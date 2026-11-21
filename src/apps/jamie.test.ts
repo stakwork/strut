@@ -25,7 +25,8 @@ import modelsStep from "../steps/lib/llm/models.js";
 import verifyStep from "../steps/lib/job/verify.js";
 import evidenceStep from "../steps/lib/job/evidence.js";
 import type { JobsCapability } from "../jobs.js";
-import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, hostPlace, insertSlash, isOwn, modelChoices, modelParams, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext, withoutAsk } from "./jamie/src/lib/chat.js";
+import type { Conversations } from "../conversations.js";
+import { BUSY_NOTICE, NOT_SHARED_NOTICE, NOT_YOURS_NOTICE, readRefusal, detectSlash, groupByDay, hostPlace, insertSlash, isOwn, mayContinue, modelChoices, modelParams, newConversationId, ownerLabel, readsAsAdmin, sendRefusal, sentModel, silentReply, timeLine, turnContext, withoutAsk } from "./jamie/src/lib/chat.js";
 import { appKey, openable, placeArtifact, servedFile, turnDeliverables } from "./jamie/src/lib/artifacts.js";
 import { answeredSince, askedSecret, captchaPrompt, claimPill, jobLook, jobRunWorkflow, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
@@ -112,8 +113,28 @@ describe("strut/jamie — the pure parts", () => {
     assert.deepEqual(sendRefusal("step_run: session_busy: alice/c1 is mid-turn"), { kind: "busy", text: BUSY_NOTICE });
     assert.deepEqual(sendRefusal('step_run: conversation_not_yours: "c-1" is another person\'s conversation'), { kind: "not-yours", text: NOT_YOURS_NOTICE });
     assert.deepEqual(sendRefusal("boom"), { kind: "error", text: "boom" });
+    assert.equal(readRefusal('No conversation "bob/1a2b" (or not yours to read)'), NOT_SHARED_NOTICE, "a link to a chat not shared with you");
+    assert.equal(readRefusal('step_run: No conversation "bob/1a2b" (or not yours to read)'), NOT_SHARED_NOTICE);
+    assert.equal(readRefusal("fetch failed"), null, "any other error is shown as it is");
     assert.ok(silentReply(" [silent]\n"));
     assert.ok(!silentReply("Done."));
+  });
+
+  it("an admin's Everyone: whose a row is, which open as a reader, and which a reader may still continue", () => {
+    assert.equal(ownerLabel({ id: "carol/c1", startedBy: "carol" }), "carol");
+    assert.equal(ownerLabel({ id: "root/fork", startedBy: "carol" }), "root", "a fork's first turns are its source's: the id says whose it is");
+    assert.equal(ownerLabel({ id: "hive-1", startedBy: "dave" }), "dave", "a bare id: who started it");
+    assert.equal(ownerLabel({ id: "host/sphinx/abc", host: "sphinx", startedBy: "alice" }), "alice");
+    assert.equal(ownerLabel({ id: "host/sphinx/abc", host: "sphinx" }), "a Sphinx tribe", "a host's with no one named: where it is continued");
+    assert.equal(ownerLabel({ id: "hive-2" }), "");
+    assert.equal(readsAsAdmin({ id: "carol/c1", startedBy: "carol" }, "root"), true);
+    assert.equal(readsAsAdmin({ id: "root/c1" }, "root"), false, "their own id");
+    assert.equal(readsAsAdmin({ id: "hive-1", startedBy: "root" }, "root"), false, "one they started");
+    const view = (participants: string[], shared?: true) => ({ conversation: shared ? { shared } : {}, participants });
+    assert.equal(mayContinue(view(["carol"]), "carol/c1", "root"), false, "someone else's: read-only");
+    assert.equal(mayContinue(view(["carol", "root"]), "carol/c1", "root"), true, "one they took a turn in");
+    assert.equal(mayContinue(view(["carol"], true), "carol/c1", "root"), true, "a shared one");
+    assert.equal(mayContinue(view([]), "root/c1", "root"), true, "their own id");
   });
 
   it('"/" opens a Concept at the start of a word only, and the pick replaces what was typed', () => {
@@ -407,10 +428,11 @@ describe("strut/jamie — its steps, as its viewer", () => {
     sse({ type: "message_stop" });
   const lines: string[] = [];
 
-  /** The seeded app's `step_run`, as `actor` (none: no person). */
-  const page = (name: string, actor?: string, version = "v1") => {
-    const tools = buildAppTools({ apps: strut.apps, registry, services: strut.services, ...(actor ? { actor } : {}), runStepDeps: { store, workspace: strut.workspace } });
-    const app = appIdentity(name, version);
+  /** The seeded app's `step_run`, as `actor` (none: no person); `admin`
+   *  when the door holds full scope (an admin's session). */
+  const page = (name: string, actor?: string, admin = false) => {
+    const tools = buildAppTools({ apps: strut.apps, registry, services: strut.services, ...(actor ? { actor } : {}), admin, runStepDeps: { store, workspace: strut.workspace } });
+    const app = appIdentity(name, "v1");
     const call = async (type: string, config: Record<string, unknown> = {}) =>
       (await (tools[STEP_RUN_TOOL] as any).execute({ type, config, app }, { toolCallId: "t", messages: [] })) as { error?: string; result?: any };
     const ok = async (type: string, config: Record<string, unknown> = {}) => {
@@ -512,6 +534,53 @@ describe("strut/jamie — its steps, as its viewer", () => {
     assert.equal((await bob.ok("run/files", read)).base64, png, "shared: a teammate reads its turns' files");
     await alice.ok("conversation/update", { session: "alice/c-pic", shared: false });
     assert.match((await bob.call("run/files", read)).error!, /No file/, "unshared, and bob never opened it");
+  });
+
+  it("an admin's Everyone (plans/jamie-app.md §2.3): anyone's conversation listed and read as it is, its files too, never a member's; a turn in it still refused; Continue here forks the admin's own", async () => {
+    const carol = page(JAMIE_APP, "carol");
+    const root = page(JAMIE_APP, "root", true);
+    const conversations = (strut.services as unknown as { conversations: Conversations }).conversations;
+    const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex").toString("base64");
+    const { runId } = await carol.ok("run/launch", {
+      workflow: ORCHESTRATOR_WORKFLOW,
+      input: { prompt: "how do I start?", session: "carol/c-new" },
+      attachments: [{ name: "pic.png", mediaType: "image/png", data: png }],
+    });
+    assert.equal((await carol.ok("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId, wait: 20_000 })).status, "success");
+    for (let i = 0; i < 500 && !(await conversations.record("carol/c-new"))?.turns.at(-1)?.status; i++) await new Promise((r) => setTimeout(r, 10));
+    const carolsRow = async () => (await carol.ok("conversation/list")).conversations.find((c: any) => c.id === "carol/c-new");
+    const before = { row: await carolsRow(), record: await conversations.record("carol/c-new") };
+
+    // The list says who may ask: an admin's page; anyone else is refused.
+    assert.deepEqual([(await root.ok("conversation/list")).admin, (await carol.ok("conversation/list")).admin], [true, undefined]);
+    assert.match((await carol.call("conversation/list", { everyone: true })).error!, /conversation\/list \{ everyone \} is an admin's/);
+    assert.match((await carol.call("conversation/get", { session: "carol/c-new", everyone: true })).error!, /conversation\/get \{ everyone \} is an admin's/);
+
+    const listed = (await root.ok("conversation/list", { everyone: true, q: "carol" })).conversations;
+    assert.deepEqual(listed.map((c: any) => [c.id, c.startedBy, c.unread]), [["carol/c-new", "carol", false]]);
+    const view = await root.ok("conversation/get", { session: "carol/c-new", everyone: true });
+    assert.deepEqual([view.turns[0].prompt, view.conversation.unread, view.participants], ["how do I start?", false, ["carol"]]);
+    const file = { workflow: ORCHESTRATOR_WORKFLOW, runId, path: view.turns[0].attachments[0].path };
+    assert.equal((await root.ok("run/files", file)).base64, png, "its turns' files too");
+    assert.match((await page(JAMIE_APP, "bob").call("run/files", file)).error!, /No file/, "never a member's");
+    assert.match((await root.call("conversation/get", { session: "carol/c-new" })).error!, /No conversation/, "without everyone it is not theirs");
+
+    // Reading leaves no trace: not a viewer, not in the admin's list, carol's row as it was.
+    assert.deepEqual(await conversations.record("carol/c-new"), before.record);
+    assert.deepEqual(await carolsRow(), before.row);
+    assert.ok(!(await root.ok("conversation/list")).conversations.some((c: any) => c.id === "carol/c-new"));
+
+    // Reading is not a turn.
+    assert.match((await root.call("run/launch", { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "let me", session: "carol/c-new" } })).error!, /conversation_not_yours/);
+
+    // Continue here: a copy that is the admin's, and theirs to continue.
+    const fork = await root.ok("conversation/fork", { session: "carol/c-new", everyone: true });
+    assert.match(fork.id, /^root\/[0-9a-f]{12}$/);
+    assert.equal(fork.forkedFrom, "carol/c-new");
+    assert.deepEqual((await root.ok("conversation/list")).conversations.map((c: any) => c.id), [fork.id]);
+    const next = await root.ok("run/launch", { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "carrying on", session: fork.id } });
+    assert.equal((await root.ok("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId: next.runId, wait: 20_000 })).status, "success");
+    assert.ok(!(await carol.ok("conversation/list")).conversations.some((c: any) => c.id === fork.id), "never carol's");
   });
 
   it("the model picker's list: llm/models is GET /llm/models", async () => {

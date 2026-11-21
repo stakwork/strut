@@ -122,6 +122,9 @@ export interface TypeStats {
   asking: number;
   /** Its ready tests (ruling 9: a paid open type needs its K of them). */
   readyTests?: number;
+  /** §9.6: its answers with no verdict yet. Absent on a server that does
+   *  not count them (a host's own task store, an older strut). */
+  toReview?: number;
   windows: Record<StatsWindow, StatsWindowView>;
   appProblem?: string;
 }
@@ -258,6 +261,23 @@ export interface Task {
   /** What the run told the workers who answered (its `task/reply`), its
    *  files read through `staff/file`. Absent: it told them nothing. */
   reply?: TaskReply;
+  /** The group its run put it in (`task/reply`'s `group`). */
+  group?: string;
+}
+
+/** A group of tasks the runs named (`staff/groups`): its tasks, their
+ *  answers and how those were reviewed. */
+export interface TaskGroup {
+  group: string;
+  type: string;
+  tasks: number;
+  answers: number;
+  ok: number;
+  rejected: number;
+  unreviewed: number;
+  workers: string[];
+  first: number;
+  last: number;
 }
 
 /** A run's reply after the answer: a JSON object and files of its run. */

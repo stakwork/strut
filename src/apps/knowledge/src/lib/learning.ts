@@ -23,7 +23,7 @@ export interface PageClaim {
 export const CLAIM_STATUS: Record<ClaimStatus, { label: string; means: string }> = {
   supported: { label: "Supported", means: "The latest evidence says this holds." },
   refuted: { label: "Refuted", means: "The latest evidence says this does not hold." },
-  stale: { label: "Stale", means: "The page changed since this was last checked." },
+  stale: { label: "Stale", means: "The concept changed since this was last checked." },
   unknown: { label: "Unknown", means: "Nothing has checked this yet." },
 };
 
@@ -41,7 +41,7 @@ export function evidenceLine(latest: PageClaim["latest"]): string | null {
 
 /** Why the claims are not shown, as one line, from the step's refusal. */
 export function claimsUnavailable(message: string): string {
-  if (/may not read/.test(message)) return "Claims aren't shown here: this page may not read where the tree is kept.";
+  if (/may not read/.test(message)) return "Claims aren't shown here: this app may not read where the tree is kept.";
   if (/claims layer/.test(message)) return "This server keeps no claims.";
   return `Couldn't read the claims: ${message}`;
 }

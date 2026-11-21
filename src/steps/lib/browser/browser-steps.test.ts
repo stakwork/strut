@@ -17,7 +17,7 @@ import { captchaManifest, writeCaptcha } from "../../../browser/captcha.js";
 import { mapCheckResult } from "../../../verify.js";
 import { buildRegistry } from "../../registry.js";
 import { CAPTURE_VERBS as SERVICE_VERBS, LOOK_VERBS as SERVICE_LOOK_VERBS } from "../../../browser/service.js";
-import { CAPTURE_VERBS, LOOK_VERBS, type Ctx } from "./_shared.js";
+import { CAPTURE_VERBS, LOOK_VERBS, type Ctx, type StrutBrowser } from "./_shared.js";
 
 const STEPS_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -76,8 +76,10 @@ const WALKED = {
   small: Buffer.from("png"),
 };
 
-/** Records every verb call; each verb returns a canned output. */
-class FakeBrowser {
+/** Records every verb call; each verb returns a canned output. A host's own
+ *  browser, as `StrutBrowser` declares one: `lookAtApp` throws, as a verb a
+ *  host's browser cannot do does. */
+class FakeBrowser implements StrutBrowser {
   calls: Array<{ verb: string; runId: string; args: unknown[] }> = [];
   fail?: string;
   /** What `open` answers for `resumed`. */
@@ -117,6 +119,8 @@ class FakeBrowser {
   async capture(runId: string, input: unknown, artifacts: unknown) { return this.rec("capture", runId, [input, artifacts], { ...SHOT, errors: ["http: 500 GET /api"], pageUrl: "https://example.com/after", title: "After" }); }
   async verify(runId: string, input: unknown, sink: unknown) { return this.rec("verify", runId, [input, sink], { ...SHOT, ...VERDICT }); }
   async walkthrough(runId: string, input: unknown, sink: unknown) { return this.rec("walkthrough", runId, [input, sink], WALKED); }
+  async dispose(runId: string) { this.rec("dispose", runId, [], undefined); }
+  async lookAtApp(): Promise<never> { throw new Error("app/look: not on this browser"); }
 }
 
 const artifacts = { tag: "artifacts" };

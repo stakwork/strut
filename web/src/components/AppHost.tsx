@@ -12,7 +12,7 @@ import { AccountWidget } from "./AccountWidget";
 import { appIdentityOf, createPlacementController, initialState, serverNameOf, type PlacementController } from "../account-widget";
 import { PaymentSheet } from "./PaymentSheet";
 import { CameraSheet } from "./CameraSheet";
-import type { CameraPhoto } from "@strut/kit/camera";
+import type { CameraCapture, CameraPhoto } from "@strut/kit/camera";
 import { SignInSheet } from "./SignInSheet";
 import { words } from "../words";
 import { signInSilently, signInWithKey, signInWithSphinx, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
@@ -112,6 +112,10 @@ export function AppHost(props: {
    *  (a page without the apps SDK), or it could not be loaded. Once per
    *  load. A host that frames strut fades in on it (../embed `reportReady`). */
   onReady?: () => void;
+  /** The address of the page a person opens this app on (strut's own, or
+   *  the framing host's): handed to the app so it can give a link to paste
+   *  (../app-host `page`). None: it gives none. */
+  page?: string;
 }) {
   const app = props.app;
   const from = app.from;
@@ -136,7 +140,7 @@ export function AppHost(props: {
   const signInRef = useRef(signIn);
   signInRef.current = signIn;
   /** The photo the page asked for (@strut/kit/camera), and where it goes. */
-  const [camera, setCamera] = useState<{ app: string; facing: "environment" | "user"; maxSide: number; title?: string; done: (p: CameraPhoto | null) => void } | null>(null);
+  const [camera, setCamera] = useState<(CameraCapture & { app: string; done: (p: CameraPhoto | null) => void }) | null>(null);
   const cameraRef = useRef(camera);
   cameraRef.current = camera;
   const connRef = useRef<AppHostConnection | null>(null);
@@ -225,6 +229,7 @@ export function AppHost(props: {
           ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
           ...(wallet ? { wallet } : {}),
           ...(permissions ? { permissions } : {}),
+          ...(props.page ? { page: props.page } : {}),
           // Channels as the signed-in viewer: a peer's app's are relayed to
           // the peer; a visitor's once they signed in.
           channels: { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}) },
@@ -400,6 +405,7 @@ export function AppHost(props: {
           app={camera.app}
           facing={camera.facing}
           maxSide={camera.maxSide}
+          review={camera.review}
           onDone={camera.done}
           {...(camera.title ? { title: camera.title } : {})}
         />

@@ -50,7 +50,7 @@ import { Store } from "./components/Store";
 import { INSTALL_LINK_PARAMS, parseInstallLink, type InstallLink } from "./store-links";
 import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph, SidebarIcon } from "./icons";
-import { appKey, appMessage, appToolInput } from "./app-links";
+import { appKey, appMessage, appPageAddress, appToolInput } from "./app-links";
 import { STAFF_APP } from "./waiting";
 import { pickPage, type PageSession, type ServedBox } from "./page";
 import { MemberApps } from "./components/MemberApps";
@@ -1492,6 +1492,10 @@ function Shell() {
   // serves or an app on that peer opens here (AppHost): the rest are the
   // peer's (plans/apps.md §7.4). Alone (`?solo=1`) it is ./components/SoloApp.
   const appToolArgs = appToolInput(appInput);
+  // Where a person opens this page: strut's own address, `?app=<key>` — the
+  // app builds its links to paste on it. Framed by a host (Hive's lab), the
+  // host's address is the one to paste, and the full UI is given none.
+  const appPage = appEntry && window.parent === window ? appPageAddress(location.href, appKey(appEntry)) : undefined;
   const appHost = appEntry && appShown
     ? <AppWithPanel
         key={`${appKey(appEntry)}@${appShown}`}
@@ -1499,6 +1503,7 @@ function Shell() {
         reload={appReload}
         onNavigate={navigateFromApp}
         {...(appToolArgs ? { toolInput: appToolArgs } : {})}
+        {...(appPage ? { page: appPage } : {})}
         {...(appEntry.peer ? {} : {
           onMessage: (text: string) => {
             setShowChat(true);

@@ -1,68 +1,17 @@
-// What a Concept's readers are held to, and what waits on a person: its
-// CLAIMS (each sentence, its status, the latest evidence in a line) and the
-// CHANGES to it the dream proposed, each drawn over the page as it is now
-// (strut/views' ConceptDiff) and decided here (`proposal/decide`). Accepting
-// one is the only write this app makes.
+// What waits on a person: the CHANGES to a Concept the dream proposed, each
+// drawn over the page as it is now (strut/views' ConceptDiff) and decided
+// here (`proposal/decide`). What the page's readers are held to is ./Checks.
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, Lightbulb, Loader2, RotateCcw, X } from "lucide-react";
 import { useStrutClient } from "@strut/kit";
 import { ConceptDiff } from "strut/views";
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { usePage } from "../lib/read";
-import { byStatus, CLAIM_STATUS, claimsUnavailable, evidenceLine, type ClaimStatus, type PendingChange } from "../lib/learning";
+import type { PendingChange } from "../lib/learning";
 import { SectionLabel } from "./bits";
 
-const TONE: Record<ClaimStatus, string> = {
-  supported: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  refuted: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300",
-  stale: "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300",
-  unknown: "text-muted-foreground",
-};
-
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
-/** The claims on the Concept `name` (`id`, so a namesake elsewhere never lends it its claims). */
-export function ClaimsSection({ id, name }: { id: string; name: string }) {
-  const q = usePage(name);
-  if (q.isLoading) return <Skeleton className="h-10" />;
-  if (q.isError) {
-    return (
-      <p className="text-xs text-muted-foreground" data-testid="claims-unavailable">
-        {claimsUnavailable(errorText(q.error))}
-      </p>
-    );
-  }
-  if (!q.data || q.data.ref_id !== id) return null;
-  const claims = [...q.data.claims].sort(byStatus);
-  return (
-    <section className="space-y-1.5" data-testid="concept-claims">
-      <SectionLabel>
-        Held to <span className="tabular-nums">{claims.length || ""}</span>
-      </SectionLabel>
-      {!claims.length && <p className="text-xs text-muted-foreground">No claims on this page yet.</p>}
-      <ul className="space-y-2">
-        {claims.map((c) => {
-          const s = CLAIM_STATUS[c.status] ?? CLAIM_STATUS.unknown;
-          const line = evidenceLine(c.latest);
-          return (
-            <li key={c.id} className="space-y-0.5" data-testid="concept-claim" data-status={c.status}>
-              <div className="flex items-start gap-2">
-                <span className={cn("mt-0.5 shrink-0 rounded border px-1.5 text-[11px]", TONE[c.status] ?? TONE.unknown)} title={s.means}>
-                  {s.label}
-                </span>
-                <span className="min-w-0 break-words text-sm">{c.text}</span>
-              </div>
-              {line && <p className="break-words pl-1 text-xs text-muted-foreground">{line}</p>}
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
 
 /** The changes to this Concept that wait on a person. `wide`: drawn open. */
 export function ChangesSection({ changes, wide, onWide }: { changes: readonly PendingChange[]; wide: boolean; onWide: (wide: boolean) => void }) {

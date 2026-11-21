@@ -51,7 +51,7 @@ daily cap: `RunOptions.maxCostUsd` → `run.start` → `ctx.maxCostUsd` →
 `LlmAuthContext.maxCostUsd`, and the run link carries the smaller of the
 two (`resolveRunCap`, src/run-cap.ts).
 
-**The module.** `createMothership({ dataDir })` → `{ llmAuth, mount(strut) }`.
+**The module.** `createMothership({ dataDir })` → `{ llmAuth, mount(strut) }` (and `grants`, below).
 Hive mints, once per user and deployment, a macaroon (org-signed user
 authorization + a user-signed standing invocation for `strut-agent`, 60
 days, a cumulative ceiling) and pushes it with that user's virtual key and
@@ -93,6 +93,43 @@ on the request path (2026-09-24, swarm38: every builder turn that searched
 and then called a tool died with `…server_tool_use.input: Field required`).
 So a swarm behind the gateway needs `EXA_API_KEY` for `web_search`; without
 it the builder and the agent step have `web_fetch` only.
+
+**Grants: model calls for a machine outside strut** (stakwork/pods PLAN.md
+§3.2). `ctx.services.llm.grant({ name, hours })` → `{ id, env, expiresAt }`,
+and `revoke(id)`: a pod's apps call the box's gateway themselves, billed to
+the run's principal. Strut adds a link of the grant's own to that person's
+macaroon, off the invocation: its own run id (`grant-<nonce>`, so the
+gateway caps it apart from any run), the cap (`STRUT_GRANT_MAX_COST_USD`,
+$1000 by default, the owner's call on 2026-11-20; lowered to the
+delegation's ceiling when that is less, so a person with a lower spending
+limit still gets a grant), an expiry no later than `hours` from now (at most
+24; or the person's authorization, when sooner), billed as the grant's
+`name` (written as a step's agent name is, `[A-Za-z0-9_.-]`, at most 64). Then it
+asks the host for a virtual key under the person's gateway customer:
+`POST <STRUT_MOTHERSHIP_GRANTS_URL>` with the deployment key
+(`Authorization: Bearer <STRUT_API_KEY>`) and `x-strut-actor`, body
+`{ name, macaroon, max_cost_usd, expires_at }`; it answers `{ id, key,
+address }`, the key joined as `<virtual key>.<macaroon>` and the address
+the gateway's public route (`https://mothership.<box>`). `env` is the
+standard variables: `OPENAI_BASE_URL` (`<address>/openai/v1`),
+`OPENAI_API_KEY`, `ANTHROPIC_BASE_URL` (`<address>/anthropic`),
+`ANTHROPIC_API_KEY`, the last two keys both the joined key; Gemini is left
+out (its SDKs share no base-URL variable). `revoke` is `DELETE <url>/<id>`
+with the deployment key and no person (a job's sweep releases with none); a
+404 is fine. The `id` is the host's, and is what a step keeps (a job's
+hold), never the key. The cap and the expiry are sent to the host because
+the link does not bind whoever holds the key: gatekey carries each link's
+HMAC, so the pod's code can drop it and present the person's bare
+delegation, and only the key's own budget and deletion hold it. No grant: a
+strut without the Mothership, or without `STRUT_MOTHERSHIP_GRANTS_URL`, has
+no `llm` on the bag; `grant` answers null when nobody can be billed here (no
+principal, or no delegation for them), an error under
+`STRUT_MOTHERSHIP_REQUIRED=1`; a host that refuses, a malformed
+`STRUT_GRANT_MAX_COST_USD` or an expired delegation is an error. Either way the machine gets no
+variables. The runner binds `llm` to the run's principal as it binds
+`secrets` (`forPrincipal`, `bindPrincipal`), and a public run gets none: a
+grant's spend is outside the run's own cap. Tests: `src/mothership.test.ts`
+("grants for a machine outside strut"), against a fake host endpoint.
 
 ## Key concepts
 
@@ -245,7 +282,7 @@ what a MEDIA step shares (`image` now, `video` next): `saveMedia` — the file w
 
 ### `src/mothership.ts`
 
-OPT-IN Mothership cost control (plans/mothership-cost-control.md §3): createMothership({ dataDir }) → { llmAuth, mount }. Hive pushes one standing macaroon per user (PUT /llm/delegations/:actor); strut appends keyless HMAC links per run and per step (gatekey `attenuate`) so the gateway bills user × workflow × step and caps the run. Delegations live in a second encrypted file (mothership.json), never on the services bag. A public run's own cap (`LlmAuthContext.maxCostUsd`, from `ctx.maxCostUsd` through `stepAuth`) makes the run link carry the smaller of it and the workflow's (src/run-cap.ts). Core never imports it
+OPT-IN Mothership cost control (plans/mothership-cost-control.md §3): createMothership({ dataDir, grantsUrl? }) → { llmAuth, grants?, mount }. `grants` is `ctx.services.llm` (model calls for a machine outside strut, a key the host makes per grant: "Grants" above). Hive pushes one standing macaroon per user (PUT /llm/delegations/:actor); strut appends keyless HMAC links per run and per step (gatekey `attenuate`) so the gateway bills user × workflow × step and caps the run. Delegations live in a second encrypted file (mothership.json), never on the services bag. A public run's own cap (`LlmAuthContext.maxCostUsd`, from `ctx.maxCostUsd` through `stepAuth`) makes the run link carry the smaller of it and the workflow's (src/run-cap.ts). Core never imports it
 
 ### `src/steps/lib/llm/`
 

@@ -3,10 +3,22 @@
 // and how things read. No React here: src/apps/staff.test.ts tests them.
 import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, SentFile, Standing, SupportConversation, SupportFilter, SupportMessage, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
 
-export const TABS = ["queue", "types", "workers", "tasks", "tests", "payouts", "support"] as const;
+export const TABS = ["queue", "types", "workers", "tasks", "groups", "tests", "payouts", "support"] as const;
 export type Tab = (typeof TABS)[number];
 
-export const TAB_LABELS: Record<Tab, string> = { queue: "Queue", types: "Types", workers: "Workers", tasks: "Tasks", tests: "Tests", payouts: "Payouts", support: "Support" };
+/** The tabs the bar shows, one a job: seeing what needs a person
+ *  (`queue`), checking the answers (`tasks`, and `groups`, the same answers
+ *  put together), the people, the kinds of work (`types`, and a type's
+ *  `tests`), paying, talking. A place keeps its own tab, so every deep link
+ *  from before opens where it did. */
+export const NAV = ["queue", "tasks", "workers", "types", "payouts", "support"] as const;
+export type NavTab = (typeof NAV)[number];
+export const NAV_LABELS: Record<NavTab, string> = { queue: "Overview", tasks: "Answers", workers: "Workers", types: "Task types", payouts: "Payouts", support: "Support" };
+
+/** The bar's tab a place is under. */
+export function navOf(tab: Tab): NavTab {
+  return tab === "groups" ? "tasks" : tab === "tests" ? "types" : tab;
+}
 
 /** Where the page is: a tab and what is open in it. */
 export interface Place {
@@ -26,6 +38,8 @@ export interface Place {
   /** §9.6: tasks with an answer not reviewed, or marked so — the review
    *  queue. */
   review?: ReviewFilter;
+  /** On the Groups tab: one group (`task/reply`'s `group`), of `type`. */
+  group?: string;
 }
 
 export type ReviewFilter = "none" | Verdict;
@@ -47,6 +61,7 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
   const named = (TABS as readonly string[]).includes(tab ?? "") ? (tab as Tab) : undefined;
   const review = REVIEW_FILTERS.find((r) => r === str("review"));
   if (str("payout")) return { tab: "payouts", payout: str("payout")! };
+  if (str("group")) return { tab: "groups", group: str("group")!, ...(str("type") ? { type: str("type")! } : {}) };
   if (named === "payouts") return { tab: "payouts", ...(str("worker") ? { worker: str("worker")! } : {}) };
   if (named === "support") return { tab: "support", ...(str("worker") ? { worker: str("worker")! } : {}) };
   if (str("task")) return { tab: "tasks", task: str("task")! };
@@ -55,13 +70,14 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
   if (str("by")) return { tab: "tasks", by: str("by")! };
   if (str("worker")) return { tab: "workers", worker: str("worker")! };
   if (str("test")) return { tab: "tests", test: str("test")! };
-  if (str("type")) return named === "tests" || named === "tasks" ? { tab: named, type: str("type")! } : { tab: "types", type: str("type")! };
+  if (str("type")) return named === "tests" || named === "tasks" || named === "groups" ? { tab: named, type: str("type")! } : { tab: "types", type: str("type")! };
   return { tab: named ?? "queue" };
 }
 
 /** A place as the app link's input, the inverse of `placeOf`. */
 export function inputOf(p: Place): Record<string, string> {
   if (p.payout) return { payout: p.payout };
+  if (p.group) return { group: p.group, ...(p.type ? { type: p.type } : {}) };
   if (p.tab === "payouts") return { tab: "payouts", ...(p.worker ? { worker: p.worker } : {}) };
   if (p.tab === "support") return { tab: "support", ...(p.worker ? { worker: p.worker } : {}) };
   if (p.task) return { task: p.task };
@@ -80,30 +96,46 @@ export function runOf(run: string): { workflow: string; runId: string } | null {
   return i > 0 && i < run.length - 1 ? { workflow: run.slice(0, i), runId: run.slice(i + 1) } : null;
 }
 
-/** One thing that needs a person, above the Queue's table. */
-export interface QueueWarning {
+/** One thing that needs a person, first on the Overview. */
+export interface Need {
   text: string;
+  /** What its button says. */
+  action: string;
   /** Where it leads. */
   to: Place;
+  /** `warn`: work or people are held up until someone acts. `plain`: it waits. */
+  tone: "warn" | "plain";
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
 
-/** What needs a person (§9.5): a type with tasks waiting and nobody granted
- *  it; tasks that expire unanswered within the hour; a type turned off with
- *  open tasks; a type whose app is missing or does not grant the worker's
- *  steps; new workers waiting for a grant. */
-export function queueWarnings(stats: TaskStats): QueueWarning[] {
-  const out: QueueWarning[] = [];
+/** A type's answers with no verdict yet (`toReview`), every type's with no
+ *  `type`; undefined on a server that does not count them (a host's own
+ *  task store, an older strut). */
+export function toReviewOf(stats: Pick<TaskStats, "types"> | undefined, type?: string): number | undefined {
+  const rows = (stats?.types ?? []).filter((t) => (type ? t.type === type : true) && t.toReview !== undefined);
+  return rows.length ? rows.reduce((n, t) => n + (t.toReview ?? 0), 0) : undefined;
+}
+
+/** What needs a person (§9.5): a type whose app is missing or does not
+ *  grant the worker's steps; one with tasks waiting and nobody who may take
+ *  them; one turned off with open tasks; tasks that expire unanswered within
+ *  the hour; people who signed in and wait to be let in; and, last, the
+ *  answers nobody has reviewed (`groups`: there is a group to review them
+ *  in). */
+export function needsYou(stats: TaskStats, o: { groups?: boolean } = {}): Need[] {
+  const out: Need[] = [];
   for (const t of stats.types) {
     const open = t.waiting + t.working;
-    if (t.appProblem) out.push({ text: `${t.type}: ${t.appProblem}.`, to: { tab: "types", type: t.type } });
-    if (t.waiting > 0 && t.granted === 0) out.push({ text: `${t.type} has ${plural(t.waiting, "task")} waiting and no worker granted it.`, to: { tab: "types", type: t.type } });
-    if (!t.enabled && open > 0) out.push({ text: `${t.type} is turned off with ${plural(open, "open task")}: none is handed out, and each expires when due.`, to: { tab: "types", type: t.type } });
-    if (t.dueHour > 0) out.push({ text: `${plural(t.dueHour, "task")} of ${t.type} ${t.dueHour === 1 ? "expires" : "expire"} unanswered within the hour.`, to: { tab: "tasks", type: t.type } });
+    if (t.appProblem) out.push({ text: `${t.type}: ${t.appProblem}.`, action: "Open the type", to: { tab: "types", type: t.type }, tone: "warn" });
+    if (t.waiting > 0 && t.granted === 0) out.push({ text: `${t.type} has ${plural(t.waiting, "task")} waiting and no worker who may take it.`, action: "Let someone in", to: { tab: "types", type: t.type }, tone: "warn" });
+    if (!t.enabled && open > 0) out.push({ text: `${t.type} is turned off with ${plural(open, "open task")}: none is handed out, and each expires when due.`, action: "Open the type", to: { tab: "types", type: t.type }, tone: "warn" });
+    if (t.dueHour > 0) out.push({ text: `${plural(t.dueHour, "task")} of ${t.type} ${t.dueHour === 1 ? "expires" : "expire"} unanswered within the hour.`, action: "See them", to: { tab: "tasks", type: t.type }, tone: "warn" });
   }
   const fresh = stats.workers.new ?? 0;
-  if (fresh > 0) out.push({ text: `${plural(fresh, "new worker")} signed in and ${fresh === 1 ? "waits" : "wait"} for a grant.`, to: { tab: "workers" } });
+  if (fresh > 0) out.push({ text: `${plural(fresh, "person", "people")} signed in and ${fresh === 1 ? "is" : "are"} waiting to be let in.`, action: "Let them in", to: { tab: "workers" }, tone: "warn" });
+  const review = toReviewOf(stats) ?? 0;
+  if (review > 0) out.push({ text: `${plural(review, "answer")} ${review === 1 ? "has" : "have"} not been reviewed.`, action: "Start reviewing", to: o.groups ? { tab: "groups" } : { tab: "tasks", review: "none" }, tone: "plain" });
   return out;
 }
 
@@ -179,6 +211,19 @@ export function owedLine(books: Books | undefined): { text: string; short: boole
   return cover >= 0
     ? { text: `${owed}; the wallet holds ${fmtSats(wallet.balance.msat)}, ${fmtSats(cover)} more than that.`, short: false }
     : { text: `${owed}; the wallet holds ${fmtSats(wallet.balance.msat)}, ${fmtSats(-cover)} short of it.`, short: true };
+}
+
+/** What workers are owed beside what the wallet holds, as the Overview
+ *  draws it: null when no worker was ever paid (`owedLine`'s rule). `cover`
+ *  is what the wallet holds past what is owed (negative: short of it);
+ *  absent when no wallet is read here. */
+export function moneyOf(books: Books | undefined): { owedMsat: number; heldMsat: number; withdrawableMsat: number; walletMsat?: number; coverMsat?: number; walletError?: string } | null {
+  if (!owedLine(books)) return null;
+  const w = books!.workers!;
+  const wallet = books?.wallet;
+  const base = { owedMsat: w.owedMsat, heldMsat: w.heldMsat, withdrawableMsat: w.withdrawableMsat };
+  if (!wallet?.balance) return { ...base, ...(wallet?.error ? { walletError: wallet.error } : {}) };
+  return { ...base, walletMsat: wallet.balance.msat, coverMsat: wallet.coverMsat ?? wallet.balance.msat - w.owedMsat };
 }
 
 // ── payouts (§8.2) ─────────────────────────────────────────────────────────
@@ -371,6 +416,109 @@ export function reviewText(r: NonNullable<Lease["review"]>, now = Date.now()): s
   const head = r.verdict === "rejected" ? `rejected${r.why ? `: ${r.why}` : ""}` : `ok${r.why ? `: ${r.why}` : ""}`;
   const who = ` · ${r.by ? `by ${r.by}, ` : ""}${fmtWhen(r.at, now)}`;
   return `${head}${who} · ${r.final || r.until <= now ? "final" : `changeable until ${fmtWhen(r.until, now)}`}`;
+}
+
+/** A group's tasks read at once: the routes' page at its largest. */
+export const GROUP_TASKS = 1000;
+
+/** A key as a label: `posted_by` → "Posted by". */
+export function labelOf(key: string): string {
+  const words = key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** `title` and `ask` of what a task or a reply shows, when they are text. */
+function wordsOf(show: unknown): string {
+  if (typeof show === "string") return show.trim();
+  if (!show || typeof show !== "object" || Array.isArray(show)) return "";
+  const s = show as Record<string, unknown>;
+  return [s["title"], s["ask"]].filter((v): v is string => typeof v === "string" && !!v.trim()).map((v) => v.trim()).join(" · ");
+}
+
+/** What a task is called in a list: the words its run sent back after the
+ *  answer (the reply's `title` and `ask`), else the words it asked with. */
+export function captionOf(t: Pick<Task, "show" | "reply">): string {
+  return wordsOf(t.reply?.show) || wordsOf(t.show);
+}
+
+/** What a task showed besides its words, in a line: its plain fields
+ *  (`Listing: Oat milk 1 L`), the first `max` of them. */
+export function shownLine(show: unknown, max = 2): string {
+  if (!show || typeof show !== "object" || Array.isArray(show)) return "";
+  return answerFields(Object.fromEntries(Object.entries(show as Record<string, unknown>).filter(([k]) => k !== "ask" && k !== "title")))
+    .slice(0, max)
+    .map(([k, v]) => `${labelOf(k)}: ${v}`)
+    .join(" · ");
+}
+
+/** An answer's plain fields with a value, as label and text: what a list
+ *  shows of an answer with no picture, and the answer page's short list. */
+export function answerFields(answer: unknown): Array<[string, string]> {
+  if (!answer || typeof answer !== "object" || Array.isArray(answer)) return [];
+  const out: Array<[string, string]> = [];
+  for (const [k, v] of Object.entries(answer as Record<string, unknown>)) {
+    if (typeof v === "string" ? v.trim() : typeof v === "number" || typeof v === "boolean") out.push([k, String(v)]);
+  }
+  return out;
+}
+
+/** The fields of an object answer left empty (`""`, null), by key. */
+export function emptyFields(answer: unknown): string[] {
+  if (!answer || typeof answer !== "object" || Array.isArray(answer)) return [];
+  return Object.entries(answer as Record<string, unknown>).filter(([, v]) => v === null || v === undefined || (typeof v === "string" && !v.trim())).map(([k]) => k);
+}
+
+/** An answer in one line, for a row with no picture: `Title: Dune · Pages: 412`. */
+export function answerLine(answer: unknown, max = 3): string {
+  if (answer === undefined) return "";
+  if (answer === null || typeof answer !== "object") return String(answer);
+  const fields = answerFields(answer);
+  return fields.length ? fields.slice(0, max).map(([k, v]) => `${labelOf(k)}: ${v}`).join(" · ") : jsonLine(answer, 60);
+}
+
+/** The picture a task is shown by: the reply's first (what the run made of
+ *  the answer), else the answer's first. */
+export function pictureOf(t: Pick<Task, "by" | "leases" | "reply">): SentFile | undefined {
+  return t.reply?.files?.find((f) => isPicture(f.path, f.mediaType)) ?? answerFiles(t).find((f) => isPicture(f.path, f.mediaType));
+}
+
+/** The lease that gave the task's answer (a copies task's, the first that agreed). */
+export function answerLease(t: Pick<Task, "by" | "leases">): Lease | undefined {
+  return t.leases.find((l) => l.worker === t.by && l.status === "submitted");
+}
+
+/** How long an answer took its worker, taken to sent; "" while open. */
+export function tookText(l: Pick<Lease, "taken" | "closed" | "status"> | undefined): string {
+  return l && l.status === "submitted" && l.closed !== undefined ? fmtDuration(l.closed - l.taken) : "";
+}
+
+/** A clock time with its seconds, for a task's history. */
+export function fmtClock(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+/** One line of a task's history. */
+export interface Happening {
+  at: number;
+  text: string;
+  /** The lease it is about: its earning, and Take back, sit on this line. */
+  lease?: Lease;
+}
+
+/** What happened to a task, oldest first: made, each time someone took it
+ *  and how that ended, the run's reply, each verdict. `who` names a worker. */
+export function happenings(t: Task, who: (actor: string) => string, now = Date.now()): Happening[] {
+  const out: Happening[] = [{ at: t.created, text: t.test ? "Served as a test" : "The run made the task" }];
+  for (const l of t.leases) {
+    out.push({ at: l.taken, text: `${who(l.worker)} took it` });
+    const end = leaseOutcome(l, now);
+    if (end !== "working") out.push({ at: l.closed ?? l.expires, text: l.status === "submitted" ? `${who(l.worker)} answered` : `${who(l.worker)}: ${end}`, ...(l.status === "submitted" ? { lease: l } : {}) });
+    if (l.review) out.push({ at: l.review.at, text: `${l.review.by ?? "Staff"} marked ${t.leases.filter((x) => x.status === "submitted").length > 1 ? `${who(l.worker)}'s answer` : "it"} ${l.review.verdict === "ok" ? "OK" : "rejected"}` });
+  }
+  if (t.reply) out.push({ at: t.reply.at, text: "The run replied" });
+  if (t.status !== "open" && t.status !== "settled" && t.settledAt) out.push({ at: t.settledAt, text: `The task ${STATUS_WORDS[t.status]}` });
+  // Stable: lines of one moment keep the order above (taken, then answered).
+  return out.map((h, i) => ({ h, i })).sort((a, b) => a.h.at - b.h.at || a.i - b.i).map(({ h }) => h);
 }
 
 export const REVIEW_WORDS: Record<ReviewFilter, string> = { none: "Not reviewed", ok: "Marked ok", rejected: "Rejected" };

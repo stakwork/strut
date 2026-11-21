@@ -67,7 +67,8 @@ plain peer key decides no proposal and sees none. A host maps its
 own credential to `peer:person` through `resolveScope` (mcp: a `lab:peer`
 JWT with a `sub`). The token Peel holds for a box (§13.6) is a person
 token that also names a linked account: it holds only while that account
-is still linked to its actor, checked on every request.
+is still linked to its actor, checked on every request. It also links and
+removes that person's places (§13.6, "Places").
 
 ## 1. Publish
 
@@ -844,14 +845,46 @@ fire's `run.end`, as `POST …/run { callback }` does; the URL is the host's
 credential, kept in a file of its own (never the deployment's secrets, which
 steps read), so every read shows `callback: { origin }` only.
 
+A PACKAGE's schedule (`schedules:` in its `strut.yaml`, `docs/packages.md`)
+is an automation like any other, on the package's workflow, with
+`package: "<publisher>/<name>"` on it and the id
+`packageAutomationId(package, name)` (`a-` and the first 8 hex of the
+sha256 of `<package>\n<name>`), the same on every box. Strut makes it at
+install, follows each release, and drops it at uninstall: no route makes it.
+When it runs, its `name` and its `input` are the package's; `enabled` is the
+admin's, and a release keeps it.
+
+WHOM A FIRE RUNS AS (`runsAs`, `src/workspace.ts`; stadeum
+`plans/software.md` §5, item 15): a run nobody launched acts as the OWNER of
+the workflow it runs, with their secrets and on their bill, and as nobody
+else. The owner is whoever brought the workflow in as a person — their
+install, their subscription (below), their publish — or whom an admin gave
+it to (`PUT /workflows/:name/owner`, `POST /actor/claim`); a release keeps
+it. `run.start` carries that `principal` and no `actor`. With no owner, a
+package's schedule launches nothing — and so does any automation where the
+deployment requires someone to bill (`STRUT_MOTHERSHIP_REQUIRED`) — a 400
+from `…/fire` and `lastFireError` on the list, beginning `nobody to run as:`
+and saying what to do. The list says both before anything fires:
+`runsAs`, the person its fires run as, and `nobodyToRunAs`, that refusal.
+An automation a person made, on a box that bills nobody, still runs as
+nobody when its workflow has no owner.
+
+```jsonc
+// GET /automations → automations[], a package's schedule on a workflow nobody owns
+{ "id": "a-1c2d3e4f", "name": "check", "package": "acme/code", "workflow": "acme/code/check", "enabled": true, "…": "…",
+  "nobodyToRunAs": "nobody to run as: the package acme/code's schedule \"check\" runs as the owner of the workflow \"acme/code/check\" — whoever brought it in as a person (their install, subscription or publish), or whom an admin gave it to — and it has no owner, so nothing ran. An admin gives it one (PUT /workflows/acme%2Fcode%2Fcheck/owner { \"owner\": \"<actor>\" }) or a person claims it (POST /actor/claim), and it runs as them, with their own secrets." }
+// … and once it has one
+{ "id": "a-1c2d3e4f", "name": "check", "package": "acme/code", "…": "…", "runsAs": "alice" }
+```
+
 | Method | Path                                      | Description |
 | ------ | ----------------------------------------- | ----------- |
-| GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running }]` |
+| GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running, lastFireError?, runsAs?, nobodyToRunAs? }]` (`AutomationView`, `src/scheduler.ts`) — `…automation` is `{ id, name, enabled, trigger, input, callback?: { origin }, package? }` |
 | POST   | `/automations/preview`                    | `{ trigger }` → `{ summary, next }` (the next five fires); writes nothing |
-| POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled?, callback?, id? }` (`id`: normally minted, `a-<8 hex>`; a taken one is 400). A trigger with no fire to come (a one-off in the past) is 400 here and on PATCH |
-| PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses; `{ callback: null }` clears the callback |
-| DELETE | `/workflows/:name/automations/:id` | remove |
-| POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going; 503 while draining (§8.1) |
+| POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled?, callback?, id? }` (`id`: normally minted, `a-<8 hex>`; a taken one is 400). A trigger with no fire to come (a one-off in the past) is 400 here and on PATCH. No body sets `package` |
+| PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses; `{ callback: null }` clears the callback. On a package's: `enabled` alone — a `name`, `trigger`, `input` or `callback` that would change it is 400 `"<name>" is the package <package>'s schedule: …` |
+| DELETE | `/workflows/:name/automations/:id` | remove. A package's is 400 (`… made again at each release: pause it, or uninstall the package.`) |
+| POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going; 503 while draining (§8.1); 400 with the reason when it launches nothing (a package's with no owner: `nobody to run as: …`) |
 
 `GET /health` → `{ ok, dataDir, stepCount, workspace: { backend, path? }, drain? }` —
 `backend` is `fs`, `neo4j` or `ladybug` (where workflows and steps live;
@@ -947,8 +980,10 @@ curl -X POST http://localhost:3000/workflows/repo-agent/run -H 'Content-Type: ap
   turn; the step's `system` is ignored after) and every earlier message,
   and is appended when the step succeeds. A failed or cancelled turn
   appends nothing.
-- **The step's output** gains `session: { id, turn, offset }`; its
-  `step.end` records the turn, not the thread.
+- **The step's output** gains `session: { id, turn, offset }` (and
+  `keptSystem: true` when the step was handed another system prompt than
+  the thread's first, which it ran on); its `step.end` records the turn,
+  not the thread.
 - **`workdir`** on `git/checkout` keeps the working copy under a name: the
   next run naming it gets the same path as it was left (`reused: true`).
   Idle ones are removed after `STRUT_WORKDIR_TTL_DAYS` (default 7).
@@ -991,6 +1026,21 @@ turn makes you a participant. The key with no actor reads any conversation; a
 plain peer reads the routes and sees none. A person token may also POST the
 two writes.
 
+**An admin reads every one** (ruled 2026-11-19, `plans/jamie-app.md` §2.3).
+`everyone` (`?everyone=1` on the two reads, `everyone: true` in a fork's
+body) lists every conversation on this strut, whoever's, and opens any, for
+full scope alone: an admin's session or the key, with or without
+`x-strut-actor`. A person token, a host and a peer asking for it get `403
+forbidden: every person's conversations are an admin's read …` (a member's
+session never reaches these routes). Reading is not a turn and leaves no
+trace: the reader is not made a viewer, the conversation is not added to
+their list, and nobody's `seenAt`, unread or archived moves. Its rows and
+its read are the record's facts (`unread: false`, no `archived` or
+`seenAt`), and its turns show every proposal made in them. `/conversations/update`
+takes no `everyone`: a title, a share, archived and seen stay the
+conversation's people's. Who may continue it is unchanged (below); a fork
+with `everyone` is the admin's own copy.
+
 **Who may continue one.** The key launches a turn on any id. A person's
 token (§3) and strut's own app (§14.10) open the person's own ids
 (`<actor>`, `<actor>/…`) as they are, and also a conversation the person
@@ -1013,10 +1063,10 @@ deployment key still launches on any id. The host reads it with
 
 | Method | Path | Body | Response |
 | ------ | ---- | ---- | -------- |
-| GET    | `/conversations?q=&archived=1&limit=&before=` | | `{ conversations: ConversationListItem[], next? }`, newest first. `q`: every word in the title. `archived=1`: the archived ones alone (default: the rest). `limit` at most 200 (default 50). `next` is the `before` of the next page |
-| GET    | `/conversations/item?id=&limit=&before=&wait=&since=` | | `ConversationView`; 404 when there is none, or it is not the viewer's to read. `limit` at most 100 turns (default 20); `before` a turn number (`next`); `wait` (ms, at most 55 000) holds until the conversation's `rev` moves past `since` (default: its rev now), so a turn launched, or one settling, answers it |
+| GET    | `/conversations?q=&archived=1&limit=&before=&everyone=1` | | `{ conversations: ConversationListItem[], next? }`, newest first. `q`: every word in the title. `archived=1`: the archived ones alone (default: the rest). `limit` at most 200 (default 50). `next` is the `before` of the next page. `everyone=1` (an admin's, above): every conversation on file, archived or not (`archived` is ignored), `q` matching its title, who started it or its host; 403 to anyone else |
+| GET    | `/conversations/item?id=&limit=&before=&wait=&since=&everyone=1` | | `ConversationView`; 404 when there is none, or it is not the viewer's to read. `limit` at most 100 turns (default 20); `before` a turn number (`next`); `wait` (ms, at most 55 000) holds until the conversation's `rev` moves past `since` (default: its rev now), so a turn launched, or one settling, answers it. `everyone=1`: any conversation, read as it is (above); 403 to anyone but an admin |
 | POST   | `/conversations/update` | `{ session, title?, archived?, seen?, shared? }` | the viewer's `ConversationListItem`. `title` renames it for everyone (`""` gives back the first message's); `shared` for everyone; `archived` and `seen` the viewer's own. 404 |
-| POST   | `/conversations/fork` | `{ session, id? }` | 201 the new conversation's `ConversationListItem`. A new session with the source's messages copied turn by turn, so the agent remembers, and its finished turns shown; listed for the forker alone. `id` defaults to `<actor>/<12 hex>`; a person token's must be under its own id. 404, 409 when `id` exists |
+| POST   | `/conversations/fork` | `{ session, id?, everyone? }` | 201 the new conversation's `ConversationListItem`. A new session with the source's messages copied turn by turn, so the agent remembers, and its finished turns shown; listed for the forker alone. `id` defaults to `<actor>/<12 hex>`; a person token's must be under its own id. `everyone: true`: an admin forks anyone's (403 to anyone else). 404, 409 when `id` exists |
 
 ```ts
 // One row of the list.
@@ -1036,7 +1086,7 @@ interface ConversationListItem {
   jobs?: ConversationJob[]; // the jobs its turns started or continued, most recent first, at most 10
   moreJobs?: number;     // jobs past those listed
   team?: true;           // listed because it is shared, not the viewer's yet; opening it makes it theirs
-  startedBy?: string;    // who took its first turn
+  startedBy?: string;    // who took its first turn (with `everyone`, for a row from before it was kept: the actor its id is under)
   host?: string;         // a host's conversation (`host/<name>/…`, §13.4): the host's name; continued by it alone
 }
 
@@ -1088,7 +1138,16 @@ launch and end, not only when the agent's session commits. The
 writes, as the step's actor; they are refused to an app's page, except
 strut's own (first-party, §14.10), which reads them as its viewer's
 person token does. `conversation/list` also answers `viewer`, the actor the
-list is for — where a page mints a new conversation, `<viewer>/<id>`.
+list is for — where a page mints a new conversation, `<viewer>/<id>` — and
+`admin: true` when the page's viewer is an admin here. `conversation/list`,
+`conversation/get` and `conversation/fork` take `everyone: true`, the routes'
+`everyone`, only as strut's own page shown to an admin (`AppRef.admin`), in
+the page's own call; anything else that asks — a member's page or a person
+token's, a model-written page, a workflow, an agent's tool, a run the page
+launched — gets `conversation/<name> { everyone } is an admin's: …`. Such a
+page also reads the files and reply of any turn it reads that way
+(`run/files`, `run/get` on the turn's run); a turn in another person's
+conversation is still `conversation_not_yours:`.
 
 ### Graph nodes
 
@@ -1716,7 +1775,9 @@ reads included.
 | POST   | `/workflows/:name/run` | a linked person | A turn of a CONVERSATION workflow (one with `params.wake`) on the host's own conversation: `input.session` under `host/<name>/`. With `input`, `wake`, `callback` and `attachments` alone: `params`, `paramOverrides`, `runId`, `settings`, `conversation`, `branch`, `job`, `title`, `mcp` and `jobCallback` are `403`. `run.start` records `origin: "host"` and `host: "<name>"`; strut wakes it like a person's turn (§9.1). Never an admin's: a step only an admin accepts proposes nothing in it (`admin_required:`), nor in the jobs and wakes it starts. Its agents' sessions open under `host/<name>/` |
 | GET    | `/conversations/item?id=` | — | One of the host's own conversations (`host/<name>/…`), whoever spoke in it; any other id is `404` (§9.1) |
 | POST   | `/proposals/:id/decide` | a linked person | A proposal made in one of the host's conversations, decided as the person it was made for (anyone else `403`, a proposal elsewhere `404`), never as an admin |
-| GET    | `/hosts/links/:key` | — | The link (`key` bare or as `<kind>:<key>`), or `404 not_linked:`. How the Sphinx daemon checks a tribe's owner is a person here (`plans/jamie-in-tribes.md` §4). A host links nothing: a person links through Peel (§13.6) |
+| PUT    | `/hosts/me` | — | `{ account, hook }` → `200 { name, account, at }`: who the host is on its medium (`account`, its own key, bare or as `<kind>:<key>` of its own kind; handed to Peel with each place, `POST /people/places`) and where strut nudges it when its places change (`hook`, an http(s) URL of at most 2,000 characters). Kept in `people.db`; the latest wins. `400` for an account or hook that is not one. The Sphinx daemon sends it at every start |
+| GET    | `/hosts/places` | — | `{ places: Place[] }`: the host's places, every linker's, the oldest first, each with `linkerName` (below) |
+| DELETE | `/hosts/places/:key` | — | `{ removed }`: a place the host no longer answers in (it was removed from the tribe, or couldn't join its link) |
 | POST   | `/mcp` | the account's person, or (where the app says `unlinked: true`) the key's own actor | `step_run` on an app's tools its `hosts:` lists for this host (§13.5) |
 
 A launch or a decision with no `x-strut-account` is `400`; with an account
@@ -1744,9 +1805,33 @@ interface AccountLink {
 }
 ```
 
+**Places** (`plans/jamie-in-tribes.md` §4, §5.4). A PLACE is where a person
+asks a host to answer, as them: a tribe, to the Sphinx daemon. A person
+links one with the token Peel holds for the box (§13.6); the host keeps
+what it is in to the list. Each change to a host's places (a link, or a
+link that moved; a removal; the linker's account unlinked, which takes its
+places with it) POSTs `{ event: "places" }` to the host's `hook`, as a
+callback is posted (retried briefly, then dropped). It names no place: the
+host reads `GET /hosts/places` and joins and leaves to match, and reads it
+at start and now and then besides, so a lost nudge costs a delay.
+
+```ts
+interface Place {
+  host: string;        // the host's name: "sphinx"
+  key: string;         // the place on its medium: a tribe's pubkey
+  link: string;        // how the host joins it: the tribe's link
+  name?: string;       // what the person saw it called
+  account: string;     // the linker: "<kind>:<key>", what the host launches a turn as when the speaker is nobody here
+  linkerName?: string; // the linker's name as strut shows it (§13.3); GET /hosts/places alone
+  at: number;          // when it was linked (ms)
+}
+```
+
 ```bash
-# Is a tribe's owner a person here?
-curl -s https://strut.box.example/hosts/links/02ab… -H "authorization: Bearer $HOST_TOKEN"
+# The daemon, at its start:
+curl -s -X PUT https://strut.box.example/hosts/me -H "authorization: Bearer $HOST_TOKEN" \
+  -H "content-type: application/json" -d '{"account":"03b0…","hook":"http://treasury:8095/strut/places?token=…"}'
+curl -s https://strut.box.example/hosts/places -H "authorization: Bearer $HOST_TOKEN"
 # A mention in a tribe, as Ada:
 curl -s https://strut.box.example/workflows/orchestrator/run -H "authorization: Bearer $HOST_TOKEN" \
   -H "x-strut-account: sphinx:02ab…" -H "content-type: application/json" \
@@ -1862,6 +1947,26 @@ curl -s https://strut.box.example/people/link -H "content-type: application/json
 curl -s https://strut.box.example/people/challenge
 curl -s https://strut.box.example/people/token -H "content-type: application/json" \
   -d '{"challenge":"strut-link.…","key":"02ab…","sig":"20aa…"}'
+```
+
+**Places.** With that token, a person links a place for a host to answer
+in (§13.4, "Places"): a tribe, from Peel's Jamie row. Peel's token alone:
+a token naming no account, and every other credential, is `403`. The linker
+is the token's account, which must be of the host's kind (`400`). Strut
+checks nothing about the place itself (whether the person owns the tribe):
+a turn as the linker has the linker's access alone, never an admin's.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/people/places` | → `{ hosts: [{ host, account }], places: Place[] }`: the host ready to take a place from this token's account (a key here, and it said who it is with `PUT /hosts/me`), and the places this person linked, the newest first |
+| POST   | `/people/places` | `{ host, key, link, name? }` → `200 { place, account }`, `account` being the host's own (Peel approves its member request with it). `key`: 1 to 200 characters, no space; `link`: 1 to 2,000, one line; `name`: one line, 80 characters. The same person again refreshes `link`, `name` and the account. `409 place_linked:` when another person linked it (they remove it first); `404 no_host:` when no host is ready; `400` for a field that is not one |
+| DELETE | `/people/places/:host/:key` | → `{ removed }`: one of the person's own places |
+
+```bash
+# Peel, as Ada turns Jamie on for a tribe she owns:
+curl -s https://strut.box.example/people/places -H "authorization: Bearer $PEEL_TOKEN" \
+  -H "content-type: application/json" -d '{"host":"sphinx","key":"02f1…","link":"sphinx.chat://?action=tribeV2&pubkey=02f1…&host=…","name":"Builders"}'
+# → { "place": { "host": "sphinx", "key": "02f1…", …, "account": "sphinx:02ab…" }, "account": "sphinx:03b0…" }
 ```
 
 The steps, from strut's own app alone:
@@ -2102,7 +2207,18 @@ host keeps its frame hidden until then and fades it in, so strut's page
 behind the app never flashes. A link the page opens to itself changes
 `input` in place, the URL following (replaced, as the full UI does); a
 file or another app opens in the side panel inside the page (below); any
-other link opens in a new window.
+other link opens in a new window. A host that frames the page may name its
+OWN page for the app with `&embed_page=<url>` beside `&embed_origin=`
+(Stadeum: `https://<box>/apps/<name>`): where a person opens the app on
+that host, without its `input`. It counts only while the page is framed
+and only on the `embed_origin`; it stays on the address bar and is never
+reported back. The app is handed it as `"strut/page"` in its host context,
+so it can give a link to paste: that page with `?input=<the app's own
+query>` (@strut/kit `useShareLink`), the same address the host's bar shows
+as the page moves. Strut's own UI — the shell, or a member's page of the
+app — hands it its own address (`<strut>/?app=<key>`) unless it is framed;
+alone with `solo=1` and no host page (Peel's web view) the app is handed
+none.
 Alone, the page reads only the listing the app is in — `GET /apps`, or that
 one peer's `GET /peers/<id>/apps` — then the app's files and its relay: no
 workflows, step types or other peers (one that does not answer cannot hold
@@ -2509,7 +2625,7 @@ what their person token has, where §14.8's rules hold a model-written page:
 | Gated tools (`approve:`) in its runs' agents | left out | kept: the proposals are the viewer's, listed by `proposal/list` and decided by `proposal/decide` — one only an admin accepts (§12) only by a viewer who is one, and a turn of a viewer who is not proposes none |
 | Job ids | under `app/<name>/` | the person's own, as they are |
 | The wake (§3) | none: its turns are a relay | strut's: each turn asks for it (`wakeAsked`), so a job the turn starts wakes the conversation |
-| `conversation/*` (§9.1) | refused | as the viewer's person token |
+| `conversation/*` (§9.1) | refused | as the viewer's person token; shown to an admin, also `everyone` (§9.1, "An admin reads every one") |
 
 What stays the same: the manifest's grants, `llm` / `agent` / `exec` /
 `acp/prompt` refused from the page, no authoring, nothing past the viewer.
@@ -2572,7 +2688,21 @@ image as a thumbnail that opens large, a text file to read, the rest by
 name, each read with `run/files` on the turn's run. The page reads any turn
 of a conversation its viewer may read (one they are in, or a shared one),
 whoever took it. Share puts a conversation in everyone's list
-(`conversation/update { shared }`); a reply has Copy. A deliverable `strut/views`
+(`conversation/update { shared }`); a reply has Copy. An ADMIN
+(`conversation/list` says `admin: true`) also has **Everyone**, folded at the
+end of the list (§9.1, "An admin reads every one"): every conversation on
+this server (`conversation/list { everyone }`, searched with the rest — a
+title, who started it, a host — and Show more), each row with who started it,
+a tribe's with its `#`, and no menu. One that is not the admin's opens
+read-only (`conversation/get { everyone }`): never marked read, its proposal
+cards with their status and no Accept or Reject, and in place of the
+composer "<person>'s conversation: you are reading it as an admin" with
+**Continue here**, which forks it (`conversation/fork { everyone }`) and
+opens the admin's own copy; a host's keeps its own bar; no Share. A link an
+admin may not read as themselves (their address to one they were reading,
+reloaded) opens the same way, read again with `everyone`. Under the composer
+every viewer reads "Admins on this server can read conversations with
+Jamie." A deliverable `strut/views`
 draws shows in the thread; the rest is handed to the host as
 `?artifact=<served path>` or `?app=<key>` (`ui/open-link`, §14.3).
 
@@ -2617,15 +2747,34 @@ typed — `now` against a branch's name is main against that branch — and
 Concept (`reservedAppType`), so a person puts a page back through a
 proposal an agent makes or through `graph/edit-node` outside the app.
 
-The LEARNING LOOP (the `dream`, docs/knowledge.md "The dream"), with six more
-grants: `knowledge/page`, `knowledge/claims`, `knowledge/cycles`,
-`proposal/list`, `proposal/get` and `proposal/decide`. A Concept's panel lists its CLAIMS
-(`knowledge/page { name }`, shown only when the page it answers is that
-node) — each sentence, its status (supported, refuted, stale, unknown) and
-the latest evidence in a line: what a person said and who, or what a check
-saw. Where the page may not read the namespace the tree is kept in (a
-personal strut, whose pages read `shared`) or the server keeps no claims,
-the step refuses and the panel says why in one line. Above them, where the tree is reviewed (the dream's input `review: true`;
+The LEARNING LOOP (the `dream`, docs/knowledge.md "The dream"), with these
+grants: `knowledge/claims`, `knowledge/checks`, `knowledge/add-check`,
+`knowledge/cases`, `knowledge/trial`, `knowledge/test`, `knowledge/use`,
+`knowledge/sample`, `knowledge/cycles`, `proposal/list`, `proposal/get` and
+`proposal/decide`. A Concept's panel lists its CHECKS (`knowledge/checks {
+concept }`, shown only when the page it answers is that node;
+plans/claim-trials.md): each claim, the cases that test it (`{ workflow,
+input }`) and a dot per verdict on the page's wording now, and the TESTS of
+the page, each two wordings (`page`, `change`) with every claim's verdicts
+on each. The answer is `{ concept, ref_id, version, docs, fromGit?, checks:
+[{ id, text, status, speaker?, latest?, cases, samples }], tests: [{ id,
+at, page: { version, docs, samples }, change: { … }, live }], running: [{
+id, test?, claim?, total, done, errors }], problem? }`, a sample `{ run,
+workflow?, supports, content?, at?, case?, trial? }`. An ADMIN's page also
+calls `knowledge/trial { claim, n }` (each case `n` times, as trials: the
+jobs, proposals and runs on other servers a trial would start are held; a
+trial's `run.start` and summary carry `trial: { claim, case? }`, and no
+launch body takes the field),
+`knowledge/cases { claim, cases }`, `knowledge/add-check { concept, text }`,
+`knowledge/test { concept, docs, n }` or `{ test, n }` (the page against a
+changed wording; nothing on the page changes), `knowledge/use { test }`
+(the page takes the other wording: `{ ok, landed }`, or `{ ok, proposed }`
+for a page whose text comes from git) and `knowledge/sample { workflow, run
+}` (a trial run's input and output). Trials return at once; the page reads
+`knowledge/checks` again while `running` is not empty. Where the page may
+not read the namespace the tree is kept in (a personal strut, whose pages
+read `shared`) or the server keeps no claims, the step refuses and the
+panel says why in one line. Above them, where the tree is reviewed (the dream's input `review: true`;
 by default its changes land at once), the
 CHANGES to that Concept the dream proposed and waiting on a person
 (`proposal/list { workflow: "dream", status, input: true }`, pending and
@@ -2633,9 +2782,10 @@ failed): a `graph/edit-node`, `move-node` or `delete-node` on its `ref_id`,
 or a `graph/create-triplet` adding a page under it along `PARENT_OF`. Each
 is drawn by `ConceptDiff`'s `proposal` (its title, rationale and what it
 changes on the page as it is now) with Accept and Reject through
-`proposal/decide` — the one write the app makes; an accepted change reads
+`proposal/decide`; an accepted change reads
 everything again. Only an ADMIN sees and decides the dream's changes (they
-are made in no conversation, §12); a member sees the claims. **Waiting**
+are made in no conversation, §12); a member sees the checks and their
+verdicts. **Waiting**
 over the graph lists the Concepts with a change waiting or a claim refuted
 (`knowledge/claims`: every Concept carrying claims, with them), each
 opening its Concept.
@@ -2694,7 +2844,13 @@ A file read by the version's FILE TOKEN (`?t=`) is served as for any app:
 only a full-scope listing mints one, and the framed document is read with
 it. The flag hides the app; what it may DO is its grants and its steps'
 own checks. `strut/earnings` and `strut/staff` (§14.15) say it; their
-usage (`GET /apps/:name/usage`, §14.6) is an admin's too.
+usage (`GET /apps/:name/usage`, §14.6) is an admin's too. A PACKAGE's
+`admin: true` app — its version installed by the package, under its
+prefix — shown on a full-scope connection gets the admin's scope for that
+package's own steps: each call's `secrets` is bound to it, so they find
+`secrets.deployment` for the names the package provides (§16, "Secrets a
+package provides"). A member's session, a run the page launches and any
+other package's step get none of it.
 
 **Its steps** go through the admin door (`src/steps/lib/earnings/_door.ts`):
 each is the route it names, made as an in-process request in the viewer's
@@ -2721,11 +2877,11 @@ page or member's page reaches it, and each step refuses without both.
 
 Any other refusal is the step's error, the route's `code` first.
 
-### 14.15 `strut/staff` — Tasks and workers, for an admin (`plans/human-steps.md` §9)
+### 14.15 `strut/staff` — Workers, for an admin (`plans/human-steps.md` §9)
 
 The staff's `/tasks` routes (§22) as an app strut seeds on every server
 (`src/apps/staff/`, `src/apps/staff-seed.ts`, after `strut/views`: it
-imports `TaskForm`), titled "Tasks and workers", `admin: true` as
+imports `TaskForm`), titled "Workers", `admin: true` as
 `strut/earnings` is (§14.14): listed to full scope alone, its files,
 versions and usage `403` to anyone else. Strut's UI lists it under Apps to
 an admin, and a waiting run's `task:<id>` (the run overview's "Waiting on",
@@ -2734,49 +2890,87 @@ a parked step's flyout) opens it on that task; a host (Stadeum) frames
 `createStrut({ staff: false })` or `STRUT_HOST_CONFIG`'s `"staff": false`
 seeds nothing. The page is only a face: the routes decide.
 
-Five tabs, each a deep link (`?app=strut/staff&input=…`): `tab=queue|types|
-workers|tasks|tests`, `type=<name>`, `worker=<actor>`, `task=<id>`,
-`test=<id>`, `run=<workflow>/<runId>`, `by=<actor>`, `review=none|ok|rejected`
-(the review queue; with `by`, that worker's), `tab=support&worker=<actor>`
-(a worker's conversation with Support). Each move goes back to
-the host as `ui/open-link`, so its address bar follows.
+Six tabs, one a job: **Overview**, **Answers**, **Workers**, **Task
+types**, **Payouts**, **Support**. Every place is a deep link
+(`?app=strut/staff&input=…`), the same as before the tabs were regrouped:
+`tab=queue|types|workers|tasks|groups|tests|payouts|support`, `type=<name>`,
+`worker=<actor>`, `task=<id>`, `test=<id>`, `run=<workflow>/<runId>`,
+`group=<name>` (with `type=`: one group's page), `by=<actor>`,
+`review=none|ok|rejected` (the review queue; with `by`, that worker's),
+`tab=support&worker=<actor>` (a worker's conversation with Support).
+`tab=queue` is the Overview; `tasks` and `groups` are the two lists of
+Answers; `tests` opens under Task types. Each move goes back to the host as
+`ui/open-link`, so its address bar follows. The Answers tab carries the
+count of answers not reviewed (`toReview`, below), the Workers tab the
+people waiting to be let in, the Support tab the unread. **Invite a
+worker** is in the header, on every tab (the panel below).
 
-- **Queue**: `GET /tasks/stats`, read every 10 s while the page is shown;
-  what needs a person above it (a type with tasks waiting and nobody
-  granted, tasks due within the hour, a type turned off with open tasks, a
+- **Overview** (`tab=queue`): `GET /tasks/stats`, read every 10 s while the
+  page is shown. First **Needs you**, each line with its one button: a
   type whose app is missing or does not grant `task/next` and
-  `task/submit`, new workers); with pay, what workers are owed beside what
-  the wallet holds (`earnings/read`, §19).
-- **Types**: the editor writes the whole type. Its answer shape is fields
-  (text, number, whole number, yes or no, pick one, pick several, numbers,
-  group), JSON, and a preview in `TaskForm`; it writes only what the store
-  checks. Pay, Tests and Copies sections; the workers who hold it, with
-  Revoke and Grant.
-- **Workers**: the workers, `new` first, several granted at once; each
+  `task/submit`, a type with tasks waiting and no worker who may take it,
+  a type turned off with open tasks, tasks due within the hour, people who
+  signed in and wait to be let in, and the answers not reviewed (the sum of
+  each type's `toReview`; said only where a verdict can be given). Then the
+  queue now (waiting, being worked on, workers online) and over the last 24
+  hours (answered, started and not finished, expired unanswered); with pay,
+  what workers are owed beside what the wallet holds (`earnings/read`,
+  §19); then one row a task type, one number a column.
+- **Answers** (`tab=tasks`, `tab=groups`): every task and what was
+  answered, with the verdict on each. **One by one**: newest first, 50 a
+  page, filtered by review (To review with its count, Rejected, OK,
+  Everything), type and who answered, and under More filters status,
+  tests, workflow and run. A row shows the answer's picture when it carried
+  one (the reply's first, else the answer's, read as it comes into view;
+  an answer of fields alone shows them in a line), what it is called (the
+  reply's `title` and `ask`, else the task's own), its group, who answered,
+  how long that took, the pay, and the verdict — **OK** and **Reject**
+  (the reason on a line in the page: an app frame has no `prompt`) given in
+  the row. **By group** (shown once a workflow named a group with
+  `task/reply`'s `group`): `GET /tasks/groups` by type — each group's
+  newest pictures (`GET /tasks?group=&type=&limit=3`, read as the row comes
+  into view), who answered, its answers and how far its review is, filtered
+  by what is left to review. A group's page reads its tasks (`GET
+  /tasks?group=&type=`) and draws them oldest first as tiles, each with its
+  verdict, a filter (to review, rejected, OK) and **Mark the others OK**
+  (`POST /tasks/groups/review`).
+- **One answer** (`task=<id>`), in the order a person asks: what was asked
+  (the task's `show`: its words, its plain fields, its files), what the
+  worker sent (its pictures large, the fields with a value as a short list,
+  the ones left empty in a line; a copies task's agreed answer, then each
+  copy's), and what the run told them back (`task.reply`: its words and
+  files, its other fields folded). Beside it: the **verdict** — by whom,
+  when and until when it can change, Mark OK and Reject while it can —
+  then the worker, how long it took, the pay, the type, the group and the
+  run (its status now, Open the run); **what happened**, in order (made,
+  taken, answered or how the lease ended, replied, each verdict), with an
+  answer's earning and Take back inside its hold; "make a test from this
+  answer"; and, folded, the ids and the raw `show` and answer. In a group,
+  previous and next; **O** marks it OK and moves on, **R** opens the
+  reason, the arrow keys move through the group.
+- **Workers**: first the people waiting to be let in (`new`), each with
+  **Let in** (a grant of the kind of work picked) and Let all in; then the
+  workers, found by name: what each can do, when they joined, their
+  answers this week, standing, and what they are owed. Each
   shown by the first line of the staff's note, else their name
   (`people/names`, §13.3), else the key shortened, with the short key
-  beside a name; each with their status,
+  beside a name. A worker's page: their status,
   note, grants (revoked ones with when, who and why, an automatic revoke by
-  `standing` too), the week, their newest leases with each answer's
+  `standing` too), the week, the newest tasks they took with each answer's
   verdict and links to their answers to review and their rejected ones,
   standing (with how many of its window are rejected answers), and what
-  they earned, hold and may withdraw. Below them, once there is one, every
-  invite the wallet keeps (`plans/human-steps.md` §5.8) with its status,
-  Copy and Cancel while it may be used (read every 3 s while one is
+  they earned, hold and may withdraw. Below the list, once there is one,
+  every invite the wallet keeps (`plans/human-steps.md` §5.8) with its
+  status, Copy and Cancel while it may be used (read every 3 s while one is
   `sending`).
-- **Tasks**: filtered by type, status, run, who answered and review (the
-  review queue: not reviewed, marked ok, rejected), with a Review column;
-  a task with what it showed and its files, its leases (a copy's answer,
-  each earning with Take back), the answer in its type's form read only,
-  the run's **reply** (`task.reply`) beside the answer on a wide screen,
-  every picture among their files drawn as it comes into view (other
-  files read when opened); the list marks a task `replied` and counts the
-  answer's files, with no thumbnails;
-  a **Review** section — each answer's verdict, by whom, when and until
-  when it can change, with Mark ok and Reject (the reason on a line in the
-  page: an app frame has no `prompt`) while it can — its run now, and
-  "make a test of it".
-- **Tests**: a type's tests with their expected answers and counts; a test
+- **Task types**: a card a type — on or off, who may take it, its pay, how
+  its answers are checked, today's answers — with See answers, Tests,
+  Invite someone and Edit. The editor writes the whole type. Its answer
+  shape is fields (text, number, whole number, yes or no, pick one, pick
+  several, numbers, group), JSON, and a preview in `TaskForm`; it writes
+  only what the store checks. Pay, Tests and Copies sections; the workers
+  who hold it, with Revoke and Grant. **Tests** (`tab=tests`, opened from a
+  type): a type's tests with their expected answers and counts; a test
   with each instance served and what its grader said; new, change (before
   it is served), its files, retire.
 - **Support** (`plans/support-chat.md`; `plans/people-and-hosts.md` §5;
@@ -2807,8 +3001,8 @@ the host as `ui/open-link`, so its address bar follows.
   (shrunk to 512 px), payout lines on or off, and the welcome's text. A
   worker's page has **Message**, which opens their conversation. (tests, standing, copies), 5a (pay, earnings) and the
 verdict shows only when the server answers for it: a host's own task store
-answers no test route and no review, so the page shows no Tests tab and no
-Review section or filter.
+answers no test route and no review, so the page shows no Tests and no
+verdict, review filter or count.
 
 **Its steps** go through the STAFF DOOR, `staffAdmin`
 (`src/steps/lib/staff/_door.ts`): one request to a `/tasks…`
@@ -2839,11 +3033,13 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/set-worker { actor, status?, note? }` | `PUT /tasks/workers/:actor` | `{ worker }` |
 | `staff/grant { actor, type, qualify? }` (`actor` `@me`: the admin themself, "Try it yourself") | `PUT /tasks/workers/:actor/grants/:type` | `{ worker, notice? }` |
 | `staff/revoke { actor, type, why? }` | `DELETE /tasks/workers/:actor/grants/:type` | `{ worker }` |
-| `staff/tasks { type?, status?, workflow?, runId?, by?, review?, test?, before?, limit? }` | `GET /tasks` | `{ tasks }` |
+| `staff/tasks { type?, status?, workflow?, runId?, group?, by?, review?, test?, before?, limit? }` | `GET /tasks` | `{ tasks }`; each task's `group` when its run named one |
 | `staff/task { id }` | `GET /tasks/:id` | `{ task, run }`; `task.reply` is the run's reply to its workers, when it made one (§22, "A run's reply") |
 | `staff/file { task, path }` | `GET /tasks/:id/files/<path>` | one file, as `run/files` answers: the task's own, an answer's, or one its reply lists |
 | `staff/take-back { task, worker?, why }` | `POST /tasks/:id/take-back` | `{ task, earnings }` |
 | `staff/review { task, worker?, verdict, why? }` | `PUT /tasks/:id/review` | `{ task, worker, lease, review, earning? }` |
+| `staff/groups { type?, limit? }` | `GET /tasks/groups` | `{ groups: [{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last }] }`, the one with the newest task first |
+| `staff/review-group { group, type?, verdict, why? }` | `POST /tasks/groups/review` | `{ reviewed, more }`: the verdict on every answer in the group with none yet, one `review` each; a verdict given stays |
 | `staff/tests { type?, retired? }` | `GET /tasks/tests` | `{ tests }` |
 | `staff/test { id }` | `GET /tasks/tests/:id` | `{ test, instances }` |
 | `staff/save-test { id?, type?, show?, files?, expected?, grade? }` | `POST /tasks/tests`, or with `id` `PUT /tasks/tests/:id` | `{ test }` |
@@ -2861,7 +3057,7 @@ line on what workers are owed) and `people/names` (the workers' names,
 §13.3). It launches nothing.
 
 **Bringing workers in.** One panel, "Invite a worker" (`BringWorkersIn`,
-components/Share.tsx): a closed row atop the Queue and the Workers tab, and
+components/Share.tsx): opened by Invite a worker in the page's header, and
 open on each type's page with that type picked ("Invite someone to this").
 First an INVITE (`plans/human-steps.md` §5.8): Work they'll do — "Anything
 open" or one type that is on, invite-only ones marked (`inviteChoices`) —
@@ -3186,10 +3382,22 @@ kept or recorded as a run.
 
 A PACKAGE is a directory: `strut.yaml` (`package: publisher/name`,
 `version`, `description?`, `license?` — an SPDX expression, never
-enforced — `requires?`, `job?: { tools, approve? }` — steps of the package
-the `job` workflow's agent may call, by their names inside it or globs over
-them, and the ones among them that ask first; a name that matches none of
-its steps refuses the package, `plans/followed-repos.md` §3) and the folders `workflows/`,
+enforced — `requires?`, `job?: { tools, approve? }` — the steps the `job`
+workflow's agent may call, and the ones among them that ask first: the
+package's own by their names inside it (or globs over them, which reach its
+own steps alone), and strut's own by their type, one by one (`git/push`: a
+name the package does not ship), each one strut lets a package grant — its
+own core or lib step, not sealed, its config naming no secret, declaring
+its `effect` — else the install is `400 bad_package: strut.yaml: job.tools:
+<why>`; a glob that matches none of its steps, a helper or another
+package's step refuses the package, `plans/followed-repos.md` §3, stadeum
+`plans/software.md` §5 item 16, `provides?: {
+secrets?, git? }` — the secrets its steps manage, "Secrets a package
+provides" below, and the hosts a token it holds serves, "Git credentials
+by host" below; `requires.git: true` — its steps read the run's token for a
+repository's host themselves, the same section — `schedules?: [{ workflow, name?, trigger, input? }]` — workflows of
+the package strut runs on its own, "Schedules a package ships" below) and
+the folders `workflows/`,
 `steps/`, `concepts/` and `apps/`, each file an item named under the
 package's prefix (`steps/create-issue.ts` is the step
 `acme/linear/create-issue`, `workflows/sync.yaml` the workflow
@@ -3206,7 +3414,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | ------ | ---- | ----------- |
 | GET    | `/packages` | What is installed: `{ packages: InstalledPackage[] }` (`src/packages/installed.ts`), a fold over the workspace, never a store |
 | POST   | `/packages/build` | `BuildRequest` → 201 `{ package, version, digest, files, requires, warnings, leftToInstaller, suggested }` (`src/packages/build.ts`): a package built from this workspace into the cache. With `dryRun: true`, 200 and the same answer with nothing kept: the package page's preview of what comes along. Both pack the package as the archive route would and read it back as a fetching strut does: one past what a strut fetches (10,000 files, 256 MB unpacked, 64 MB as `.tar.gz`) is 400 `package_unarchivable: …`, and nothing is kept. A person's act like install: full scope, one at a time with install and uninstall |
-| POST   | `/packages/install` | `{ ref, digest?, url?, tokenSecret?, index?, wait? }` → 201 `InstallResult` (`src/packages/install.ts`), or with `wait: false` 202 `{ install: InstallState }` at once, the install going on behind it — follow it at `GET /packages/installs/:id` ("An install as it goes" below); a body that is not one is still 400 before anything starts. `ref` is `file:/path/to/package`, `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below — `git+https://host/org/repo[@<branch\|tag\|commit>][#<folder>]`, a git repository read with the secret `tokenSecret` names (default `GITHUB_TOKEN`; only with `git+`) — see "Installing from a repository" below — or a bare NAME, `publisher/name`, looked up in the indexes this strut follows (the first whose card lists the publisher, or the one `index` names) and installed as `pk:` with the row's key and catalog URLs, tried in order. A name with `url` is 400; 404 `package_not_listed` when no index lists the publisher, `package_index_unknown` for an `index` not followed; 502 `package_index_unreachable` when no index card could be read; 400 when this strut follows none. A person's act: behind the key at full scope (a peer is 403), one at a time |
+| POST   | `/packages/install` | `{ ref, digest?, url?, index?, wait? }` → 201 `InstallResult` (`src/packages/install.ts`), or with `wait: false` 202 `{ install: InstallState }` at once, the install going on behind it — follow it at `GET /packages/installs/:id` ("An install as it goes" below); a body that is not one is still 400 before anything starts. `ref` is `file:/path/to/package`, `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below — `git+https://host/org/repo[@<branch\|tag\|commit>][#<folder>]`, a git repository read with the token for its host ("Git credentials by host" below; a `tokenSecret` is 400, `tokenSecret is gone: …`) — see "Installing from a repository" below — or a bare NAME, `publisher/name`, looked up in the indexes this strut follows (the first whose card lists the publisher, or the one `index` names) and installed as `pk:` with the row's key and catalog URLs, tried in order. A name with `url` is 400; 404 `package_not_listed` when no index lists the publisher, `package_index_unknown` for an `index` not followed; 502 `package_index_unreachable` when no index card could be read; 400 when this strut follows none. A person's act: behind the key at full scope (a peer is 403), one at a time |
 | GET    | `/packages/installs` | `{ installs: InstallState[] }` (`src/packages/progress.ts`): every install as it goes, whichever door started it — this route with or without `wait`, a `package/install` proposal's apply, the boot list (`STRUT_PACKAGES`), a subscription — newest first, and the last 20 that ended within the hour. In memory: a restart forgets them |
 | GET    | `/packages/installs/:id` | One `InstallState`; 404 for an id this process does not hold |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
@@ -3223,8 +3431,8 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | POST   | `/publisher/listings` | `{ index, base, description?, url?, live? }` → the index's answer + `record`: ask a followed index to LIST this strut's name, or change its row. Sealed by the PUBLIC key under `strut-listing\n` with the publisher's name as `prefix`, POSTed to the index strut beside the followed card (`…/index/catalog` → `…/index/requests`); the index key comes from the followed record. `base` is where this server is reached — an origin and at most one path segment (`https://<swarm>:3355/lab`); `live` also lists its public view (a live row at the base), `false` drops it. A server with NO package public (`plans/public-view-listing.md`) asks with `live: true`: the ask mints the public key when there is none and seals an EMPTY public catalog with it, which `GET /packages/catalog?public=1` then serves — the index's proof that this base holds the key — and the index lists the name for the public view alone. 200 `{ status: "listed" }`, 202 `{ status: "pending", reason }` (waiting for the index's operator); the index's 4xx passed on with its `error`, 502 when it cannot be reached. 409 `listing_nothing_public` (no package under the name is public and `live` is not `true`: nothing is minted), `publisher_no_name`, `publisher_unsafe_key` (a file store with `STRUT_SECRET_KEY` unset mints no key), `listing_no_route`; 400 `listing_invalid`; 404 `package_index_unknown`. Full scope. After every change to the public catalog, and every save of the public view (`PUT /public-view`, a served box's deploy), this strut also POSTs `{ key }` to `…/index/ping` on every index it asked and has not taken itself off |
 | DELETE | `/publisher/listings/:index` | Take this strut's row — or its waiting request — off that index (a request with `remove: true`) → `{ status: "removed" }`; the index's 404 `listing_not_listed` passed on |
 | POST   | `/publisher/tokens` | `{ subscriber, days? }` → 201 `{ key, subscriber, token, exp }`: a READ TOKEN for a strut that subscribes to this one's catalog (default 60 days, at most 366). Full scope; the key is minted first when there is none |
-| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, the secrets a package of it waits for (`waiting`), and each package it installed with the items edited here (`diverged`). Never a token: a catalog's shows `token: boolean`, a `git+` one's the NAME of its secret (`tokenSecret`, default `GITHUB_TOKEN`) |
-| PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` (a publisher's catalog) or `{ ref, tokenSecret? }` (a git branch, below) → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. A changed `key` or `ref` starts the state over. The operator's act: full scope (a peer is 403). 400 `subscription_invalid`: both shapes at once, a `ref` that is not `git+…`, one naming a full commit sha, a `tokenSecret` that is not a secret's name |
+| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, the secrets a package of it waits for (`waiting`), and each package it installed with the items edited here (`diverged`). Never a token: a catalog's shows `token: boolean`, a `git+` one's the NAME of the secret that serves its host (`tokenSecret`; absent when none does, "Git credentials by host" below) |
+| PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` (a publisher's catalog) or `{ ref }` (a git branch, below) → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. A changed `key` or `ref` starts the state over. The request's actor, when it has one, is the subscription's PERSON (`actor` on the record; "Whose a subscription is", below); a later `PUT` records its own. The operator's act: full scope (a peer is 403). 400 `subscription_invalid`: both shapes at once, a `ref` that is not `git+…`, one naming a full commit sha, any `tokenSecret` (gone: a branch is read with the token for its host), an `actor` in the body |
 | POST   | `/packages/subscriptions/:id/sync` | → 200 `SyncOutcome` `{ id, status: "applied" \| "current" \| "waiting" \| "error", seq?, from?, to?, error?, waiting?, result? }`: one sync now, answered when it is done — `waiting` (`{ secrets }`) when a package lacks a required secret and is not installed (the secrets gate, below), `seq` a catalog's, `from`/`to` a `git+` ref's commits (the one applied before, the one the branch is at; `to` absent when the read failed), `result` the `InstallResult` when something went in. How a host moves a `git+` subscription in its own window. Full scope: a peer is 403 (it may send only the ping below). 404 when there is none |
 | DELETE | `/packages/subscriptions/:id[?uninstall=1]` | Stop following → `{ ok, removed, uninstalled }`; with `uninstall=1` its packages go through the distro's door (forks kept). 404 when there is none |
 | GET    | `/packages/indexes` | `{ indexes: IndexSubscriptionInfo[] }` (`src/packages/indexes.ts`): the indexes this strut FOLLOWS, each `{ id, key, urls, label?, read?: { seq, digest, at, url, publishers }, error? }` — the last read of its card in this process |
@@ -3248,7 +3456,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | POST   | `/index/requests/:id/refuse` | `{ reason }` → the refusal: the request dropped, and a re-send from that key for that name answered with `reason` for 30 days, without a fetch. Full scope; 404 `listing_unknown` |
 | GET    | `/index/catalog[?digest=]` | The INDEX card as served (RFC 8785 bytes, sealed under `strut-index\n` by the index key; `ETag`, `If-None-Match` → 304; `cache-control: public`): `{ v, key, seq, publishers, urls?, sig }`. **Open to anyone.** A reader checks it with `readCard(bytes, { key, kind: "index" })`; 404 before the first row |
 | GET    | `/index/packages?q=&limit=` | `{ packages: IndexHit[] }` — every listed publisher's public packages, each at its newest release not yanked: `{ package, publisher, key, urls, version, digest, description?, license?, requires?, detail? }`; `q` as the sidebar's matcher (every word in the name, description or publisher), at most `limit` (100; ≤ 500). `detail` is the release's archive as the index READ it at the crawl (`src/packages/detail.ts`, below): `{ apps: [{ name, title, description?, icon?, screenshots?, can }], workflows, steps, concepts (counts), secrets, job?: { tools, approve }, can: { spends, acts, code }, readme }` — absent until the archive has been fetched. **Open to anyone**; derived and unsigned — an install re-verifies against the publisher |
-| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError? }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, screenshots?: [{ path, caption? }], grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, job?: { tools, approve }, can, files, bytes }` (names inside the package; `job` the steps `strut.yaml`'s `job:` gives the job agent and, among them, the ones that ask first (plans/followed-repos.md §3); `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). `?docs=0` leaves each Concept page's `docs` out (the store's read: a page's text is `/index/concepts/:name`'s). **Open to anyone**; 404 when no listed publisher's catalog has it |
+| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError? }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, screenshots?: [{ path, caption? }], grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, schedules?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, job?: { tools, approve, strut?: [{ name, effect?, secrets?, description? }] }, can, files, bytes }` (names inside the package; `job` the steps `strut.yaml`'s `job:` gives the job agent and, among them, the ones that ask first (plans/followed-repos.md §3), strut's own by their type and each in `strut` with what the index's strut says of it (stadeum plans/software.md §5 item 16); a workflow's `schedules` when strut runs it on its own, each schedule `strut.yaml`'s `schedules:` ships on it as a sentence (`"Every 15 minutes"`, the zone said only when the schedule names one: else it is the installing server's); `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). `?docs=0` leaves each Concept page's `docs` out (the store's read: a page's text is `/index/concepts/:name`'s). **Open to anyone**; 404 when no listed publisher's catalog has it |
 | GET    | `/index/packages/:publisher/:name/screenshot?path=&digest=` | One of the package's app screenshots (app.yaml `screenshots`, `src/apps/manifest.ts`): `path` one an app of the current release lists in `detail` (`apps/<app>/public/shot.png`), read from the index's cache of the archive, `content-type` by extension (png, jpeg, webp, gif), `x-content-type-options: nosniff`, `content-security-policy: sandbox`, an `ETag`. With `digest` (the store's links carry it) only that release's, `cache-control: public, max-age=31536000, immutable`; without, the current one, `no-cache`. 404 for any path the page does not list, or a `digest` that is no longer the current release. **Open to anyone** |
 | GET    | `/index/concepts?q=` | `{ concepts: IndexConcept[] }` — every Concept page across the crawled packages AND the live rows' public trees, one per name: `{ name, description?, parent?, packages: [{ package, version }], live?: [{ publisher, url }] }` (the first package by name gives the description and parent, then a live tree's; a page only a live view holds has `packages: []`, and its docs are read from `<url>/public/concepts/<name>`; `q` over names and descriptions). **Open to anyone** |
 | GET    | `/index/concepts/:name` | `IndexConceptPage`: the entry plus `docs?` (the first package's text), `children: [{ name, description? }]` (the pages naming this one as parent) and `parents` (nearest first). **Open to anyone**; 404 when no listed package carries it |
@@ -3258,7 +3466,8 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 
 **Installed at first boot.** `STRUT_PACKAGES` (and `createStrut({
 packages })`) lists packages a box should come up with: a JSON list of `{
-ref, url?, digest?, tokenSecret? }`, the fields `POST /packages/install` takes. Once the
+ref, url?, digest? }`, the fields `POST /packages/install` takes (a
+`tokenSecret` from before 2026-11-20 is left unread, so the box boots). Once the
 boot is done, each listed package not installed here (by its name, at any
 digest; a `git+` ref's name is known once fetched, so it is here when an
 installed package records that very ref) is installed through the person's door, one at a time, in order,
@@ -3539,7 +3748,8 @@ the release requires first:
 | --- | --- | --- |
 | Its active version is one the package wrote (any release) | the release's version is published and made active | `updated` |
 | A fork: its active version is one this strut wrote | the release's version is recorded beside it, not active | `diverged` |
-| Already the release's content | nothing | `present` |
+| Already the release's content, stamped that release's | nothing | `present` |
+| Already the release's content, from another release, its active version the package's | stamped this release's in place, no new version — so a release that changes only its `strut.yaml` (`job:`, `provides`, `schedules:`) is what `GET /packages` reads as installed | `stamped` |
 | Not in the release, untouched | removed (the runs stay) | `retired` |
 | Not in the release, a fork — or a helper while a step of the package stays forked | kept | `kept` |
 | A Concept edited here (or whose edit cannot be told) | left as it is | `modified` |
@@ -3568,11 +3778,134 @@ secrets its package declares: any other `secrets.get(NAME)` fails
 `secret_fenced: <step> came from the package <package>, which declares
 only …` (`src/packages/fence.ts`).
 
+**Secrets a package provides.** A package names the secrets its steps
+MANAGE, each one they may read (else `bad_package`):
+
+```yaml
+requires:
+  optional: [HOOK_TOKEN, HOOK_SECRET]   # what its steps may read
+provides:
+  secrets: [HOOK_TOKEN, HOOK_SECRET]    # what they may also set and delete
+```
+
+A person's own value (a token they connect or paste) is `own`'s; the
+deployment's is for a value that is the server's and nobody's — a webhook's
+signing secret the package makes once, a bot's token an admin pastes.
+
+`provides` takes no other key, so a strut from before a key refuses the
+package instead of installing it without it. Reading stays
+`ctx.services.secrets.get(NAME)` — the run's person's value, else the
+deployment's, else the environment. Beside it, a step of the package finds
+two scopes, each `{ get(name), set(name, value), delete(name) → boolean }`:
+
+| Scope | Holds | On which calls |
+| --- | --- | --- |
+| `secrets.own` | the run's PERSON's own value — their actor secret (`/actors/:actor/secrets/:name`), never the deployment's | any run or call with a principal: a page's call for its viewer, a workflow run as its person, the job agent's tool call |
+| `secrets.deployment` | the DEPLOYMENT's value (`/secrets/:name`); a read falls back to the environment as `get` does, a delete removes the store's alone | only a call from the package's OWN `admin: true` app (§14.14) whose connection holds full scope — an admin's session, the deployment key. Never a member's session, another package's app or a non-admin one, a host's or a visitor's call, a preview, a run the page launches, a workflow run or the job agent |
+
+A scope the call does not have is absent (`if (secrets.deployment) …`).
+A package's step works for the run's person alone: its `secrets` has no
+`forPrincipal`, so it never reads another person's value (`get` as them)
+nor reaches their `own`. A run it starts is bound to that run's person by
+the runner, as any run is.
+Each takes the names the package provides and no other: `secret_fenced:
+<step> came from the package <package>, which provides only … — it may not
+set the deployment's NAME`. A name follows `PUT /secrets/:name`'s rules
+(`secret_name:`, a name no step reads included) and a value is a non-empty
+string (`secret_empty:`). A step of strut's own or the workspace's has
+neither scope, and a package's step finds no `secretBlanks` on its bag:
+it writes a secret through its scopes or not at all. Strut never logs,
+returns or records a value; a step that reads one decides what its output
+says, and a step that takes one lists the field in `redact`, so a run's
+events, the events sink and the app monitor hold `"[redacted]"`.
+
+```ts
+// steps/me.ts: "Connected as …", from the viewer's own token alone. A
+// deployment value never stands in for a person's
+async run(_cfg, ctx) {
+  const token = await ctx.services.secrets.own?.get("HOOK_TOKEN");
+  return token ? { connected: true, login: await loginOf(ctx, token) } : { connected: false };
+}
+// steps/token.ts (redact: ["token"]): a person pastes their own token, or disconnects
+async run(cfg, ctx) {
+  const mine = ctx.services.secrets.own;
+  if (!mine) throw new Error("a person's: this run has no person");
+  if (cfg.token) await mine.set("HOOK_TOKEN", cfg.token);
+  else await mine.delete("HOOK_TOKEN");
+  return { connected: !!cfg.token };
+}
+// steps/hook-secret.ts: the package's admin app makes the webhook's signing secret, once.
+// The secret is the deployment's and nobody's
+async run(_cfg, ctx) {
+  const deployment = ctx.services.secrets.deployment;
+  if (!deployment) throw new Error("an admin's, from this package's admin app");
+  if (!(await deployment.get("HOOK_SECRET"))) await deployment.set("HOOK_SECRET", crypto.randomUUID());
+  return { ready: true }; // never the value
+}
+```
+
+**Git credentials by host** (`src/git-hosts.ts`; stadeum `plans/software.md`
+§5, item 9). Which secret holds the token for a repository is the box's
+map, by HOST: strut's own entry, `github.com` → `GITHUB_TOKEN`, and each
+installed package's `provides.git`:
+
+```yaml
+# strut.yaml of a forge's package
+requires:
+  optional: [GITLAB_TOKEN]                        # a person's own, written by the connect seam
+provides:
+  git:
+    - { host: gitlab.com, secret: GITLAB_TOKEN }  # a lowercase host, :port when not the default
+```
+
+A host is served by one secret: an install that would serve one with a
+second — github.com's included — is `409 package_conflict: … a host is
+served by one secret`; naming the same secret again is fine. The map is
+made again after every install, update, uninstall and sync, from the
+packages that still hold their own items. A run's token for a repository
+is that secret's value read as the run reads any secret — its person's
+own, then the deployment's — for `https://<host>/…`, or `http://` to this
+machine (`localhost`, `127.0.0.1`, `[::1]`). A host no secret serves, a
+`file:` repository and plain http to another machine get none. Strut's git
+steps (`git/checkout`, `git/push`, `git/remote-head`), `git+` installs,
+subscriptions (a person's: their own value alone), serve mode,
+`STRUT_PACKAGES` and the repo door all read it, and hand git the token for
+that host alone: git's credential helper answers no other host, so a
+redirect elsewhere gets nothing. Git gets no other credential — none of the
+machine's helpers, config, `~/.netrc`, askpass or ssh — except on a
+person's own machine (`STRUT_GIT_LOCAL=1`, which the desktop launcher
+sets): there a run with no token for the host uses the machine's own git
+as before, and a token still wins. No caller names the secret any more: a
+`tokenSecret` (gone 2026-11-20) is 400 at a route.
+
+A step reads it as `ctx.services.secrets.git(url)`. A package's step holds
+that only when its package says `requires: { git: true }` — shown on the
+store page and on `GET /packages` (`git: true`) — and then for any host the
+box serves; it still reads by name only what it declares. Without it the
+step never sees a token, and strut's own git steps it calls with its ctx
+still use the run's:
+
+```ts
+// stadeum/code: names no forge, requires no secret — the run's token is used, never seen
+const { branch, head } = await ctx.registry["git/remote-head"]!.run({ repo: url, timeoutMs: 30_000 }, ctx);
+// stadeum/pods (requires.git: true): hands the token to git inside a pod, for that host alone
+const token = await ctx.services.secrets.git?.(url);
+```
+
+`git/remote-head` `{ repo, timeoutMs? }` → `{ branch, head }`: what `git
+ls-remote --symref <repo> HEAD` says — the remote's default branch and the
+full commit it points at — in one request, with no clone and nothing
+written. It fails with `remote_denied:` (a credential wanted, or the token
+refused), `remote_not_found:`, `remote_unreachable:` or `remote_empty:`
+(no commit yet), and never prints or returns the token.
+
 ```jsonc
 // InstalledPackage
 {
   "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
   "source": { "ref": "file:/srv/packages/acme-linear" }, "secrets": ["LINEAR_API_KEY"],
+  // "provides": { "secrets": ["LINEAR_API_KEY"] },  // its strut.yaml's provides, when it has one (`git` too)
+  // "git": true,                     // requires.git: its steps read the run's token for a repository's host
   // "commit": "8f2c…",               // a git+ ref: the commit its newest installed version was read at
   "door": "install",                  // or "distro": the distro wrote it (absent for a package of Concepts alone)
   "items": [
@@ -3591,10 +3924,61 @@ an edited page, and the helpers while a forked step of the package stays
 are kept and listed in `kept: [{ kind, name, reason }]`; so is a page with a
 page under it that stays — one this strut added under the package's root,
 an edited page — and every page above it, since retiring a page deletes
-its edges. 404
+its edges. The values of the secrets it provided stay: they are the
+people's and the deployment's, other steps read them by name, and a
+reinstall finds them (revoking them is the package's to do before it
+goes; deleting them is `DELETE /secrets/:name` and
+`DELETE /actors/:actor/secrets/:name`). 404
 `package_not_installed`; 409 `package_busy` while one of its workflows has
 a run in flight; 409 `package_distro_owned` for a package the distro
 installed.
+
+**Schedules a package ships.** A package names workflows of its own that
+strut runs on a schedule, each an automation's draft (§8: `name?`,
+`trigger`, `input?`) with the `workflow` it runs, by its name inside the
+package:
+
+```yaml
+schedules:
+  - workflow: check                           # workflows/check.yaml
+    trigger: { every: interval, minutes: 15 } # the automations' grammar
+  - workflow: digest
+    name: weekly                              # the workflow's name unless given; unique in the package
+    trigger: { every: week, on: [mon], at: ["09:00"], tz: UTC }
+    input: { since: "{{ last.output.until }}" } # fixed here: now, today and last only
+```
+
+`readPackage` refuses (`bad_package: strut.yaml: schedules[i]…`) a workflow
+the package does not carry (strut's, another package's, its own by its full
+name), a trigger the grammar does not have or a key no shape of it has (it
+is held strict, as the manifest is), a `once` (a release outlives it), two
+schedules of one name, and an input template that reads anything but `now`,
+`today` and `last`. `schedules` takes no other key, so a strut from before
+it refuses the package instead of installing it without its schedules.
+
+Each is an ordinary automation (§8) on the workflow, `package` on it, its
+id `packageAutomationId(package, name)`: strut makes the automations what
+the installed packages ship at boot and after every package write — an
+install, a release, an uninstall, a subscription's sync, a repo's Open,
+Pull or Commit — so there is exactly one each, whatever restarts,
+reinstalls or restores. A package ships its schedules while something of it
+is still its own here (a workflow, step or app whose active version it
+wrote; the rule `job:` grants follow): an uninstall drops them, the one
+that keeps a fork included. A release follows its trigger, input and name
+(an interval keeps its anchor while it stays one); one that drops a
+schedule drops the automation. On or off is the admin's (`PATCH … {
+enabled }`), and a release keeps it; an edit of anything else, and a
+delete, is refused (§8). The store's detail lists each as a sentence on its
+workflow (`PackageDetail.workflows[].schedules`, as `GET /index/packages/:publisher/:name` serves it).
+
+A scheduled run of a package's workflow acts as the workflow's OWNER —
+whoever installed the package through a person's door — and reads secrets
+as any run of theirs does: `get(NAME)` their own value, else the
+deployment's, else the environment; `secrets.own` theirs, and no
+`secrets.deployment`. With no owner (the distro's install, a boot install,
+an install with no actor), a fire launches nothing and says why (§8,
+`nobody to run as:`); claiming the workflow (`POST /actor/claim`) or giving
+it an owner (`PUT /workflows/:name/owner`) lets it run as them.
 
 The archive is transport: a fetcher checks the unpacked TREE against the
 digest, never the archive's bytes, so any URL that serves the right tree
@@ -3710,26 +4094,27 @@ record are other places it comes from, and neither changes a check.
 
 **Installing from a repository** (`plans/marketplace.md` §5,
 `plans/app-repos.md` §2; `src/packages/git-source.ts`). `POST
-/packages/install { ref: "git+https://github.com/acme/linear@main#strut",
-tokenSecret? }` reads a package out of a git repository: any http(s) host
+/packages/install { ref: "git+https://github.com/acme/linear@main#strut" }`
+reads a package out of a git repository: any http(s) host
 or `file://` (no credentials in the URL, no ssh), at a branch, a tag or a
 commit (the remote's default branch with no `@`), at the repository's root
 or in the folder `#<folder>` names. The repository is fetched into the same
 bare cache `git/checkout` keeps (`<dataDir>/repos/`); the ref is the
 remote's branch of that name, then a tag, then a commit; the tree at that
 commit is read out, hashed, and kept by its digest like any package. A
-private repository is read with the token in the secret `tokenSecret`
-names (default `GITHUB_TOKEN`; the installing person's own first where
-actor secrets are kept): it reaches git through its environment alone,
+private repository is read with the token for its host — the secret that
+serves the host ("Git credentials by host" above: `GITHUB_TOKEN` for
+github.com), the installing person's own first where actor secrets are
+kept: it reaches git through its environment alone, for that host alone,
 never a URL, an argument, an error or a record, and the repository's ACL
 decides. The install records on every version it writes the ref as given
 (`upstream.source.ref`, what an update re-resolves: a branch moves, a tag
 does not) and the commit it resolved (`upstream.commit`); `GET /packages`
 and the install report show `commit`. A `requires.packages` entry may name
 a `git+` source; it is taken from the cache when it holds the pinned
-digest, else read — with the token only when it is on the same origin as a
-ref the person named, so a package never sends this strut's token to a
-host of its choosing. Refusals:
+digest, else read — with a token only when it is on the host of a ref the
+person named, so a package never spends a token on a host of its
+choosing. Refusals:
 
 | Code | Status | |
 | --- | --- | --- |
@@ -3751,9 +4136,9 @@ proposal only an admin accepts (below).
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/packages/repos` | `{ repos: RepoView[] }`: each repo on file (`<dataDir>/packages/repos.json`) — `{ package, url, branch, path?, ref, commit, digest, tokenSecret?, openedAt, by?, originals?, merge?, workdir, added, forked, deleted, conflict? }`. `commit` is the commit last installed, `ref` the `git+<url>@<branch>[#<path>]` each version's `upstream.source.ref` records, `tokenSecret` the NAME of the secret its token is read from (never a value), `added` / `forked` / `deleted` the workflows, steps and apps added, edited or deleted here since `commit` (`{ kind, name }`; an edited Concept is in `forked`, a new page only in the diff), `conflict` the files a pull's merge left unmerged |
-| POST   | `/packages/repos` | **Open repo**: `{ url, ref?, path?, tokenSecret? }` → 201 `RepoView` + `install` (an `InstallResult`). The repository fetched into `git/checkout`'s bare cache; `ref` a BRANCH (default the remote's default branch), followed from then on; a KEPT working copy at `<dataDir>/packages/work/<publisher>/<name>/`, a worktree of the cache on a branch of its own (`repo/<publisher>/<name>`) tracking the remote's; the package at the branch's commit installed through the `repo` door — every item checked before the first write, missing secrets reported, each version stamped `source: "repo"` with `upstream: { …, source: { ref }, commit }`. 409 `package_repo_open` when the package is a repo here already; `package_conflict` when it is installed by another door (uninstall it first), when workflows, steps or apps made here are already under its name, or when a Concept page made here has the name of one of its pages — a first Open takes nothing it did not bring, as an ordinary install; 400 `package_repo_branch` for a ref that is no branch; 502 `package_repo_unreachable` |
-| POST   | `/packages/repos/create` | **Create repo**: a `BuildRequest` (`package`, `version`, the picks — as `POST /packages/build`) + `{ url, branch?, path?, tokenSecret? }` → 201 `RepoView` + `install` + `originals`. The picks built, written as the first commit of the EMPTY remote at `url` on `branch` (default `main`), in the folder `path` when given, with the person's identity, pushed, then opened as above. `originals` are the bare workflows, steps and apps the package was built from: they stay until the person retires them (below). 409 `package_repo_not_empty` when the remote has any branch or tag, `package_conflict` when the package is installed here already or items made here are under its name — each refused before anything is pushed; 400 a build's refusal. Its open takes the Concept pages the package was built from as the package's (the same nodes) |
+| GET    | `/packages/repos` | `{ repos: RepoView[] }`: each repo on file (`<dataDir>/packages/repos.json`) — `{ package, url, branch, path?, ref, commit, digest, openedAt, by?, originals?, merge?, workdir, added, forked, deleted, conflict? }`. `commit` is the commit last installed, `ref` the `git+<url>@<branch>[#<path>]` each version's `upstream.source.ref` records, `added` / `forked` / `deleted` the workflows, steps and apps added, edited or deleted here since `commit` (`{ kind, name }`; an edited Concept is in `forked`, a new page only in the diff), `conflict` the files a pull's merge left unmerged |
+| POST   | `/packages/repos` | **Open repo**: `{ url, ref?, path? }` (a `tokenSecret` is 400) → 201 `RepoView` + `install` (an `InstallResult`). The repository fetched into `git/checkout`'s bare cache; `ref` a BRANCH (default the remote's default branch), followed from then on; a KEPT working copy at `<dataDir>/packages/work/<publisher>/<name>/`, a worktree of the cache on a branch of its own (`repo/<publisher>/<name>`) tracking the remote's; the package at the branch's commit installed through the `repo` door — every item checked before the first write, missing secrets reported, each version stamped `source: "repo"` with `upstream: { …, source: { ref }, commit }`. 409 `package_repo_open` when the package is a repo here already; `package_conflict` when it is installed by another door (uninstall it first), when workflows, steps or apps made here are already under its name, or when a Concept page made here has the name of one of its pages — a first Open takes nothing it did not bring, as an ordinary install; 400 `package_repo_branch` for a ref that is no branch; 502 `package_repo_unreachable` |
+| POST   | `/packages/repos/create` | **Create repo**: a `BuildRequest` (`package`, `version`, the picks — as `POST /packages/build`) + `{ url, branch?, path? }` (a `tokenSecret` is 400) → 201 `RepoView` + `install` + `originals`. The picks built, written as the first commit of the EMPTY remote at `url` on `branch` (default `main`), in the folder `path` when given, with the person's identity, pushed, then opened as above. `originals` are the bare workflows, steps and apps the package was built from: they stay until the person retires them (below). 409 `package_repo_not_empty` when the remote has any branch or tag, `package_conflict` when the package is installed here already or items made here are under its name — each refused before anything is pushed; 400 a build's refusal. Its open takes the Concept pages the package was built from as the package's (the same nodes) |
 | GET    | `/packages/repos/:publisher/:name` | One `RepoView`; 404 when the package is not a repo here |
 | GET    | `/packages/repos/:publisher/:name/diff` | What a Commit would push: the workspace's edits written into the working copy and staged → `RepoDiff`: `{ files: [{ path, status: added \| modified \| deleted }], stat, patch, truncated? }` (the patch cut at 200,000 characters). 409 `package_repo_merging` while a pull's merge waits |
 | POST   | `/packages/repos/:publisher/:name/commit` | **Commit**: `{ message, branch?, pr? }` → 201 `CommitResult` `{ package, committed: true, commit, branch, pushed, pr?, prSkipped?, diff, stamped, install }`, or 200 `{ committed: false, … }` when nothing changed here and nothing waits to be pushed. Below. 409 `package_repo_merging` while a pull's merge waits, `push_rejected` when the remote refused the push (a straight push to a branch that moved: Pull, then Commit again); 403 `no_push_permission` |
@@ -3821,9 +4206,10 @@ proposal only an admin accepts (below).
   `acme/moon/score`) are not the package's and stay as they are; a package
   of the same name published from this strut is a catalog's and is not
   read.
-- **The token** is read from the secret `tokenSecret` names (default
-  `GITHUB_TOKEN`), the person's own first where actor secrets are kept, and
-  reaches git only through its environment (`src/steps/lib/git/_shared.ts`);
+- **The token** is the one for the repository's host ("Git credentials by
+  host" above: `GITHUB_TOKEN` for github.com), the person's own first where
+  actor secrets are kept, and reaches git only through its environment, for
+  that host alone (`src/steps/lib/git/_shared.ts`);
   it is masked out of every error and never on file.
 - **`package/commit`** (`src/steps/lib/package/commit.ts`): `{ package,
   message, branch?, pr? }`, run ONLY as a proposal an ADMIN accepted
@@ -3909,8 +4295,8 @@ A subscription may follow a **git branch** instead (`plans/followed-repos.md`
 ```jsonc
 // PUT /packages/subscriptions/pods — a host's first boot
 {
-  "ref": "git+https://github.com/stakwork/pods@stable#package",  // git+<repo>[@<branch>][#<folder>]; no @: the default branch
-  "tokenSecret": "GITHUB_TOKEN"   // optional: the NAME of the secret the repo is read with; a public repo needs none
+  "ref": "git+https://github.com/stakwork/pods@stable#package"  // git+<repo>[@<branch>][#<folder>]; no @: the default branch
+  // read with the token for its host (GITHUB_TOKEN for github.com); a public repo needs none
 }
 ```
 
@@ -3933,7 +4319,7 @@ subscription follows a branch, not a tag or a commit`.
 ```jsonc
 // GET /packages/subscriptions → subscriptions[]
 {
-  "id": "pods", "ref": "git+https://github.com/stakwork/pods@stable#package", "tokenSecret": "GITHUB_TOKEN",
+  "id": "pods", "ref": "git+https://github.com/stakwork/pods@stable#package", "tokenSecret": "GITHUB_TOKEN",   // the secret that serves github.com
   "applied": { "ref": "git+…", "commit": "9531ac85…", "digest": "sha256:…", "at": "…",   // no seq: a branch has no catalog
                "packages": [{ "package": "stadeum/pods", "version": "0.1.0", "digest": "sha256:…" }] },
   "checkedAt": "…", "error": "…", "warnings": [],
@@ -3955,7 +4341,38 @@ runs even when nothing moved, so the next sync after a secret is set installs
 the package with no new release, and the next after one is removed takes it
 out. `applied.packages` lists what went in, not what waits. A person's
 install (`POST /packages/install`) is not gated: it installs and lists what
-is missing.
+is missing. A person's subscription is gated on what its runs will read:
+their own value, then the deployment's, then the environment.
+
+**Whose a subscription is** (stadeum `plans/software.md` §5, item 15). The
+`PUT`'s actor — the person a session or a person token names, or the
+`x-strut-actor` beside the deployment key — is recorded as its `actor`; the
+body never names one (400). Every release such a subscription applies goes
+in as that person's own install would: they own each workflow it adds, so
+its package's schedules run as them (`runsAs`, "Automations" above), and a
+workflow already here keeps its owner, an admin's choice included. Its git
+branch is read with that person's OWN value of the secret that serves its
+host (`PUT /actors/:actor/secrets/:name`, the name the `GET` shows as
+`tokenSecret`) and nothing else: a deployment value of the same name is never sent, and a private
+repository with none fails with `package_repo_denied: … — this subscription
+is <actor>'s, and is read with their own <NAME> alone (never the
+deployment's), which they have not set: …`. To hand a subscription to
+another person, they `PUT` it again (the same body): the next read is
+theirs, and so is what later releases add; the workflows already here move
+only when an admin gives them an owner. A subscription nobody made (the
+deployment key with no actor, a first boot, the operator's distro) has no
+`actor`: what it installs has no owner, so its schedules launch nothing
+until an admin gives their workflows one, and its branch is read with the
+deployment's value, as before.
+
+```jsonc
+// PUT /packages/subscriptions/code — by stadeum-ui, for the admin who set up GitHub
+// Authorization: Bearer <STRUT_API_KEY>
+// x-strut-actor: <the admin's actor>
+{ "ref": "git+https://github.com/stakwork/stadeum-github@stable#package" }
+// GET /packages/subscriptions → subscriptions[]
+{ "id": "code", "ref": "git+…", "tokenSecret": "GITHUB_TOKEN", "actor": "evan", "applied": { "…": "…" }, "packages": [ "…" ] }
+```
 
 ```jsonc
 // POST /packages/subscriptions/pods/sync, with PODS_URL and PODS_TOKEN unset
@@ -4188,7 +4605,7 @@ a `404`, as if it were not there.
 | `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account?, link, peelLink }]` — each at the version the public view serves; `link` the visitor's page (`<base>/?app=<name>&solo=1&public=1`, base `STRUT_PUBLIC_URL`, else the request's origin with `x-forwarded-host` / `-proto` / `-prefix`), `peelLink` the same opened in Peel (`peel://open?url=<link, percent-encoded>`); `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
-| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds, but for the server's name ("‹name› invites you", HTML-escaped; "You're invited" with none, §14.12) and the worker's language: English or Spanish ("‹name› te invita", "Tienes una invitación"), from `?lang=` on the link, else the first tag of `Accept-Language` (`Vary: Accept-Language`). Its script reads the invite after `#` — which no browser sends — and on Android links "Open in Peel" and "Opened Peel without the invite? Tap here" to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on either also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
+| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds, but for the server's name ("‹name› invites you", HTML-escaped; "You're invited" with none, §14.12) and the worker's language: English or Spanish ("‹name› te invita", "Tienes una invitación"), from `?lang=` on the link, else the `join_lang` cookie, else the first tag of `Accept-Language`, else English (`Vary: Accept-Language, Cookie`). The page is an invitation card (the employer's initial, "Invite", the heading, a ticket meta row) with a two-button switcher, "English · Español", top right: a click sets `join_lang` (`Path=/public/join`, a year) and reloads with `?lang=`, the `#` invite kept. Its script reads the invite after `#` — which no browser sends — and on Android links the one "Open in Peel" button to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on it also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
 | `GET /public/join/qrcode.js` | qrcode-generator's browser build, for that page |
 
 `host` says what another strut UI may do with this view: `remote` (a
@@ -5433,14 +5850,15 @@ payment went is the payer's (§19, `…/withdrawals/:paymentHash/read`).
 
 ## 21. Serve mode — one package's app at a domain (`plans/app-repos.md` §4)
 
-A strut started with `STRUT_SERVE=<ref>` (`createStrut({ serve: { ref, url?,
-tokenSecret? } })`) is the box one package's app is served from (`src/packages/serve.ts`;
+A strut started with `STRUT_SERVE=<ref>` (`createStrut({ serve: { ref, url? }
+})`) is the box one package's app is served from (`src/packages/serve.ts`;
 `deploy/app/` runs one). The ref is one the install takes: a bare
 `publisher/name` through the followed indexes, `pk:<key>/<publisher>/<name>`
 with `STRUT_SERVE_URL` (the publisher's `…/packages/catalog?public=1`),
 `git+https://host/org/repo@<branch|tag|commit>[#<folder>]` (§16,
-"Installing from a repository"; a private one read with the secret
-`STRUT_SERVE_TOKEN_SECRET` names, default `GITHUB_TOKEN`), or `file:/path`.
+"Installing from a repository"; a private one read with the token for its
+host, "Git credentials by host"; `STRUT_SERVE_TOKEN_SECRET` is no longer
+read), or `file:/path`.
 At boot, in the background, the box DEPLOYS the ref:
 
 1. the ref into the package cache;
@@ -5518,7 +5936,6 @@ any strut with a public view.
 {
   "ref": "pk:fesbp7why3…/acme/moonlander",
   "url": "https://publisher.example.com/packages/catalog?public=1",
-  // "tokenSecret": "MOONLANDER_TOKEN", // a git+ ref's secret, by NAME
   "serving": {                          // absent before the first deploy
     "package": "acme/moonlander", "version": "1.2.0", "digest": "sha256:…",
     "ref": "pk:…",                      // what it was deployed from
@@ -5582,7 +5999,7 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 | `task/skip` | `{ lease, reason?, all? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
 | `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, title?, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
-| `task/history` | `{ all? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, reply?: { show?, files?, at } }] }` |
+| `task/history` | `{ all?, group?, groups? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, reply?: { show?, files?, at }, group?, review?: { verdict, why?, at } }], groups?: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last }] }`: with `group`, every answer of theirs in it (at most 1000) instead of the newest 50; `groups: true` adds their own groups, their answers alone counted ("A run's reply", §22) |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
@@ -5720,11 +6137,13 @@ server whose task store is its host's (which answers none of them).
 | `PUT /tasks/workers/:actor` | `{ status?, note? }` → `{ worker }`: `suspended` or `banned` expires their live lease at once |
 | `PUT /tasks/workers/:actor/grants/:type` (`:actor` `@me`: the signed-in admin themself) | an empty body, or `{ qualify: false }` → `{ worker, notice? }`: a `new` worker becomes `active`. The only way back into a type whose grant was revoked, open or not. A grant of a type with tests records its K (`qualify`): the type's, or 0 with `qualify: false` or fewer ready tests than K (`notice` says so). A grant already live stays as it is; one made again after a revoke starts anew |
 | `DELETE /tasks/workers/:actor/grants/:type?why=` | `{ worker }`: expires their live lease of that type; the status stays |
-| `GET /tasks?type=&status=&workflow=&runId=&by=&review=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `by` the tasks an actor ANSWERED (a submitted lease of theirs: any copy of a copies task, not only its `by`); `review=none` the real tasks with an answer no verdict was given on (the REVIEW QUEUE), `review=ok` or `review=rejected` those with an answer marked so — with `by`, that actor's answer; `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
+| `GET /tasks?type=&status=&workflow=&runId=&group=&by=&review=&test=&before=&limit=` | `{ tasks: TaskView[] }`, newest first, 100 a page (`before` a task's `seq`, `limit` at most 1,000); `group` the tasks of one group (`task/reply`'s `group`; a task carries its `group`); `by` the tasks an actor ANSWERED (a submitted lease of theirs: any copy of a copies task, not only its `by`); `review=none` the real tasks with an answer no verdict was given on (the REVIEW QUEUE), `review=ok` or `review=rejected` those with an answer marked so — with `by`, that actor's answer; `test=true` the test instances alone, `test=false` the real tasks; `status=disputed` the tasks whose copies did not agree |
 | `GET /tasks/:id` | `{ task: TaskView, run }`: `run` is the task's run as it stands now, `{ status, waitingOn? }` (`running` while it runs here, `stale` when it started and never finished, else its summary's status), or `null` for a test instance or a run not on file |
 | `GET /tasks/:id/files/<path>` | one of the task's `files`, as `task/file` answers it, read by staff with no lease (§9.4): a path on the task's list, one its run's reply lists (`task.reply.files`), or one its answers carried (a lease's `attachments`, read from the run's artifacts), only; `404 not_listed` for any other whether or not it exists, `404 no_file` when it is gone. A test instance's are its test's |
 | `POST /tasks/:id/take-back` | `{ worker?, why }` → `{ task, earnings: TakeBackOutcome[] }`: what the task's answers earned (or `worker`'s alone) taken back while it is HELD; `409 released` (with `earnings`) when every earning asked for is past its hold — then it is the worker's |
 | `PUT /tasks/:id/review` | `{ worker?, verdict, why? }` → `{ task, worker, lease, review: LeaseReview, earning? }`: a person's VERDICT on one answer ("Review" below), `ok` or `rejected` (which says `why`). `worker` only when the task has several answers (`400` otherwise: say whose); `404 no_answer` when it has none (or none by `worker`); `400` for a test instance's. `409 final` to change one once the answer's hold has ended |
+| `GET /tasks/groups?type=&limit=` | `{ groups: TaskGroup[] }`: the groups the runs named with `task/reply`'s `group`, one row a type and group, the one with the newest task first, 100 a page (`limit` at most 1,000): `{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last }` — its real tasks, their answers and verdicts, who answered, when its first task was made and its newest answered. `501 not_available` on a host's own store |
+| `POST /tasks/groups/review` | `{ group, type?, verdict, why? }` → `{ reviewed, more }`: the verdict ("Review" below) on every answer in the group (of `type`, when given) that has none yet, one review each, oldest first; a verdict given stays. A rejection says `why`. At most 1,000 tasks a call: `more` when there may be others |
 
 ```jsonc
 // TaskType
@@ -5810,6 +6229,7 @@ server whose task store is its host's (which answers none of them).
     "holding": 1,          // live leases of the type
     "asking": 2,           // workers whose page holds a task/next waiting
     "readyTests": 10,      // its ready tests, not retired: what a paid open type's K is held to
+    "toReview": 12,        // its real tasks' answers no verdict was given on, of any age (what GET /tasks?review=none lists, by answer)
     "appProblem": "app workers does not grant task/submit: its page cannot answer this type's tasks",  // absent when the app is fine
     "windows": {           // the last hour, day and week
       "hour": { "answered": 4, "expired": 0, "cancelled": 0, "disputed": 0, "skipped": 1, "leasesLost": 0,
@@ -6308,7 +6728,17 @@ an `image` step drew from their photo):
 
 | Step | Config | Answers |
 | --- | --- | --- |
-| `task/reply` | `{ task, show?, files? }` | `{ task, at }` |
+| `task/reply` | `{ task, show?, files?, group? }` | `{ task, at }` |
+
+- **A group.** `group` (at most 200 characters, one line, trimmed) names the
+  deliverable the task is part of — a book its pages, a batch its photos —
+  which the run knows once the answer is in. A reply with only a group
+  leaves what was told as it was; a later reply without one keeps it. Staff
+  read and review a group as one (`GET /tasks/groups`, `GET /tasks?group=`,
+  `POST /tasks/groups/review`, §14.15's `staff/groups` and
+  `staff/review-group`, the staff app's Answers by group); the worker reads their
+  groups and each answer's verdict and why (`task/history { groups, group
+  }`), so their app can show what they handed in and what was sent back.
 
 - **Only the run that asked.** A workflow's step (`effect: "write"`, on the
   shared bag): the store reads the CALLING run off the step's run control

@@ -44,7 +44,7 @@ let strutInstance: Strut | null = null;
  *  `automation?: { workflow, approve?, grants? }`, and `graphReaders?`, who
  *  may read which namespaces of the graph (src/graph/scope.ts), and
  *  `memory?: "graph"`, accepted and ignored (the memory is always the
- *  graph), and `concepts?: false | { personal?: boolean }`,
+ *  graph), and `concepts?: false | { personal?: boolean; claims?: boolean }`,
  *  the Concept pages seeded (`StrutOptions.concepts`), and `assistant?: false
  *  | { title? }`, strut's own assistant app (`StrutOptions.assistant`), and
  *  `publicRuns?: { principal? }`, who pays for a stranger's run
@@ -100,8 +100,8 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   const concepts = (raw as Record<string, unknown> | null)?.["concepts"];
   if (
     concepts !== undefined && concepts !== false &&
-    !(concepts && typeof concepts === "object" && !Array.isArray(concepts) && Object.entries(concepts).every(([k, v]) => k === "personal" && typeof v === "boolean"))
-  ) throw new Error(`STRUT_HOST_CONFIG: ${file}: "concepts" must be false or { personal?: boolean }`);
+    !(concepts && typeof concepts === "object" && !Array.isArray(concepts) && Object.entries(concepts).every(([k, v]) => (k === "personal" || k === "claims") && typeof v === "boolean"))
+  ) throw new Error(`STRUT_HOST_CONFIG: ${file}: "concepts" must be false or { personal?: boolean, claims?: boolean }`);
   if (concepts !== undefined) out.concepts = concepts as StrutOptions["concepts"];
   const jamie = (raw as Record<string, unknown> | null)?.["jamie"];
   if (jamie !== undefined && jamie !== false) throw new Error(`STRUT_HOST_CONFIG: ${file}: "jamie" must be false`);
@@ -198,12 +198,15 @@ async function getDefault(): Promise<Strut> {
     // A folder copied from another host: point it at this one before
     // anything reads it (src/moved.ts).
     await applyMove(dataDir);
+    // With STRUT_MOTHERSHIP_GRANTS_URL, `ctx.services.llm` too: model calls
+    // for a machine outside strut, through a key the host makes for it.
     const mothership =
       bootEnv()["STRUT_MOTHERSHIP"] === "1"
-        ? (await import("./mothership.js")).createMothership({ dataDir })
+        ? (await import("./mothership.js")).createMothership({ dataDir, grantsUrl: bootEnv()["STRUT_MOTHERSHIP_GRANTS_URL"] || undefined })
         : null;
-    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "eventsSink" | "job" | "orchestrator" | "builder" | "automation" | "graphReaders"> = {
+    const shared: Pick<StrutOptions, "llmAuth" | "services" | "publicUrl" | "eventsSink" | "job" | "orchestrator" | "builder" | "automation" | "graphReaders"> = {
       ...(mothership ? { llmAuth: mothership.llmAuth } : {}),
+      ...(mothership?.grants ? { services: { llm: mothership.grants } } : {}),
       // Where a caller outside the UI (the MCP door) is told this server
       // is; else each request's own origin.
       ...(bootEnv()["STRUT_PUBLIC_URL"] ? { publicUrl: bootEnv()["STRUT_PUBLIC_URL"] } : {}),

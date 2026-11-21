@@ -1,4 +1,4 @@
-title: Tasks and workers
+title: Workers
 description: >-
   The people who answer this server's workflows (plans/human-steps.md §9): the
   queue of tasks waiting for a person, the task types (who draws them, the
@@ -35,6 +35,8 @@ grants:
     - staff/file
     - staff/take-back
     - staff/review
+    - staff/groups
+    - staff/review-group
     - staff/tests
     - staff/test
     - staff/save-test

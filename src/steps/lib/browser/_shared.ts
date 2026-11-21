@@ -1,9 +1,9 @@
 /**
  * Shared by every `browser/*` step. A leading `_` makes this a helper the
  * registry skips but siblings import (`./_shared.js`). The browser itself is
- * `ctx.services.browser` — the `BrowserService` (src/browser/service.ts)
- * that `createStrut` builds from `BROWSER_*` — so each step is a thin
- * wrapper over one of its verbs.
+ * `ctx.services.browser` — a `StrutBrowser` (src/browser/service.ts): the
+ * `BrowserService` `createStrut` builds from `BROWSER_*`, or a host's own —
+ * so each step is a thin wrapper over one of its verbs.
  */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,10 +11,10 @@ import { z } from "zod";
 import type { StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { jobRoot } from "../../../jobs.js";
-import type { BrowserService, KeptSession } from "../../../browser/service.js";
+import type { StrutBrowser, KeptSession } from "../../../browser/service.js";
 import type { ShotSink } from "../../../browser/shot.js";
 
-export type { BrowserService, KeptSession, ShotSink };
+export type { StrutBrowser, KeptSession, ShotSink };
 
 export type Ctx = StepContext<StrutCapabilities>;
 
@@ -87,7 +87,7 @@ export function keptOf(ctx: Ctx, name: string, verb: string): { session: KeptSes
 
 export const holdId = (name: string) => `browser:${name}`;
 
-export function browserOf(ctx: Ctx): BrowserService {
+export function browserOf(ctx: Ctx): StrutBrowser {
   const browser = ctx.services?.browser;
   if (!browser) throw new Error("browser/*: no `browser` service on ctx.services — the host did not build one (its boot log says why)");
   return browser;

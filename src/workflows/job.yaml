@@ -85,6 +85,9 @@ steps:
       message: "{{ input.prompt }}"
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
+      # The person's SSH key, signed with by an agent in strut's process:
+      # bash gets SSH_AUTH_SOCK, never the key (ssh/keygen makes it).
+      sshKeys: [SSH_KEY]
       schema:
         type: object
         additionalProperties: false
@@ -172,7 +175,9 @@ params:
   # its directory; the job-app runtime (plans/apps.md §6) is still served
   # for a directory with an app.yaml, but nothing here scaffolds or builds
   # one. A host appends its own (`createStrut({ job: { tools } })`): the
-  # lab adds `pod/*`. Never the
+  # lab adds `pod/*`. An installed package appends what its strut.yaml's
+  # `job:` names — its own steps, and strut's named one by one (`git/push`
+  # for a change that ends as a pull request; src/job-seed.ts). Never the
   # authoring writes (meta/publish-workflow, meta/create-step, edit-step):
   # a workflow, or an app that lives in a workspace, is the `builder`
   # workflow's, which this agent runs through meta/run-workflow when such a
@@ -227,6 +232,10 @@ params:
     - remote/run-workflow
     - remote/call
     - remote/buy-credit
+    # A server someone lets the job into over SSH: the public half of the
+    # person's key, made the first time — the private half stays in strut
+    # and signs through the agent's `sshKeys`, so bash's ssh just works.
+    - ssh/keygen
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: package/install

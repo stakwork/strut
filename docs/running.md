@@ -292,7 +292,7 @@ What else a paid flow needs, each learned the hard way:
   1000, "workerDaySats": 1000000, "serverDaySats": 10000000 }` (all four;
   `inviteSats` beside them is an invite's default, 100 when left out).
 - **Inviting a worker** (plans/human-steps.md §5.8): Invite a worker in
-  `strut/staff` (the Queue, the Workers tab or a type's page), or `POST
+  `strut/staff` (its header, on every tab, or a type's page), or `POST
   /tasks/invites {}` (`{ "type": "<type>" }` for one kind of work), asks the
   stand-in's `POST /invite` (with the pay token; it debits the sats and its
   price, `INVITE_PRICE_SATS`, 10) and answers the join link, which opens
@@ -346,7 +346,7 @@ a VOICE DEMO (plans/private-voice.md), run from this folder like deploy/index: t
 
 ### `deploy/app/`
 
-a SERVED APP (plans/app-repos.md §4.5), run from this folder like deploy/index: the published strut image on Ladybug (one volume, `/data`) with `STRUT_SERVE` (+ `STRUT_SERVE_URL` for a `pk:` ref, `STRUT_SERVE_TOKEN_SECRET` for a private repo) naming the package — a repository's branch, `git+https://…@main`, by default, behind Caddy for TLS on one host (`STRUT_APP_HOST`), compose project `strut-app`; every line of `.env` reaches strut (`env_file`), so the model keys, the wallet and the package's `requires.secrets` values go there. README.md: a package's `serve.yaml`, a repository as its home or publishing one from a strut (`serve` on `POST /packages/publish`), the box, `GET /serve`, `/?shell=1`, and following new commits (the push webhook at `/serve/sync`) and releases
+a SERVED APP (plans/app-repos.md §4.5), run from this folder like deploy/index: the published strut image on Ladybug (one volume, `/data`) with `STRUT_SERVE` (+ `STRUT_SERVE_URL` for a `pk:` ref; a private repo is read with the token for its host, `GITHUB_TOKEN` for github.com) naming the package — a repository's branch, `git+https://…@main`, by default, behind Caddy for TLS on one host (`STRUT_APP_HOST`), compose project `strut-app`; every line of `.env` reaches strut (`env_file`), so the model keys, the wallet and the package's `requires.secrets` values go there. README.md: a package's `serve.yaml`, a repository as its home or publishing one from a strut (`serve` on `POST /packages/publish`), the box, `GET /serve`, `/?shell=1`, and following new commits (the push webhook at `/serve/sync`) and releases
 
 ### `tsconfig.json`
 

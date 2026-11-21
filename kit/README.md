@@ -93,7 +93,9 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `{ upload(file), remove(path) }` (`job/upload`, `job/delete-upload`: files
   into the app's job, §12; `fileData` turns a `File` into what a step
   takes), `useCancel`, `useWorkflow` (`run/workflow`), `useStep(type)` →
-  `run(config, input)`, `useToolInput`, `useAppLink`, `useHost` (theme,
+  `run(config, input)`, `useToolInput`, `useAppLink`, `useShareLink` (the
+  address to paste: the host's page, `strut/page` in its context, with
+  `?input=`; undefined with none), `useHost` (theme,
   display mode, `sendMessage`, `openLink`; in a strut server's public view
   `public: true`, `runnable` — the granted workflows a VISITOR may start —
   and `results`, what it reads of the runs it launched of each (`output`:
@@ -138,7 +140,11 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   the viewer can open here, each with its `app`), `useTaskHistory()`
   (`task/history`, `{ all }` likewise: their own
   newest tasks here, each with its `ask`, how it ended and what it earned,
-  `WorkerHistoryItem`; grant `task/history`) and
+  the group the workflow put it in (`group`, `task/reply`'s) and staff's
+  verdict (`review { verdict, why?, at }`: a rejection's `why` is what to
+  fix), `WorkerHistoryItem`; `{ group }` every answer of theirs in one
+  group, `{ groups: true }` also their groups, `WorkerTaskGroup`, each with
+  its answers, `ok`, `rejected` and `unreviewed`; grant `task/history`) and
   `useTaskFile(task, path)` / `useTaskFileUrl` (`task/file`: one of
   `task.files`, `run/files`' shape and a `blob:` URL); grant `task/next`,
   `task/submit`, `task/skip`, `task/file`, `task/me`. SQL and automation

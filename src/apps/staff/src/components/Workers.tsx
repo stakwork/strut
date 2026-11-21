@@ -10,6 +10,7 @@
 // conversation with Support (plans/support-chat.md §3) where Support answers.
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ChevronRight, Search } from "lucide-react";
 import { useStrutClient } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,10 +20,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
-  balanceCells, fmtWhen, grantedBy, leaseOutcome, liveTypesText, OPEN_GRANT_BY, reviewText, shortActor, standingLow, standingText, STATUS_WORDS, whoElse, whoOf, workersInOrder, type Place, type Shown,
+  balanceCells, fmtSats, fmtWhen, grantedBy, leaseOutcome, OPEN_GRANT_BY, reviewText, standingLow, standingText, STATUS_WORDS, whoElse, whoOf, type Place, type Shown,
 } from "../lib/view";
 import type { TaskType, TypeShare, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
-import { Back, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
+import { Avatar, Back, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
 import { BringWorkersIn } from "./Share";
 
 interface Props {
@@ -43,127 +44,115 @@ export function Workers(props: Props) {
   return (
     <>
       {props.types && <BringWorkersIn types={props.types} tasks={props.tasks} workers={props.workers} history />}
-      <WorkerList {...props} workers={props.workers} />
+      <WorkerList {...props} workers={props.workers} waiting={0} />
     </>
   );
 }
 
-function WorkerList(props: Props & { workers: Worker[] }) {
-  const client = useStrutClient();
-  const { act, busy, error } = useAct();
-  const [ticked, setTicked] = useState<Set<string>>(new Set());
-  const [type, setType] = useState("");
-  const [result, setResult] = useState<string | null>(null);
-  const list = workersInOrder(props.workers);
-  const fresh = list.filter((w) => w.status === "new");
-  const tick = (a: string, on: boolean) => setTicked((s) => (on ? new Set(s).add(a) : new Set([...s].filter((x) => x !== a))));
-  /** One door call per worker; the page says which failed. */
-  const grantAll = async () => {
-    const failed: string[] = [];
-    let done = 0;
-    await act("grant", async () => {
-      for (const actor of ticked) {
-        try {
-          await client.run("staff/grant", { actor, type });
-          done++;
-        } catch (err) {
-          failed.push(`${shortActor(actor)}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    });
-    setTicked(new Set());
-    setResult(`Granted ${type} to ${done} worker${done === 1 ? "" : "s"}; each is active now.${failed.length ? ` Failed: ${failed.join("; ")}` : ""}`);
-  };
-
+function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
+  const [find, setFind] = useState("");
+  const words = find.trim().toLowerCase();
+  const list = words ? props.workers.filter((w) => `${whoOf(w)} ${w.name ?? ""} ${w.actor}`.toLowerCase().includes(words)) : props.workers;
+  const able = props.workers.filter((w) => w.status === "active").length;
   return (
-    <Section title="Workers" aside={<Note>{fresh.length ? `${fresh.length} new, waiting for a grant` : `${list.length} here`}</Note>}>
-      {list.length === 0 ? (
-        <Empty>No worker has signed in yet. A worker is anyone who signed in to Tasks and asked for work (Invite a worker, above, makes their link); they appear here as new. Open work lets them in on their first ask; invite-only work, their invite or a grant.</Empty>
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <h2 className="text-base font-semibold">Workers</h2>
+        <span className="text-sm text-muted-foreground">
+          {able.toLocaleString("en-US")} can take tasks{props.workers.length > able ? ` · ${props.workers.length - able} suspended or banned` : ""}
+        </span>
+        {props.workers.length > 5 && (
+          <label className="ml-auto flex h-9 items-center gap-2 rounded-md border px-3 text-muted-foreground focus-within:border-ring">
+            <Search className="size-4 shrink-0" />
+            <input type="search" aria-label="Find a worker" placeholder="Find a worker" className="w-44 bg-transparent text-sm text-foreground outline-none" value={find} onChange={(e) => setFind(e.target.value)} />
+          </label>
+        )}
+      </div>
+      {props.workers.length === 0 ? (
+        <Empty>
+          {props.waiting
+            ? "Nobody has been let in yet: the people above are waiting."
+            : "No worker has signed in yet. A worker is anyone who signed in to Tasks and asked for work (Invite a worker, above, makes their link). Open work lets them in on their first ask; invite-only work, their invite or you."}
+        </Empty>
+      ) : list.length === 0 ? (
+        <Empty>No worker by that name.</Empty>
       ) : (
-        <>
-          {fresh.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span>Grant the {ticked.size || "ticked"} new worker{ticked.size === 1 ? "" : "s"}</span>
-              <NativeSelect aria-label="Type to grant" value={type} onChange={(e) => setType(e.target.value)}>
-                <NativeSelectOption value="">a type…</NativeSelectOption>
-                {(props.types ?? []).map((t) => (
-                  <NativeSelectOption key={t.name} value={t.name}>
-                    {t.name}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
-              <Button size="sm" disabled={!type || ticked.size === 0 || busy !== null} onClick={() => void grantAll()}>
-                Grant
-              </Button>
-            </div>
-          )}
-          {result && <p className="text-sm text-muted-foreground" role="status">{result}</p>}
-          <ErrorLine error={error} />
-          <div className="overflow-x-auto rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  {fresh.length > 0 && <TableHead className="w-8" />}
-                  <TableHead>Who</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>First seen</TableHead>
-                  <TableHead>Types</TableHead>
-                  <TableHead className="text-right" title="Answers in the last 7 days">This week</TableHead>
-                  <TableHead>Holding</TableHead>
-                  {props.shown.standing && <TableHead title="Per type with tests: passed of the newest graded, or qualifying">Standing</TableHead>}
-                  {props.shown.earnings && (
-                    <>
-                      <TableHead className="text-right" title="Earned, less taken back and withdrawn: what they are owed">Earned</TableHead>
-                      <TableHead className="text-right" title="Of it, still in its hold">Held</TableHead>
-                      <TableHead className="text-right" title="Past its hold: theirs to withdraw">Withdrawable</TableHead>
-                    </>
-                  )}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {list.map((w) => {
-                  const [earned, held, free] = balanceCells(w.balance);
-                  return (
-                    <TableRow key={w.actor} className="cursor-pointer" onClick={() => props.go({ tab: "workers", worker: w.actor })}>
-                      {fresh.length > 0 && (
-                        <TableCell onClick={(e) => e.stopPropagation()}>{w.status === "new" && <Checkbox aria-label={`Tick ${whoOf(w)}`} checked={ticked.has(w.actor)} onCheckedChange={(c) => tick(w.actor, c === true)} />}</TableCell>
-                      )}
-                      <TableCell>
-                        <div className="font-medium" title={w.actor}>{whoOf(w)}</div>
-                        {whoElse(w) && <div className="font-mono text-xs text-muted-foreground">{whoElse(w)}</div>}
-                      </TableCell>
-                      <TableCell>
-                        <StatusBadge status={w.status} />
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">{fmtWhen(w.firstSeen)}</TableCell>
-                      <TableCell>{liveTypesText(w) || "—"}</TableCell>
-                      <TableCell className="text-right tabular-nums">{w.week ?? "—"}</TableCell>
-                      <TableCell>{w.holding ?? "—"}</TableCell>
-                      {props.shown.standing && (
-                        <TableCell className="text-xs">
-                          {Object.entries(w.standing ?? {}).map(([t, s]) => (
-                            <div key={t} className={cn(standingLow(s) && "text-destructive")}>
-                              {t}: {standingText(s)}
-                            </div>
+        <div className="overflow-x-auto rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Worker</TableHead>
+                <TableHead>Can do</TableHead>
+                <TableHead>Joined</TableHead>
+                <TableHead className="text-right" title="Answers in the last 7 days">Answers this week</TableHead>
+                {props.shown.standing && <TableHead title="Per type with tests: passed of the newest graded, or qualifying">Standing</TableHead>}
+                {props.shown.earnings && <TableHead className="text-right" title="Earned, less taken back and withdrawn: what they are owed">Owed</TableHead>}
+                <TableHead className="w-6" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {list.map((w) => {
+                const types = w.grants.filter((g) => g.revokedAt === undefined);
+                return (
+                  <TableRow key={w.actor} className="cursor-pointer" onClick={() => props.go({ tab: "workers", worker: w.actor })}>
+                    <TableCell>
+                      <div className="flex items-center gap-3">
+                        <Avatar name={whoOf(w)} />
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 font-medium" title={w.actor}>
+                            {whoOf(w)}
+                            {w.status !== "active" && <StatusBadge status={w.status} />}
+                            {w.holding && (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-normal text-muted-foreground" title={`Working on a task of ${w.holding} now`}>
+                                <span aria-hidden className="size-1.5 rounded-full bg-emerald-500" /> working now
+                              </span>
+                            )}
+                          </div>
+                          {whoElse(w) && <div className="font-mono text-xs text-muted-foreground">{whoElse(w)}</div>}
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {types.length === 0 ? (
+                        <span className="text-muted-foreground">nothing yet</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {types.map((g) => (
+                            <Badge key={g.type} variant="outline" title={g.by === OPEN_GRANT_BY ? "Open work: they took it up themselves" : undefined}>
+                              {g.type}
+                            </Badge>
                           ))}
-                        </TableCell>
+                        </div>
                       )}
-                      {props.shown.earnings && (
-                        <>
-                          <TableCell className="text-right tabular-nums">{earned}</TableCell>
-                          <TableCell className="text-right tabular-nums">{held}</TableCell>
-                          <TableCell className="text-right tabular-nums">{free}</TableCell>
-                        </>
-                      )}
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
-        </>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-muted-foreground">{fmtWhen(w.firstSeen)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{w.week ?? "—"}</TableCell>
+                    {props.shown.standing && (
+                      <TableCell className="text-xs">
+                        {Object.entries(w.standing ?? {}).map(([t, s]) => (
+                          <div key={t} className={cn(standingLow(s) && "text-destructive")}>
+                            {t}: {standingText(s)}
+                          </div>
+                        ))}
+                      </TableCell>
+                    )}
+                    {props.shown.earnings && (
+                      <TableCell className="text-right tabular-nums" title={w.balance ? `${fmtSats(w.balance.withdrawableMsat)} can be withdrawn now` : undefined}>
+                        {w.balance ? fmtSats(w.balance.totalMsat) : "—"}
+                        {w.balance && w.balance.heldMsat > 0 && <div className="text-xs text-muted-foreground">{fmtSats(w.balance.heldMsat)} held</div>}
+                      </TableCell>
+                    )}
+                    <TableCell className="pl-0 text-muted-foreground">
+                      <ChevronRight aria-hidden className="size-4" />
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
       )}
-    </Section>
+    </section>
   );
 }
 
@@ -211,7 +200,7 @@ function WorkerDetail(props: Props & { actor: string }) {
       <div className="flex flex-wrap items-center gap-2">
         {(w.status === "new" || w.status === "suspended" || w.status === "banned") && (
           <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => setStatus("active")}>
-            {w.status === "new" ? "Activate" : "Lift"}
+            {w.status === "new" ? "Let in" : "Lift"}
           </Button>
         )}
         {w.status !== "suspended" && w.status !== "banned" && (
@@ -250,7 +239,7 @@ function WorkerDetail(props: Props & { actor: string }) {
       </div>
       {holding && (
         <p className="text-sm">
-          Holding a lease of {holding.type} until {fmtWhen(holding.expires)}:{" "}
+          Working on a task of {holding.type}, theirs until {fmtWhen(holding.expires)}:{" "}
           <button type="button" className="underline underline-offset-2" onClick={() => props.go({ tab: "tasks", task: holding.task })}>
             its task
           </button>
@@ -279,8 +268,8 @@ function WorkerDetail(props: Props & { actor: string }) {
         </section>
       )}
 
-      <Section title="Grants">
-        {live.length === 0 && <Note>No live grant: they take nothing here.</Note>}
+      <Section title="Work they can do">
+        {live.length === 0 && <Note>Not let in to any work yet: they take nothing here.</Note>}
         <ul className="flex flex-col gap-1">
           {live.map((g) => {
             const s = w.standing?.[g.type];
@@ -327,7 +316,7 @@ function WorkerDetail(props: Props & { actor: string }) {
                 })
               }
             >
-              Grant
+              Let in
             </Button>
           </div>
         )}
@@ -380,7 +369,7 @@ function WorkerDetail(props: Props & { actor: string }) {
       </Section>
 
       <Section
-        title="Newest leases"
+        title="Newest tasks they took"
         aside={
           props.shown.review ? (
             <span className="flex flex-wrap gap-2 text-xs">
@@ -410,7 +399,7 @@ function WorkerDetail(props: Props & { actor: string }) {
             ))}
           </ul>
         ) : (
-          <Note>No lease yet.</Note>
+          <Note>They have taken no task yet.</Note>
         )}
       </Section>
     </div>

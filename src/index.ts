@@ -716,8 +716,22 @@ export {
 export { builderSystem, renderBuilderSystem, BUILDER_ENTRY, type ConceptPage } from "./ai/builder-system.js";
 // The browser the browser/* lib steps drive (src/browser/service.ts):
 // createStrut builds one from BROWSER_* as `services.browser` unless the
-// host passes its own; and the browser workflows it seeds beside them.
-export { BrowserService, type BrowserServiceOptions } from "./browser/service.js";
+// host passes its own, which implements `StrutBrowser` (the types below are
+// what its verbs take and answer); and the browser workflows it seeds beside them.
+export {
+  BrowserService,
+  type BrowserServiceOptions,
+  type StrutBrowser,
+  type Target,
+  type Viewport,
+  type Navigated,
+  type Observations,
+  type KeptSession,
+  type CaptureStep,
+} from "./browser/service.js";
+export type { Shot, ShotSink } from "./browser/shot.js";
+// BROWSER_MCP_URL: a Browser MCP server over HTTP (src/browser/mcp.ts).
+export { McpBrowser, browserFromEnv, type McpBrowserOptions } from "./browser/mcp.js";
 export { seedBrowserWorkflows, BROWSER_WORKFLOWS, BROWSER_CATEGORY } from "./browser/seed.js";
 // Pseudonymization (src/privacy/, specs/PRIVACY_SPEC.md): the privacy/* steps' logic and the `private-ask` seed.
 export * from "./privacy/index.js";

@@ -6,7 +6,9 @@
  * The index derives it at the crawl and the store's package page draws it,
  * so a person sees an app before the package under it. It also says which
  * of the package's steps the manifest's `job:` gives the job agent, and
- * which of those ask first (plans/followed-repos.md §3.3).
+ * which of those ask first (plans/followed-repos.md §3.3), and which of
+ * strut's own steps it gives it, each with what this strut says it does
+ * (stadeum plans/software.md §5, item 16).
  *
  * A READING, never a check: nothing here is loaded or run — a step's facts
  * are regexes over its source, a workflow's over its YAML — and an install
@@ -25,6 +27,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseManifest as parseAppManifest, SCREENSHOT_MAX_BYTES } from "../apps/manifest.js";
+import { describeTrigger, normalizeTrigger } from "../automations.js";
 import { walkSteps } from "../closure.js";
 import { parseConceptFile } from "../concept-seed.js";
 import type { Step, StepEffect } from "../core.js";
@@ -34,6 +37,7 @@ import { lintStepSource } from "../step-lint.js";
 import { baseType } from "../step-ref.js";
 import { loadYaml } from "../yaml.js";
 import type { CachedPackage } from "./cache.js";
+import { strutGrants, type JobGrant } from "./format.js";
 
 /** What running a workflow (or an app over its workflows) reaches. */
 export interface PackageCan {
@@ -89,6 +93,10 @@ export interface WorkflowDetail {
   sealed?: true;
   /** How many claims the `claims:` block declares. */
   claims?: number;
+  /** When strut runs it on its own: each schedule strut.yaml ships on it
+   *  (`schedules:`), as a sentence — in the server's own zone unless it
+   *  names one. */
+  schedules?: string[];
   /** The YAML could not be read as a workflow. */
   error?: string;
 }
@@ -129,12 +137,22 @@ export interface PackageDetail {
   /** The manifest's `requires.optional`: secrets its steps may read, but a
    *  strut without them still installs it. Not in `secrets`. */
   optional?: string[];
-  /** The steps the manifest's `job:` gives the job agent, by their names
-   *  inside the package, and the ones among them that ask first. */
-  job?: { tools: string[]; approve: string[] };
+  /** The steps the manifest's `job:` gives the job agent, and the ones
+   *  among them that ask first. */
+  job?: JobDetail;
   can: PackageCan;
   files: number;
   bytes: number;
+}
+
+/** What a package gives the job agent: `tools` and `approve` by their
+ *  names inside the package — strut's own steps by their type, each also
+ *  in `strut` with what this strut says of it (`effect`, the `secrets` it
+ *  reads, its description), so an admin sees strut's steps named as such. */
+export interface JobDetail {
+  tools: string[];
+  approve: string[];
+  strut?: Array<StepFacts & { name: string }>;
 }
 
 /** What this strut knows of a step type (its registry): for the flags and
@@ -190,6 +208,10 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
   const pkg = info.manifest.package;
   const inside = (name: string) => (name.startsWith(`${pkg}/`) ? name.slice(pkg.length + 1) : name);
   const text = (path: string) => readFile(join(info.dir, path), "utf-8");
+  const jobDetail = (job: JobGrant): JobDetail => {
+    const strut = strutGrants(pkg, job.tools).map((name) => ({ name, ...deps.stepInfo?.(name) }));
+    return { tools: job.tools.map(inside), approve: job.approve.map(inside), ...(strut.length ? { strut } : {}) };
+  };
 
   // The package's own steps, by their names inside it, read first: a
   // workflow's flags and secrets lean on them.
@@ -352,6 +374,12 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
   };
   const workflows = [...readings.keys()].sort().map((n) => fold(n, []));
   const workflowByName = new Map(workflows.map((w) => [w.name, w]));
+  for (const sc of info.schedules ?? []) {
+    const w = workflowByName.get(inside(sc.workflow));
+    // The zone a schedule names; with none, the installing server's, which no catalog knows.
+    const said = describeTrigger(normalizeTrigger(sc.trigger, new Date(0), sc.trigger.tz ?? "UTC"));
+    if (w) (w.schedules ??= []).push(sc.trigger.tz ? said : said.replace(/ \([^)]*\)$/, ""));
+  }
 
   // The apps: the manifest's face, the flags of what they may launch.
   const apps: AppDetail[] = [];
@@ -450,7 +478,7 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
     concepts: concepts.sort((a, b) => a.name.localeCompare(b.name)),
     secrets: [...secrets].sort(),
     ...(optional.length ? { optional } : {}),
-    ...(info.job ? { job: { tools: info.job.tools.map(inside), approve: info.job.approve.map(inside) } } : {}),
+    ...(info.job ? { job: jobDetail(info.job) } : {}),
     can,
     files: info.files.length,
     bytes,
@@ -464,7 +492,7 @@ export interface DetailSummary {
   steps: number;
   concepts: number;
   secrets: string[];
-  job?: { tools: string[]; approve: string[] };
+  job?: JobDetail;
   can: PackageCan;
   readme: boolean;
 }

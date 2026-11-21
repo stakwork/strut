@@ -66,17 +66,18 @@ export interface BringProps {
   types?: TaskType[] | undefined;
   /** Tasks' share (`staff/types`' `tasks`): every link opens it. */
   tasks?: TypeShare | undefined;
-  /** The kind of work picked to start with: a type's own page. */
+  /** The kind of work the invite is for, fixed: a type's own page. */
   type?: string;
   /** Shown open, not as a closed row: a type's page. */
   open?: boolean;
   /** The Workers tab's box: always open, with the invites made. `workers` says who took which. */
   history?: boolean;
   workers?: Worker[] | undefined;
+  /** The kind of work picked to start with, and still a choice: a type's card asked. */
+  pick?: string;
 }
 
-/** The panel: a closed row ("Invite a worker") that opens, or, on a type's
- *  page, open with that type picked. */
+/** The panel on a type's page, that type picked. */
 export function BringWorkersIn(props: BringProps) {
   const [open, setOpen] = useState(!!props.open);
   if (props.history) return <InviteBox {...props} />;
@@ -102,6 +103,23 @@ export function BringWorkersIn(props: BringProps) {
       <div hidden={!open} className="flex flex-col gap-4 border-t p-4">
         <Body {...props} />
       </div>
+    </section>
+  );
+}
+
+/** The panel the header's Invite a worker opens, on any tab. */
+export function InvitePanel(props: BringProps & { onClose: () => void }) {
+  return (
+    <section className="flex flex-col gap-4 rounded-lg border p-4" aria-label="Bring workers in" data-testid="bring-workers-in">
+      <div className="flex items-center gap-2">
+        <h2 className="flex items-center gap-2 text-base font-semibold">
+          <UserPlus className="size-4 text-muted-foreground" /> Invite a worker
+        </h2>
+        <Button variant="ghost" size="icon-sm" className="ml-auto" aria-label="Close" onClick={props.onClose}>
+          <X />
+        </Button>
+      </div>
+      <Body {...props} />
     </section>
   );
 }
@@ -141,7 +159,7 @@ function Body(props: BringProps & { group?: boolean }) {
   return (
     <>
       {tasks && !tasks.peelLink && <Note>Tasks is online; its links show here once this server has been opened at its web address.</Note>}
-      <InviteMaker types={props.types} {...(props.type ? { type: props.type } : {})} />
+      <InviteMaker types={props.types} {...(props.type ? { type: props.type } : {})} {...(props.pick ? { pick: props.pick } : {})} />
       {props.group !== false && tasks?.peelLink && anyOpenWork(props.types) && <GroupLink share={tasks} />}
     </>
   );
@@ -170,13 +188,13 @@ function TasksOffline() {
 }
 
 /** A link for one person, used once (§5.8). */
-function InviteMaker(props: { types?: TaskType[] | undefined; type?: string }) {
+function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pick?: string }) {
   const client = useStrutClient();
   const queries = useQueryClient();
   const q = useInvites();
   const { act, busy, error } = useAct();
   const choices = inviteChoices(props.types);
-  const [work, setWork] = useState(props.type ?? "");
+  const [work, setWork] = useState(props.type ?? props.pick ?? "");
   const [satsText, setSatsText] = useState("");
   const [touched, setTouched] = useState(false);
   // Start the box at the server's default, unless they have typed.

@@ -10,6 +10,13 @@
  * missed while the process was down is simply skipped. Everything about past
  * runs — the `last` cursor, "is the previous run still going" — is read from
  * the run store, where a scheduled run carries its automation's id.
+ *
+ * A package's schedules (`schedules:` in its strut.yaml) are automations
+ * too, marked with their package and made exactly by
+ * `syncPackageSchedules`: when one runs, its name and its input are the
+ * package's, and on or off is the admin's. Whom a fire runs as is
+ * `runsAs` (workspace.ts): the workflow's owner, the one rule for work
+ * nobody launched.
  */
 import { randomUUID } from "node:crypto";
 import type { z } from "zod";
@@ -24,6 +31,7 @@ import {
   noRunsToCome,
   automationCallbackSecret,
   normalizeTrigger,
+  packageAutomationId,
   resolveAutomationInput,
   triggerSchema,
   type Automation,
@@ -35,15 +43,17 @@ import { callbackOrigin } from "./callback.js";
 import type { Flow } from "./core.js";
 import type { SecretStore } from "./secret-store.js";
 import type { RunStore } from "./store.js";
-import { workflowDisabled, type WorkspaceStore } from "./workspace.js";
+import { runsAs, workflowDisabled, type WorkspaceStore } from "./workspace.js";
 import { principalRequired } from "./auth.js";
 
 export interface AutomationsDeps {
   workspace: WorkspaceStore;
   store: RunStore;
   /** Launch a run detached, stamped as this automation's; returns its id.
-   *  `callback` is the automation's, when it has one: `run.end` goes there. */
-  launch: (flow: Flow, input: Record<string, unknown>, automation: { id: string }, callback?: { url: string }) => string;
+   *  `callback` is the automation's, when it has one: `run.end` goes there.
+   *  `principal` is whom the run acts as and bills (`runsAs`); absent, the
+   *  launch's own default (the workflow's owner, createStrut `principalFor`). */
+  launch: (flow: Flow, input: Record<string, unknown>, automation: { id: string }, callback?: { url: string }, principal?: string) => string;
   /** Where an automation's callback URL is kept — a credential, never in
    *  the workflow metadata, and a store of its own (`AUTOMATION_CALLBACKS_FILE`),
    *  never the deployment's secrets, which every step can read. Without it,
@@ -76,10 +86,36 @@ export interface AutomationView extends Automation {
   running: boolean;
   /** Why the latest fire launched nothing (memory only; lost on restart). */
   lastFireError?: string;
+  /** The person its fires run as (`runsAs`, workspace.ts): its workflow's
+   *  owner, whose secrets they read and who pays. Absent when it has none. */
+  runsAs?: string;
+  /** Why a fire would launch nothing, said before one does: nobody to run
+   *  as (a package's schedule on a workflow with no owner, or any automation
+   *  where the deployment requires someone to bill), and what to do. */
+  nobodyToRunAs?: string;
 }
 
 export type AutomationsResult<T> = ({ ok: true } & T) | { error: string };
 type Saved = AutomationsResult<{ automation: AutomationView; next: string[] }>;
+
+/** A schedule a package ships (`schedules:` in its strut.yaml,
+ *  src/packages/schedules.ts): an automation's draft on a workflow of the
+ *  package, named for the package. */
+export interface ShippedSchedule {
+  package: string;
+  name: string;
+  workflow: string;
+  trigger: TriggerDraft;
+  input: Record<string, unknown>;
+}
+
+/** What a sync did, each as `<workflow>: <name>`. */
+export interface ScheduleSync {
+  made: string[];
+  changed: string[];
+  dropped: string[];
+  warnings: string[];
+}
 
 export interface Automations {
   /** Every automation, or one workflow's. */
@@ -94,6 +130,14 @@ export interface Automations {
   /** Drop a workflow's schedules from the tick loop and their callback
    *  secrets (the workflow is being deleted; its metadata goes with it). */
   forget(workflow: string): Promise<void>;
+  /** Make the automations packages ship exactly `shipped`: one each, on its
+   *  workflow, its id `packageAutomationId(package, name)`. What is missing
+   *  is made (on), a changed trigger, input or name is followed, and an
+   *  automation of a package that no longer ships it is dropped; on or off
+   *  stays as the admin left it. A package in `keep` (its manifest could not
+   *  be read) keeps what it has. Never touches an automation no package
+   *  made. */
+  syncPackageSchedules(shipped: ShippedSchedule[], keep?: string[]): Promise<ScheduleSync>;
   /** Begin ticking (idempotent). The timer is unref'd. */
   start(): void;
   stop(): void;
@@ -251,14 +295,15 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       if (draining) return { error: draining };
       const facts = (await runFacts(workflow, [automation.id])).get(automation.id)!;
       if (facts.inFlight) return { error: `skipped: the previous run (${facts.inFlight}) is still in flight` };
-      // Nobody to bill → nothing launches (surfaces as `lastFireError`), rather
-      // than a run that dies at its first LLM step.
-      const unowned = await ownerGate(workflow, true);
-      if (unowned) throw new Error(unowned);
+      // Nobody to run as → nothing launches (surfaces as `lastFireError`),
+      // rather than a run as nobody on the deployment's secrets, or one that
+      // dies at its first LLM step with nobody to bill.
+      const person = await personFor(workflow, automation);
+      if ("error" in person) throw new Error(person.error);
       const flow = await workspace.getWorkflow(workflow);
       const input = resolveAutomationInput(automation, at, facts.last);
       const callback = await callbackOf(automation);
-      const runId = deps.launch(flow, input, { id: automation.id }, callback);
+      const runId = deps.launch(flow, input, { id: automation.id }, callback, person.principal);
       launched.set(`${workflow}/${runId}`, { workflow, runId, id: automation.id, startedAt: clock().toISOString() });
       fireErrors.delete(k);
       return { ok: true, runId };
@@ -298,7 +343,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
 
   // ── Views ────────────────────────────────────────────────────────────────
 
-  function view(workflow: string, automation: Automation, facts: RunFacts | undefined, category?: string): AutomationView {
+  function view(workflow: string, automation: Automation, facts: RunFacts | undefined, category?: string, person?: { principal?: string } | { error: string }): AutomationView {
     const k = key(workflow, automation.id);
     // Before the first load there is no entry yet: compute rather than show "never".
     const next = entries.get(k)?.nextRunAt ?? (automation.enabled && !loaded ? nextFire(automation.trigger, clock()) : null);
@@ -312,12 +357,15 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       lastRun: facts?.lastRun ?? null,
       running: !!facts?.inFlight,
       ...(fireError ? { lastFireError: fireError } : {}),
+      ...(person && "principal" in person && person.principal ? { runsAs: person.principal } : {}),
+      ...(person && "error" in person ? { nobodyToRunAs: person.error } : {}),
     };
   }
 
   async function viewsOf(workflow: string, automations: Automation[], category?: string): Promise<AutomationView[]> {
     const facts = await runFacts(workflow, automations.map((a) => a.id));
-    return automations.map((a) => view(workflow, a, facts.get(a.id), category));
+    const people = await Promise.all(automations.map((a) => personFor(workflow, a)));
+    return automations.map((a, i) => view(workflow, a, facts.get(a.id), category, people[i]));
   }
 
   // ── Callbacks ────────────────────────────────────────────────────────────
@@ -367,6 +415,41 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     return `workflow "${workflow}" has no owner — its scheduled runs would have nobody to bill. Claim the workflow (or transfer it) first.`;
   }
 
+  /**
+   * Whom a fire runs as: `runsAs` (workspace.ts), the one rule for a run
+   * nobody launched — its workflow's OWNER, with their secrets and on their
+   * bill. A package's schedule was set up by nobody, so with no owner (the
+   * distro's install, a boot install or subscription, an install with no
+   * actor) it launches nothing and says what to do; so does any automation
+   * where the deployment requires someone to bill (`principalRequired`). An
+   * automation a person made, on a box that bills nobody, still runs as
+   * nobody when its workflow has no owner, as it always has.
+   */
+  async function personFor(workflow: string, automation: Automation): Promise<{ principal?: string } | { error: string }> {
+    const work = automation.package ? `the package ${automation.package}'s schedule "${automation.name}"` : `the automation "${automation.name}"`;
+    const person = await runsAs(workspace, workflow, work);
+    if ("principal" in person || automation.package || principalRequired()) return person;
+    return {};
+  }
+
+  /** A package's schedule: what only its releases change. */
+  const packageOwns = (a: Automation) =>
+    `"${a.name}" is the package ${a.package}'s schedule: when it runs, its name and its input follow the package's releases. ` +
+    `Pause or resume it here; for another rhythm or input, pause it and add an automation of your own.`;
+
+  /** The automation a package's schedule is: `existing`'s on or off, and an
+   *  interval's anchor while its rhythm is the same, kept. */
+  function shippedAutomation(s: ShippedSchedule, existing?: Automation): Automation {
+    return {
+      id: packageAutomationId(s.package, s.name),
+      name: s.name,
+      enabled: existing?.enabled ?? true,
+      trigger: triggerFrom(s.trigger, existing?.trigger),
+      input: s.input,
+      package: s.package,
+    };
+  }
+
   async function save(workflow: string, list: Automation[], changed: Automation, category: string | undefined): Promise<Saved> {
     await workspace.setWorkflowAutomations(workflow, list);
     fireErrors.delete(key(workflow, changed.id));
@@ -390,6 +473,66 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       const list = (await workspace.getWorkflowMetadata(workflow).catch(() => null))?.automations ?? [];
       for (const a of list) await saveCallback(a.id, null, a.callback);
     },
+
+    syncPackageSchedules: (shipped, keep = []) =>
+      serial(async () => {
+        const out: ScheduleSync = { made: [], changed: [], dropped: [], warnings: [] };
+        const workflows = await workspace.listWorkflows();
+        const here = new Set(workflows.map((w) => w.name));
+        /** id → the schedule shipped under it, on a workflow that is here. */
+        const want = new Map<string, ShippedSchedule>();
+        for (const s of shipped) {
+          if (here.has(s.workflow)) want.set(packageAutomationId(s.package, s.name), s);
+          else out.warnings.push(`${s.package}'s schedule "${s.name}" is not made: its workflow ${s.workflow} is not here`);
+        }
+        for (const w of workflows) {
+          const list = w.automations ?? [];
+          const next: Automation[] = [];
+          const placed = new Set<string>();
+          let dirty = false;
+          for (const a of list) {
+            const s = want.get(a.id);
+            if (!a.package) {
+              // An automation no package made, under a shipped id: left alone.
+              if (s?.workflow === w.name) {
+                out.warnings.push(`${s.package}'s schedule "${s.name}" is not made: ${w.name} has an automation of its own under its id ${a.id}`);
+                placed.add(a.id);
+              }
+              next.push(a);
+              continue;
+            }
+            if (keep.includes(a.package)) {
+              next.push(a);
+              continue;
+            }
+            // No longer shipped, shipped on another workflow, or here twice: dropped.
+            if (!s || s.workflow !== w.name || s.package !== a.package || placed.has(a.id)) {
+              dirty = true;
+              fireErrors.delete(key(w.name, a.id));
+              out.dropped.push(`${w.name}: ${a.name}`);
+              continue;
+            }
+            const followed = shippedAutomation(s, a);
+            if (JSON.stringify(followed) !== JSON.stringify(a)) {
+              dirty = true;
+              out.changed.push(`${w.name}: ${followed.name}`);
+            }
+            next.push(followed);
+            placed.add(a.id);
+          }
+          for (const [id, s] of want) {
+            if (s.workflow !== w.name || placed.has(id)) continue;
+            const made = shippedAutomation(s);
+            next.push(made);
+            dirty = true;
+            out.made.push(`${w.name}: ${made.name}`);
+          }
+          if (!dirty) continue;
+          await workspace.setWorkflowAutomations(w.name, next);
+          setEntries(w.name, next);
+        }
+        return out;
+      }),
 
     async list(workflow) {
       if (workflow !== undefined) {
@@ -443,11 +586,21 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         const current = list.find((a) => a.id === id);
         if (!current) return { error: `Automation "${id}" not found on workflow "${workflow}"` };
         const p = parsed.data;
+        const trigger = p.trigger ? triggerFrom(p.trigger, current.trigger) : current.trigger;
+        // A package's schedule takes on or off alone.
+        if (
+          current.package &&
+          ((p.name ?? current.name) !== current.name ||
+            JSON.stringify(p.input ?? current.input) !== JSON.stringify(current.input) ||
+            JSON.stringify(trigger) !== JSON.stringify(current.trigger) ||
+            p.callback)
+        ) {
+          return { error: packageOwns(current) };
+        }
         const unowned = await ownerGate(workflow, p.enabled ?? current.enabled);
         if (unowned) return { error: unowned };
         if (p.callback && !deps.secrets) return { error: NO_SECRETS };
         // `callback`: absent keeps it, null clears it.
-        const trigger = p.trigger ? triggerFrom(p.trigger, current.trigger) : current.trigger;
         if (p.trigger && !nextFires(trigger, clock()).length) return { error: noRunsToCome(describeTrigger(trigger)) };
         const callback = await saveCallback(id, p.callback, current.callback);
         const automation: Automation = {
@@ -457,6 +610,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
           trigger,
           input: p.input ?? current.input,
           ...(callback ? { callback } : {}),
+          ...(current.package ? { package: current.package } : {}),
         };
         return save(workflow, list.map((a) => (a.id === id ? automation : a)), automation, meta.category);
       }),
@@ -466,7 +620,12 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         const meta = await workspace.getWorkflowMetadata(workflow);
         if (!meta) return { error: `Workflow "${workflow}" not found` };
         const list = meta.automations ?? [];
-        if (!list.some((a) => a.id === id)) return { error: `Automation "${id}" not found on workflow "${workflow}"` };
+        const target = list.find((a) => a.id === id);
+        if (!target) return { error: `Automation "${id}" not found on workflow "${workflow}"` };
+        // A release would only make it again: pausing is how it stops.
+        if (target.package) {
+          return { error: `"${target.name}" is the package ${target.package}'s schedule, made again at each release: pause it, or uninstall the package.` };
+        }
         const rest = list.filter((a) => a.id !== id);
         await workspace.setWorkflowAutomations(workflow, rest);
         await saveCallback(id, null, list.find((a) => a.id === id)?.callback);

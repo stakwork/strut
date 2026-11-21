@@ -96,7 +96,9 @@ export async function compileStyles(opts: CompileStylesOptions): Promise<string>
 export async function scanCandidates(sources: Iterable<string>, base = readBaseStylesheet()): Promise<string[]> {
   const { __unstable__loadDesignSystem } = await import("tailwindcss");
   const tokens = new Set<string>();
-  for (const text of sources) for (const t of text.split(/[\s"'`]+/)) if (t && t.length < 200) tokens.add(t);
+  // Split at quotes, then again keeping `'`: an arbitrary variant may hold one
+  // (the Button's `[&_svg:not([class*='size-'])]:size-4`, which sizes its icons).
+  for (const text of sources) for (const re of [/[\s"'`]+/, /[\s"`]+/]) for (const t of text.split(re)) if (t && t.length < 200) tokens.add(t);
   const design = await __unstable__loadDesignSystem(base, tailwindOptions());
   const list = [...tokens].sort();
   const css = design.candidatesToCss(list);

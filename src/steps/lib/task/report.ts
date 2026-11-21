@@ -8,7 +8,7 @@ import type { StrutCapabilities } from "../../../capabilities.js";
  * per hour, earned), over `ctx.services.taskTypes.report()`. The assistant
  * answers "how is the pilot going", "what have we spent", "who is fastest"
  * with it, instead of anyone building a dashboard. Workers are actor ids;
- * names are the person's to read in Tasks and workers.
+ * names are the person's to read in Workers.
  */
 export default defineStep({
   type: "task/report",

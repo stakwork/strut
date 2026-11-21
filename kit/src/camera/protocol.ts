@@ -10,7 +10,7 @@
 /** What a host puts in `ui/initialize`'s `hostCapabilities.experimental`
  *  when it draws the camera: `{ v: 1 }`. */
 export const CAMERA_CAPABILITY = "strut/camera";
-/** Page → host: take a photo. `{ facing?, maxSide?, title? }` → a
+/** Page → host: take a photo. `{ facing?, maxSide?, title?, review? }` → a
  *  `CameraPhoto`, or `{ cancelled: true }` when the person closed the sheet. */
 export const CAMERA_CAPTURE_METHOD = "strut/camera/capture";
 /** How long a page waits for the person: they frame the shot. */
@@ -26,7 +26,14 @@ export interface CameraCaptureParams {
   maxSide?: number;
   /** A line the sheet shows over the viewfinder ("Fit the whole page in the frame"). */
   title?: string;
+  /** Whether the person looks at the photo first (Retake / Use photo), the
+   *  default. `false`: the shutter hands the photo over at once — one tap a
+   *  photo, for many in a row (the pages of a book). */
+  review?: boolean;
 }
+
+/** A page's capture params as the host acts on them (`parseCaptureParams`). */
+export type CameraCapture = Required<Pick<CameraCaptureParams, "facing" | "maxSide" | "review">> & Pick<CameraCaptureParams, "title">;
 
 /** The photo the person took: a JPEG, base64. */
 export interface CameraPhoto {
@@ -54,20 +61,22 @@ export function cameraTitle(title: string): string {
   return line.length > CAMERA_TITLE_MAX ? `${line.slice(0, CAMERA_TITLE_MAX - 1).trimEnd()}…` : line;
 }
 
-/** A page's capture params, checked: `{ facing?, maxSide?, title? }` and nothing else. */
-export function parseCaptureParams(params: unknown): { ok: true; params: Required<Pick<CameraCaptureParams, "facing" | "maxSide">> & Pick<CameraCaptureParams, "title"> } | { ok: false; error: string } {
+/** A page's capture params, checked: `{ facing?, maxSide?, title?, review? }` and nothing else. */
+export function parseCaptureParams(params: unknown): { ok: true; params: CameraCapture } | { ok: false; error: string } {
   const p = (params ?? {}) as Record<string, unknown>;
-  if (typeof p !== "object" || Array.isArray(p)) return { ok: false, error: "capture: params must be an object { facing?, maxSide?, title? }" };
-  for (const k of Object.keys(p)) if (k !== "facing" && k !== "maxSide" && k !== "title") return { ok: false, error: `capture: unknown field "${k}" (only facing, maxSide and title)` };
+  if (typeof p !== "object" || Array.isArray(p)) return { ok: false, error: "capture: params must be an object { facing?, maxSide?, title?, review? }" };
+  for (const k of Object.keys(p)) if (k !== "facing" && k !== "maxSide" && k !== "title" && k !== "review") return { ok: false, error: `capture: unknown field "${k}" (only facing, maxSide, title and review)` };
   if (p["facing"] !== undefined && p["facing"] !== "environment" && p["facing"] !== "user") return { ok: false, error: 'capture: facing is "environment" or "user"' };
   const side = p["maxSide"];
   if (side !== undefined && (typeof side !== "number" || !Number.isInteger(side) || side < 64 || side > CAMERA_MAX_SIDE)) return { ok: false, error: `capture: maxSide is a whole number of pixels, 64 to ${CAMERA_MAX_SIDE}` };
   if (p["title"] !== undefined && typeof p["title"] !== "string") return { ok: false, error: "capture: title is text, one line (a longer one is cut)" };
+  if (p["review"] !== undefined && typeof p["review"] !== "boolean") return { ok: false, error: "capture: review is true or false" };
   return {
     ok: true,
     params: {
       facing: (p["facing"] as "environment" | "user" | undefined) ?? "environment",
       maxSide: (side as number | undefined) ?? CAMERA_DEFAULT_SIDE,
+      review: p["review"] !== false,
       ...(typeof p["title"] === "string" && cameraTitle(p["title"]) ? { title: cameraTitle(p["title"]) } : {}),
     },
   };

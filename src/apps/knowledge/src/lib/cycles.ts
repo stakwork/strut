@@ -71,7 +71,7 @@ export function cycleWords(c: Pick<DreamCycle, "status" | "lessons" | "turns" | 
  *  (they see nothing of it, as with the dream's proposals). */
 export function cyclesUnavailable(message: string): string | null {
   if (/is an admin's/.test(message)) return null;
-  if (/may not read/.test(message)) return "What the dream learned isn't shown here: this page may not read where the tree is kept.";
+  if (/may not read/.test(message)) return "What the dream learned isn't shown here: this app may not read where the tree is kept.";
   if (/claims layer/.test(message)) return "This server keeps no claims, so there is no dream.";
   return `Couldn't read what the dream learned: ${message}`;
 }

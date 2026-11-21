@@ -9,7 +9,7 @@ import { flowFromYaml, WorkspaceManager } from "../workspace.js";
 import { MemoryRunStore } from "../store.js";
 
 /**
- * Round types (Tasks and workers' Send a round): a type saved with
+ * Round types (Workers' Send a round): a type saved with
  * `round: { workflow }` names the workflow whose run makes one task of it
  * for each item, and staff send a round of it — all its items, or the ones
  * they tick — with no need to ask the assistant.

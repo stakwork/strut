@@ -17,8 +17,8 @@ export default defineStep({
   effect: "write",
   approver: "admin",
   description:
-    "Ask an admin to give someone a task type's work, so they can take its tasks (an invite-only type needs this; an open one does not). `worker` is a worker's actor id from task/report or Tasks and workers; left out, it is the person asking. Whoever asked for a new invite-only type, and the admin who approved it, hold it already: never ask for them. " +
-    "The call becomes a card an ADMIN of this strut server approves; strut grants it when they accept. For someone NEW to Peel, an invite from Tasks and workers does this in one step; for someone who already has Peel, a grant link from there does — point the person there rather than asking for each worker.",
+    "Ask an admin to give someone a task type's work, so they can take its tasks (an invite-only type needs this; an open one does not). `worker` is a worker's actor id from task/report or Workers; left out, it is the person asking. Whoever asked for a new invite-only type, and the admin who approved it, hold it already: never ask for them. " +
+    "The call becomes a card an ADMIN of this strut server approves; strut grants it when they accept. For someone NEW to Peel, an invite from Workers does this in one step; for someone who already has Peel, a grant link from there does — point the person there rather than asking for each worker.",
   input: z.object({
     type: z.string().min(1).describe("The task type's name (task/types)."),
     worker: z.string().min(1).optional().describe("The worker's actor id; left out: the person asking."),
@@ -28,7 +28,7 @@ export default defineStep({
     const who = cfg.worker ? `the worker ${cfg.worker}` : "you";
     return {
       title: `Give ${who} the "${cfg.type}" work`,
-      summary: `${cfg.worker ? `The worker ${cfg.worker}` : "You"} can take tasks of "${cfg.type}" from now on, and ${cfg.worker ? "is" : "are"} paid for them like any worker. Revoke it in Tasks and workers.`,
+      summary: `${cfg.worker ? `The worker ${cfg.worker}` : "You"} can take tasks of "${cfg.type}" from now on, and ${cfg.worker ? "is" : "are"} paid for them like any worker. Revoke it in Workers.`,
       fields: [
         { label: "Task type", value: cfg.type },
         { label: "Who", value: cfg.worker ?? "you, as you are signed in here" },

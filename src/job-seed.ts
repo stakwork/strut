@@ -1,7 +1,11 @@
 import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
-import type { JobGrant } from "./packages/format.js";
-import { listInstalledPackages, type InstalledDeps } from "./packages/installed.js";
+import type { StepRegistry } from "./core.js";
+import { strutGrants, type JobGrant } from "./packages/format.js";
+import { holdsItsOwn, listInstalledPackages, type InstalledDeps } from "./packages/installed.js";
+import { configSecretField } from "./reach.js";
+import { isSealedStep, sealedStepPatterns } from "./sealed.js";
+import type { StepSources } from "./steps/registry.js";
 import type { WorkspaceStore } from "./workspace.js";
 
 /**
@@ -35,12 +39,15 @@ import type { WorkspaceStore } from "./workspace.js";
  * simply lacks those tools.
  *
  * An installed PACKAGE adds to the same delta (plans/followed-repos.md §3):
- * what its manifest's `job:` names, resolved over its own steps when it was
- * read (src/packages/format.ts) — the types into `params.tools`, the
- * `approve` ones into `params.approve` too — after the host's, deduplicated
- * and sorted, so the text and its version do not depend on install order.
- * createStrut seeds again after every package write, so an install grants
- * and an uninstall takes the grant away without a reboot.
+ * what its manifest's `job:` names, resolved when it was read
+ * (src/packages/format.ts) — its own steps, and strut's steps it names one
+ * by one, each held to `strutGrantProblem` — the types into
+ * `params.tools`, the `approve` ones into `params.approve` too — after the
+ * host's, deduplicated and sorted, so the text and its version do not
+ * depend on install order. A grant only adds: a tool two grant is granted
+ * once, and asks first when any of them (the template, the host, a
+ * package) says so. createStrut seeds again after every package write, so
+ * an install grants and an uninstall takes the grant away without a reboot.
  */
 export interface JobSeedOptions {
   /** Registry step types, or globs (`pod/*`), granted to the job agent ON
@@ -107,29 +114,72 @@ export async function jobWorkflowYaml(opts?: JobSeedOptions): Promise<string> {
 }
 
 /**
+ * Why a package may not give the job agent strut's step `type`, or
+ * undefined when it may (stadeum plans/software.md §5, item 16). A host's
+ * own grant (`createStrut({ job })`) is held to nothing, and strut keeps a
+ * step from an agent at the call (a step that is a page's alone, or one
+ * that parks, refuses an agent's call whoever granted it). A package's
+ * grant is narrower, the steps strut describes for a host to hand out:
+ *
+ *   - strut's own step (core or lib) on this server — never a workspace's
+ *     or another package's;
+ *   - not sealed (src/sealed.ts: the meta surface and the graders) — which
+ *     of those its agent holds is strut's own `job` template's to say;
+ *   - its config names no secret (`configSecretField`, src/reach.ts): the
+ *     model calling it would choose which secret it reads;
+ *   - it says what it does, `effect: "read"` or `"write"` — what `GET
+ *     /steps` lists for a host's connector list and its `approve:`
+ *     defaults, and what the store shows an admin before the install.
+ *
+ * `git/push` and `github/create-pr` pass. Asked at the install (a refusal
+ * names it) and again at every seed, against the registry then in force.
+ */
+export function strutGrantProblem(type: string, registry: StepRegistry, sources: StepSources, sealed: readonly string[] = sealedStepPatterns()): string | undefined {
+  const def = registry[type];
+  if (!def) return `strut has no step ${type} here — a package for a newer strut?`;
+  if (sources[type] !== "core" && sources[type] !== "lib") return `${type} is not one of strut's own steps — a package grants its own steps and strut's, never a workspace's or another package's`;
+  if (isSealedStep(type, registry, sealed)) return `${type} is sealed (the meta surface and the graders): which of those the job agent holds is strut's own job workflow's to say`;
+  const field = configSecretField(def);
+  if (field) return `${type} takes a secret's name in its config (${field}): the model calling it would choose which secret it reads`;
+  if (def.effect !== "read" && def.effect !== "write") return `${type} does not say what it does (effect: read or write), so an admin could not tell what the grant is`;
+  return undefined;
+}
+
+/**
  * What the installed packages give the job agent: each one's `job:`, read
  * from the package cache by the digest installed (nothing prunes it). A
  * package grants while something of it is still its own here — a
  * workflow, step or app whose active version it wrote: an uninstall that
  * keeps a fork leaves only forks (and the helpers they import), which are
  * this box's own work and grant nothing. A package the cache lacks, or
- * cannot read, grants nothing, with a warning.
+ * cannot read, grants nothing, with a warning. Each of strut's steps a
+ * package names is held to `strutGrant` (createStrut passes
+ * `strutGrantProblem` over the registry in force) and left out, with a
+ * warning, when it is refused: the install checked it, and this holds a
+ * package installed before a strut that changed the step.
  */
-export async function packageJobGrants(deps: InstalledDeps): Promise<JobGrant> {
+export async function packageJobGrants(deps: InstalledDeps, strutGrant?: (type: string) => string | undefined): Promise<JobGrant> {
   const tools = new Set<string>();
   const approve = new Set<string>();
   for (const p of await listInstalledPackages(deps)) {
-    if (!p.digest || !p.items.some((i) => i.kind !== "concept" && !i.helper && !i.modified)) continue;
+    if (!holdsItsOwn(p)) continue;
     let job: JobGrant | undefined;
     try {
-      const info = await deps.cache.get(p.digest);
+      const info = await deps.cache.get(p.digest!);
       if (!info) throw new Error(`the package cache holds no ${p.digest}`);
       job = info.job;
     } catch (err) {
       console.warn(`[job] ${p.package}: what it gives the job agent is not granted —`, err instanceof Error ? err.message : err);
     }
-    for (const t of job?.tools ?? []) tools.add(t);
-    for (const t of job?.approve ?? []) approve.add(t);
+    const refused = new Set<string>();
+    for (const t of strutGrants(p.package, job?.tools ?? [])) {
+      const problem = strutGrant ? strutGrant(t) : `nothing here checks strut's steps a package grants`;
+      if (!problem) continue;
+      refused.add(t);
+      console.warn(`[job] ${p.package}: ${t} is not granted — ${problem}`);
+    }
+    for (const t of job?.tools ?? []) if (!refused.has(t)) tools.add(t);
+    for (const t of job?.approve ?? []) if (!refused.has(t)) approve.add(t);
   }
   return { tools: [...tools].sort(), approve: [...approve].sort() };
 }

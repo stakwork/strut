@@ -385,8 +385,9 @@ export default function App() {
               <section
                 className={cn(
                   "absolute z-30 flex flex-col overflow-hidden bg-background",
-                  // Narrow, the card takes the page (Back returns to the graph); wide, it floats beside it.
-                  narrow ? "inset-0" : cn("right-3 top-3 max-h-[calc(100%-4.5rem)] max-w-[60%] rounded-lg border bg-background/95 shadow-lg backdrop-blur", wide ? "w-[30rem]" : "w-80"),
+                  // Narrow, the card takes the page (Back returns to the graph). Otherwise it floats beside
+                  // the graph, and opened wide (docs, checks, tests, history) it covers it: Less brings it back.
+                  narrow ? "inset-0" : wide ? "inset-3 rounded-lg border shadow-lg" : "right-3 top-3 max-h-[calc(100%-4.5rem)] w-80 max-w-[60%] rounded-lg border bg-background/95 shadow-lg backdrop-blur",
                 )}
                 data-testid="node-pane"
               >
@@ -402,6 +403,8 @@ export default function App() {
                     onSelect={(n) => pick(n)}
                     onClose={() => setCard(false)}
                     changes={proposedFor.get(sel.ref_id)}
+                    // Only an admin's page reads the dream's cycles: what says the viewer is one.
+                    admin={!!cycles.data}
                   />
                 </div>
               </section>

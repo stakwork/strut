@@ -9,7 +9,7 @@ index. A change in this area updates this file, not AGENTS.md.
 
 - **Automations — run a workflow on a schedule** (`plans/automations.md`;
   `src/automations.ts` pure, `src/scheduler.ts` stateful). An automation is
-  `{ id, name, enabled, trigger, input, callback? }`, stored as **workflow-level
+  `{ id, name, enabled, trigger, input, callback?, package? }`, stored as **workflow-level
   metadata beside `category`** (`WorkflowMetadata.automations`:
   `_metadata.json` on the filesystem, one JSON-string `automations`
   property on the `StrutWorkflow` node in the graph;
@@ -52,6 +52,52 @@ index. A change in this area updates this file, not AGENTS.md.
   UI is per-workflow: the topbar **Workflow** button opens `WorkflowFlyout`
   (the Automate tab is `AutomationsPanel`); scheduled workflows and scheduled
   runs carry a clock badge in the sidebar.
+- **Schedules a package ships** (`schedules:` in strut.yaml; docs/packages.md,
+  specs/API.md §16; stadeum plans/software.md §5 item 3). An entry is an
+  automation's draft (`name?`, `trigger`, `input?`) with the package's own
+  `workflow` — the grammar above, so strut has one "how often". Each is an
+  ORDINARY automation in the same metadata list, marked `package` (set by
+  the sync alone; no door's body carries it) with the id
+  `packageAutomationId(package, name)` (`a-` + 8 hex of sha256 of
+  `<package>\n<name>`), so a restart, a reinstall or a restored backup finds
+  the one it made. `syncPackageSchedules(shipped, keep)` makes the marked
+  automations exactly what the installed packages ship
+  (src/packages/schedules.ts reads them): it makes what is missing (on),
+  follows a release's trigger, input and name (an interval keeps its anchor
+  while it stays one: `triggerFrom`), drops what no package ships any more,
+  a duplicate, or one on the wrong workflow, and never touches an automation
+  no package made (one under a shipped id is left alone, with a warning).
+  createStrut runs it once at boot, before `start()`, and after every package
+  write (`oneAtATime`). THE RULE for an admin: on or off is theirs, and a
+  release keeps it; the name, the trigger and the input are the package's —
+  a PATCH that would change them (or set a callback) is refused, and so is a
+  DELETE (a release would only make it again: pausing is how it stops); for
+  another rhythm or input, pause it and add an automation of one's own. Both
+  doors and the `automation/*` steps share that one layer. The Automate tab
+  shows the package, the toggle and Run now, and no Edit or Delete.
+- **Whom a fire runs as** (`runsAs`, src/workspace.ts; the scheduler's
+  `personFor`) — the one rule for a run nobody launched (stadeum
+  plans/software.md §5 item 15: every token is a person's): it acts as its
+  workflow's OWNER, with their secrets and on their bill, and as nobody
+  else. The owner is whoever brought the workflow in as a person — their
+  install (`InstallOptions.actor` owns the new workflows), their
+  subscription (docs/packages.md: the `PUT`'s actor installs every release
+  as them), their publish — or whom an admin gave it to (`PUT
+  /workflows/:name/owner`, `POST /actor/claim`); a release keeps it, an
+  admin's choice included. Every fire passes that owner to `launch` as
+  `principal`: `run.start` carries it and no `actor`, and its steps read
+  secrets as any run of theirs (`get`: theirs, else the deployment's, else
+  env; a package step's `secrets.own` theirs; never `secrets.deployment`).
+  With no owner a PACKAGE's schedule launches nothing (set up by nobody: the
+  distro's or a boot install, a subscription nobody made, an install with
+  no actor), and so does any automation where the deployment requires
+  someone to bill (`principalRequired`, which `ownerGate` still checks at
+  create and update): `nobody to run as: …`, saying what to do, is the
+  fire's error and `lastFireError`. The list says it before anything fires
+  (`AutomationView.nobodyToRunAs`), beside whom it runs as (`runsAs`); the
+  Automate tab shows both ("Runs as alice", "It cannot run yet: …"). An
+  automation a person made, on a box that bills nobody, still runs as
+  nobody when its workflow has no owner, as it always has.
 
 ## Files
 
@@ -63,7 +109,7 @@ automations, the PURE half (plans/automations.md): the record, the closed trigge
 
 ### `src/scheduler.ts`
 
-automations, the STATEFUL half: createAutomations(deps) — the policy layer behind BOTH doors (list / create / update / remove / preview / fire) + the in-process tick loop. `nextRunAt` is memory-only (computed from now → missed runs are skipped, never replayed); the `last` cursor and "previous run still in flight" are read from the run store. `strut.automations`
+automations, the STATEFUL half: createAutomations(deps) — the policy layer behind BOTH doors (list / create / update / remove / preview / fire, and `syncPackageSchedules`, the packages' schedules made exactly) + the in-process tick loop; whom a fire runs as is `runsAs` (src/workspace.ts), through `personFor`, and the list shows it (`runsAs`, `nobodyToRunAs`). `nextRunAt` is memory-only (computed from now → missed runs are skipped, never replayed); the `last` cursor and "previous run still in flight" are read from the run store. `strut.automations`
 
 ### `src/automations-routes.ts`
 

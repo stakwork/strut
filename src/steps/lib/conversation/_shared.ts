@@ -7,11 +7,32 @@
  * Refused from an app's page (`ctx.app`): a page is code a model wrote, and
  * a person's conversations are theirs. A FIRST-PARTY page (strut's own app,
  * plans/jamie-app.md §3) reads them as its viewer's person token does.
+ *
+ * `everyone` (`conversation/list`, `get`, `fork`; plans/jamie-app.md §2.3)
+ * reads every person's conversations, as `knowledge/cycles` reads what the
+ * dream learned from them: only strut's own page, shown to an ADMIN of this
+ * server (`AppRef.admin`), in the page's own call — never a member's page, a
+ * person token, a model-written page, a workflow, an agent's tool or a run
+ * the page launched.
  */
-import { isFirstParty, type AppRef } from "../../../core.js";
+import { isFirstParty, workflowOf, type AppRef } from "../../../core.js";
 import type { ConversationViewer, ConversationsCapability } from "../../../conversations.js";
+import { RUN_STEP_FLOW } from "../../../run-step.js";
 
-export function requireConversations(ctx: { services?: unknown; app?: AppRef; actor?: string }): {
+/** The `everyone` field of the steps that take it. */
+export const EVERYONE_DESCRIPTION =
+  "An admin's read of every person's conversations on this strut (not only the viewer's), as a reader: nothing read becomes theirs or moves anyone's unread. " +
+  "Only strut's own page, shown to an admin of this server, may ask for it.";
+
+/** Is this call strut's own page, shown to an admin, in its own call? */
+export function adminPageCall(ctx: { app?: AppRef; path?: string; workflow?: string }): boolean {
+  return isFirstParty(ctx.app) && ctx.app?.admin === true && workflowOf(ctx) === RUN_STEP_FLOW;
+}
+
+export function requireConversations(
+  ctx: { services?: unknown; app?: AppRef; actor?: string; path?: string; workflow?: string },
+  ask: { type?: string; everyone?: boolean } = {},
+): {
   conversations: ConversationsCapability;
   viewer: ConversationViewer;
 } {
@@ -20,6 +41,11 @@ export function requireConversations(ctx: { services?: unknown; app?: AppRef; ac
   if (!conversations) {
     throw new Error("conversation/* steps need the conversation index (ctx.services.conversations). The standard strut server provides it.");
   }
-  if (ctx.app) return { conversations, viewer: { actor: ctx.actor!, person: true } };
-  return { conversations, viewer: ctx.actor ? { actor: ctx.actor } : {} };
+  if (ask.everyone && !adminPageCall(ctx)) {
+    throw new Error(
+      `${ask.type ?? "conversation/*"} { everyone } is an admin's: only strut's own page, shown to an admin of this server, reads every person's conversations (plans/jamie-app.md §2.3)`,
+    );
+  }
+  const viewer: ConversationViewer = ctx.app ? { actor: ctx.actor!, person: true } : ctx.actor ? { actor: ctx.actor } : {};
+  return { conversations, viewer: ask.everyone ? { ...viewer, everyone: true } : viewer };
 }

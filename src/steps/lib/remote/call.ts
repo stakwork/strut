@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { coerceJsonArg, defineStep, type StepContext } from "../../../core.js";
+import { coerceJsonArg, defineStep, TRIAL_HELD, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { remoteOf, SPENDS_HELD_CREDIT, withCharge } from "./_shared.js";
 
@@ -26,6 +26,8 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
+    // A trial buys nothing from another strut (src/trials.ts).
+    if (ctx.trial) throw new Error(`${TRIAL_HELD} — the call to ${cfg.url} was not made`);
     const out = await remoteOf(ctx, "remote/call").call(cfg.url, cfg.type, cfg.config ?? {}, { ...(ctx.control ? { control: ctx.control } : {}) });
     return withCharge(out, out.credit?.charged_usd);
   },

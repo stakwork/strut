@@ -35,6 +35,8 @@ export default defineStep({
       keep: cfg.keep,
       // A run on a Concept branch runs the step on it (src/branches.ts).
       ...(ctx.branch ? { branch: ctx.branch } : {}),
+      // A trial's step run is a trial (src/trials.ts).
+      ...(ctx.trial ? { trial: ctx.trial } : {}),
     });
   },
 });

@@ -53,6 +53,24 @@ describe("concept files (pure)", () => {
     assert.throws(() => parseConceptFile("n.md", "---\nname: N\nparents: [1]\n---\n", "p/"), /parents is a list of Concept names/);
   });
 
+  it("reads a page's claims block in either form: each claim's sentence and its cases, never an attribute, never the page's docs", () => {
+    const block = ["claims:", "  - text: It says yes.", "    workflow: orchestrator", "    cases:", "      - prompt: Can you use bash?", "      - prompt: Can you read a PDF?", "  - text: It is brief."].join("\n");
+    const claims = [
+      { text: "It says yes.", cases: [{ workflow: "orchestrator", input: { prompt: "Can you use bash?" } }, { workflow: "orchestrator", input: { prompt: "Can you read a PDF?" } }] },
+      { text: "It is brief.", cases: [] },
+    ];
+    const old = parseConceptFile("Rules.md", `---\ndescription: The rules\n${block}\n---\nBe kind.\n`, "p/");
+    assert.deepEqual([old.name, old.attributes, old.docs, old.claims], ["Rules", { description: "The rules" }, "Be kind.", claims]);
+    const now = parseConceptFile("r.md", `---\nname: Rules\ndescription: The rules\n${block}\n---\nBe kind.\n`, "p/");
+    assert.deepEqual([now.attributes, now.claims], [{ description: "The rules" }, claims], "not an attribute in the new form");
+    assert.equal(parseConceptFile("Bare.md", "just docs", "p/").claims, undefined);
+    // A block that is not one is left out, and the page is still a page: cases with no workflow to run them, a list of strings.
+    assert.equal(parseConceptFile("Rules.md", "---\nclaims:\n  - text: x\n    cases:\n      - prompt: y\n---\nd", "p/").claims, undefined);
+    assert.equal(parseConceptFile("Rules.md", "---\nclaims: [a, b]\n---\nd", "p/").docs, "d");
+    // Writing the page's text back keeps the block byte for byte (a change of its docs is a diff of its docs).
+    assert.ok(!renderConceptPage({ ...now, docs: "Be kinder." }).includes("claims"), "a page rendered anew carries no block");
+  });
+
   it("renders a page that reads back as it was, byte for byte", () => {
     const page = { name: "acme/linear", attributes: { repo: "acme/linear", description: "Its code", alt_names: ["a", "b"] }, parents: ["Repos", "Law"], docs: "---\nIts README." };
     const text = renderConceptPage(page);
@@ -153,10 +171,10 @@ describe("concept files (pure)", () => {
     // Ruling 12: open paid work needs no qualifying test first.
     assert.doesNotMatch(work.docs!, /first needs a short qualifying test/, "open paid work is not held for a test");
     assert.doesNotMatch(work.docs!, /hive|@<slug>|\bpod\b|coffee/i, "names nothing one deployment has");
-    // A worker app's links are shared from Tasks and workers, which opens with
+    // A worker app's links are shared from Workers, which opens with
     // them (a QR code, Invite): every page points there, none pastes a link.
     for (const c of [wb, app, work]) {
-      assert.ok(c.docs!.includes("strut/staff"), `${c.name} points to Tasks and workers`);
+      assert.ok(c.docs!.includes("strut/staff"), `${c.name} points to Workers`);
       assert.match(c.docs!, /never\s+paste\s+a\s+link/, `${c.name}: no link pasted in a reply`);
       assert.doesNotMatch(c.docs!, /hand the person `peelLink`|give the person the `peelLink`/, `${c.name}: no pasted peelLink`);
     }
@@ -236,6 +254,11 @@ describe("concept files (pure)", () => {
     assert.ok(opener.includes('A kind\'s page — graph_graph_get({ node_type: "Concept", name: "<name>", children: "PARENT_OF" })'), "with a tool, how to open one — never 'follow its convention'");
     assert.ok(!opener.includes("OPEN ITS PAGE FIRST"));
     assert.equal(renderConceptSection({ name: "Job", docs: "x", children: [] }, "", { docs: false }), "", "no kinds, nothing to route by");
+    // A page that IS an agent's rules (`frame: false`): its docs alone, as they are, up to `max`.
+    assert.equal(renderConceptSection({ name: "Orchestrator", docs: "  You are an assistant.\n", children: [{ name: "A kind" }] }, "graph_graph_get", { frame: false }), "You are an assistant.");
+    assert.equal(renderConceptSection({ name: "Orchestrator", children: [] }, "graph_graph_get", { frame: false }), "", "no docs: nothing, so a prompt falls back to its own");
+    assert.equal(renderConceptSection({ name: "O", docs: "x".repeat(7000), children: [] }, "", { frame: false, max: 20000 }).length, 7000, "the cap is the step's to raise");
+    assert.equal(renderConceptSection({ name: "O", docs: "x".repeat(7000), children: [] }, "", { frame: false }), `${"x".repeat(6000)}…`);
     assert.ok(!renderConceptSection(page, "", { docs: true }).includes("OPEN ITS PAGE"), "with docs and no tool, the docs and the kinds, no opener");
   });
 });
@@ -537,13 +560,13 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     await make({ concepts: false });
     assert.deepEqual(await names(), []);
     await make();
-    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Worker Tasks", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Orchestrator", "Worker Tasks", "Workflow Builder"]);
   });
 
   it("concepts: { personal: true } seeds Personal; an agent walks it with context/concept and graph_get, and the run records both reads", async () => {
     const store = new MemoryRunStore();
     const strut = await make({ concepts: { personal: true }, store });
-    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Personal", "Worker Tasks", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Orchestrator", "Personal", "Worker Tasks", "Workflow Builder"]);
     const root = (await b.reader.namesLike("Concept", "Personal", 1))[0]!.ref_id;
     // A page the person taught, under the root.
     const cooking = (await b.nodes.write({ type: "Concept", data: { name: "Cooking", description: "How meals are planned", docs: "Plan on Sundays." } })).ref_id;

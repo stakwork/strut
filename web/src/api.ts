@@ -1947,6 +1947,10 @@ export interface Automation {
   enabled: boolean;
   trigger: Trigger;
   input: Record<string, unknown>;
+  /** The package that ships it (`schedules:` in its strut.yaml): when it
+   *  runs, its name and its input are the package's, so an admin pauses or
+   *  resumes it and nothing else. */
+  package?: string;
 }
 
 /** An automation plus what the server derives for display. */
@@ -1961,6 +1965,11 @@ export interface AutomationView extends Automation {
   running: boolean;
   /** Why the latest fire launched nothing. */
   lastFireError?: string;
+  /** The person its fires run as: its workflow's owner, whose secrets they
+   *  read and who pays. Absent when it has none. */
+  runsAs?: string;
+  /** Why a fire would launch nothing, said before one does: nobody to run as. */
+  nobodyToRunAs?: string;
 }
 
 export interface AutomationDraft {
@@ -2383,6 +2392,8 @@ export function getBrandStyles(): Promise<BrandStyles | null> {
 export interface PackageRequires {
   secrets?: string[];
   optional?: string[];
+  /** Its steps read the person's token for a repository's host themselves. */
+  git?: true;
   binaries?: string[];
   runtimes?: Array<{ name: string; image?: string; binaries?: string[] }>;
   packages?: Array<{ package: string; digest: string; source: string }>;
@@ -2536,7 +2547,6 @@ export interface RepoInfo {
   /** The commit last installed. */
   commit: string;
   digest: string;
-  tokenSecret?: string;
   openedAt: string;
   by?: string;
   /** Create repo's bare originals, offered for retirement. */
@@ -2585,12 +2595,12 @@ const repoPath = (pkg: string) => `/packages/repos/${pkg.split("/").map(encodeUR
 
 export const listRepos = () => fetchJSON<{ repos: RepoInfo[] }>("/packages/repos").then((r) => r.repos);
 
-export const openRepo = (req: { url: string; ref?: string; path?: string; tokenSecret?: string }) =>
+export const openRepo = (req: { url: string; ref?: string; path?: string }) =>
   fetchJSON<RepoInfo>("/packages/repos", { method: "POST", body: JSON.stringify(req) });
 
 /** `POST /packages/repos/create`: the picks built and pushed as the first
  *  commit of an EMPTY remote, then opened. */
-export const createRepo = (req: Omit<PublishRequest, "channel" | "public"> & { url: string; branch?: string; path?: string; tokenSecret?: string }) =>
+export const createRepo = (req: Omit<PublishRequest, "channel" | "public"> & { url: string; branch?: string; path?: string }) =>
   fetchJSON<RepoInfo & { originals: RepoItem[] }>("/packages/repos/create", { method: "POST", body: JSON.stringify(req) });
 
 /** What a Commit would push: the workspace's edits written into the working copy, staged. */
@@ -2724,7 +2734,8 @@ export interface SubscriptionInfo {
   url?: string;
   channel?: string;
   token?: boolean;
-  /** A git branch's: the `git+` ref and the NAME of the secret it is read with. */
+  /** A git branch's: the `git+` ref and the NAME of the secret that serves
+   *  its host, which it is read with (none: read with no token). */
   ref?: string;
   tokenSecret?: string;
   accepted?: { seq: number; digest: string; at: string };
@@ -2884,6 +2895,8 @@ export interface WorkflowDetail {
   peer?: true | "person";
   sealed?: true;
   claims?: number;
+  /** When strut runs it on its own: the package's `schedules:` on it, as sentences. */
+  schedules?: string[];
   error?: string;
 }
 export interface StepDetail {
@@ -2917,10 +2930,18 @@ export interface PackageDetail {
   optional?: string[];
   /** The steps the manifest's `job:` gives the job agent, by their names
    *  inside the package, and the ones among them that ask first. */
-  job?: { tools: string[]; approve: string[] };
+  job?: JobDetail;
   can: PackageCan;
   files: number;
   bytes: number;
+}
+/** What a package gives the job agent: `tools` and `approve` by their names
+ *  inside the package — strut's own steps by their type, each also in
+ *  `strut` with what the index's strut says of it. */
+export interface JobDetail {
+  tools: string[];
+  approve: string[];
+  strut?: Array<{ name: string; effect?: "read" | "write"; secrets?: string[]; description?: string }>;
 }
 /** The short form a search hit carries. */
 export interface DetailSummary {
@@ -2929,7 +2950,7 @@ export interface DetailSummary {
   steps: number;
   concepts: number;
   secrets: string[];
-  job?: { tools: string[]; approve: string[] };
+  job?: JobDetail;
   can: PackageCan;
   readme: boolean;
 }

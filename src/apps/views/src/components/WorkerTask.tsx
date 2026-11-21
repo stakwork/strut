@@ -345,8 +345,8 @@ export interface WorkerPageProps {
   intro?: ReactNode;
   /** The dashboard lists the task types of EVERY app the worker can open
    *  here (`task/me { all }`), not this app's alone: a type another app
-   *  draws opens that app on it (`appLink(app, { type })`), whose Back
-   *  returns here. strut/worker's, the server's one work link. */
+   *  draws opens that app on it when tapped (`appLink(app, { type })`),
+   *  whose Back returns here. strut/worker's, the server's one work link. */
   everyApp?: boolean;
   className?: string;
 }
@@ -412,10 +412,16 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   /** What they are working on: a type, every type (`null`), or nothing yet — the dashboard. */
   const [working, setWorking] = useState<string | null | undefined>(undefined);
   // Opened on one kind of work (`appLink(app, { type })`, as another app's
-  // dashboard opens it, or an invite's link): straight to it, once.
+  // dashboard opens it, or an invite's link): straight to it, once, when this
+  // app draws it; a kind another app draws goes first on the dashboard, one
+  // tap away (below).
   const input = useToolInput<Record<string, unknown>>();
   const opened = typeof input?.["type"] === "string" ? input["type"] : undefined;
   const openedOnce = useRef(false);
+  /** Opened on a kind and not yet past it: the page waits (One moment)
+   *  rather than drawing the dashboard for the instant before it starts
+   *  that kind here. */
+  const [handingOff, setHandingOff] = useState(!!opened);
   /** From the moment an answer goes until Next task: no next task is
    *  leased meanwhile, so a worker who stops here holds nothing. */
   const [paused, setPaused] = useState(false);
@@ -433,25 +439,17 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   };
   // Once `task/me` has answered — an invite's grant made by then — and only
   // when the worker may do it: else the dashboard, which says what they can.
-  // A kind another app draws opens that app, and first this page's own link
-  // loses its `type`: Back from that app comes back to this page, which must
-  // be the dashboard then, not this link again, which would open the app
-  // again (Back bounced forward, 2026-11-19).
+  // A kind another app draws is NOT opened from here: it goes first on the
+  // dashboard, and the worker's tap opens that app. A page that opens another
+  // by itself, untapped, is one a phone's Back skips: Android's web view then
+  // says there is nothing to go back to, so Peel drew no Back, and Peel opens
+  // the invite's link at every start, so it jumped there every time
+  // (2026-11-20).
   useEffect(() => {
     if (!signedIn || !opened || openedOnce.current || !me.data) return;
     openedOnce.current = true;
-    if (!me.data.types.some((t) => t.name === opened)) return;
-    const app = drawnElsewhere(opened);
-    if (!app || !here) {
-      setWorking(opened);
-      return;
-    }
-    const { type: _opened, ...rest } = input ?? {};
-    const own = Object.fromEntries(Object.entries(rest).filter(([, v]) => typeof v === "string")) as Record<string, string>;
-    void host
-      .openLink(appLink(here, own))
-      .catch(() => undefined)
-      .then(() => host.openLink(appLink(app, { type: opened })));
+    if (me.data.types.some((t) => t.name === opened) && !drawnElsewhere(opened)) setWorking(opened);
+    setHandingOff(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `drawnElsewhere` reads me.data, which is a dependency
   }, [signedIn, opened, me.data]);
   const [sent, setSent] = useState<Sent | null>(null);
@@ -501,8 +499,10 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
         }
       />
     );
+  } else if (handingOff && working === undefined && !me.isError) {
+    body = <Screen icon={<Loader2 className="size-10 animate-spin" />} heading={w.oneMoment} />;
   } else if (working === undefined) {
-    body = <WorkHome only={type} all={everyApp} onStart={start} />;
+    body = <WorkHome only={type} all={everyApp} onStart={start} {...(opened ? { first: opened } : {})} />;
   } else if (sent) {
     body = <SentScreen sent={sent} next={more} onNext={next} onHome={home} />;
   } else if (work.task) {
@@ -590,8 +590,9 @@ const HOME_POLL_MS = 15_000;
  * kind starts it (`onStart(type)`); Start working takes any kind this app
  * draws (`null`). With `all`, every app's kinds the worker can open here; one
  * another app draws says so, and `onStart` is for the page to open that app.
+ * `first`: the kind the page was opened on, listed first.
  */
-export function WorkHome({ only, all = false, onStart }: { only?: string; all?: boolean; onStart: (type: string | null) => void }) {
+export function WorkHome({ only, all = false, first, onStart }: { only?: string; all?: boolean; first?: string; onStart: (type: string | null) => void }) {
   const w = useWorkerWords();
   const fmt = useFormats();
   const here = useApp()?.name;
@@ -616,7 +617,7 @@ export function WorkHome({ only, all = false, onStart }: { only?: string; all?: 
     );
   }
   const info: WorkerInfo = me.data;
-  const types = info.types.filter((t) => only === undefined || t.name === only);
+  const types = info.types.filter((t) => only === undefined || t.name === only).sort((a, b) => Number(b.name === first) - Number(a.name === first));
   if (info.status === "suspended" || info.status === "banned") {
     return <Screen icon={<Clock className="size-10" />} heading={w.paused} text={w.pausedText} />;
   }
@@ -800,7 +801,8 @@ function Stat({ label, msat, note }: { label: string; msat: number; note?: strin
   );
 }
 
-/** One of their tasks: the kind, when, how it ended and what it earned. */
+/** One of their tasks: the kind, when, how it ended and what it earned; an
+ *  answer staff sent back says so, and why — what to fix. */
 function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string | undefined }) {
   const w = useWorkerWords();
   const fmt = useFormats();
@@ -809,12 +811,13 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
   if (item.status === "open") badge = <Badge tone="accent">{w.inYourHand}</Badge>;
   else if (item.status === "skipped") badge = <Badge>{w.skipped}</Badge>;
   else if (item.status === "expired") badge = <Badge>{w.notFinished}</Badge>;
+  else if (item.review?.verdict === "rejected") badge = <Badge tone="error">{w.sentBack}</Badge>;
   else if (!e) badge = <Badge tone="done">{w.sent}</Badge>;
   else if (e.takenBack) badge = <Badge tone="error">{w.notPaid}</Badge>;
   else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.until(e.releases))}</Badge>;
   else badge = <Badge tone="done">{w.cleared}</Badge>;
   return (
-    <li className={cn("flex items-center gap-3 px-4 py-3", item.reply && "flex-wrap")}>
+    <li className={cn("flex items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[15px] font-medium">{item.ask ?? typeLabel(item.type, title)}</div>
         <div className="truncate text-xs text-muted-foreground">
@@ -826,6 +829,7 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
         {e && <span className={cn("text-sm font-semibold tabular-nums", e.takenBack && "text-muted-foreground line-through")}>+{fmt.sats(e.msat)}</span>}
         {badge}
       </div>
+      {item.review?.verdict === "rejected" && item.review.why && <div className="w-full text-sm text-destructive">{w.toFix(item.review.why)}</div>}
       {item.reply && <ReplyLine item={item} reply={item.reply} />}
     </li>
   );

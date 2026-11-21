@@ -33,6 +33,8 @@
  * `tasks.standing` (1 on a standing type's task) and `tasks.launched_at`
  * (when its run was launched) the same way, and a run's reply to its
  * workers `tasks.reply` (JSON: `{ show?, files?, at }`, null: none).
+ * The group a run names with its reply adds `tasks.group_key` the same way
+ * (null: none), with the partial index `tasks_group`.
  * A type's title, what workers call it (plans/i18n.md), adds
  * `task_types.title` the same way (null: none).
  */
@@ -67,6 +69,8 @@ import {
   type StandingRule,
   type LimitRule,
   type LeaseTotals,
+  type TaskGroup,
+  type TaskGroupQuery,
   type TaskListQuery,
   type TaskRecord,
   type TaskReply,
@@ -114,6 +118,7 @@ create table if not exists ${name} (
   standing integer,
   launched_at integer,
   reply text,
+  group_key text,
   unique (workflow, run_id, path),
   unique (test, served_to)
 ) strict;`;
@@ -210,6 +215,7 @@ const ADDED: Array<[table: string, column: string, type: string]> = [
   ["tasks", "launched_at", "integer"],
   ["task_types", "round_rule", "text"],
   ["tasks", "reply", "text"],
+  ["tasks", "group_key", "text"],
   ["task_types", "title", "text"],
   ["task_types", "limits", "text"],
   ["task_types", "check_rule", "text"],
@@ -238,6 +244,7 @@ create index if not exists leases_type_closed on leases(type, closed);
 create index if not exists leases_worker_taken on leases(worker, taken);
 create index if not exists reviews_rejected on reviews(worker) where verdict = 'rejected';
 create index if not exists tasks_unlaunched on tasks(settled_at) where standing = 1 and status = 'settled' and launched_at is null;
+create index if not exists tasks_group on tasks(group_key, type) where group_key is not null;
 `;
 
 /** The task side's tables brought to version 2, inside the file's one
@@ -370,6 +377,12 @@ export class SqliteTaskStore implements TaskStore {
            from tasks t where t.type = ?1 and t.status = 'open' and t.test is null and t.due > ?2`,
       ),
       queueHolding: p("select count(*) n from leases where type = ?1 and status = 'open' and expires > ?2"),
+      // §9.6: the answers of its real tasks with no verdict (the list's `review=none`, counted).
+      queueUnreviewed: p(
+        `select count(*) n from leases l join tasks t on t.id = l.task
+          where l.type = ?1 and l.status = 'submitted' and t.test is null
+            and not exists (select 1 from reviews r where r.task = l.task and r.worker = l.worker)`,
+      ),
       holdingAll: p("select count(*) n from leases where status = 'open' and expires > ?"),
       // Each window as a sum over the week's rows: ?2 the hour's start, ?3
       // the day's, ?4 the week's, ?5 now.
@@ -419,7 +432,7 @@ export class SqliteTaskStore implements TaskStore {
       ),
       launched: p("update tasks set launched_at = ? where id = ? and standing = 1 and launched_at is null"),
       unlaunched: p("select * from tasks where standing = 1 and status = 'settled' and launched_at is null order by settled_at limit ?"),
-      reply: p("update tasks set reply = ? where id = ? and status = 'settled' and test is null"),
+      reply: p("update tasks set reply = coalesce(?, reply), group_key = coalesce(?, group_key) where id = ? and status = 'settled' and test is null"),
       // §7.2's takeTest: the tests this worker may be served, least-served first.
       servable: p(
         `select * from tests x
@@ -594,6 +607,7 @@ export class SqliteTaskStore implements TaskStore {
     eq("status", q.status);
     eq("workflow", q.workflow);
     eq("run_id", q.runId);
+    eq("group_key", q.group);
     if (q.test !== undefined) where.push(q.test ? "test is not null" : "test is null");
     if (q.by) {
       // Any answer of theirs, a copy's too (`leases_answered`).
@@ -704,6 +718,7 @@ export class SqliteTaskStore implements TaskStore {
           dueSoon: n(open.due_soon),
           dueHour: n(open.due_hour),
           holding: n((this.s.queueHolding.get(type, now) as Row).n),
+          unreviewed: n((this.s.queueUnreviewed.get(type) as Row).n),
           windows,
         };
       });
@@ -884,8 +899,45 @@ export class SqliteTaskStore implements TaskStore {
     return (this.s.unlaunched.all(Math.max(0, Math.floor(limit))) as Row[]).map(taskOf);
   }
 
-  async reply(task: string, reply: TaskReply): Promise<boolean> {
-    return this.db.tx(() => Number(this.s.reply.run(JSON.stringify(reply), task).changes) === 1);
+  async reply(task: string, o: { reply?: TaskReply; group?: string }): Promise<boolean> {
+    return this.db.tx(() => Number(this.s.reply.run(o.reply ? JSON.stringify(o.reply) : null, o.group ?? null, task).changes) === 1);
+  }
+
+  async groups(q: TaskGroupQuery = {}): Promise<TaskGroup[]> {
+    // One row a task and answer (of `worker`'s alone, when asked), with the
+    // answer's verdict; folded by type and group.
+    const args: Array<string | number> = [];
+    const whose = q.worker ? "and l.worker = ?" : "";
+    if (q.worker) args.push(q.worker);
+    const types = q.types ? "and t.type in (select value from json_each(?))" : "";
+    if (q.types) args.push(JSON.stringify(q.types));
+    const sql = `select t.type as type, t.group_key as grp, count(distinct t.id) as tasks, count(l.id) as answers,
+        coalesce(sum(r.verdict = 'ok'), 0) as ok, coalesce(sum(r.verdict = 'rejected'), 0) as rejected,
+        json_group_array(distinct l.worker) filter (where l.worker is not null) as workers,
+        min(t.created) as first, max(coalesce(t.settled_at, t.created)) as last, max(t.seq) as seq
+      from tasks t
+      ${q.worker ? "join" : "left join"} leases l on l.task = t.id and l.status = 'submitted' ${whose}
+      left join reviews r on r.task = l.task and r.worker = l.worker
+      where t.group_key is not null and t.test is null ${types}
+      group by t.type, t.group_key
+      order by seq desc limit ?`;
+    return (this.db.prepare(sql).all(...args, pageLimit(q.limit)) as Row[]).map((r) => {
+      const answers = Number(r.answers);
+      const ok = Number(r.ok);
+      const rejected = Number(r.rejected);
+      return {
+        group: r.grp as string,
+        type: r.type as string,
+        tasks: Number(r.tasks),
+        answers,
+        ok,
+        rejected,
+        unreviewed: answers - ok - rejected,
+        workers: JSON.parse(r.workers as string) as string[],
+        first: Number(r.first),
+        last: Number(r.last),
+      };
+    });
   }
 
   async putTest(t: NewTest): Promise<TestRecord> {
@@ -1124,6 +1176,8 @@ function taskOf(r: Row): TaskRecord {
   if (launchedAt !== undefined) t.launchedAt = launchedAt;
   const reply = opt<string>(r.reply);
   if (reply !== undefined) t.reply = JSON.parse(reply) as TaskReply;
+  const group = opt<string>(r.group_key);
+  if (group !== undefined) t.group = group;
   return t;
 }
 

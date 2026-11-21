@@ -368,11 +368,12 @@ tool (`step_run`) the host relays to the strut server:
 | `useAppState(key, initial)` → `[value, set, { loaded }]` | what THIS viewer's page remembers across visits, like `useState`: a tab, a filter, a draft (`app/state`, always granted) |
 | `useToolInput()` | what the model or a deep link opened the app with; a link's values are strings |
 | `useAppLink()` → `link(input?)`, `appLink(name, input?)` | a deep link to this app (or another) opened with `input`: `openLink(link({ view: "/runs", run: id }))` shows it, and the host's address bar follows, so the person can share it |
+| `useShareLink()` → `link(input?)` or undefined | the address a person can PASTE to open this app at `input` (the host's own page, e.g. `https://box/?input=…`) — for a Copy link button; undefined where the host has no address to give, so offer no Copy link there |
 | `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
 | `useHost()` → `{ theme, public, runnable, results, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a link to the strut server's UI in place; `public` is true when a visitor opened the page in the server's public view, `runnable` the workflows a visitor may start there and `results` what it reads of its own runs (see "The public view") |
 | `useAssistant({ thread? })` → `{ messages, send(text, files?), pending, jobs }` | a chat with the person's ASSISTANT (`orchestrator`), as the viewer — see "The assistant" |
 | `useAccountWidget()` → `{ available, setPlacement({ corner?, collapsed? }) }` | on a public page, strut's own account widget (see "Signed-in visitors"): move it to another corner or collapse / expand it — e.g. a game collapses it during play and expands it in menus. It can never be hidden |
-| `useCamera()` → `{ available, capture({ facing?, maxSide?, title? }) }` | a photo the person takes in strut's camera sheet, as a JPEG `File` (null when they cancel); needs `camera` in `permissions:` — see "The camera" |
+| `useCamera()` → `{ available, capture({ facing?, maxSide?, title?, review? }) }` | a photo the person takes in strut's camera sheet, as a JPEG `File` (null when they cancel); needs `camera` in `permissions:` — see "The camera" |
 | `useVisitor()` → `{ available, actor, signIn(), signOut() }` | on a public page, who is playing: a visitor may SIGN IN, and then the page's calls are theirs — their own `useAppState`, channels, rows (see "Signed-in visitors"). `signIn({ silent: true })` as the page loads signs in only when nobody has to say yes (in Peel, a page Peel already lets sign them in), drawing nothing; keep a Sign in button for the rest |
 
 **Deep links.** The page is opened with whatever its link carries
@@ -552,6 +553,17 @@ stream. `facing: "user"` asks for the front camera. Cancel answers null.
 with a run, see `useLaunch`'s `files`; on a public page the workflow's
 runnable entry must take files (`attachments: true`).
 
+The page has no viewfinder of its own, so never draw one: a round shutter
+button on a dark screen only opens strut's camera, and the person taps it,
+sees no photo taken, and taps again. Name the button for what it does
+("Scan pages", "Take a photo").
+
+For many photos in a row (the pages of a book), ask with `review: false`:
+the shutter hands each photo over at once, one tap a photo, with no Retake
+or Use photo. Ask again as soon as one comes back, with the next title
+(`"Page 13"`), and check or send the last one in the background: a page
+that waits for its server before it asks again makes the person wait too.
+
 ## Worker apps: people as a step of a workflow
 
 A workflow asks a PERSON with a `human` step: it makes a TASK of a task
@@ -597,7 +609,7 @@ answers and photos with them. So what the answers come to (a report, a
 tally, the photos marked up) is never a tab of the worker app, and never
 grant it the workflow whose runs hold them. Hiding a tab behind
 `useHost().public` locks nothing: the grant is what opens the runs. The
-person reads the answers in Tasks and workers (each task with its answer,
+person reads the answers in Workers (each task with its answer,
 its photos and its run); a page of their own over the runs, when they ask
 for one, is a separate app that is never made public.
 
@@ -715,16 +727,16 @@ offers `sphinx` with the root key, so a worker is one person on every
 server. Anyone with the link sees a sign-in and nothing else; a worker's
 calls are never kept as runs, and none counts against a visitor's daily
 writes. Say in your reply that later publishes are drafts until someone
-makes them live. The person shares a worker app from Tasks and workers
+makes them live. The person shares a worker app from Workers
 (`strut/staff`), whose first page opens with its links, a QR code and
 Invite (a one-use link that sets up a new worker's phone): point them
 there with an artifact, `{ kind: "app", app: "strut/staff" }` (your words
-say "Tasks and workers"), and never paste a link from the result (or `GET
+say "Workers"), and never paste a link from the result (or `GET
 /public/apps`) in your reply, nor build one by hand.
 
 A worker app is the WORKERS' page and nothing else. Never build an admin
 app for work by people — costs, budgets, time per worker, settings,
-grants: Tasks and workers has them, and a type's `limits` are its budget
+grants: Workers has them, and a type's `limits` are its budget
 and daily cap (`Worker Tasks`, "What is built in").
 
 ## The assistant

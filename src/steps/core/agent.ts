@@ -83,6 +83,7 @@ import os from "node:os";
 // shared with the chat builder's bash tool.
 
 import { runCmd, runShellProcess, killGroups, maskSecretValues, type ProcessResult } from "../../shell.js";
+import { serveSshAgent } from "../../ssh-agent.js";
 import { bootEnv } from "../../env.js";
 
 /** Immediate subdirs of `cwd` that are git repos. */
@@ -1353,6 +1354,12 @@ export default defineStep({
       .describe(
         "secret NAMES (from the deployment's secret store) to inject as env vars into the bash tool's subprocess — the agent writes `$NAME` in commands (e.g. curl auth headers) and the shell expands it at exec time. The VALUE never enters the prompt, the model's context, or the event log: bash gets it via env only, and every tool output is masked before the model sees it. Grant narrowly (a dedicated research sub-agent), never to a drafting/producing agent. Residual risk (accepted): a prompt-injected agent can still SEND $NAME somewhere — masking stops leakage into context/logs, not egress.",
       ),
+    sshKeys: z
+      .array(z.string())
+      .default([])
+      .describe(
+        "secret NAMES holding SSH private keys (Ed25519, PKCS#8 PEM — what ssh/keygen makes) that an SSH agent in strut's own process signs with (src/ssh-agent.ts): the bash tool gets SSH_AUTH_SOCK, so ssh, scp, rsync and git over ssh log in with them, and the shell never holds a key — it can USE one while the run lasts, never copy it (unlike a key in secretsEnv, which ssh could only read from a file the shell wrote). Each name is resolved at every request, so a key stored mid-turn signs at once; one that resolves to nothing, or to no key strut can load, is skipped. Not on Windows.",
+      ),
     mcp: z
       .boolean()
       .default(true)
@@ -1373,7 +1380,7 @@ export default defineStep({
       .optional()
       .meta({
         description:
-          "model id, aieo alias ('sonnet', 'gemini', 'grok', 'kimi', 'glm'), or 'provider/id' ('openrouter/deepseek/deepseek-v3' — OpenRouter models as openrouter/org/model); the provider is inferred from it when `provider` is omitted",
+          "model id, aieo alias ('sonnet', 'argon', 'grok', 'kimi', 'glm'), or 'provider/id' ('openrouter/deepseek/deepseek-v3' — OpenRouter models as openrouter/org/model); the provider is inferred from it when `provider` is omitted",
         // The step editor offers the deployment's model catalog (GET /llm/models).
         suggest: "llm-models",
       }),
@@ -1507,6 +1514,25 @@ export default defineStep({
           : "")
       : "";
 
+    // ── sshKeys: an SSH agent in this process; bash gets its socket ────────
+    // The keys stay here (src/ssh-agent.ts), read from the secrets at every
+    // request, so the note below says the same thing every turn whether a
+    // key is stored yet or not: the bash tool's description is part of the
+    // cached prefix.
+    const bashEnv: Record<string, string> = { ...secretEnv };
+    let sshNote = "";
+    if (cfg.sshKeys.length && process.platform !== "win32") {
+      const secrets = (ctx?.services as { secrets?: SecretsCapability } | undefined)?.secrets;
+      if (!secrets) throw new Error("agent: sshKeys requires the secrets capability (ctx.services.secrets)");
+      const sshAgent = await serveSshAgent(async () =>
+        (await Promise.all(cfg.sshKeys.map((name: string) => secrets.get(name)))).filter((v): v is string => !!v),
+      );
+      ctx?.onRunEnd?.(() => sshAgent.close());
+      bashEnv["SSH_AUTH_SOCK"] = sshAgent.socket;
+      sshNote =
+        " An SSH agent holds this shell's keys (SSH_AUTH_SOCK is set): ssh, scp, rsync and git over ssh log in with them, and `ssh-add -L` prints their public halves — nothing when no key is stored yet. The private keys never reach the shell. A host it has not met needs `-o StrictHostKeyChecking=accept-new`.";
+    }
+
     // What a `bash` command leaves running in its process group once it has
     // returned — a dev server started in the background, a browser behind
     // `| tail` — is ended with the run (shell.ts `killGroups`), never left to
@@ -1554,7 +1580,8 @@ export default defineStep({
       bash: tool({
         description:
           `Execute a bash command inside the working dir. Use for listing dirs, reading files (cat/head), inspecting manifests/lockfiles/docker files, running installs/builds, and anything the other tools don't cover. One command may run for ${bashBudget}: at that point its whole process group is killed and the tool reports the timeout. So a program that never exits (a dev server), or a pipeline whose helper processes keep the pipe open (a browser behind \`| tail\`), is started in the background with its output redirected to a file, then polled.` +
-          secretsNote,
+          secretsNote +
+          sshNote,
         inputSchema: z.object({ command: z.string().describe("The bash command to execute") }) as any,
         execute: async ({ command }: { command: string }) => {
           if (!existsSync(cfg.cwd)) return "Working directory does not exist";
@@ -1577,7 +1604,7 @@ export default defineStep({
               cwd: cfg.cwd,
               timeoutMs: cfg.bashTimeoutMs,
               maxOutputChars: resultCap,
-              env: secretEnv,
+              env: bashEnv,
               signal: ac.signal,
               onLeftover: (pgid) => void leftovers.add(pgid),
             });
@@ -2193,7 +2220,11 @@ export default defineStep({
               ...(from !== undefined ? { replayFrom: from } : {}),
             },
           });
-          out = { ...out, session: { id: session.id, turn: line.turn, offset: line.offset } };
+          // `keptSystem`: the thread ran on its first turn's prompt and this
+          // step was handed another. What a step rendered into THIS turn's
+          // `system` the model never read, so the run does not observe those
+          // pages (`subjectsOfRun`, src/verify.ts).
+          out = { ...out, session: { id: session.id, turn: line.turn, offset: line.offset, ...(session.system != null && session.system !== cfg.system ? { keptSystem: true as const } : {}) } };
           if (toTell.length) await proposalsOf(ctx?.services)?.markReported(toTell.map((p) => p.id)).catch(() => {});
         }
         const spent = { modelCalls: out["steps"] as number, usage: out["usage"] as TokenUsage, cost: out["cost"] as number };

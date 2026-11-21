@@ -139,6 +139,17 @@ container in the compose (strut and any service that registers steps).
   reaches the builder through Jamie. But installing a package is an
   ADMIN's act whatever the door: `package/install` is `approver: "admin"`
   (see "Proposals"), so a member's Jamie neither proposes nor accepts one.
+  Reading CONVERSATIONS: a person reads their own and the shared ones; an
+  ADMIN reads every one (ruled 2026-11-19, plans/jamie-app.md §2.3):
+  `everyone` on `GET /conversations`, `/conversations/item` and `POST
+  /conversations/fork` for full scope alone (403 to a person token, a host,
+  a peer), and on `conversation/list|get|fork` only from strut's own page
+  shown to an admin, in its own call (`adminPageCall`; refused to a
+  member's page, a model-written one, a workflow, an agent's tool and a run
+  the page launched). Reading is not a turn: no viewer added, nobody's
+  seen moved, and a turn in another person's conversation stays
+  `conversation_not_yours:`. Jamie tells every viewer that admins can read
+  conversations.
   "Is this session the key's equal" is an ALLOWLIST (`fullSession`: the
   key login's, no role, or an admin's) — never "not a member" — so a role
   strut adds later opens nothing by default.
@@ -210,8 +221,9 @@ container in the compose (strut and any service that registers steps).
   (`scopeFromKey`, and createStrut's `resolveScope` before a host hook, as a
   member's session is). The gate passes it `HOST_ROUTES` alone — `POST
   /workflows/:name/run`, `GET /conversations/item`, `POST
-  /proposals/:id/decide`, `GET /hosts/links/:key` (whether an account is
-  linked, and to whom), and `POST /mcp` (below) — and 403s every other route, reads included
+  /proposals/:id/decide`, `PUT /hosts/me`, `GET /hosts/places` and `DELETE
+  /hosts/places/:key` ("Linked places" below), and `POST /mcp` (below) —
+  and 403s every other route, reads included
   (`createStrut.test.ts` "a host key" sweeps them). The gate also reads its `x-strut-account: <kind>:<key>`
   (the host's own kind, else 400) and asks `people.actorOf` once
   (`hostCalls`); `resolveActor` answers that person only when the account
@@ -275,6 +287,31 @@ container in the compose (strut and any service that registers steps).
   door; the app door hands each request one bound to strut's address as
   that request reached it (createStrut `requestServices`), and the shared
   bag's has `STRUT_PUBLIC_URL` alone (none: `account/link` fails).
+- **Linked places** (plans/jamie-in-tribes.md §4, §5.4; specs/API.md
+  §13.4, §13.6; `src/people.ts`). A PLACE is where a person asks a host to
+  answer, as them: a tribe, to the Sphinx daemon. `people.db`'s `places
+  (host, key, link, name, account, at)`, one linker per `(host, key)`, the
+  linker being the account their Peel token names (`<kind>:<key>`, the host's
+  own kind). Strut keeps the list and knows nothing of tribes; the host
+  joins and leaves to match it. A person's routes take the token Peel holds
+  for a box (`placeLinker`: a person token NAMING an account, which the
+  gate already holds to its link; any other credential is 403): `GET
+  /people/places` (the host ready for that kind, and their places), `POST
+  /people/places` (another person's place is `409 place_linked:`, a host
+  with no key or that hasn't said who it is `404 no_host:`), `DELETE
+  /people/places/:host/:key` (their own). The gate lets a person token POST
+  and DELETE these, past a peer's routes. A host's routes: `PUT /hosts/me {
+  account, hook }` (`hosts (name, account, hook, at)`: its own account,
+  handed to Peel to approve its join of a private tribe, and an http(s)
+  hook), `GET /hosts/places` (every linker's, with `linkerName`, the
+  linker's name as strut shows it), `DELETE /hosts/places/:key`. Each change
+  to a host's places (a link that moves, a removal, an account's unlink,
+  which takes its places with it) calls `createPeople`'s `onPlaces`, which
+  POSTs `{ event: "places" }` to the hook as a callback is posted
+  (`postCallback`: retried briefly, then dropped). The nudge names nothing:
+  the host reads its whole list, so a lost or repeated one changes nothing.
+  Strut checks no tribe's owner: a turn as the linker has the linker's
+  access alone, never an admin's.
 - **A host calls an app's tools** (plans/people-and-hosts.md §3, §9;
   docs/apps.md has the door). On `POST /mcp` a host key gets `step_run`
   alone, and only the steps an app's `hosts:` lists for that key's name —
@@ -454,6 +491,204 @@ instead of baked into env at deploy time.
   `list_secrets`. A run's `input` is persisted on `run.start`, so this is
   how a per-user credential reaches a workflow without ever being in it.
 
+- **A package's steps manage the secrets it provides** (`provides.secrets`
+  in `strut.yaml`; src/packages/fence.ts, `own` / `deployment` in
+  src/capabilities.ts). Reads stay one merged lookup for every step. Beside
+  it a package's step gets two scopes, each `{ get, set, delete }` and each
+  held to the names its package provides (`secret_fenced:` for any other):
+  `secrets.own`, the run's principal's own actor secrets apart from the
+  deployment's — wherever the run has a principal, so a page's call for its
+  viewer, a workflow run as its person, the job agent's tool call — and
+  `secrets.deployment`, the deployment's store (a read falls back to the
+  environment, as `get` does), only on a call from the package's own
+  `admin: true` app whose connection holds full scope. The app door decides
+  that (`packageAdminOf`, src/apps/tools.ts) from what it already knows — the
+  connection's scope (`AppRef.admin`) and the app version's `upstream` — and
+  binds that ONE call's `secrets` (`adminSecrets`); a run the page launches
+  takes the shared bag, so it has none. The writers hang off strut's own
+  capability in a module-private map (`secretScopesOf`), never on an object
+  a step reads, and are not exported from strut's index: a step of strut's
+  own or the workspace's has no scope, and a package's step has no
+  `secretBlanks` either, so a member's call never sets a deployment secret
+  whatever the step does. Nor does its `secrets` have `forPrincipal`: a
+  package's step works for the run's person alone and never re-binds to
+  read another person's value or manage their `own` (a nested or launched
+  run is bound to its own person by the runner). Names and values follow the routes' rules
+  (`secret_name:`, hidden names included; `secret_empty:`). Strut never logs
+  or returns a value; a step that takes one lists the field in `redact`.
+  Uninstalling the package leaves the values. Not isolation — a step has
+  `shell` — but the door it is given says what it may do.
+
+- **Work nobody launched runs as a person** (stadeum plans/software.md §5,
+  item 15; the owner's rule of 2026-11-20: there is no box token, every
+  token is a person's). `runsAs` (src/workspace.ts) names that person for
+  every such run: the OWNER of the workflow it runs, with their secrets and
+  on their bill, and nobody else — whoever brought it in as a person (their
+  install, their subscription, their publish) or whom an admin gave it to.
+  A package never names a person: no manifest key, step or request does,
+  and an admin changes who with the owner routes that exist. With no owner
+  a package's work launches nothing and says what to do (docs/automations.md).
+  A subscription a person makes is theirs (`actor`, the `PUT`'s; never a
+  field of the body): it installs as them, and its git branch is read with
+  their OWN value of the secret that serves its host alone — a deployment value of the same name is
+  never sent for a person (src/packages/subscriptions.ts `own`). One nobody
+  made reads the deployment's value, as before, and its work has no owner.
+  A package's STEP starts work only as its own run's person
+  (`heldToItsRun`, src/packages/fence.ts): `runs.launch` takes the run's own
+  caller, `authoring.runWorkflow` / `resumeRun` / `controlRun`,
+  `jobs.launch` and `proposals.propose` take the run's actor and principal
+  whatever the step passed, a request to a peer carries the run's principal
+  as `x-strut-actor` (or none), and in a run for nobody a launch is
+  refused (`run_as_fenced:`), since it would run as the launched
+  workflow's owner. Its bag has no `proposals.decide` (a person decides,
+  and the apply runs as the proposer), no `automations` (the scheduler's
+  API: `fire` would run any workflow as its owner) and no `trials`. Each
+  capability it holds is a FRESH object (`held`): the methods it does not hold
+  forward to the original by closure, and the original is on no prototype and
+  in no property a step reaches (a test walks the bag). Strut's
+  own steps pass the run's person anyway; what is still open: a run that
+  acts for nobody which launches another workflow (a `run/launch` in YAML,
+  an app page's call with no viewer) runs it as that workflow's owner, the
+  principal rule's fallback (`principalFor`).
+
+- **Git credentials by host** (src/git-hosts.ts; stadeum plans/software.md
+  §5, item 9). Which secret holds the token for a repository is the box's
+  map, by HOST: strut's own entry, `github.com` → `GITHUB_TOKEN` (what its
+  git steps and `git+` sources always read), and each installed package's
+  `provides.git: [{ host, secret }]` (a package that still holds its own
+  items, as `job`'s grants are read; made again after every package write,
+  `syncGitHosts` in createStrut). One host, one secret: an install that
+  would serve a host with another (github.com's included) is
+  `package_conflict:`; the same one again is welcome. The lookup is the
+  URL's — `https://<host>/…`, or `http://` to this machine
+  (`localhost`, `127.0.0.1`, `[::1]`) — and its token is the run's value of
+  that secret, read as `get` reads it: the person's own, then the
+  deployment's (`secrets.git(url)`, on every capability strut builds and on
+  a host's once createStrut wraps it). A host no secret serves, a `file:`
+  repository and plain http to another machine get none. Every git caller
+  uses it: `git/checkout`, `git/push`, `git/remote-head`, `git+` installs,
+  subscriptions (a person's: their OWN value of that secret alone), serve
+  mode, `STRUT_PACKAGES` and the repo door. Nobody names the secret any
+  more: `tokenSecret` is gone (2026-11-20) — a door refuses it, and an old
+  one in `STRUT_PACKAGES` or `STRUT_SERVE_TOKEN_SECRET` is left unread so a
+  box still boots. Before it, every one of them read `tokenSecret`
+  (GITHUB_TOKEN unless named) whatever the URL, and git's helper answered
+  any host: a workflow, an agent's tool call or a package could send the
+  person's GitHub token — or any secret, by naming it — to a host of its
+  choosing. Git is held to it too: the inline credential helper
+  (src/steps/lib/git/_shared.ts) answers only when git asks for the
+  token's own host (`STRUT_GIT_HOST`), so a redirect elsewhere gets
+  nothing. And git gets no credential but the run's, token or not
+  (`credentialArgs`, `gitEnv`): the helper list is reset on every command
+  (a machine's `osxkeychain`, as Xcode's system gitconfig sets it, a
+  `store`, or one a repository's config names), no askpass program
+  (`GIT_ASKPASS=""`), no system config and a `HOME` with nothing in it
+  (`/dev/null`: no `~/.gitconfig`, `~/.git-credentials` or `~/.netrc`,
+  which git's curl reads on its own), and no ssh
+  (`protocol.ssh.allow=never`: a URL rewrite would log in with the
+  machine's key). Before, a run with no token for a host fell through to
+  all of these and acted as the machine's user; now a private repository
+  with no token fails. ONE exception, a person's own machine: with
+  `STRUT_GIT_LOCAL=1` (`createStrut({ git: { local: true } })`; off by
+  default, and the desktop launcher, `scripts/desktop.js`, which Peel
+  runs, turns it on), a run with no token for the repository's host keeps
+  that machine's git as its person set it up — its helpers, config,
+  `~/.netrc`, askpass and ssh, as before this rule (`machine` in
+  `credentialArgs` / `gitEnv`, from `gitLocalOf` on strut's own capability,
+  which no step can set). There git may also stop on the machine's own
+  prompts, a keychain dialog on a Mac, and the step waits for its person
+  until its timeout, as `git` in a terminal would; with nothing saved it
+  fails at once. With a token the token wins there too, for its host
+  alone, and nothing of the machine's goes beside it. Never inferred
+  from the operating system or a hostname: a server never uses its
+  machine's credentials unless someone turned this on. `git/push` asks GitHub who the token is (`GET /user`, the
+  commit's author) only with GitHub's own token — the one
+  `https://github.com` gets — and a token for another host is never sent
+  there. A PACKAGE's step holds `secrets.git` only when its package says
+  `requires.git: true`, which the store page and `GET /packages` show; it
+  then reads the run's token for any host the box serves, and still reads
+  by name only what it declares. Without it the step never sees a token,
+  yet strut's git steps it calls with its own ctx use the run's: the
+  fence keeps a module-private reader on its view (`keepGitTokens`,
+  `gitTokens` in src/capabilities.ts, not exported from strut's index),
+  beside the run's own `shell` and `http` (`gitVia`), and those steps send
+  the token to its host alone, through those alone — a shell or http the
+  step puts in the ctx it calls them with never carries it.
+
+- **A package's grant of strut's steps** (stadeum plans/software.md §5,
+  item 16). A package's `strut.yaml` `job:` may name strut's own steps for
+  the `job` workflow's agent, one by one (`job: { tools: [repositories,
+  git/push] }`: a name the package does not ship is strut's; a glob is
+  over its own steps alone). The host's own grant (`createStrut({ job:
+  { tools } })`, `STRUT_HOST_CONFIG`) is held to nothing: any type or
+  glob, an unknown one skipped at run time. Strut keeps a step from an
+  agent at the CALL: one that is a page's alone (`ctx.app`: the admin
+  doors, `proposal/decide`), one that refuses `ctx.agentTool`
+  (`task/reply`) and one that parks (`human`) refuse an agent's call
+  whoever granted it. A package's grant is narrower, held to
+  `strutGrantProblem` (src/job-seed.ts) at the install (`bad_package:
+  strut.yaml: job.tools: <why>`) and again at every seed against the
+  registry in force: strut's own step (core or lib — never a workspace's or
+  another package's), not sealed (src/sealed.ts: the meta surface and the
+  graders — which of those the agent holds is strut's own template's to
+  say), its config naming no secret (`configSecretField`: the model would
+  choose which secret it reads — `exec`, `agent`, `browser/open`,
+  `http/verify`), and declaring its `effect` (what `GET /steps` lists for a
+  host's connector list and `approve:` defaults, and what the store shows
+  the admin). `git/push` (`effect: write`) and `github/create-pr` pass.
+  The admin sees it before installing: the store's Tools section lists
+  strut's steps as "strut's step" with acts/reads, `package/install`'s card
+  says "strut's git/push (acts)", a search hit counts them. A granted
+  step runs as the job's PERSON, like every tool the agent calls: with the
+  run's ctx, its `secrets` bound to the run's principal. `git/push` takes
+  the token for origin's host (`secrets.git`: that person's own value of
+  the secret that serves the host, then the deployment's, never another
+  person's) and sends it to that host alone; `github/create-pr` reads
+  `GITHUB_TOKEN` the same way. A grant only adds: a tool is granted once
+  whoever names it, an uninstall keeps another package's grant of it, and
+  it asks first when any grant says so. Why the job agent had
+  `git/checkout` and not `git/push`: checkout is a READ as the person (a
+  private repository found mid-turn, 104fd643); a push is a WRITE as the
+  person, and the line was plans/code-change.md §2's — the agent's bash
+  structurally cannot push (no credential in the checkout), and landing is
+  deterministic after the person approved the diff, no model between the
+  approval and the pull request. A package's grant crosses it on the
+  admin's install, shown as such: with `approve: [git/push]` each push is
+  the person's yes, the gated `git/push` plans/proposals.md foresaw;
+  without it the pull request it opens is the person's review (the
+  `Code Change` page's small change). `git/push` holds two lines itself,
+  for every caller (a workflow's author wired `path` and `branch`; a
+  model types them, and an accepted proposal carries what it typed):
+  it never pushes origin's DEFAULT branch, asked of the remote at the
+  push (`ls-remote --symref origin HEAD`, as `git/remote-head` asks, with
+  the same token) — `push_rejected: <branch> is origin's default branch`
+  — and it pushes only a working copy `git/checkout` made for this run or
+  its job: an absolute `path` whose top level, every symlink resolved,
+  is under the run's own directory (an accepted proposal's: the run that
+  proposed it) or the job's, `<dataDir>/jobs/<job>`, and whose repository
+  is one of checkout's caches, `<dataDir>/repos/` (`notOwnWorkingCopy`).
+  Another job's checkout, a path out through `..` or a link, a repository
+  made by hand in the job's directory, a relative path (which resolved
+  against the server's own working directory) and any other repository on
+  the disk are refused before git touches it. It cannot force: the
+  refspec is `HEAD:refs/heads/<branch>`, so a push that is not a
+  fast-forward is `push_rejected:`. Not isolation: the agent's bash
+  reaches the disk; these hold what a caller hands the step.
+
+- **A person's SSH key is used, never held** (src/ssh-agent.ts,
+  `ssh/keygen`). A job someone lets into a server logs in with ONE key per
+  person: `ssh/keygen` makes it in code and stores the private half as the
+  run principal's actor secret `SSH_KEY` (`secretBlanks.fill` with an
+  actor: that person's blank, never overwritten; the server's blank when
+  the run has no principal), answering with the public half alone. The
+  agent step's `sshKeys` serves it to `bash` through an SSH agent in
+  strut's own process (`SSH_AUTH_SOCK`), so the key is in no file, no
+  child's environment, no prompt and no event. What is left: while a run
+  lasts, its shell (and, with no sandbox between jobs, another job's shell
+  on the same box) can SIGN with it, so a prompt-injected job can reach
+  the person's servers; it can never copy the key out. Revoking is taking
+  the public half out of `authorized_keys`, or deleting the actor secret.
+
 - **The wallet's credentials are not secrets a step reads**
   (plans/paid-runs.md decision 20; `src/payments/settings.ts`). The server's
   wallet (`LIGHTNING_*`, `PUT /earnings/wallet`) lives in `payments.json`,
@@ -491,7 +726,9 @@ instead of baked into env at deploy time.
   built-in outside `builtins` (an agent must list its built-ins in
   `toolFilter`), or a secret outside `secrets` (`secretsEnv`, a
   `tokenSecret` or `storageStateSecret` — a default too — `http/verify`'s
-  `{NAME}` header templates, or one named by a template); `meta/run-step`
+  `{NAME}` header templates, or one named by a template; a `git/*` step
+  names none, reading the run's token for its repository's host as a
+  `github/*` step reads GITHUB_TOKEN, so `tools` decides it); `meta/run-step`
   refuses a step outside it. The same rule (`stepProblems`) holds at RUN
   time for every step inside a version of a workflow the AI wrote (the
   version that runs, `aiWroteVersion`: a seed put back at boot, or a
@@ -527,6 +764,10 @@ the pieces of createStrut's one gate in front of EVERY route, reads included —
 
 SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional filename for a second file) + MemorySecretStore — backs ctx.services.secrets + /secrets endpoints
 
+### `src/git-hosts.ts`
+
+GIT CREDENTIALS BY HOST (stadeum plans/software.md §5, item 9): `STRUT_GIT_HOSTS` (strut's own `github.com` → `GITHUB_TOKEN`), `tokenHost(url)` (the host a URL's token would serve: https, or http to this machine; else none), `gitSecretOf(hosts)` (the lookup, URL → secret NAME), `boxGitHosts(packages)` (strut's own entry, then each package's `provides.git`), `gitHostProblems` (a host two holders serve with different secrets: what an install refuses). The map reaches steps as `secrets.git(url)` (src/capabilities.ts `hideSecrets`); "Git credentials by host" above
+
 ### `src/actor-secrets.ts`
 
 per-ACTOR secrets (plans/code-change.md §3.2): ActorSecretStore over any SecretStore (`A_<hex(actor)>_<NAME>` keys; a third encrypted file, actor-secrets.json), behind PUT/DELETE /actors/:actor/secrets/:name + GET /actors/:actor/secrets. The runner binds a run's `secrets` to its principal (`SecretsCapability.forPrincipal`), so `secrets.get(NAME)` resolves the actor's value first — never in /secrets or list_secrets
@@ -545,4 +786,4 @@ the static check on a custom step's SOURCE — imports of child_process / fs / n
 
 ### `src/steps/lib/secret/`
 
-secret/add { name, value } (plans/member-rights.md "Adding a secret"): a secret a PERSON types into strut's own app — the builder's reply names it in `ask.secret`, Jamie's SecretBox stores it — FILLING A BLANK through `ctx.services.secretBlanks` (src/secret-store.ts `secretBlanks`, set by createStrut when strut owns the store): refused (`secret_set:`) when the name has a value in the store or the environment, so a member never replaces the team's model or GitHub key; never lists, reads, changes or deletes one. Answers `{ name }` alone. Runs only as a first-party page's own call (a one-step run, for its viewer), never an agent's tool or a model-written page's; its `value` is `redact`ed from the run's events (`StepDef.redact`, runner.ts), so no log, sink or kept run holds it
+secret/add { name, value } (plans/member-rights.md "Adding a secret"): a secret a PERSON types into strut's own app — the builder's reply names it in `ask.secret`, Jamie's SecretBox stores it — FILLING A BLANK through `ctx.services.secretBlanks` (src/secret-store.ts `secretBlanks`, set by createStrut when strut owns the store): refused (`secret_set:`) when the name has a value in the store or the environment, so a member never replaces the team's model or GitHub key; never lists, reads, changes or deletes one. `fill(name, value, actor)` fills that ACTOR's blank instead (refused only when the actor has a value of their own; `secret_actor:` on a server with no actor store) — `ssh/keygen`'s door, never `secret/add`'s. Answers `{ name }` alone. Runs only as a first-party page's own call (a one-step run, for its viewer), never an agent's tool or a model-written page's; its `value` is `redact`ed from the run's events (`StepDef.redact`, runner.ts), so no log, sink or kept run holds it

@@ -7,15 +7,22 @@
 // (`conversation/get { wait }`) and marked read while it is open. A host's
 // conversation (a Sphinx tribe's) is read-only here: its host alone takes a
 // turn in it, so in place of the composer a line says where to reply, and
-// Continue here forks it into the viewer's own.
+// Continue here forks it into the viewer's own. Share, in the header, puts it
+// in the team's list and copies its link (./Share). A link to one the viewer
+// may not read says so, with no composer: there is nothing to reply to. So
+// is someone else's that an admin opened from Everyone, or by a link they
+// may not read otherwise (plans/jamie-app.md §2.3): read as it is — not made
+// theirs, never marked read, no Share, its cards deciding nothing — and
+// Continue here forks a copy that is theirs. Under it, every viewer reads
+// that admins can read conversations here.
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Hash, Loader2, MessageCircle, PanelLeftOpen, Square, Zap } from "lucide-react";
+import { Eye, Hash, Loader2, MessageCircle, PanelLeftOpen, Square, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useHost } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
-import { hostPlace, inFlight, sendRefusal, silentReply, turnContext, withoutAsk, type SendRefusal } from "../lib/chat";
+import { ADMINS_READ, hostPlace, inFlight, mayContinue, ownerLabel, readRefusal, sendRefusal, silentReply, turnContext, withoutAsk, type SendRefusal } from "../lib/chat";
 import { turnDeliverables, type Shown } from "../lib/artifacts";
 import type { ConversationTurn, WakeMark } from "../lib/types";
 import { useConversation, useFork, useSend, useStop, useUpdateConversation } from "../hooks";
@@ -26,12 +33,20 @@ import { Composer } from "./Composer";
 import { JobCard, useJob } from "./JobCard";
 import { ProposalCard } from "./ProposalCard";
 import { CopyButton, IconButton, Notice, errorText } from "./bits";
+import { ShareMenu } from "./Share";
 import { TurnAttachments } from "./Attachments";
+import { ReadOnlyContext, useViewer } from "../viewer";
 
 export interface ThreadProps {
   /** The conversation, or a new one's id before its first turn (`draft`). */
   session: string | null;
   draft: boolean;
+  /** An admin reads it as a reader (`everyone`): opened from Everyone, or a
+   *  link they may not read as themselves. */
+  everyone?: boolean;
+  /** The viewer is an admin: a link they may not read as themselves is read
+   *  again as a reader. */
+  onReadAsAdmin?: () => void;
   /** The draft's first turn was sent: it is a conversation now. */
   onStarted: (id: string) => void;
   /** Open another conversation (a fork of this one). */
@@ -41,10 +56,11 @@ export interface ThreadProps {
   focusJob?: { job: string; at: number };
 }
 
-export function Thread({ session, draft, onStarted, onOpen, onShowList, focusJob }: ThreadProps) {
+export function Thread({ session, draft, everyone = false, onReadAsAdmin, onStarted, onOpen, onShowList, focusJob }: ThreadProps) {
   const host = useHost();
   const qc = useQueryClient();
-  const conv = useConversation(draft ? null : session);
+  const viewer = useViewer();
+  const conv = useConversation(draft ? null : session, everyone);
   const send = useSend();
   const stop = useStop();
   const update = useUpdateConversation();
@@ -124,10 +140,24 @@ export function Thread({ session, draft, onStarted, onOpen, onShowList, focusJob
   };
 
   const title = draft ? "New chat" : (conv.view?.conversation.title || (conv.view ? "Untitled" : ""));
+  /** A link to a conversation the viewer may not read: nothing to reply to. */
+  const unreadable = !draft && !!conv.error && !conv.view;
+  const refused = unreadable ? readRefusal(errorText(conv.error)) : null;
+  // An admin's link to someone else's: read again as a reader, with no
+  // "isn't shared with you" on the way.
+  const asAdmin = !everyone && !!refused && !!onReadAsAdmin;
+  useEffect(() => {
+    if (asAdmin) onReadAsAdmin?.();
+  }, [asAdmin]);
   const hosted = draft ? undefined : conv.view?.conversation.host;
+  // Someone else's, read from Everyone: the viewer adds nothing to it.
+  // Until it is read, it is someone else's: no composer flashes up.
+  const reading = everyone && !!session && !hosted && !(conv.view && mayContinue(conv.view, session, viewer));
+  // Whose it is (a host's: who started it, beside where it is continued).
+  const owner = !conv.view ? "" : hosted ? (conv.view.conversation.startedBy ?? "") : ownerLabel(conv.view.conversation);
   const continueHere = async () => {
     if (!session) return;
-    const row = await fork.mutateAsync({ session }).catch(() => null);
+    const row = await fork.mutateAsync({ session, ...(everyone ? { everyone: true } : {}) }).catch(() => null);
     if (row) onOpen(row.id);
   };
   return (
@@ -139,8 +169,9 @@ export function Thread({ session, draft, onStarted, onOpen, onShowList, focusJob
           </IconButton>
         )}
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>{title}</h1>
-        {conv.view?.conversation.shared && <span className="shrink-0 text-xs text-muted-foreground">Shared</span>}
+        {session && !draft && conv.view && !reading && <ShareMenu session={session} shared={!!conv.view.conversation.shared} onChanged={() => conv.refresh()} />}
         {hosted && <span className="shrink-0 text-xs text-muted-foreground">In {hostPlace(hosted)}</span>}
+        {everyone && owner && owner !== viewer && <span className="shrink-0 text-xs text-muted-foreground">{owner}'s chat</span>}
         <span className="shrink-0 text-xs text-muted-foreground">Jamie</span>
       </header>
       <div
@@ -155,29 +186,43 @@ export function Thread({ session, draft, onStarted, onOpen, onShowList, focusJob
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
           {!session && <Empty />}
           {session && draft && <Empty />}
-          {conv.error && !conv.view && <Notice tone="error">{errorText(conv.error)}</Notice>}
+          {unreadable && !asAdmin && <Notice tone={refused ? "warn" : "error"}>{refused ?? errorText(conv.error)}</Notice>}
           {session && !draft && !conv.view && !conv.error && <p className="text-sm text-muted-foreground">Loading…</p>}
           {conv.hasOlder && (
             <button type="button" onClick={() => void conv.loadOlder()} className="self-center text-xs text-muted-foreground hover:text-foreground">
               Earlier turns
             </button>
           )}
-          <ThreadPrs.Provider value={threadPrs}>
-            {turns.map((t) => (
-              <Turn key={t.runId} turn={t} conversation={session!} carded={carded} />
-            ))}
-          </ThreadPrs.Provider>
+          <ReadOnlyContext.Provider value={reading}>
+            <ThreadPrs.Provider value={threadPrs}>
+              {turns.map((t) => (
+                <Turn key={t.runId} turn={t} conversation={session!} carded={carded} />
+              ))}
+            </ThreadPrs.Provider>
+          </ReadOnlyContext.Provider>
         </div>
       </div>
       <div className="shrink-0 px-4 pb-4">
         <div className="mx-auto w-full max-w-3xl space-y-2">
           {refusal && <Notice tone={refusal.kind === "error" ? "error" : "warn"}>{refusal.text}</Notice>}
-          {hosted ? (
+          {unreadable ? null : hosted ? (
             <>
               {fork.isError && <Notice tone="error">{errorText(fork.error)}</Notice>}
               <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3 py-2.5" data-testid="hosted-bar">
                 <Hash className="size-4 shrink-0 text-muted-foreground" />
                 <p className="min-w-0 flex-1 text-sm">In {hostPlace(hosted)}: reply there.</p>
+                <Button size="sm" variant="outline" onClick={() => void continueHere()} disabled={fork.isPending}>
+                  {fork.isPending && <Loader2 className="animate-spin" />}
+                  Continue here
+                </Button>
+              </div>
+            </>
+          ) : reading ? (
+            <>
+              {fork.isError && <Notice tone="error">{errorText(fork.error)}</Notice>}
+              <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3 py-2.5" data-testid="reader-bar">
+                <Eye className="size-4 shrink-0 text-muted-foreground" />
+                <p className="min-w-0 flex-1 text-sm">{owner ? `${owner}'s conversation` : "Someone else's conversation"}: you are reading it as an admin.</p>
                 <Button size="sm" variant="outline" onClick={() => void continueHere()} disabled={fork.isPending}>
                   {fork.isPending && <Loader2 className="animate-spin" />}
                   Continue here
@@ -193,6 +238,7 @@ export function Thread({ session, draft, onStarted, onOpen, onShowList, focusJob
               running={running ? { stopping: stop.isPending, onStop: () => stop.mutate({ workflow: running.workflow, runId: running.runId }) } : null}
             />
           )}
+          <p className="text-center text-[11px] text-muted-foreground" data-testid="admins-read">{ADMINS_READ}</p>
         </div>
       </div>
     </div>

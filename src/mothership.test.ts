@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
+import { z } from "zod";
 import {
   attenuate,
   attenuationSigBytes,
@@ -42,6 +43,9 @@ import { createStrut } from "./createStrut.js";
 import { WorkspaceManager, type WorkspaceStore } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
 import type { LlmAuthContext } from "./llm.js";
+import type { StrutCapabilities } from "./capabilities.js";
+import { defineStep, flow, step, type StepContext, type StepRegistry } from "./core.js";
+import { runWorkflow } from "./runner.js";
 import { mintDelegation, type MintOptions } from "./test-util/mint-delegation.js";
 
 // ── Fixture: what hive mints — an org-signed UA + a user-signed standing invocation ──
@@ -406,5 +410,195 @@ describe("mothership: routes and the delegation file", () => {
     assert.equal((await call("GET", "/llm/mothership")).json.enabled, true);
     assert.equal((await call("GET", "/llm/delegations")).status, 200);
     assert.equal((await call("GET", "/llm/nope")).status, 404);
+  });
+});
+
+// ── Grants: model calls for a machine outside strut (stakwork/pods PLAN.md §3.2) ──
+
+describe("mothership: grants for a machine outside strut", () => {
+  const GRANT_ENV = [...ENV, "STRUT_GRANT_MAX_COST_USD"];
+  let saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    saved = Object.fromEntries(GRANT_ENV.map((k) => [k, process.env[k]]));
+    for (const k of GRANT_ENV) delete process.env[k];
+  });
+  afterEach(() => {
+    for (const k of GRANT_ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k]!;
+    }
+  });
+
+  const URL = "http://stadeum-ui:3000/api/mothership/keys";
+  type HostCall = { method: string; url: string; headers: Record<string, string>; body?: any };
+  /** stadeum-ui's endpoint, faked: a key per POST, joined as `<virtual key>.<macaroon>`; DELETE removes one. */
+  const fakeHost = (answer?: (c: HostCall) => Response | undefined) => {
+    const calls: HostCall[] = [];
+    const keys = new Set<string>();
+    let made = 0;
+    const fetch = (async (url: string, init: RequestInit) => {
+      const c: HostCall = { method: init.method!, url, headers: init.headers as Record<string, string>, ...(init.body ? { body: JSON.parse(init.body as string) } : {}) };
+      calls.push(c);
+      const custom = answer?.(c);
+      if (custom) return custom;
+      if (c.method === "POST") {
+        const id = `pk-${++made}`;
+        keys.add(id);
+        return Response.json({ id, key: `sk-bf-vk${made}.${c.body.macaroon}`, address: "https://mothership.box.example/", expires_at: c.body.expires_at });
+      }
+      return keys.delete(decodeURIComponent(url.slice(URL.length + 1))) ? Response.json({ ok: true }) : Response.json({ error: "no such key" }, { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+    return { fetch, calls, keys };
+  };
+
+  const build = async (o: { delegation?: ReturnType<typeof mint>; now?: () => Date; answer?: (c: HostCall) => Response | undefined } = {}) => {
+    const host = fakeHost(o.answer);
+    const ms = createMothership({ dataDir: "/nonexistent", store: new MemorySecretStore(), grantsUrl: `${URL}/`, fetch: host.fetch, now: o.now });
+    const d = o.delegation ?? mint();
+    await ms.delegations.put(ACTOR, { macaroon: d.macaroon, delegationId: d.delegationId, apiKey: "vk-evan", baseUrl: "https://swarm.example:8181", exp: d.exp });
+    return { ms, d, host, grants: ms.grants! };
+  };
+
+  it("a grant: the host is asked with the deployment key and the person; the env is the standard variables; the macaroon is capped, expiring and billed as the grant", async () => {
+    process.env["STRUT_API_KEY"] = "deploy-key";
+    const { grants, host } = await build();
+    const before = Date.now();
+    const g = (await grants.forPrincipal!(ACTOR).grant({ name: "pod hive", hours: 2 }))!;
+    const call = host.calls[0]!;
+    assert.equal(g.id, "pk-1");
+    const key = `sk-bf-vk1.${call.body.macaroon}`;
+    assert.deepEqual(g.env, {
+      OPENAI_BASE_URL: "https://mothership.box.example/openai/v1",
+      OPENAI_API_KEY: key,
+      ANTHROPIC_BASE_URL: "https://mothership.box.example/anthropic",
+      ANTHROPIC_API_KEY: key,
+    });
+    assert.equal(call.method, "POST");
+    assert.equal(call.url, URL);
+    assert.equal(call.headers["authorization"], "Bearer deploy-key");
+    assert.equal(call.headers["x-strut-actor"], ACTOR);
+    assert.deepEqual(Object.keys(call.body).sort(), ["expires_at", "macaroon", "max_cost_usd", "name"]);
+    assert.equal(call.body.name, "pod_hive", "the name the gateway bills, as the host takes it: [A-Za-z0-9._-]{1,64}");
+    assert.equal(call.body.max_cost_usd, 1000, "the default cap, sent so the host holds the key to it too");
+    assert.equal(call.body.expires_at, g.expiresAt);
+    const exp = Date.parse(g.expiresAt);
+    assert.ok(exp >= before + 2 * 3600_000 && exp <= Date.now() + 2 * 3600_000, g.expiresAt);
+
+    const claims = verify(call.body.macaroon, policy, new Date());
+    assert.equal(claims.user_id, ACTOR);
+    assert.equal(claims.agent_name, "pod_hive", "billed as the grant's name");
+    assert.deepEqual(claims.effective_caveats.agents, [STRUT_AGENT, "pod_hive"]);
+    assert.match(claims.run_id, /^grant-[0-9a-f]+$/);
+    assert.equal(claims.effective_caveats.max_cost_usd, 1000);
+    assert.equal(claims.effective_caveats.max_steps, 0);
+    assert.equal(decodeMacaroon(call.body.macaroon).attenuations.length, 1, "one link, off the invocation: no run's cap above it");
+    assert.throws(() => verify(call.body.macaroon, policy, new Date(exp + 1000)), /expired/);
+
+    const again = (await grants.forPrincipal!(ACTOR).grant({ name: "pod hive", hours: 2 }))!;
+    assert.equal(again.id, "pk-2");
+    assert.notEqual(verify(host.calls[1]!.body.macaroon, policy, new Date()).run_id, claims.run_id, "each grant is capped apart");
+  });
+
+  it("the cap: STRUT_GRANT_MAX_COST_USD, else $1000, lowered to the delegation's ceiling, never zero", async () => {
+    const { grants, host } = await build({ delegation: mint({ ceiling: 50 }) });
+    const mine = grants.forPrincipal!(ACTOR);
+    const capOf = (i: number) => {
+      const c = host.calls[i]!;
+      assert.equal(verify(c.body.macaroon, policy, new Date()).effective_caveats.max_cost_usd, c.body.max_cost_usd, "the link and the key carry the same cap");
+      return c.body.max_cost_usd;
+    };
+    process.env["STRUT_GRANT_MAX_COST_USD"] = "2.5";
+    await mine.grant({ name: "pod", hours: 1 });
+    assert.equal(capOf(0), 2.5);
+    process.env["STRUT_GRANT_MAX_COST_USD"] = "";
+    await mine.grant({ name: "pod", hours: 1 });
+    assert.equal(capOf(1), 50, "the $1000 default, lowered to a $50 ceiling: a grant all the same");
+    process.env["STRUT_GRANT_MAX_COST_USD"] = "500";
+    await mine.grant({ name: "pod", hours: 1 });
+    assert.equal(capOf(2), 50, "a setting above the ceiling is lowered too");
+    process.env["STRUT_GRANT_MAX_COST_USD"] = "0";
+    await assert.rejects(() => mine.grant({ name: "pod", hours: 1 }), /positive number/);
+    process.env["STRUT_GRANT_MAX_COST_USD"] = "lots";
+    await assert.rejects(() => mine.grant({ name: "pod", hours: 1 }), /positive number/);
+    assert.equal(host.calls.length, 3, "nothing asked of the host for a grant that fails here");
+  });
+
+  it("hours past the person's authorization: the grant ends with it", async () => {
+    const soon = mint({ ttlMs: 2 * 3600_000 });
+    const { grants, host } = await build({ delegation: soon });
+    const g = (await grants.forPrincipal!(ACTOR).grant({ name: "pod", hours: 24 }))!;
+    assert.equal(g.expiresAt, soon.exp, "the parent's own exp string, verbatim");
+    assert.doesNotThrow(() => verify(host.calls[0]!.body.macaroon, policy, new Date()));
+  });
+
+  it("no principal, or no delegation for it: null and the host never asked; required mode makes both an error; an expired one is always an error", async () => {
+    const { grants, host } = await build();
+    assert.equal(await grants.grant({ name: "pod", hours: 1 }), null, "the unbound capability bills nobody");
+    assert.equal(await grants.forPrincipal!("stranger-1").grant({ name: "pod", hours: 1 }), null);
+    process.env["STRUT_MOTHERSHIP_REQUIRED"] = "1";
+    await assert.rejects(() => grants.grant({ name: "pod", hours: 1 }), /this grant has nobody to bill/);
+    await assert.rejects(() => grants.forPrincipal!("stranger-1").grant({ name: "pod", hours: 1 }), /no Mothership authorization on file for stranger-1/);
+    assert.equal(host.calls.length, 0);
+
+    const late = await build({ now: () => new Date(Date.now() + 61 * 86_400_000) });
+    await assert.rejects(() => late.grants.forPrincipal!(ACTOR).grant({ name: "pod", hours: 1 }), /expired .* re-authorize/);
+  });
+
+  it("a bad request, a refusing host or an answer without a key: an error, never a grant", async () => {
+    const { grants } = await build({ answer: (c) => (c.body?.name === "refused" ? Response.json({ error: "no customer for evan" }, { status: 403 }) : c.body?.name === "odd" ? Response.json({ id: "pk-x" }) : undefined) });
+    const mine = grants.forPrincipal!(ACTOR);
+    await assert.rejects(() => mine.grant({ name: "", hours: 1 }), /name/);
+    await assert.rejects(() => mine.grant({ name: "pod", hours: 0 }), /hours/);
+    await assert.rejects(() => mine.grant({ name: "pod", hours: Number.NaN }), /hours/);
+    await assert.rejects(() => mine.grant({ name: "pod", hours: 25 }), /at most 24/);
+    await assert.rejects(() => mine.grant({ name: "refused", hours: 1 }), /no grant for evan-cmx123: .* answered 403 .*no customer/);
+    await assert.rejects(() => mine.grant({ name: "odd", hours: 1 }), /without an id, a key and an address/);
+  });
+
+  it("revoke: the host deletes the key, with the deployment key and no person (a job's sweep has none); one already gone is fine", async () => {
+    process.env["STRUT_API_KEY"] = "deploy-key";
+    const { grants, host } = await build({ answer: (c) => (c.method === "DELETE" && c.url.endsWith("/pk-broken") ? new Response("boom", { status: 500 }) : undefined) });
+    const g = (await grants.forPrincipal!(ACTOR).grant({ name: "pod", hours: 1 }))!;
+    assert.ok(host.keys.has(g.id));
+    await grants.revoke(g.id);
+    const del = host.calls[1]!;
+    assert.equal(del.method, "DELETE");
+    assert.equal(del.url, `${URL}/pk-1`);
+    assert.equal(del.headers["authorization"], "Bearer deploy-key");
+    assert.equal(del.headers["x-strut-actor"], undefined);
+    assert.equal(host.keys.size, 0);
+    await grants.revoke(g.id);
+    await assert.rejects(() => grants.revoke("pk-broken"), /could not revoke grant pk-broken: .* answered 500 boom/);
+    await assert.rejects(() => grants.revoke(""), /id/);
+  });
+
+  it("no grants URL: no grants (the bag gets no llm)", () => {
+    assert.equal(createMothership({ dataDir: "/nonexistent", store: new MemorySecretStore() }).grants, undefined);
+  });
+
+  it("in a run: ctx.services.llm is billed to the run's principal; a run with none gets null; a public run gets no llm", async () => {
+    const { grants, host } = await build();
+    const claim = defineStep({
+      type: "claim",
+      input: z.object({}),
+      output: z.any(),
+      async run(_cfg, ctx: StepContext<StrutCapabilities>) {
+        const llm = ctx.services.llm;
+        if (!llm) return { llm: false };
+        const g = await llm.grant({ name: "pod", hours: 1 });
+        return { llm: true, id: g?.id ?? null, names: g ? Object.keys(g.env).sort() : [] };
+      },
+    });
+    const registry = { claim } as unknown as StepRegistry;
+    const wf = flow("job", { input: z.object({}), steps: [step("claim", "claim", {})] });
+    const services = { http: async () => ({}), secrets: { get: async () => undefined }, llm: grants } as unknown as StrutCapabilities;
+
+    const asEvan = await runWorkflow(wf, {}, registry, { services, actor: ACTOR, principal: ACTOR });
+    assert.deepEqual(asEvan.output, { llm: true, id: "pk-1", names: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL"] });
+    assert.equal(host.calls[0]!.headers["x-strut-actor"], ACTOR);
+    assert.deepEqual((await runWorkflow(wf, {}, registry, { services })).output, { llm: true, id: null, names: [] });
+    assert.deepEqual((await runWorkflow(wf, {}, registry, { services, principal: ACTOR, origin: "public" })).output, { llm: false });
+    assert.equal(host.calls.length, 1);
+    assert.equal(services.llm, grants, "the shared bag is unchanged");
   });
 });

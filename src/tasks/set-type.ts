@@ -176,7 +176,7 @@ export const typeChangeInput = z.object({
     .describe("A STANDING type, for work a worker starts — a photo of something they found: { workflow }. A worker's ask makes the task whenever they like, any number of workers at once, and each answer starts `workflow`, whose FIRST step must be this type's `human` step (its show reading only input and params, no files). The workflow runs only once someone answers, billed to its owner. null: not standing — a `human` step in a run makes its tasks."),
   round: z
     .preprocess(fromJsonText, z.object({ workflow: z.string().min(1) }).strict().nullable().optional())
-    .describe("A ROUND type, for work one for each item of a list — each shop, each page: { workflow }, the workflow whose run makes one task of this type for each item (its `human` step of this type, in a `foreach`). Name it so the person can send a round from Tasks and workers (Send a round, the items ticked) as well as by asking in the conversation. Never with standing. null: none named."),
+    .describe("A ROUND type, for work one for each item of a list — each shop, each page: { workflow }, the workflow whose run makes one task of this type for each item (its `human` step of this type, in a `foreach`). Name it so the person can send a round from Workers (Send a round, the items ticked) as well as by asking in the conversation. Never with standing. null: none named."),
   check: z
     .preprocess(fromJsonText, z.object({ step: z.string().min(1), config: z.record(z.string(), z.any()).optional() }).strict().nullable().optional())
     .describe(
@@ -707,7 +707,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     value: after.standing
       ? `Any time: a worker starts one whenever they like, and many can work at once. Each one they hand in starts the workflow ${after.standing.workflow}.`
       : after.round
-        ? `One for each item, when you send a round: from Tasks and workers (Send a round), or by asking here. The workflow ${after.round.workflow} makes them.`
+        ? `One for each item, when you send a round: from Workers (Send a round), or by asking here. The workflow ${after.round.workflow} makes them.`
         : "When a workflow sends one out: one for each thing it asks about.",
   });
   // §5.6.7 c: what an answer must pass before it is accepted, and so paid,
@@ -731,7 +731,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
       : { who: "and they are paid from their first one: there is no qualifying test, so only your own review of their answers checks them", summary: "Anyone signed in is paid from their first one, with no qualifying test." };
   const who = after.open
     ? `Anyone signed in to the worker page${qualify ? `, after passing a test of ${plural(qualify, "task")}` : ""}${warn ? `, ${warn.who}` : ""}.`
-    : "Only people you invite: give it to each of them in Tasks and workers.";
+    : "Only people you invite: give it to each of them in Workers.";
   fields.push({ label: "Who can do it", value: who, ...(warn ? { danger: true } : {}) });
   let pay = after.paySats
     ? `${money(after.paySats)} for each one, from this server's wallet. Workers can withdraw it ${after.holdHours ? `${holdText(after.holdHours)} later` : "at once"}.`
@@ -761,7 +761,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     value: !existing
       ? after.open
         ? "none yet: anyone signed in holds it from their first ask"
-        : "none yet: you give it to each worker in Tasks and workers (strut/staff)"
+        : "none yet: you give it to each worker in Workers (strut/staff)"
       : workers === undefined
         ? "not counted on this server"
         : `${workers} hold it`,

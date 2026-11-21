@@ -44,6 +44,17 @@ export function appToolInput(input: string | null | undefined): Record<string, s
   return Object.keys(out).length ? out : undefined;
 }
 
+/** The address a person opens app `key` on in this UI — `href`'s page
+ *  (origin and path) with `?app=<key>` alone, every other param dropped —
+ *  which the app builds its links to paste on (`strut/page`, @strut/kit
+ *  `useShareLink`). */
+export function appPageAddress(href: string, key: string): string {
+  const url = new URL(href);
+  const page = new URL(url.pathname, url.origin);
+  page.searchParams.set("app", key);
+  return page.href;
+}
+
 /** A strut link from a PEER's app, as this strut's UI follows it. The page
  *  names apps and files where it lives, so `app=<name>` is that peer's
  *  `@<peer>/<name>`, its `input` kept, and `artifact=<served path>` that

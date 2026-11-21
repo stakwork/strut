@@ -363,7 +363,8 @@ describe("a box following a git branch", () => {
     const put = await subscribe({ ref });
     assert.equal(put.status, 200, await put.clone().text());
     const info = (await put.json()) as SubscriptionInfo;
-    assert.deepEqual([info.ref, info.tokenSecret, info.token, info.key], [ref, "GITHUB_TOKEN", undefined, undefined], "the secret's name, never a token");
+    // A file: repository takes no token: no secret serves it (src/git-hosts.ts).
+    assert.deepEqual([info.ref, info.tokenSecret, info.token, info.key], [ref, undefined, undefined, undefined], "no secret's name, and never a token");
 
     // The PUT starts the first read; a sync after it finds the package in.
     await strut.subscriptions.sync("pods");
@@ -469,10 +470,9 @@ describe("a box following a git branch", () => {
     };
     await refused({ ref: `git+${pathToFileURL(repo).href}@${c1}#pkg` }, /^subscription_invalid: ref .*names a commit, which does not move/);
     await refused({ ref, key: "y".repeat(52) }, /not both/);
-    await refused({ ref, tokenSecret: "ghp-not-a-name" }, /tokenSecret is the NAME of a secret/);
+    await refused({ ref, tokenSecret: "GITHUB_TOKEN" }, /^subscription_invalid: tokenSecret is gone: a git\+ ref is read with the run's token for its host/);
     await refused({ ref: "https://github.com/acme/pods" }, /^subscription_invalid: ref https:\/\/github.com\/acme\/pods: a git ref starts with git\+/);
     await refused({ ref: "git+https://github.com/acme/pods@" }, /nothing after @/);
-    await refused({ tokenSecret: "GITHUB_TOKEN" }, /^subscription_invalid: ref is git\+https:/);
     await refused({ ref: 3 }, /^subscription_invalid: ref is git\+https:/);
 
     // A tag names a commit that does not move: the first sync says so.
@@ -482,12 +482,11 @@ describe("a box following a git branch", () => {
     assert.match(tag.error!, /^package_ref_not_found: .*no branch "v1" .*a subscription follows a branch, not a tag or a commit/);
     assert.equal(await ws.getWorkflowMetadata("acme/pods/sync"), null);
 
-    // The branch, then another token's name: the state stays.
+    // The branch, then the same again: the state stays.
     assert.equal((await subscribe({ ref })).status, 200);
     await strut.subscriptions.sync("pods");
     assert.equal((await state()).applied?.commit, c1);
-    const renamed = await subscribe({ ref, tokenSecret: "STADEUM_GH" });
-    assert.equal(((await renamed.json()) as SubscriptionInfo).tokenSecret, "STADEUM_GH");
+    assert.equal((await subscribe({ ref })).status, 200);
     await strut.subscriptions.sync("pods");
     assert.equal((await state()).applied?.commit, c1);
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { stepHashesFor } from "./closure.js";
-import type { AppRef, Flow, HostRef, StepRegistry, RunEvent, RunResult, RunSummary } from "./core.js";
+import type { AppRef, Flow, HostRef, StepRegistry, RunEvent, RunResult, RunSummary, RunTrial } from "./core.js";
 import type { ClaimsReader } from "./graph/claims.js";
 import { runWorkflow, type SubflowResolver } from "./runner.js";
 import type { RunController } from "./run-control.js";
@@ -82,6 +82,8 @@ export interface RunStepOptions {
   job?: string;
   /** The Concept branch the step runs on (src/branches.ts): the calling run's. */
   branch?: string;
+  /** The calling run is a trial (`RunTrial`): so is this step's run. */
+  trial?: RunTrial;
   /** The APP the step runs for (plans/apps.md §5): the app door's
    *  (`step_run`) stamp, the twin of `job` — `ctx.app` for the step, `app`
    *  on the kept run's summary. */
@@ -161,6 +163,7 @@ export async function runSingleStep(
     ...(opts.controller ? { controller: opts.controller } : {}),
     ...(opts.job ? { job: opts.job } : {}),
     ...(opts.branch ? { branch: opts.branch } : {}),
+    ...(opts.trial ? { trial: opts.trial } : {}),
     ...(opts.app ? { app: opts.app } : {}),
     ...(opts.host ? { hostCall: opts.host } : {}),
     ...(pkg ? { package: pkg } : {}),

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appKey, appMessage, appToolInput, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, publicAppHop, soloTheme, strutLink } from "./app-links";
+import { appKey, appMessage, appPageAddress, appToolInput, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, publicAppHop, soloTheme, strutLink } from "./app-links";
 import { appLink } from "../../kit/src/links";
 
 /** The pure parts of the app host's relay (./app-links, what ./app-host
@@ -40,6 +40,11 @@ describe("the app host", () => {
     assert.equal(appToolInput(null), undefined);
     assert.equal(appToolInput(""), undefined);
     assert.equal(appToolInput("&"), undefined, "no keys, no input");
+  });
+
+  it("an app's page address is this UI's page with ?app=<key> alone", () => {
+    assert.equal(appPageAddress("https://strut.test/?app=strut%2Fjamie&input=session%3Dx&lang=es#top", "strut/jamie"), "https://strut.test/?app=strut%2Fjamie");
+    assert.equal(appPageAddress("https://swarm.test/lab/?wf=bench", "@peer/bench"), "https://swarm.test/lab/?app=%40peer%2Fbench");
   });
 
   it("a peer's page names apps on that peer; its other links are the peer's", () => {

@@ -38,7 +38,6 @@ services:
       STRUT_MODEL_DIR: /data/models
       STRUT_SERVE: "${STRUT_SERVE:?set STRUT_SERVE}"
       STRUT_SERVE_URL: "${STRUT_SERVE_URL:-}"
-      STRUT_SERVE_TOKEN_SECRET: "${STRUT_SERVE_TOKEN_SECRET:-}"
       # og:image and og:url are written against it.
       STRUT_PUBLIC_URL: "https://${STRUT_APP_HOST:?set STRUT_APP_HOST}"
       # The operator's key: the console (/?shell=1), GET /serve, everything

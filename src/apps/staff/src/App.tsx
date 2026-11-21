@@ -1,15 +1,18 @@
 // strut/staff (plans/human-steps.md §9, specs/API.md §14.15): the task
 // store's staff routes as a page, for an ADMIN — strut's own UI lists it in
 // Apps, a host (Stadeum) frames it for a person it signed in as an admin.
-// Seven tabs, each deep-linkable (`?input=tab=…`, `type=`, `worker=`,
-// `task=`, `test=`, `run=`, `payout=`, `tab=support&worker=`): the Queue (what
-// waits, and what needs a person), the task Types (who draws them, the
-// answer's shape, pay, tests, copies, who holds them), the Workers (letting
-// them in, what they did and earned), the Tasks (every task and its answers),
-// the Tests, the Payouts (workers' withdrawals: the switch, the caps, the
-// list), and Support (the chat with workers, plans/support-chat.md, with its
-// unread count on the tab; its tables are this app's own SQLite,
-// plans/people-and-hosts.md §5). Every call
+// Six tabs, one a job: the Overview (what needs a person, and how the work
+// goes), the Answers (every task and what was answered — one by one, or by
+// the groups a workflow put them in with task/reply's group — and the
+// verdict on each), the Workers (letting them in, what they did and earned),
+// the Task types (who draws them, the answer's shape, pay, tests, copies),
+// the Payouts (workers' withdrawals: the switch, the caps, the list) and
+// Support (the chat with workers, plans/support-chat.md, with its unread
+// count on the tab; its tables are this app's own SQLite,
+// plans/people-and-hosts.md §5). A type's Tests open from the type. Every
+// place is deep-linkable as before (`?input=tab=…`, `type=`, `worker=`,
+// `task=`, `group=`, `test=`, `run=`, `payout=`, `tab=support&worker=`).
+// Invite a worker is in the header, on every tab. Every call
 // to the task store is a `staff/*` step, which answers only strut's own page
 // shown to an admin with a name; the page is only a face, the routes decide.
 // Support's are SQL on the app's own tables and its `support/*` tools. Parts of items 4
@@ -17,17 +20,18 @@
 // answers for them (§9.7).
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, Users } from "lucide-react";
+import { RefreshCw, UserPlus, Users } from "lucide-react";
 import { useAppLink, useChannel, useHost, useNames, useSql, useStrutClient, useToolInput } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { TABS, TAB_LABELS, inputOf, placeOf, shownOf, testsAnswerOf, type Place, type Tab } from "./lib/view";
-import type { TaskType, Test, TypeShare, Worker } from "./lib/types";
-import { ErrorLine } from "./components/bits";
-import { Queue } from "./components/Queue";
+import { NAV, NAV_LABELS, inputOf, navOf, placeOf, shownOf, testsAnswerOf, toReviewOf, type NavTab, type Place } from "./lib/view";
+import type { TaskStats, TaskType, Test, TypeShare, Worker } from "./lib/types";
+import { Count, ErrorLine } from "./components/bits";
+import { Overview } from "./components/Overview";
+import { Answers } from "./components/Answers";
+import { InvitePanel } from "./components/Share";
 import { Types } from "./components/Types";
 import { Workers } from "./components/Workers";
-import { Tasks } from "./components/Tasks";
 import { Tests } from "./components/Tests";
 import { Payouts } from "./components/Payouts";
 import { Support } from "./components/Support";
@@ -56,6 +60,8 @@ export default function App() {
   const listed = useMemo(() => workers.data?.workers.map((w) => (names?.[w.actor] ? { ...w, name: names[w.actor] } : w)), [workers.data, names]);
   // Whether the test routes answer here (item 4): the Tests tab's own read.
   const tests = useQuery({ queryKey: ["staff", "tests", "all"], queryFn: () => client.run<{ tests: Test[] }>("staff/tests", {}) });
+  // Whether any workflow named a group (`task/reply`'s `group`): the Groups tab shows once one did.
+  const groups = useQuery({ queryKey: ["staff", "groups", "any"], queryFn: () => client.run<{ groups: unknown[] }>("staff/groups", { limit: 1 }), retry: false });
   // Whether the payout routes answer here (item 5b): the Payouts tab's own read.
   const payouts = useQuery({ queryKey: ["staff", "payouts", "any"], queryFn: () => client.run("staff/payouts", { limit: 1 }) });
   // Support (plans/people-and-hosts.md §5): its tables are this app's own
@@ -83,43 +89,62 @@ export default function App() {
       if (m.key === "invites") void qc.invalidateQueries({ queryKey: ["staff", "invites"] });
     },
   });
-  const tabs = TABS.filter((t) => (t !== "tests" || shown.tests) && (t !== "payouts" || shown.payouts) && (t !== "support" || shown.support));
+  // The queue's counts, for the tabs: the Overview reads them again every
+  // 10 s while it shows, and every write reads them again.
+  const stats = useQuery({ queryKey: ["staff", "stats"], queryFn: () => client.run<TaskStats>("staff/stats", {}), retry: false });
+  const hasGroups = (groups.data?.groups.length ?? 0) > 0 || place.tab === "groups";
+  const shownNav = NAV.filter((t) => (t !== "payouts" || shown.payouts) && (t !== "support" || shown.support));
   const unread = counts.data?.rows[0]?.unread ?? 0;
-  const tab: Tab = tabs.includes(place.tab) ? place.tab : "queue";
+  // A place the server does not answer for (its tests, its payouts) opens the Overview.
+  const here: Place = (place.tab === "tests" && !shown.tests) || (place.tab === "payouts" && !shown.payouts) || (place.tab === "support" && !shown.support) ? { tab: "queue" } : place;
+  const nav = navOf(here.tab);
+  const fresh = listed?.filter((w) => w.status === "new").length ?? 0;
+  const toReview = shown.review ? (toReviewOf(stats.data) ?? 0) : 0;
+  /** Where a tab opens: the answers by group once a workflow named one. */
+  const open = (t: NavTab) => go(t === "tasks" && hasGroups ? { tab: "groups" } : { tab: t });
+  // Invite a worker, from any tab: open, and the kind of work picked first
+  // when a type's card asked. Kept mounted once opened, so an invite just
+  // made stays on its card.
+  const [invite, setInvite] = useState<{ open: boolean; pick?: string } | null>(null);
   // Strut's own admin pages act as the person viewing them: with the bare
   // key and no name, every step refuses.
   const refused = [types.error, workers.error].find((e) => e && /is an admin's/.test(e instanceof Error ? e.message : String(e)));
+  const share = types.data?.tasks ? { tasks: types.data.tasks } : {};
 
   return (
     <div className="mx-auto flex min-h-screen max-w-6xl flex-col gap-5 bg-background p-4 text-foreground sm:p-6">
       <header className="flex flex-wrap items-center gap-3">
         <Users className="size-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Tasks and workers</h1>
-        <span className="hidden text-sm text-muted-foreground md:inline">The people who answer this server's workflows, and what they answered.</span>
-        <Button variant="ghost" size="icon-sm" className="ml-auto" title="Read again" onClick={() => void qc.invalidateQueries({ queryKey: ["staff"] })}>
-          <RefreshCw className={cn((types.isFetching || workers.isFetching) && "animate-spin")} />
-        </Button>
+        <h1 className="text-lg font-semibold">Workers</h1>
+        <div className="ml-auto flex items-center gap-2">
+          {!refused && types.data && (
+            <Button variant="outline" size="sm" aria-expanded={!!invite?.open} onClick={() => setInvite((i) => ({ open: !i?.open }))} data-testid="invite-a-worker">
+              <UserPlus /> Invite a worker
+            </Button>
+          )}
+          <Button variant="ghost" size="icon-sm" title="Read again" aria-label="Read again" onClick={() => void qc.invalidateQueries({ queryKey: ["staff"] })}>
+            <RefreshCw className={cn((types.isFetching || workers.isFetching) && "animate-spin")} />
+          </Button>
+        </div>
       </header>
 
       <nav className="flex flex-wrap gap-1 border-b" aria-label="Tabs">
-        {tabs.map((t) => (
+        {shownNav.map((t) => (
           <button
             key={t}
             type="button"
             role="tab"
-            aria-selected={t === tab}
-            onClick={() => go({ tab: t })}
+            aria-selected={t === nav}
+            onClick={() => open(t)}
             className={cn(
-              "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors",
-              t === tab ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+              "-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors",
+              t === nav ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
             )}
           >
-            {TAB_LABELS[t]}
-            {t === "support" && unread > 0 && (
-              <span className="ml-1.5 inline-grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground" aria-label={`${unread} unread`}>
-                {unread}
-              </span>
-            )}
+            {NAV_LABELS[t]}
+            {t === "tasks" && toReview > 0 && <Count n={toReview} label={`${toReview} to review`} />}
+            {t === "workers" && fresh > 0 && <Count n={fresh} warn label={`${fresh} waiting to be let in`} />}
+            {t === "support" && unread > 0 && <Count n={unread} warn label={`${unread} unread`} />}
           </button>
         ))}
       </nav>
@@ -130,13 +155,20 @@ export default function App() {
         />
       ) : (
         <main className="flex min-w-0 flex-col gap-5">
-          {tab === "queue" && <Queue go={go} types={types.data?.types} {...(types.data?.tasks ? { tasks: types.data.tasks } : {})} />}
-          {tab === "types" && <Types go={go} place={place} shown={shown} types={types.data?.types} {...(types.data?.tasks ? { tasks: types.data.tasks } : {})} workers={listed} error={types.error} />}
-          {tab === "workers" && <Workers go={go} place={place} shown={shown} types={types.data?.types} {...(types.data?.tasks ? { tasks: types.data.tasks } : {})} workers={listed} error={workers.error} />}
-          {tab === "tasks" && <Tasks go={go} place={place} shown={shown} types={types.data?.types} workers={listed} />}
-          {tab === "tests" && shown.tests && <Tests go={go} place={place} types={types.data?.types} />}
-          {tab === "payouts" && shown.payouts && <Payouts go={go} place={place} workers={listed} />}
-          {tab === "support" && shown.support && <Support go={go} place={place} shown={shown} workers={listed} />}
+          {invite && types.data && (
+            <div hidden={!invite.open}>
+              <InvitePanel key={invite.pick ?? ""} types={types.data.types} {...share} {...(invite.pick ? { pick: invite.pick } : {})} onClose={() => setInvite((i) => ({ ...i, open: false }))} />
+            </div>
+          )}
+          {here.tab === "queue" && <Overview go={go} shown={shown} hasGroups={hasGroups} types={types.data?.types} />}
+          {(here.tab === "tasks" || here.tab === "groups") && <Answers go={go} place={here} shown={shown} hasGroups={hasGroups} types={types.data?.types} workers={listed} stats={stats.data} />}
+          {here.tab === "types" && (
+            <Types go={go} place={here} shown={shown} types={types.data?.types} {...share} workers={listed} error={types.error} invite={(pick) => setInvite({ open: true, pick })} />
+          )}
+          {here.tab === "workers" && <Workers go={go} place={here} shown={shown} types={types.data?.types} workers={listed} error={workers.error} />}
+          {here.tab === "tests" && <Tests go={go} place={here} types={types.data?.types} />}
+          {here.tab === "payouts" && <Payouts go={go} place={here} workers={listed} />}
+          {here.tab === "support" && <Support go={go} place={here} shown={shown} workers={listed} />}
         </main>
       )}
     </div>

@@ -13,13 +13,17 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import yaml from "js-yaml";
 import { createStrut, type Strut } from "../createStrut.js";
+import { registerModelWrapper } from "../extensions.js";
 import { JOB_WORKFLOW } from "../job-seed.js";
+import { jobRoot } from "../jobs.js";
+import { mockModel, type MockTurn } from "../privacy/testing/mock-model.js";
 import { expandAgentTools } from "../steps/core/agent.js";
 import { MemoryRunStore } from "../store.js";
+import { serveGit, type GitServer } from "../test-util/git-remote.js";
 import { WorkspaceManager } from "../workspace.js";
 import { readPackage } from "./format.js";
 import type { SyncOutcome } from "./subscriptions.js";
@@ -41,6 +45,12 @@ const POD = (pkg: string, job: string): Record<string, string> => ({
   "steps/workspace.ts": STEP(`${pkg}/workspace`),
   "steps/git/push.ts": STEP(`${pkg}/git/push`),
   "steps/_shared.ts": "export const shared = 1;\n",
+});
+
+/** A package of one step, `look`, granting what `job` says — strut's steps among it. */
+const CODE = (pkg: string, job: string, manifest = ""): Record<string, string> => ({
+  "strut.yaml": `package: ${pkg}\nversion: 0.1.0\n${manifest}${job}`,
+  "steps/look.ts": STEP(`${pkg}/look`),
 });
 
 let root: string;
@@ -119,17 +129,28 @@ describe("strut.yaml's job: key (readPackage)", () => {
     assert.equal((await readPackage(await writeTree(POD("acme/pods", "")))).job, undefined, "no key, no grant");
   });
 
-  it("refuses a name that matches none of its steps — strut's, another package's, a helper, its own by full type — and an approve name outside tools", async () => {
+  it("reads a name it does not ship as strut's step: its own first, globs over its own alone", async () => {
+    const mixed = await readPackage(await writeTree(POD("acme/pods", "job:\n  tools: [claim, git/push, github/create-pr, graph/graph-get]\n  approve: [github/create-pr]\n")));
+    // `git/push` is the package's own (steps/git/push.ts), as any bare name in a package is.
+    assert.deepEqual(mixed.job, { tools: ["acme/pods/claim", "acme/pods/git/push", "github/create-pr", "graph/graph-get"], approve: ["github/create-pr"] });
+    // A package that ships no git/push names strut's.
+    const strut = await readPackage(await writeTree({ "strut.yaml": "package: acme/code\nversion: 0.1.0\njob:\n  tools: [look, git/push]\n  approve: [git/push]\n", "steps/look.ts": STEP("acme/code/look") }));
+    assert.deepEqual(strut.job, { tools: ["acme/code/look", "git/push"], approve: ["git/push"] });
+    // A glob never reaches strut's steps: `*` is the package's own, as it always was.
+    assert.deepEqual((await readPackage(await writeTree({ "strut.yaml": "package: acme/code\nversion: 0.1.0\njob:\n  tools: ['*']\n", "steps/look.ts": STEP("acme/code/look") }))).job, { tools: ["acme/code/look"], approve: [] });
+  });
+
+  it("refuses another package's step, its own by full type, a helper, a glob that matches none of its steps, a bad name, and an approve name outside tools", async () => {
     const refused = async (job: string, pattern: RegExp) => {
       await assert.rejects(readPackage(await writeTree(POD("acme/pods", job))), pattern);
     };
-    await refused("job:\n  tools: [claim, graph/graph-get]\n", /^Error: bad_package: strut\.yaml: job\.tools: "graph\/graph-get" matches no step of the package/);
-    await refused("job:\n  tools: [acme/linear/fetch]\n", /job\.tools: "acme\/linear\/fetch" matches no step of the package/);
-    await refused("job:\n  tools: [acme/pods/claim]\n", /job\.tools: "acme\/pods\/claim" matches no step/);
-    await refused("job:\n  tools: [_shared]\n", /job\.tools: "_shared" matches no step/);
-    await refused("job:\n  tools: ['nope/*']\n", /job\.tools: "nope\/\*" matches no step/);
+    await refused("job:\n  tools: [acme/linear/fetch]\n", /^Error: bad_package: strut\.yaml: job\.tools: "acme\/linear\/fetch" is another package's step, or this one's by its full type/);
+    await refused("job:\n  tools: [acme/pods/claim]\n", /job\.tools: "acme\/pods\/claim" is another package's step, or this one's by its full type/);
+    await refused("job:\n  tools: [_shared]\n", /job\.tools: "_shared" is a helper \(a `_` file\), not a step/);
+    await refused("job:\n  tools: ['nope/*']\n", /job\.tools: "nope\/\*" matches no step of the package — a glob is over the package's own steps/);
+    await refused("job:\n  tools: ['git/push@v2']\n", /job\.tools: "git\/push@v2" is not a step's name/);
     await refused("job:\n  tools: [claim]\n  approve: [workspace]\n", /job\.approve: acme\/pods\/workspace is not among job\.tools/);
-    await refused("job:\n  tools: [claim]\n  approve: [nope]\n", /job\.approve: "nope" matches no step/);
+    await refused("job:\n  tools: [claim]\n  approve: [github/create-pr]\n", /job\.approve: github\/create-pr is not among job\.tools/);
     await refused("job:\n  tools: []\n", /job\.tools: job\.tools names at least one step/);
     await refused("job:\n  tools: [claim]\n  system: hi\n", /strut\.yaml: job: Unrecognized key/);
   });
@@ -201,6 +222,53 @@ describe("the job seed grants what installed packages name", () => {
     }
   });
 
+  it("grants strut's steps a package names, asking first where it says; two packages grant one step once, and one's uninstall keeps the other's", async () => {
+    const before = await jobOf(ws);
+    for (const t of ["git/push", "github/create-pr"]) assert.ok(!before.tools.includes(t), `strut's own template does not grant ${t}`);
+
+    await install(strut, await writeTree(CODE("acme/code", "job:\n  tools: [look, git/push]\n")));
+    let job = await jobOf(ws);
+    assert.deepEqual(job.tools.slice(before.tools.length), ["acme/code/look", "git/push"]);
+    assert.deepEqual(job.approve, before.approve);
+    const listed = expandAgentTools(job.tools, strut.getRegistry());
+    assert.ok(listed.includes("git/push") && listed.includes("acme/code/look"), "the job agent lists them");
+
+    // A second package grants git/push too, asking first, and strut's pull-request step.
+    await install(strut, await writeTree(CODE("zeta/forge", "job:\n  tools: [git/push, github/create-pr]\n  approve: [git/push, github/create-pr]\n")));
+    job = await jobOf(ws);
+    assert.deepEqual(job.tools.slice(before.tools.length), ["acme/code/look", "git/push", "github/create-pr"], "one git/push");
+    assert.deepEqual(job.approve.slice(before.approve.length), ["git/push", "github/create-pr"], "asks first when any grant says so");
+
+    await uninstall(strut, "zeta/forge");
+    job = await jobOf(ws);
+    assert.deepEqual(job.tools.slice(before.tools.length), ["acme/code/look", "git/push"], "acme/code's grant of git/push stays");
+    assert.deepEqual(job.approve, before.approve, "and no longer asks first");
+    await uninstall(strut, "acme/code");
+    assert.equal((await jobOf(ws)).text, before.text, "the grant goes with the package");
+  });
+
+  it("refuses at install a step strut keeps from what a package grants, saying why, and grants nothing", async () => {
+    const before = await jobOf(ws);
+    // A workspace's own step is not strut's.
+    await ws.publishStep("team/tool", STEP("team/tool"));
+    const refused = async (job: string, pattern: RegExp) => {
+      const res = await strut.app.request("/packages/install", json({ ref: `file:${await writeTree(CODE("acme/code", job))}` }));
+      const body = (await res.json()) as { error: string };
+      assert.equal(res.status, 400, body.error);
+      assert.match(body.error, pattern);
+    };
+    await refused("job:\n  tools: [look, meta/publish-workflow]\n", /^bad_package: strut\.yaml: job\.tools: meta\/publish-workflow is sealed \(the meta surface and the graders\)/);
+    await refused("job:\n  tools: [exec]\n", /job\.tools: exec takes a secret's name in its config \(secretsEnv\): the model calling it would choose which secret it reads/);
+    await refused("job:\n  tools: [human]\n", /job\.tools: human does not say what it does \(effect: read or write\)/);
+    await refused("job:\n  tools: [git/fly]\n", /job\.tools: strut has no step git\/fly here — a package for a newer strut\?/);
+    await refused("job:\n  tools: [team/tool]\n", /job\.tools: team\/tool is not one of strut's own steps/);
+    // `approve` is within `tools`, so the same names are held there.
+    await refused("job:\n  tools: [look, exec]\n  approve: [exec]\n", /job\.tools: exec takes a secret's name/);
+    assert.equal((await jobOf(ws)).text, before.text);
+    const listed = (await (await strut.app.request("/packages", { headers: auth })).json()) as { packages: Array<{ package: string }> };
+    assert.deepEqual(listed.packages.map((p) => p.package), [], "nothing installed");
+  });
+
   it("`job: false` seeds nothing, a package's grant included", async () => {
     const ws3 = new WorkspaceManager(join(root, "box3"));
     const off = await boot(ws3, { job: false });
@@ -259,6 +327,15 @@ describe("a git+ subscription's package grants once it is in", () => {
       assert.equal(granted.approve.at(-1), "stadeum/pods/workspace");
       assert.ok(expandAgentTools(granted.tools, strut.getRegistry()).includes("stadeum/pods/claim"));
 
+      // A release that names strut's git/push too, asking first: the sync that applies it grants it.
+      await writeFile(join(repo, "package/strut.yaml"), files["package/strut.yaml"]!.replace("version: 0.1.0", "version: 0.2.0").replace("[claim, workspace]\n  approve: [workspace]", "[claim, workspace, git/push]\n  approve: [workspace, git/push]"));
+      git(repo, "commit", "--quiet", "-am", "pods 0.2.0");
+      out = await sync();
+      assert.equal(out.status, "applied", out.error);
+      const released = await jobOf(ws);
+      assert.deepEqual(released.tools.slice(before.tools.length), ["git/push", "stadeum/pods/claim", "stadeum/pods/workspace"]);
+      assert.deepEqual(released.approve.slice(before.approve.length), ["git/push", "stadeum/pods/workspace"]);
+
       assert.equal((await strut.app.request("/secrets/PODS_TOKEN", { method: "DELETE", headers: auth })).status, 200);
       out = await sync();
       assert.equal(out.status, "waiting", out.error);
@@ -266,5 +343,160 @@ describe("a git+ subscription's package grants once it is in", () => {
     } finally {
       await strut.close();
     }
+  });
+});
+
+/**
+ * The job agent calls strut's git/push a package granted (stadeum plans/
+ * software.md §5, item 16), as a turn's model would — stood in for through
+ * strut's hook on every model it builds (src/extensions.ts), from a script.
+ * The repository is private, served over http on this machine, recording
+ * what each request carried (src/test-util/git-remote.ts).
+ */
+describe("the job agent pushes with a granted git/push, as the job's person", () => {
+  const ADA = "ada-own-SENTINEL-1a2b";
+  const BOB = "bob-own-SENTINEL-3c4d";
+  const DEPLOYMENT = "deployment-SENTINEL-5e6f";
+  const ADA_FORGE = "ada-forge-SENTINEL-7a8b";
+  /** The stand-in's turns, set by each test: each one a list of the model's parts. */
+  let script: MockTurn[] = [];
+  let model: ReturnType<typeof mockModel> | undefined;
+  let priv: GitServer;
+  let strut: Strut;
+  let ws: WorkspaceManager;
+  let repos: string;
+  let saved: string | undefined;
+
+  before(() => {
+    saved = process.env["ANTHROPIC_API_KEY"];
+    // A key that is no one's: nothing reaches a provider even if the stand-in were skipped.
+    process.env["ANTHROPIC_API_KEY"] = "stand-in";
+    registerModelWrapper(() => (model = mockModel({ turns: script })));
+  });
+  after(() => {
+    if (saved === undefined) delete process.env["ANTHROPIC_API_KEY"];
+    else process.env["ANTHROPIC_API_KEY"] = saved;
+  });
+  beforeEach(async () => {
+    // acme/widgets: a private repository, which only ada's own token reaches.
+    repos = join(root, "repos");
+    const seed = join(root, "seed");
+    await mkdir(seed, { recursive: true });
+    await writeFile(join(seed, "README.md"), "# widgets\n");
+    git(seed, "-c", "init.defaultBranch=main", "init", "--quiet");
+    git(seed, "add", "-A");
+    git(seed, "commit", "--quiet", "-m", "init");
+    git(root, "init", "--quiet", "--bare", "-b", "main", join(repos, "acme", "widgets.git"));
+    git(seed, "push", "--quiet", join(repos, "acme", "widgets.git"), "main");
+    priv = await serveGit(repos, { token: ADA });
+    ws = new WorkspaceManager(join(root, "box"));
+    strut = await boot(ws, { dataDir: join(root, "data") });
+    const put = async (path: string, value: string) => assert.equal((await strut.app.request(path, json({ value }, "PUT"))).status, 200, path);
+    // The box's value, bob's and ada's for the repository's host; ada's for another host.
+    await put("/secrets/LAB_TOKEN", DEPLOYMENT);
+    await put("/actors/bob/secrets/LAB_TOKEN", BOB);
+    await put("/actors/ada/secrets/LAB_TOKEN", ADA);
+    await put("/actors/ada/secrets/FORGE_TOKEN", ADA_FORGE);
+  });
+  afterEach(async () => {
+    await strut.close();
+    await priv.close();
+  });
+
+  /** acme/code serves the repository's host with LAB_TOKEN and grants `job`; zeta/forge serves another host. */
+  const packages = async (job: string) => {
+    await install(strut, await writeTree(CODE("acme/code", job, `requires:\n  optional: [LAB_TOKEN]\nprovides:\n  git:\n    - { host: "${priv.host}", secret: LAB_TOKEN }\n`)));
+    await install(strut, await writeTree(CODE("zeta/forge", "", "requires:\n  optional: [FORGE_TOKEN]\nprovides:\n  git:\n    - { host: git.zeta.test, secret: FORGE_TOKEN }\n")));
+  };
+  const url = () => `${priv.url}/acme/widgets.git`;
+  const call = (id: string, toolName: string, input: unknown) => [{ type: "tool-call", toolCallId: id, toolName, input: JSON.stringify(input) }];
+  const dirOf = (job: string) => jobRoot(join(root, "data"), job);
+  /** ada's job turn: the repository checked out into the job's directory; the
+   *  model stages a change with bash, pushes it with git_push and answers. */
+  const turn = async (job: string, branch = "job/blue") => {
+    script = [
+      call("c1", "bash", { command: "cd widgets && echo 'The button is blue.' >> README.md && git add -A" }),
+      call("c2", "git_push", { path: join(dirOf(job), "widgets"), branch, message: "Make the button blue" }),
+      call("c3", "final_answer", { text: "Pushed.", artifacts: [] }),
+    ];
+    return strut.run("job", { prompt: "Make the button blue.", repos: [url()] }, { job, actor: "ada", principal: "ada" });
+  };
+  /** What the model read back from each tool call of the last turn, by call id. */
+  const results = (): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const m of model!.prompts.at(-1)!) {
+      if (m.role !== "tool") continue;
+      for (const p of m.content as Array<{ toolCallId: string; output: { type?: string; value?: unknown } }>) {
+        out[p.toolCallId] = typeof p.output?.value === "string" ? p.output.value : JSON.stringify(p.output?.value ?? p.output);
+      }
+    }
+    return out;
+  };
+  const pushResult = () => results()["c2"] ?? "";
+  const branches = () => git(join(repos, "acme", "widgets.git"), "for-each-ref", "--format=%(refname:short) %(authorname)", "refs/heads/");
+
+  it("pushes as ada with ada's own token for the repository's host — never bob's, the box's, or her token for another host", async () => {
+    await packages("job:\n  tools: [look, git/push]\n");
+    const run = await turn("j-ada");
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    assert.match(pushResult(), /"branch":"job\/blue"/, pushResult());
+    // On the remote, authored by "strut": her token is not GitHub's, so GitHub is never asked who it is.
+    assert.deepEqual(branches().split("\n").sort(), ["job/blue strut", "main test"]);
+    const pushes = priv.seen.filter((r) => r.path.includes("git-receive-pack"));
+    assert.ok(pushes.length > 0 && pushes.some((r) => r.password === ADA), "the push carried ada's token");
+    for (const r of priv.seen) assert.ok(r.password === undefined || r.password === ADA, `${r.path} carried ada's token or none`);
+  });
+
+  it("refuses the remote's default branch: nothing reaches the remote", async () => {
+    await packages("job:\n  tools: [look, git/push]\n");
+    const run = await turn("j-ada-main", "main");
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    assert.match(pushResult(), /push_rejected: main is origin's default branch — git\/push pushes a branch of its own, for a pull request/, pushResult());
+    assert.equal(branches(), "main test", "main as it was");
+    assert.ok(priv.seen.every((r) => !r.path.includes("git-receive-pack")), "no push reached the remote");
+  });
+
+  it("pushes only from a working copy of the job's own: never another job's, a path out through .. or a link, a repository made by hand, a relative path or the server's own", async () => {
+    await packages("job:\n  tools: [look, git/push]\n");
+    // Another job of ada's, its change staged in its own checkout.
+    script = [call("o1", "bash", { command: "cd widgets && echo other >> README.md && git add -A" }), call("o2", "final_answer", { text: "Staged.", artifacts: [] })];
+    const other = await strut.run("job", { prompt: "Stage a change.", repos: [url()] }, { job: "j-other", actor: "ada", principal: "ada" });
+    assert.equal(other.status, "success", JSON.stringify(other.error));
+    const theirs = join(dirOf("j-other"), "widgets");
+
+    const mine = dirOf("j-mine");
+    const push = (id: string, path: string) => call(id, "git_push", { path, branch: `job/${id}`, message: "m" });
+    script = [
+      // A link to the other job's checkout, and a repository made by hand with the same origin.
+      call("p0", "bash", { command: `ln -s '${theirs}' link && mkdir notes && cd notes && git init -q && git remote add origin '${url()}' && echo x > a && git add a` }),
+      push("p1", theirs),
+      push("p2", `${mine}/../${basename(dirOf("j-other"))}/widgets`),
+      push("p3", join(mine, "link")),
+      push("p4", join(mine, "notes")),
+      push("p5", "widgets"),
+      push("p6", process.cwd()),
+      call("p7", "final_answer", { text: "Refused.", artifacts: [] }),
+    ];
+    const run = await strut.run("job", { prompt: "Push the change.", repos: [url()] }, { job: "j-mine", actor: "ada", principal: "ada" });
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    const r = results();
+    for (const id of ["p1", "p2", "p3"]) assert.match(r[id]!, /git\/push: .* is not in this job's own directory — git\/push pushes a working copy git\/checkout made for this job/, `${id}: ${r[id]}`);
+    assert.match(r["p4"]!, /git\/push: .*notes is not a working copy git\/checkout made/, r["p4"]);
+    assert.match(r["p5"]!, /git\/push: "widgets" is not an absolute path — pass the `path` git\/checkout returned/, r["p5"]);
+    assert.match(r["p6"]!, /is not in this job's own directory/, r["p6"]);
+    assert.equal(branches(), "main test", "nothing pushed");
+    assert.ok(priv.seen.every((x) => !x.path.includes("git-receive-pack")));
+    assert.match(git(theirs, "diff", "--cached", "--name-only"), /README\.md/, "the other job's change is still only staged there");
+  });
+
+  it("asks first when the package approves git/push: the call is ada's proposal, and nothing is pushed", async () => {
+    await packages("job:\n  tools: [look, git/push]\n  approve: [git/push]\n");
+    const run = await turn("j-ada-asks");
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    assert.match(pushResult(), /"status":"pending"/, pushResult());
+    assert.equal(branches(), "main test", "nothing pushed");
+    assert.ok(priv.seen.every((r) => !r.path.includes("git-receive-pack")));
+    const listed = (await (await strut.app.request("/proposals?status=pending", { headers: auth })).json()) as { proposals: Array<{ step: string; by: { actor?: string; job?: string } }> };
+    assert.deepEqual(listed.proposals.map((p) => [p.step, p.by.actor, p.by.job]), [["git/push", "ada", "j-ada-asks"]]);
   });
 });

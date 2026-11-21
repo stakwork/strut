@@ -4,7 +4,8 @@
 // the Concepts a "/" offers (`graph/find`), and a turn sent
 // (`run/launch` of `orchestrator`) or stopped (`run/cancel`); a tribe's
 // conversation forked (`conversation/fork`); the viewer's linked accounts
-// (`account/*`).
+// (`account/*`). An admin's Everyone (plans/jamie-app.md §2.3) is the same
+// list, read and fork with `everyone`.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fileData, useAppState, useStrutClient } from "@strut/kit";
@@ -21,17 +22,20 @@ export const PAGE = 30;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export const listKey = (archived: boolean, q: string, limit: number) => ["assistant", "list", archived, q, limit] as const;
+export const listKey = (archived: boolean, q: string, limit: number, everyone = false) => ["assistant", "list", archived, q, limit, everyone] as const;
 
-/** The viewer's conversations: the open ones, or the archived ones. */
-export function useConversationList(opts: { archived?: boolean; q?: string; limit?: number; enabled?: boolean }) {
+/** The viewer's conversations: the open ones, or the archived ones; for an
+ *  admin, `everyone`'s. */
+export function useConversationList(opts: { archived?: boolean; q?: string; limit?: number; enabled?: boolean; everyone?: boolean }) {
   const client = useStrutClient();
   const archived = !!opts.archived;
+  const everyone = !!opts.everyone;
   const q = opts.q?.trim() ?? "";
   const limit = opts.limit ?? PAGE;
   return useQuery({
-    queryKey: listKey(archived, q, limit),
-    queryFn: () => client.run<ConversationList>("conversation/list", { limit, ...(archived ? { archived: true } : {}), ...(q ? { q } : {}) }),
+    queryKey: listKey(archived, q, limit, everyone),
+    queryFn: () =>
+      client.run<ConversationList>("conversation/list", { limit, ...(archived ? { archived: true } : {}), ...(q ? { q } : {}), ...(everyone ? { everyone: true } : {}) }),
     refetchInterval: LIST_INTERVAL_MS,
     enabled: opts.enabled !== false,
     placeholderData: (prev) => prev,
@@ -53,9 +57,10 @@ export function useUpdateConversation() {
  * One conversation, followed: read once, then held (`wait`) until it
  * changes past the `rev` we have — a turn launched or settled — at most a
  * call a second, none while the page is hidden. `older` are the turns paged
- * in before the newest `PAGE` (settled, read once).
+ * in before the newest `PAGE` (settled, read once). `everyone`: an admin
+ * reading it as a reader (plans/jamie-app.md §2.3).
  */
-export function useConversation(session: string | null) {
+export function useConversation(session: string | null, everyone = false) {
   const client = useStrutClient();
   const [view, setView] = useState<ConversationView | null>(null);
   const [error, setError] = useState<Error | null>(null);
@@ -68,7 +73,7 @@ export function useConversation(session: string | null) {
     setError(null);
     setOlder(null);
     rev.current = undefined;
-  }, [session]);
+  }, [session, everyone]);
 
   useEffect(() => {
     if (!session) return;
@@ -81,6 +86,7 @@ export function useConversation(session: string | null) {
           const v = await client.run<ConversationView>("conversation/get", {
             session,
             limit: PAGE,
+            ...(everyone ? { everyone: true } : {}),
             ...(first || rev.current === undefined ? {} : { wait: WAIT_MS, since: rev.current }),
           });
           if (stop) return;
@@ -103,14 +109,14 @@ export function useConversation(session: string | null) {
     return () => {
       stop = true;
     };
-  }, [client, session, nudge]);
+  }, [client, session, everyone, nudge]);
 
   const loadOlder = useCallback(async () => {
     const before = older ? older.next : view?.next;
     if (!session || before === undefined) return;
-    const v = await client.run<ConversationView>("conversation/get", { session, limit: PAGE, before });
+    const v = await client.run<ConversationView>("conversation/get", { session, limit: PAGE, before, ...(everyone ? { everyone: true } : {}) });
     setOlder((o) => ({ turns: [...(o?.turns ?? []), ...v.turns], ...(v.next !== undefined ? { next: v.next } : {}) }));
-  }, [client, session, older, view?.next]);
+  }, [client, session, everyone, older, view?.next]);
 
   return {
     view,
@@ -198,12 +204,13 @@ export function useStop() {
 }
 
 /** A copy of a conversation the viewer continues here (`conversation/fork`):
- *  a tribe's, which its host alone continues. Answers its row. */
+ *  a tribe's, which its host alone continues, or one an admin read in
+ *  Everyone (`everyone`). Answers its row. */
 export function useFork() {
   const client = useStrutClient();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { session: string }) => client.run<ConversationListItem>("conversation/fork", v),
+    mutationFn: (v: { session: string; everyone?: boolean }) => client.run<ConversationListItem>("conversation/fork", v),
     onSettled: () => qc.invalidateQueries({ queryKey: ["assistant", "list"] }),
   });
 }

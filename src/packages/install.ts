@@ -22,7 +22,9 @@
  * The operator's distro (`distro`, §12, §12.1) applies a release with no
  * ask — its publish was the accept — and is the door that updates, item by
  * item (§4's table): an item whose active version the package wrote is
- * FAST-FORWARDED to the release's; a fork gets the release's version BESIDE
+ * FAST-FORWARDED to the release's (STAMPED the release's in place when its
+ * content is the release's already, so a release that changes only its
+ * strut.yaml is what reads as installed); a fork gets the release's version BESIDE
  * it, the fork staying active; an item the release no longer ships is
  * RETIRED when untouched and kept when forked; an edited Concept is left as
  * it is. A package the distro wrote is the distro's: a person's door
@@ -65,18 +67,21 @@ import type { NodeSchema } from "../graph/schema-resolver.js";
 import { isSealedStep, sealedStepPatterns } from "../sealed.js";
 import { formatStepLint, lintStepSource } from "../step-lint.js";
 import { baseType } from "../step-ref.js";
-import { stepFileType, stepLoadError } from "../steps/registry.js";
+import { stepFileType, stepLoadError, type StepSources } from "../steps/registry.js";
 import { contentHash, treeHash } from "../version.js";
 import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream, type VersionSource } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
-import { gitOrigin } from "./git-source.js";
-import { readableSecrets, type PackageItem } from "./format.js";
+import { gitHostOfRef } from "./git-source.js";
+import { gitHostProblems, STRUT_GIT_HOSTS, type GitSecretOf } from "../git-hosts.js";
+import { MANIFEST_FILE, readableSecrets, strutGrants, type PackageItem } from "./format.js";
+import { strutGrantProblem } from "../job-seed.js";
 import type { InstallProgress } from "./progress.js";
 import { checkPackageTypes, registerPackageTypes, type CheckedTypes } from "./graph-types.js";
 import {
   conceptHash,
   conceptPrefix,
+  holdsItsOwn,
   listInstalledPackages,
   packageConcepts,
   type InstalledDeps,
@@ -92,6 +97,10 @@ export interface PackageDeps extends InstalledDeps {
   /** A FRESH registry: rebuilt from the workspace, package steps fenced.
    *  The install loads the steps it published through it. */
   getRegistry(): Promise<StepRegistry>;
+  /** Where each step of the registry `getRegistry` last returned came from
+   *  (core, lib, custom): which are strut's own, for a `job:` that names
+   *  strut's steps. Without it the install grants none of strut's. */
+  stepSources?(): StepSources;
   /** The claims layer; without one a package's claims are skipped, said. */
   claims?: ClaimsAuthoring | null;
   /** Fires `run_when: publish` checks, as any publish does. */
@@ -111,6 +120,12 @@ export interface PackageDeps extends InstalledDeps {
   /** Where a `git+` resolve keeps its bare caches (`<dataDir>/repos/`);
    *  default the package cache's parent. */
   dataDir?: string;
+  /** Which secret serves a `git+` ref's host (src/git-hosts.ts): the box's
+   *  map; default strut's own. */
+  gitSecret?: GitSecretOf;
+  /** A person's own machine (`STRUT_GIT_LOCAL`): with no token for the
+   *  repository's host, git keeps this machine's own credentials. */
+  gitLocal?: boolean;
 }
 
 /** What happened to one item: `installed` new here; `present` already here
@@ -119,7 +134,8 @@ export interface PackageDeps extends InstalledDeps {
  *  release's version recorded beside a fork, which stays active; `retired`
  *  dropped by the release and removed; `kept` dropped by the release and
  *  kept, with the reason; `stamped` its active version recorded as the
- *  repo's commit (the repo's door: a fork committed is no longer one). */
+ *  repo's commit (the repo's door: a fork committed is no longer one), or
+ *  as the distro's release whose content it has already. */
 export type InstallItemStatus = "installed" | "present" | "modified" | "updated" | "diverged" | "retired" | "kept" | "stamped";
 
 export interface PackageInstallReport {
@@ -142,10 +158,6 @@ export interface InstallOptions {
   digest?: string;
   /** A `pk:` ref's catalog URL (src/packages/pk.ts). */
   url?: string;
-  /** A `git+` ref's token: the NAME of the secret holding it (default
-   *  GITHUB_TOKEN), read as `actor` when one is given. The packages it
-   *  requires are read with the same one. */
-  tokenSecret?: string;
   /** The commit a `git+` ref's `digest` was read at, by a caller that
    *  resolved it already (serve mode): recorded as it is when the cache
    *  holds the digest, so nothing is fetched twice. */
@@ -225,7 +237,7 @@ export async function installPackages(deps: PackageDeps, refs: PackageRef[], opt
   const door = opts.door ?? "install";
   opts.progress?.({ phase: "resolving" });
   const before = new Map((await listInstalledPackages(deps)).map((p) => [p.package, p]));
-  const members = await resolveSet(deps, refs, before, door, { ...(opts.tokenSecret ? { tokenSecret: opts.tokenSecret } : {}), ...(opts.actor ? { actor: opts.actor } : {}) });
+  const members = await resolveSet(deps, refs, before, door, opts.actor);
   const registry = await deps.getRegistry();
   // The apps are copied out of the cache to build (a build writes `dist/`),
   // and the steps to a trial directory to load.
@@ -283,6 +295,8 @@ async function installSet(
     digest: m.info.digest,
     source: m.source,
     secrets: readableSecrets(m.info.manifest),
+    ...(m.info.manifest.requires?.git ? { git: true as const } : {}),
+    ...(m.info.manifest.provides ? { provides: m.info.manifest.provides } : {}),
     at,
   });
   const publish = { source: opts.door, ...(opts.actor ? { actor: opts.actor } : {}) };
@@ -457,6 +471,9 @@ async function installSet(
     }
     done(m, item.kind as Wrote["kind"], item.name, { action: "stamp" });
   }
+  // A step's fence is read off its version's stamp (src/packages/fence.ts):
+  // the registry takes the release's.
+  if (stamps.some((s) => s.item.kind === "step")) await deps.getRegistry();
 
   // What the release no longer ships, once the release is in: retired when
   // untouched, kept when forked. A removal that fails is said, never a
@@ -555,24 +572,26 @@ async function resolveSet(
   refs: PackageRef[],
   installed: Map<string, InstalledPackage>,
   door: PackageDoor,
-  as: { tokenSecret?: string; actor?: string } = {},
+  actor?: string,
 ): Promise<Member[]> {
   const order: Member[] = [];
   const inSet = new Map<string, string>();
-  // A `git+` ref's token, read as the actor when the deployment keeps
-  // per-actor secrets (theirs first, then the deployment's).
-  const secrets = as.actor && deps.secrets?.forPrincipal ? deps.secrets.forPrincipal(as.actor) : deps.secrets;
+  // A `git+` ref's token: the one for its host (src/git-hosts.ts), read as
+  // the actor when the deployment keeps per-actor secrets (theirs first,
+  // then the deployment's).
+  const secrets = actor && deps.secrets?.forPrincipal ? deps.secrets.forPrincipal(actor) : deps.secrets;
   const git = {
-    ...(as.tokenSecret ? { tokenSecret: as.tokenSecret } : {}),
+    ...(deps.gitSecret ? { gitSecret: deps.gitSecret } : {}),
+    ...(deps.gitLocal ? { gitLocal: true } : {}),
     ...(deps.shell ? { shell: deps.shell } : {}),
     ...(deps.dataDir ? { dataDir: deps.dataDir } : {}),
   };
   const secret = secrets ? { secret: (name: string) => secrets.get(name) } : {};
-  // The token goes only where a person pointed it: the refs asked for, and a
-  // requirement on the same origin as one of them — never a host a
-  // package's requirement names, so a package cannot send it elsewhere.
-  const tokenOrigins = new Set(refs.map((r) => gitOrigin(r.ref)).filter((o): o is string => !!o));
-  const tokenFor = (ref: string, asked: boolean) => (asked || tokenOrigins.has(gitOrigin(ref) ?? "") ? secret : {});
+  // A token goes only where a person pointed it: the refs asked for, and a
+  // requirement on the same host as one of them — never a host only a
+  // package's requirement names, so a package cannot spend another token.
+  const tokenHosts = new Set(refs.map((r) => gitHostOfRef(r.ref)).filter((h): h is string => !!h));
+  const tokenFor = (ref: string, asked: boolean) => (asked || tokenHosts.has(gitHostOfRef(ref) ?? "") ? secret : {});
   const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }, url?: string, commit?: string): Promise<void> => {
     const asked = !expected;
     // A `pk:` ref is always resolved: the catalog is the key's word on the
@@ -723,10 +742,29 @@ async function checkSet(
       }
     }
   }
+  // One secret for each git host on the box (src/git-hosts.ts): strut's
+  // own, the packages here the set does not replace, then the set's.
+  const inSet = new Set(members.map((m) => m.info.manifest.package));
+  problems.push(
+    ...gitHostProblems([
+      { by: "strut", git: STRUT_GIT_HOSTS },
+      ...[...installed.values()].filter((p) => !inSet.has(p.package) && holdsItsOwn(p)).map((p) => ({ by: p.package, ...(p.provides?.git ? { git: p.provides.git } : {}) })),
+      ...members.map((m) => ({ by: m.info.manifest.package, ...(m.info.manifest.provides?.git ? { git: m.info.manifest.provides.git } : {}) })),
+    ]),
+  );
   if (problems.length) throw conflict(problems.join("; "));
 
   // The files: what each workflow names must be here or in the set; claims parse.
   const bad: string[] = [];
+  // Strut's steps a `job:` names: each one a package may grant
+  // (src/job-seed.ts). `approve` is within `tools` (format.ts).
+  const sources = deps.stepSources?.() ?? {};
+  for (const m of members) {
+    for (const t of strutGrants(m.info.manifest.package, m.info.job?.tools ?? [])) {
+      const problem = strutGrantProblem(t, registry, sources, sealed);
+      if (problem) bad.push(`${MANIFEST_FILE}: job.tools: ${problem}`);
+    }
+  }
   const withClaims: Array<Member & { claims: MemberClaims[] }> = [];
   for (const m of members) {
     const claims: MemberClaims[] = [];
@@ -916,7 +954,11 @@ async function planItem(deps: PackageDeps, m: Member, item: PackageItem, at: Ins
     const stamped = active.source === "repo" && active.upstream?.digest === m.info.digest && active.upstream?.commit === m.commit;
     return stamped ? { action: "present" } : { action: "stamp" };
   }
-  if (active.hash === hash) return { action: "present" };
+  // The release's content already, from another release: stamped with this
+  // one in place, so what is installed reads this release — and a release
+  // that changes only its strut.yaml (its `job:`, `provides`, `schedules`)
+  // is followed. A fork stays a fork.
+  if (active.hash === hash) return !at.modified && active.upstream?.digest !== m.info.digest ? { action: "stamp" } : { action: "present" };
   return at.modified ? { action: "diverge" } : { action: "update", previous: active.label };
 }
 

@@ -25,9 +25,12 @@ describe("the host's camera contract", () => {
     assert.equal(NO_CAMERA.available(), false);
   });
 
-  it("checks a page's params: facing, maxSide, title and nothing else", () => {
-    assert.deepEqual(parseCaptureParams(undefined), { ok: true, params: { facing: "environment", maxSide: CAMERA_DEFAULT_SIDE } });
-    assert.deepEqual(parseCaptureParams({ facing: "user", maxSide: 800, title: "Smile" }), { ok: true, params: { facing: "user", maxSide: 800, title: "Smile" } });
+  it("checks a page's params: facing, maxSide, title, review and nothing else", () => {
+    assert.deepEqual(parseCaptureParams(undefined), { ok: true, params: { facing: "environment", maxSide: CAMERA_DEFAULT_SIDE, review: true } });
+    assert.deepEqual(parseCaptureParams({ facing: "user", maxSide: 800, title: "Smile" }), { ok: true, params: { facing: "user", maxSide: 800, review: true, title: "Smile" } });
+    // One tap a photo: the shutter hands it over, no Retake / Use photo.
+    assert.deepEqual(parseCaptureParams({ title: "Page 12", review: false }), { ok: true, params: { facing: "environment", maxSide: CAMERA_DEFAULT_SIDE, review: false, title: "Page 12" } });
+    assert.match((parseCaptureParams({ review: "no" }) as { error: string }).error, /review is true or false/);
     assert.match((parseCaptureParams({ zoom: 2 }) as { error: string }).error, /unknown field "zoom"/);
     assert.match((parseCaptureParams({ facing: "back" }) as { error: string }).error, /facing/);
     assert.match((parseCaptureParams({ maxSide: 10_000 }) as { error: string }).error, /maxSide/);

@@ -3692,7 +3692,9 @@ body.is-resizing-flyout iframe { pointer-events: none !important; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.auto-name:hover { color: var(--accent); }
+button.auto-name:hover { color: var(--accent); }
+/* A package's schedule: not edited here, so its name is no button. */
+span.auto-name { cursor: default; }
 .auto-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); cursor: pointer; flex: none; }
 .auto-summary { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
 .auto-summary svg { flex: none; color: var(--accent); }
@@ -6162,7 +6164,8 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 }
 
 /* The host's camera (components/CameraSheet.tsx): over the app's frame, which
-   gets no camera of its own; the page gets only the photo "Use photo" hands it. */
+   gets no camera of its own; the page gets only the photo "Use photo" hands it
+   (or the shutter itself, when the page asked with `review: false`). */
 .camera-sheet { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; justify-content: space-between; background: #000; color: #fff; }
 .camera-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
 .camera-top { position: relative; display: flex; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4) var(--sp-6); background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0)); font-size: 13px; }
@@ -6174,5 +6177,12 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .camera-shutter { width: 74px; height: 74px; padding: 0; border: 4px solid #fff; border-radius: 50%; background: #fff; box-shadow: inset 0 0 0 4px #000; cursor: pointer; }
 .camera-shutter:active { transform: scale(0.94); }
 .camera-shutter:disabled { opacity: 0.4; cursor: default; }
+/* No square over the round shutter: Android's web view draws its tap highlight
+   (and an older one a focus ring) as a rectangle round any tapped button. */
+.camera-sheet button { -webkit-tap-highlight-color: transparent; }
+.camera-sheet button:focus:not(:focus-visible) { outline: none; }
+/* Each shot's flash (keyed per shot, so the animation runs again). */
+.camera-flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; animation: camera-flash 220ms ease-out; }
+@keyframes camera-flash { from { opacity: 0.75; } to { opacity: 0; } }
 .camera-btn { min-width: 128px; height: 46px; padding: 0 var(--sp-4); border: 0; border-radius: 14px; background: rgba(255, 255, 255, 0.18); color: #fff; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
 .camera-btn.is-primary { background: #fff; color: #000; }

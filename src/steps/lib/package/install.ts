@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { CardField } from "../../../core.js";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
+import type { JobDetail } from "../../../packages/detail.js";
 import { PACKAGE_NAME } from "../../../packages/format.js";
 
 /**
@@ -19,9 +20,9 @@ import { PACKAGE_NAME } from "../../../packages/format.js";
  * `detail`, derived by the index from the archive — src/packages/detail.ts):
  * the publisher and its key, which index vouches for the pair, the digest,
  * the license, what it brings, what it can spend or act on (the §8 lines,
- * read off the closure by the index), which of its steps it gives the job
- * agent and which of those ask first (plans/followed-repos.md §3.3), what
- * it needs. Nothing is fetched
+ * read off the closure by the index), which steps it gives the job agent
+ * — strut's own named as such, with whether they act — and which of those
+ * ask first (plans/followed-repos.md §3.3), what it needs. Nothing is fetched
  * from the publisher before the yes; the install then re-verifies
  * everything against the publisher's own catalog.
  *
@@ -46,9 +47,16 @@ const input = z.object({
 
 const words = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-/** The steps a package gives the job agent, the ones that ask first said. */
-const jobTools = (job: { tools: string[]; approve: string[] }) =>
-  `${words(job.tools.length, "step")}: ${job.tools.join(", ")}` + (job.approve.length ? ` (${job.approve.join(", ")} ${job.approve.length === 1 ? "asks" : "ask"} you first)` : "");
+/** The steps a package gives the job agent: strut's own named as such,
+ *  with what they do, and the ones that ask first said. */
+const jobTools = (job: JobDetail) => {
+  const strut = new Map((job.strut ?? []).map((s) => [s.name, s]));
+  const named = job.tools.map((t) => {
+    const s = strut.get(t);
+    return s ? `strut's ${t}${s.effect === "write" ? " (acts)" : s.effect === "read" ? " (reads)" : ""}` : t;
+  });
+  return `${words(job.tools.length, "step")}: ${named.join(", ")}` + (job.approve.length ? ` (${job.approve.join(", ")} ${job.approve.length === 1 ? "asks" : "ask"} you first)` : "");
+};
 
 export default defineStep({
   type: "package/install",
