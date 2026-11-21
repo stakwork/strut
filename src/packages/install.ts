@@ -167,6 +167,10 @@ export interface InstallOptions {
   /** Who writes it (`install` unless said): the distro's door applies a
    *  release with no ask and updates (§12). Code only: no route takes it. */
   door?: PackageDoor;
+  /** The package `ref` must hold: a name an index resolved to a `git+`
+   *  repository (`IndexRow.repos`), where the package is whatever its
+   *  `strut.yaml` says. Anything else is refused before a write. */
+  named?: string;
   /** The repo door only: a Concept page made here (no stamp) under one of
    *  the package's page names is taken as the package's — Create repo's
    *  open, where it is the page the package was built from. A repo already
@@ -215,8 +219,8 @@ const isHelper = (item: PackageItem) => item.kind === "step" && !!item.helper;
  *  every package it requires — through the distro's door, updating it and
  *  them (the module comment). */
 export async function installPackage(deps: PackageDeps, ref: string, opts: InstallOptions = {}): Promise<InstallResult> {
-  const { digest, url, commit, ...rest } = opts;
-  return installPackages(deps, [{ ref, ...(digest ? { digest } : {}), ...(url ? { url } : {}), ...(commit ? { commit } : {}) }], rest);
+  const { digest, url, commit, named, ...rest } = opts;
+  return installPackages(deps, [{ ref, ...(digest ? { digest } : {}), ...(url ? { url } : {}), ...(commit ? { commit } : {}), ...(named ? { named } : {}) }], rest);
 }
 
 /** One package an install is asked for. */
@@ -226,13 +230,15 @@ export interface PackageRef {
   url?: string;
   /** The commit a `git+` ref's `digest` was read at (`InstallOptions.commit`). */
   commit?: string;
+  /** The package it must hold (`InstallOptions.named`). */
+  named?: string;
 }
 
 /** Install several packages as ONE install — all or nothing, every name of
  *  every package checked before the first write — each with what it
  *  requires, requirements first: a channel's release applied as a whole
  *  (§12.1). The result names the last package as the one asked for. */
-export async function installPackages(deps: PackageDeps, refs: PackageRef[], opts: Omit<InstallOptions, "digest" | "url" | "commit"> = {}): Promise<InstallResult> {
+export async function installPackages(deps: PackageDeps, refs: PackageRef[], opts: Omit<InstallOptions, "digest" | "url" | "commit" | "named"> = {}): Promise<InstallResult> {
   if (!refs.length) throw new Error("package_source_invalid: nothing to install");
   const door = opts.door ?? "install";
   opts.progress?.({ phase: "resolving" });
@@ -593,7 +599,7 @@ async function resolveSet(
   // package's requirement names, so a package cannot spend another token.
   const tokenHosts = new Set(refs.map((r) => gitHostOfRef(r.ref)).filter((h): h is string => !!h));
   const tokenFor = (ref: string, asked: boolean) => (asked || tokenHosts.has(gitHostOfRef(ref) ?? "") ? secret : {});
-  const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }, url?: string, commit?: string): Promise<void> => {
+  const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }, url?: string, commit?: string, named?: string): Promise<void> => {
     const asked = !expected;
     // A `pk:` ref is always resolved: the catalog is the key's word on the
     // release, and the resolve records the key and URL the install pins.
@@ -611,6 +617,7 @@ async function resolveSet(
     if (expected && pkg !== expected.package) {
       throw new Error(`package_name_mismatch: ${expected.by} requires ${expected.package} from ${ref}, which is the package ${pkg}`);
     }
+    if (named && pkg !== named) throw new Error(`package_name_mismatch: the index lists ${named} at ${ref}, which holds the package ${pkg}`);
     // Asked for once already — as another package's requirement, or twice.
     const seen = inSet.get(pkg);
     if (seen !== undefined) {
@@ -642,7 +649,7 @@ async function resolveSet(
     }
     order.push(member);
   };
-  for (const r of refs) await visit(r.ref, r.digest, undefined, undefined, r.url, r.commit);
+  for (const r of refs) await visit(r.ref, r.digest, undefined, undefined, r.url, r.commit, r.named);
   return order;
 }
 

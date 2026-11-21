@@ -40,7 +40,7 @@ import type { WorkspaceStore } from "./workspace.js";
 import type { ArtifactsCapability } from "./capabilities.js";
 import type { BuildInfo } from "./apps/build.js";
 import type { PublicSurfaceService } from "./public-surface.js";
-import type { ListedRunnable } from "./public-runnable.js";
+import type { ListedRunnable, PublicSales } from "./public-runnable.js";
 import { declaredPaths, outputOnlySummary as outputOnly, publicEvent, publicSummary, relativeFile, stepHelpers } from "./public-surface.js";
 import { runsPage } from "./runs.js";
 import { searchWorkflows } from "./search.js";
@@ -100,6 +100,9 @@ export interface PublicRouteDeps {
   /** What anyone may run, and for how much (plans/paid-runs.md §2,
    *  `listRunnable`): `GET /public`'s `runnable`. */
   runnable?: () => Promise<ListedRunnable[]>;
+  /** What this server has been paid for credit, in sats (`salesOf`): `GET
+   *  /public`'s `sales`, when something here is priced. */
+  sales?: () => Promise<PublicSales | undefined>;
   /** Public RUNS (plans/paid-runs.md §3): the launch, the launcher's reads
    *  with the run token, cancel. Absent: nothing launches here. */
   launches?: PublicLaunchDeps;
@@ -237,6 +240,9 @@ export interface PublicListing {
   types: string[];
   apps: PublicAppInfo[];
   runnable: ListedRunnable[];
+  /** What this server has been paid for credit, in sats: all time and the
+   *  last 30 days. Absent when nothing here is priced. */
+  sales?: PublicSales;
 }
 
 /** A public app's share links on `base` (this server as the person reaches
@@ -502,6 +508,10 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
       apps: await listedApps(),
       // Listed whether or not its definition is public (decision 11).
       runnable: (await deps.runnable?.()) ?? [],
+      ...(await (async () => {
+        const sales = await deps.sales?.();
+        return sales ? { sales } : {};
+      })()),
     };
   };
   app.get("/public", async (c) => c.json(await listing()));

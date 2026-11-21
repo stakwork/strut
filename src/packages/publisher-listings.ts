@@ -33,6 +33,9 @@ export interface ListingAsk {
   url?: string;
   /** Also list this server's public view. */
   live?: boolean;
+  /** The packages this publisher keeps in git: name → `git+https://…` ref
+   *  (`IndexRow.repos`); `{}` drops them, absent leaves the row's. */
+  repos?: Record<string, string>;
 }
 
 /** The last answer an index gave this strut. */
@@ -45,6 +48,7 @@ export interface ListingRecord {
   description?: string;
   url?: string;
   live?: boolean;
+  repos?: Record<string, string>;
   status: "listed" | "pending" | "removed" | "refused" | "error";
   /** Why it waits, or why it was refused or failed. */
   reason?: string;
@@ -151,6 +155,7 @@ export function createPublisherListings(deps: PublisherListingsDeps): PublisherL
       ...(fields.description !== undefined ? { description: fields.description } : {}),
       ...(fields.url !== undefined ? { url: fields.url } : {}),
       ...(fields.live !== undefined ? { live: fields.live } : {}),
+      ...(fields.repos !== undefined ? { repos: fields.repos } : {}),
       ...(remove ? { remove: true as const } : {}),
     });
     let status: number;
@@ -215,6 +220,7 @@ export function createPublisherListings(deps: PublisherListingsDeps): PublisherL
         ...(ask.description?.trim() ? { description: ask.description.trim() } : {}),
         ...(ask.url?.trim() ? { url: ask.url.trim() } : {}),
         ...(ask.live !== undefined ? { live: ask.live } : {}),
+        ...(ask.repos !== undefined ? { repos: ask.repos } : {}),
       }, false);
     },
     async withdraw(id) {

@@ -302,9 +302,43 @@ export interface ListedRunnable {
   attachments?: true;
   /** A workflow's `input:` block; a step's input JSON Schema. */
   input: unknown;
-  /** The ledger's last `RECENT_DAYS` days for the item: runs, and the
-   *  average charge in dollars. */
-  recent: { days: number; runs: number; average: number };
+  /** The ledger's last `RECENT_DAYS` days for the item: runs, the average
+   *  and the total charge in dollars, and the runs on each UTC day, oldest
+   *  first (the last is today). */
+  recent: { days: number; runs: number; average: number; charged: number; daily: number[] };
+  /** Every run of the item here, all time, and what they were charged in
+   *  dollars: the ledger's rollups, which nothing deletes. */
+  total: { runs: number; charged: number };
+}
+
+/** What this server has been paid for credit (plans/paid-runs.md §5): sats
+ *  in, all time and over the last `RECENT_DAYS` days, from the ledger's
+ *  payments. Credit is bought per server, not per item, so sats are the
+ *  server's number; an item's is dollars charged (`ListedRunnable.total`). */
+export interface PublicSales {
+  sats: number;
+  recent: { days: number; sats: number; daily: number[] };
+}
+
+/** The `days` UTC days ending at `now`, oldest first. */
+function lastDays(now: number, days: number): string[] {
+  const out: string[] = [];
+  for (let i = days - 1; i >= 0; i--) out.push(new Date(now - i * 86_400_000).toISOString().slice(0, 10));
+  return out;
+}
+
+/** `GET /public`'s `sales`: the sats this server's ledger received. */
+export async function salesOf(ledger: Pick<LedgerStore, "received">, now = Date.now()): Promise<PublicSales> {
+  const rows = await ledger.received();
+  const window = lastDays(now, RECENT_DAYS);
+  const byDay = new Map<string, number>();
+  let msat = 0;
+  for (const r of rows) {
+    msat += r.msat;
+    byDay.set(r.day, (byDay.get(r.day) ?? 0) + r.msat);
+  }
+  const daily = window.map((d) => Math.floor((byDay.get(d) ?? 0) / 1000));
+  return { sats: Math.floor(msat / 1000), recent: { days: RECENT_DAYS, sats: daily.reduce((a, b) => a + b, 0), daily } };
 }
 
 /** `GET /public`'s `runnable`: every item still on this server and not
@@ -336,7 +370,12 @@ export async function listRunnable(
       description = def.description;
       input = stepSchemas(def).input;
     }
-    const recent = await ledger.recent(runnableSubject(item));
+    const subject = runnableSubject(item);
+    const now = Date.now();
+    const recent = await ledger.recent(subject, { now });
+    const window = lastDays(now, recent.days);
+    const perDay = new Map((await ledger.earnings({ by: "day", subjects: [subject], from: window[0]! })).map((r) => [r.key, r.calls]));
+    const all = (await ledger.earnings({ by: "total", subjects: [subject] }))[0];
     out.push({
       kind: item.kind,
       name: item.name,
@@ -348,7 +387,8 @@ export async function listRunnable(
       results: item.results ?? "output",
       ...(item.kind === "workflow" && item.attachments ? { attachments: true as const } : {}),
       input,
-      recent: { days: recent.days, runs: recent.runs, average: microsToUsd(recent.average) },
+      recent: { days: recent.days, runs: recent.runs, average: microsToUsd(recent.average), charged: microsToUsd(recent.earned), daily: window.map((d) => perDay.get(d) ?? 0) },
+      total: { runs: all?.calls ?? 0, charged: microsToUsd(all?.earned ?? 0) },
     });
   }
   return out;

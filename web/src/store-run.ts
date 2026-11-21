@@ -34,7 +34,17 @@ export interface LiveRunnableItem {
   results: "output" | "run";
   /** A workflow's `input:` block; a step's input JSON Schema. */
   input?: unknown;
-  recent?: { days: number; runs: number; average: number };
+  /** The last 30 days: runs, the average charge, what they were charged and
+   *  the runs each day, oldest first (a server from before sends the first three). */
+  recent?: { days: number; runs: number; average: number; charged?: number; daily?: number[] };
+  /** Every run there, all time, and what they were charged in dollars. */
+  total?: { runs: number; charged: number };
+}
+
+/** What a server has been paid for credit, in sats (`GET /public`'s `sales`). */
+export interface LiveSales {
+  sats: number;
+  recent: { days: number; sats: number; daily: number[] };
 }
 
 /** What a run or call costs, in words: free, a fixed price, metered, or

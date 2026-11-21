@@ -153,6 +153,7 @@ export const LISTING_ERROR_STATUS: Record<string, 400 | 403 | 404 | 409 | 422 | 
   listing_not_listed: 404,
   listing_unknown: 404,
   listing_no_catalog: 422,
+  listing_repo_invalid: 422,
   listing_busy: 429,
   index_no_key: 503,
 };
@@ -289,10 +290,16 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
    *  something (plans/public-view-listing.md §2). */
   const readUsed = async (r: Listing): Promise<{ catalog: PendingListing["catalog"]; view?: ViewCounts }> => {
     const catalog = await readCatalog(r);
-    if (catalog.packages.length) return { catalog };
+    // The packages it keeps in git: each repository it names read as anyone
+    // reads it, holding the package its name says — a name used, as a
+    // package in the catalog is. A request naming none keeps the row's.
+    if (r.repos && Object.keys(r.repos).length) await deps.index.checkRepos(r.repos);
+    const held = (await deps.index.info())?.publishers[r.prefix];
+    const repos = r.repos ?? (held?.key === r.key ? held.repos : undefined);
+    if (catalog.packages.length || (repos && Object.keys(repos).length)) return { catalog };
     const at = `${catalogUrlOf(r.base!).split("?")[0]}?public=1`;
     if (r.live === false) throw new Error(`listing_no_catalog: ${at}: it lists no package under ${r.prefix}/, so a row without the public view would list nothing — take the row off instead (remove)`);
-    if (r.live !== true) throw new Error(`listing_no_catalog: ${at}: it lists no package under ${r.prefix}/ — publish one and make it public first, or ask for this server's public view (live: true)`);
+    if (r.live !== true) throw new Error(`listing_no_catalog: ${at}: it lists no package under ${r.prefix}/ — publish one and make it public first, name the packages it keeps in git (repos), or ask for this server's public view (live: true)`);
     const view = await readView(r.base!);
     if (!(view.apps + view.workflows + view.steps + view.concepts + view.runnable)) {
       throw new Error(`listing_no_catalog: ${at} lists no package under ${r.prefix}/, and its public view at ${normalizeBase(r.base!)}/public shows nothing — add something to the public view first`);
@@ -300,16 +307,21 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
     return { catalog, view };
   };
 
-  const rowOf = (r: Listing): IndexRow => ({
-    key: r.key,
-    urls: [catalogUrlOf(r.base!)],
-    ...(r.description !== undefined ? { description: r.description } : {}),
-    ...(r.url !== undefined ? { url: r.url } : {}),
-  });
+  const rowOf = (r: Listing, kept?: IndexRow): IndexRow => {
+    // A request with no `repos` leaves the row's as they are (the same key's).
+    const repos = r.repos ?? (kept?.key === r.key ? kept.repos : undefined);
+    return {
+      key: r.key,
+      urls: [catalogUrlOf(r.base!)],
+      ...(r.description !== undefined ? { description: r.description } : {}),
+      ...(r.url !== undefined ? { url: r.url } : {}),
+      ...(repos && Object.keys(repos).length ? { repos } : {}),
+    };
+  };
 
   /** Write the row (and the live row the request asks for), then read the publisher, detached. */
   const apply = async (r: Listing): Promise<ListingAnswer & { status: "listed" }> => {
-    const row = rowOf(r);
+    const row = rowOf(r, (await card()).publishers[r.prefix]);
     let live: IndexLiveRow | undefined;
     await serial(async () => {
       await deps.index.setRow(r.prefix, row, { crawl: false });

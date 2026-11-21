@@ -346,7 +346,7 @@ describe("the index's requests desk", () => {
     const quietBase = "https://quiet.sphinx.chat:3355/lab";
     serve(quiet, quietBase, []);
     showView(quietBase, { workflows: ["hello"] });
-    await assert.rejects(submit(quiet, { prefix: "quiet", base: quietBase }), /^Error: listing_no_catalog: .*lists no package under quiet\/ — publish one and make it public first, or ask for this server's public view \(live: true\)/);
+    await assert.rejects(submit(quiet, { prefix: "quiet", base: quietBase }), /^Error: listing_no_catalog: .*lists no package under quiet\/ — publish one and make it public first, name the packages it keeps in git \(repos\), or ask for this server's public view \(live: true\)/);
     assert.ok(!fetched.includes(`${quietBase}/public`));
     // Asking for a view that shows nothing (node types do not count): refused.
     const blank = newSigner();

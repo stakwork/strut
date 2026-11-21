@@ -31,6 +31,7 @@ import type { PeersCapability } from "../peers.js";
 import type { PackageCache } from "./cache.js";
 import { Z32_KEY, type IndexCatalog, type IndexRow } from "./card.js";
 import { PACKAGE_NAME } from "./format.js";
+import { sameRepoFolder } from "./git-source.js";
 import type { ConceptDetail, IndexConcept, IndexConceptPage, IndexHit, IndexPackage, PackageDetail } from "./index.js";
 import type { InstalledPackage } from "./installed.js";
 import { fetchCatalog } from "./pk.js";
@@ -109,8 +110,11 @@ export interface IndexSubscriptionInfo extends IndexSubscription {
 
 /** A bare name, resolved through a card: what the install goes on with. */
 export interface ResolvedName {
+  /** `pk:<row key>/<name>`, or — a package the row lists from git
+   *  (`IndexRow.repos`) — the `git+` ref of its repository. */
   ref: string;
-  /** Where the publisher's public catalog is served, as the row says: tried in order. */
+  /** Where the publisher's public catalog is served, as the row says: tried
+   *  in order. Empty for a `git+` ref. */
   urls: string[];
   /** The index whose card named the key. */
   index: string;
@@ -210,6 +214,11 @@ export interface PackageIndexes {
   card(id: string, opts?: { fresh?: boolean }): Promise<{ card: IndexCatalog; url: string }>;
   /** A bare name through the cards, in order — or one index's, with `index`. */
   resolveName(name: string, opts?: { index?: string }): Promise<ResolvedName>;
+  /** The followed index that lists the package where it was installed from
+   *  — its row's key for a `pk:` source, its row's repository for a `git+`
+   *  one — and that index strut's base; undefined when none does (or none
+   *  could be read). What a box's install ping goes to (./install-pings.ts). */
+  listedAt(name: string, source: string): Promise<{ index: string; base: string } | undefined>;
   /** The indexes' packages and the peers' installed ones, every word of `q` matched. */
   search(q: string, opts?: { limit?: number; peers?: boolean }): Promise<PackageSearch>;
   /** One package's page from the first followed index whose card lists its
@@ -397,7 +406,23 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
         throw new Error(`package_source_invalid: ${name} is a name, and this strut server follows no index to look it up in — install by pk:<key>/${name} with url, or follow one (PUT /packages/indexes/:id)`);
       }
       const { sub, row } = await rowFor(name, subs);
+      const repo = row.repos && Object.hasOwn(row.repos, name) ? row.repos[name] : undefined;
+      if (repo !== undefined) return { ref: repo, urls: [], index: sub.id };
       return { ref: `pk:${row.key}/${name}`, urls: [...row.urls], index: sub.id };
+    },
+    async listedAt(name, source) {
+      if (!PACKAGE_NAME.test(name)) return undefined;
+      let found: { sub: IndexSubscription; row: IndexRow };
+      try {
+        found = await rowFor(name, await readFileList());
+      } catch {
+        return undefined;
+      }
+      const { sub, row } = found;
+      const repo = row.repos && Object.hasOwn(row.repos, name) ? row.repos[name] : undefined;
+      const listed = repo !== undefined ? source.startsWith("git+") && sameRepoFolder(source, repo) : source.startsWith(`pk:${row.key}/`);
+      const base = sub.urls.map((u) => indexBaseOf(u)).find((b): b is string => !!b);
+      return listed && base ? { index: sub.id, base } : undefined;
     },
     async search(q, opts = {}) {
       const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));

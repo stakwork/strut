@@ -2856,7 +2856,7 @@ export const refuseIndexRequest = (id: string, reason: string) =>
 export interface IndexOperatorInfo {
   key: string;
   urls: string[];
-  publishers: Record<string, { key: string; urls: string[]; description?: string; url?: string }>;
+  publishers: Record<string, { key: string; urls: string[]; description?: string; url?: string; repos?: Record<string, string> }>;
   crawled: Array<{ prefix: string; key: string; accepted?: { seq: number; digest: string; at: string; url: string }; checkedAt?: string; error?: string; packages?: number }>;
   live: Record<string, { url: string; description?: string }>;
 }
@@ -2996,6 +2996,19 @@ export interface StoreHit {
   license?: string;
   requires?: PackageRequires;
   detail?: DetailSummary;
+  /** Kept in git: the `git+` ref a box installs it from, the commit the index read. */
+  source?: string;
+  commit?: string;
+  /** A bundle: the packages it lists (followed, never installed). */
+  bundle?: string[];
+  /** Installs the index counted: all time, and the last 30 days. */
+  installs?: { total: number; recent: number };
+}
+/** A package's installs as the index counted them (src/packages/index-installs.ts). */
+export interface StoreInstalls {
+  total: number;
+  boxes: number;
+  recent: { days: number; installs: number; boxes: number; daily: number[] };
 }
 /** `GET /index/packages/:publisher/:name`: the package's page. */
 export interface StorePackage {
@@ -3009,6 +3022,10 @@ export interface StorePackage {
   readAt: string;
   detail?: PackageDetail;
   detailError?: string;
+  source?: string;
+  commit?: string;
+  bundle?: string[];
+  installs?: StoreInstalls;
 }
 export interface StoreConcept {
   name: string;
@@ -3263,7 +3280,7 @@ export interface StoreLiveItem {
   pages?: number;
   /** Anyone may run it on its server (plans/paid-runs.md §10): its price as
    *  the index's crawl read it. */
-  run?: { base: number; markup: number; capUsd: number | null; reserve: number; results: "output" | "run"; recent?: { days: number; runs: number; average: number } };
+  run?: { base: number; markup: number; capUsd: number | null; reserve: number; results: "output" | "run"; recent?: { days: number; runs: number; average: number; charged?: number; daily?: number[] }; total?: { runs: number; charged: number } };
   /** Runnable, its definition not public: its page reads `/public` alone. */
   definition?: false;
 }
@@ -3336,7 +3353,7 @@ const l402 = (credential: string | undefined): Record<string, string> => (creden
 const enc2 = (s: string) => s.split("/").map(encodeURIComponent).join("/");
 
 /** `GET <base>/public`: what the publisher's server shows and lets anyone run. */
-export const liveListing = (base: string) => liveJSON<{ runnable?: import("./store-run").LiveRunnableItem[] }>(base, "/public");
+export const liveListing = (base: string) => liveJSON<{ runnable?: import("./store-run").LiveRunnableItem[]; sales?: import("./store-run").LiveSales }>(base, "/public");
 /** Launch a workflow anyone may run there: `{ input, key }`. */
 export const liveLaunch = (base: string, name: string, body: { input: Record<string, unknown>; key: string }, credential?: string) =>
   liveSend(`${base}/public/workflows/${encodeURIComponent(name)}/run`, { method: "POST", headers: { "content-type": "application/json", ...l402(credential) }, body: JSON.stringify(body) });

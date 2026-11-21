@@ -75,7 +75,7 @@ import { taskAppProblem } from "./tasks/answer-schema.js";
 import { createTaskTypes } from "./tasks/set-type.js";
 import { ACCOUNT_HEADER, ACCOUNT_NAME_HEADER, accountAddress, accountKey, accountText, createPeople, ownName, parseAccount, placeInput, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader, accountsCapability, type Account, type AccountActor, type People } from "./people.js";
 import { createTasks, memoryTaskStores, openTaskDb, openTaskStores, TaskError, TASKS_IN_MEMORY, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
-import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
+import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, salesOf, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
 import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
 import type { SecretStore } from "./secret-store.js";
@@ -155,9 +155,11 @@ import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, ensurePublicCatalog, move
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { TOKEN_SECRET_GONE } from "./packages/git-source.js";
 import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, withoutConceptDocs, type PackageIndex } from "./packages/index.js";
+import { INSTALL_PINGS_PER_MINUTE, type InstallPing } from "./packages/index-installs.js";
+import { BOX_ID_FILE, boxIdOf, createInstallPings } from "./packages/install-pings.js";
 import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
 import { PUBLISHER_PREFIX, Z32_KEY, releaseFor, type IndexLiveRow, type IndexRow } from "./packages/card.js";
-import { LISTING_MAX_BYTES, baseProblem, hostPatternProblem, perMinute } from "./packages/listing.js";
+import { LISTING_MAX_BYTES, baseProblem, hostPatternProblem, perMinute, reposProblem } from "./packages/listing.js";
 import { LISTING_ERROR_STATUS, LISTING_REQUESTS_PER_MINUTE, createRequestsDesk, type RequestsDesk } from "./packages/index-requests.js";
 import { LISTINGS_FILE, createPublisherListings } from "./packages/publisher-listings.js";
 import { packageCache } from "./packages/cache.js";
@@ -1243,7 +1245,7 @@ export async function createStrut<TServices = unknown>(
    *  listing request and its ping, each carrying its own proof — the
    *  request its seal, the ping nothing (it only makes the index read a
    *  catalog it already lists). Budgeted per address. */
-  const INDEX_POSTS = new Set(["/index/requests", "/index/ping"]);
+  const INDEX_POSTS = new Set(["/index/requests", "/index/ping", "/index/installs"]);
   const INDEX_READ = /^\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$)|live$|mcp$)/;
   /** The index's MCP door (src/packages/index-tools.ts): the one POST the
    *  role opens, the three read tools over the same derived pages. */
@@ -4457,6 +4459,8 @@ export async function createStrut<TServices = unknown>(
         ledger,
       });
     },
+    // What this server has been paid for credit, shown once something here is priced.
+    sales: async () => ((await publicSurface.get()).runnable.some(isPriced) ? salesOf(await ledger()) : undefined),
     registry: () => registry,
     stepSources: () => stepSources,
     ...(artifacts ? { artifacts } : {}),
@@ -5482,8 +5486,12 @@ export async function createStrut<TServices = unknown>(
     },
     stepSources: () => stepSources,
   };
-  // Every install as it goes, whichever door (src/packages/progress.ts).
-  const installs = createInstallTracker();
+  // Every install as it goes, whichever door (src/packages/progress.ts) —
+  // and, once one writes a package a followed index lists, that index told
+  // (src/packages/install-pings.ts; never for a repo opened here, which is
+  // its author's working copy). `STRUT_INDEX_PINGS=0` turns it off.
+  let installPings: ReturnType<typeof createInstallPings> | undefined;
+  const installs = createInstallTracker({ onDone: (result, door) => (door === "repo" ? undefined : installPings?.after(result)) });
   let packageWrites: Promise<unknown> = Promise.resolve();
   // Each write seeds `job` again after it, in its turn (`seedJob`, above),
   // and makes the packages' schedules what they now ship (`syncSchedules`,
@@ -5515,6 +5523,22 @@ export async function createStrut<TServices = unknown>(
     if (problem) throw new Error(`packageIndexes: ${problem}`);
     await indexes.set(sub);
   }
+  if (bootEnv()["STRUT_INDEX_PINGS"] !== "0") {
+    const boxIdFile = join(packageStore.root, BOX_ID_FILE);
+    installPings = createInstallPings({
+      indexes,
+      boxId: () => boxIdOf(boxIdFile),
+      // A subscription installs as `subscription:<id>` (a bundle's part as
+      // `<bundle>/<part>`): the branch or catalog it follows is the source.
+      sourceOf: async (ref, pkg) => {
+        if (!ref.startsWith("subscription:")) return ref;
+        const id = ref.slice("subscription:".length);
+        const sub = await subscriptions.get(id.split("/")[0]!);
+        const one = sub?.id === id ? sub : sub?.parts?.find((p) => p.id === id);
+        return one?.ref ?? (one?.key ? `pk:${one.key}/${pkg}` : undefined);
+      },
+    });
+  }
   // The package/* steps' door (src/steps/lib/package/): the store's reads —
   // search, a package's page, the Concept tree — and package/install's,
   // below, once the in-process door exists.
@@ -5529,7 +5553,7 @@ export async function createStrut<TServices = unknown>(
    *  it came. */
   const installByName = async (ref: string, opts: Parameters<Strut["packages"]["install"]>[1] = {}): Promise<InstallResult> => {
     const { index: which, ...rest } = opts;
-    const run = (r: string, o: typeof rest) =>
+    const run = (r: string, o: typeof rest & { named?: string }) =>
       oneAtATime(() =>
         recorded(
           () => installPackage(packageDeps, r, { ...o, busy: busyWorkflow, forget: forgetWorkflow }),
@@ -5539,6 +5563,8 @@ export async function createStrut<TServices = unknown>(
     if (!PACKAGE_NAME.test(ref)) return run(ref, rest);
     if (rest.url) throw new Error(`package_source_invalid: ${ref} is a name, looked up in an index; a url goes with a pk: ref`);
     const named = await indexes.resolveName(ref, which ? { index: which } : {});
+    // A package the index lists from git installs from its repository.
+    if (named.ref.startsWith("git+")) return run(named.ref, { ...rest, named: ref });
     let last: unknown;
     for (const url of named.urls) {
       try {
@@ -5989,7 +6015,7 @@ export async function createStrut<TServices = unknown>(
     return c.json({ error: (out.answer["error"] as string | undefined) ?? `the index answered ${out.status}`, record: out.record }, status);
   };
   app.post("/publisher/listings", async (c) => {
-    const body = await c.req.json<{ index?: unknown; base?: unknown; description?: unknown; url?: unknown; live?: unknown }>().catch(() => ({}) as Record<string, unknown>);
+    const body = await c.req.json<{ index?: unknown; base?: unknown; description?: unknown; url?: unknown; live?: unknown; repos?: unknown }>().catch(() => ({}) as Record<string, unknown>);
     if (typeof body.index !== "string") return c.json({ error: "index is the id of an index this strut server follows (GET /packages/indexes)" }, 400);
     if (typeof body.base !== "string") return c.json({ error: "base is where this server is reached: an origin and at most one path segment (https://<swarm>:3355/lab)" }, 400);
     if ((body.description !== undefined && typeof body.description !== "string") || (body.url !== undefined && typeof body.url !== "string") || (body.live !== undefined && typeof body.live !== "boolean")) {
@@ -5999,17 +6025,23 @@ export async function createStrut<TServices = unknown>(
       if (!(await indexes.list()).some((x) => x.id === body.index)) throw new Error(`package_index_unknown: this strut server follows no index "${body.index}"`);
       const name = (await publisher.get())?.name;
       if (!name) throw new Error("publisher_no_name: set the publisher's name first — it is the name an index lists");
+      // The packages kept in git (IndexRow.repos): name → git+https ref, each under the name.
+      const badRepos = body.repos === undefined ? undefined : reposProblem(name, body.repos, { local: true });
+      if (badRepos) throw new Error(`listing_invalid: ${badRepos}`);
+      const repos = body.repos as Record<string, string> | undefined;
+      const inGit = !!repos && Object.keys(repos).length > 0;
       // A server with nothing public yet lists its public VIEW (plans/public-view-listing.md
-      // §1): the ask mints the public key and an empty public catalog, the index's proof
-      // that this base holds the key. Asked for nothing an index could list, it mints nothing.
+      // §1), or the packages it keeps in git: the ask mints the public key and an empty
+      // public catalog, the index's proof that this base holds the key. Asked for nothing
+      // an index could list, it mints nothing.
       const shown = (await catalogDeps.publicCatalogs.current())?.card.packages ?? {};
-      if (body.live !== true && !Object.keys(shown).some((p) => p.startsWith(`${name}/`))) {
-        throw new Error(`listing_nothing_public: this strut server has made no package under ${name}/ public — make one public, or ask for its public view (live: true)`);
+      if (body.live !== true && !inGit && !Object.keys(shown).some((p) => p.startsWith(`${name}/`))) {
+        throw new Error(`listing_nothing_public: this strut server has made no package under ${name}/ public — make one public, name the packages it keeps in git (repos), or ask for its public view (live: true)`);
       }
       const badBase = baseProblem(body.base, { allowHttp: true });
       if (badBase) throw new Error(`listing_invalid: ${badBase}`);
-      if (body.live === true) await oneAtATime(() => ensurePublicCatalog(catalogDeps));
-      return listingOutcome(c, await listings.ask(body.index, { base: body.base, ...(body.description !== undefined ? { description: body.description as string } : {}), ...(body.url !== undefined ? { url: body.url as string } : {}), ...(body.live !== undefined ? { live: body.live as boolean } : {}) }));
+      if (body.live === true || inGit) await oneAtATime(() => ensurePublicCatalog(catalogDeps));
+      return listingOutcome(c, await listings.ask(body.index, { base: body.base, ...(body.description !== undefined ? { description: body.description as string } : {}), ...(body.url !== undefined ? { url: body.url as string } : {}), ...(body.live !== undefined ? { live: body.live as boolean } : {}), ...(repos !== undefined ? { repos } : {}) }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
@@ -6354,6 +6386,9 @@ export async function createStrut<TServices = unknown>(
         secrets: publisherSecrets,
         dir: indexDir(dataDir),
         cache: packageStore,
+        // A listed repository's bare cache, beside git/checkout's.
+        dataDir,
+        ...((services as Record<string, unknown>)["shell"] ? { shell: (services as Record<string, unknown>)["shell"] as ShellCapability } : {}),
         ...(indexConfig.urls ? { urls: indexConfig.urls } : {}),
         // What this strut knows of a step a package's workflow uses — a lib
         // step's `effect` and `secrets` — for the derived page's flags.
@@ -6471,6 +6506,21 @@ export async function createStrut<TServices = unknown>(
         return c.json(answer, answer.status === "pending" ? 202 : 200);
       } catch (err) {
         return deskError(c, err);
+      }
+    });
+    // A box's word that it installed a listed package (src/packages/
+    // index-installs.ts): open, budgeted per address, counted when the
+    // package is listed here and the ping's source is the row's.
+    const installBudget = perMinute(INSTALL_PINGS_PER_MINUTE);
+    app.post("/index/installs", async (c) => {
+      if (!installBudget.allow(visitorAddress(c))) return c.json({ error: `too many pings: ${INSTALL_PINGS_PER_MINUTE} a minute from one address` }, 429, { "retry-after": "60" });
+      if (Number(c.req.header("content-length") ?? 0) > 2048) return c.json({ error: "index_install_invalid: a ping is at most 2 KB" }, 400);
+      const body = await c.req.json<unknown>().catch(() => undefined);
+      try {
+        return c.json(await index.countInstall(body as InstallPing), 202);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return c.json({ error: message }, message.startsWith("index_install_invalid:") ? 400 : 500);
       }
     });
     app.post("/index/ping", async (c) => {
@@ -11345,6 +11395,9 @@ export async function createStrut<TServices = unknown>(
     wakeJobFeeds(dataDir);
     for (const t of subscriptionTimers) clearTimeout(t);
     requestsDesk?.close();
+    // A ping still on its way to an index, and the index's installs file.
+    await installPings?.settle();
+    index?.close();
     // The browser connection, when strut built it: every run's context goes with it.
     await ownBrowser?.close();
     await ownStt?.close();

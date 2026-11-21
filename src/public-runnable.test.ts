@@ -231,15 +231,20 @@ describe("PUT /public-view: what anyone may run", () => {
       reserve: 10.1,
       results: "output",
       input: { q: { type: "string" } },
-      // (0.1 + 2 × 0.2) and (0.1 + 2 × 0.4): $0.50 and $0.90.
-      recent: { days: 30, runs: 2, average: 0.7 },
+      // (0.1 + 2 × 0.2) and (0.1 + 2 × 0.4): $0.50 and $0.90, both today.
+      recent: { days: 30, runs: 2, average: 0.7, charged: 1.4, daily: [...Array(29).fill(0), 2] },
+      // All time: the ledger's rollups, which nothing deletes.
+      total: { runs: 2, charged: 1.4 },
     });
     const step = body.runnable[1]!;
     assert.equal(step["kind"], "step");
     assert.equal(step["reserve"], 0);
     assert.equal(step["capUsd"], null);
     assert.equal((step["input"] as { type?: string }).type, "object");
-    assert.deepEqual(step["recent"], { days: 30, runs: 0, average: 0 });
+    assert.deepEqual(step["recent"], { days: 30, runs: 0, average: 0, charged: 0, daily: Array(30).fill(0) });
+    assert.deepEqual(step["total"], { runs: 0, charged: 0 });
+    // What the server was paid for that credit, in sats: the one payment of 1000 msat, today.
+    assert.deepEqual((body as { sales?: unknown }).sales, { sats: 1, recent: { days: 30, sats: 1, daily: [...Array(29).fill(0), 1] } });
   });
 
   it("GET /public-view/runnable: what the closure can do, what its runs cost here, and what the save will ask", async () => {

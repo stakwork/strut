@@ -151,7 +151,8 @@ describe("an agent over MCP buys and runs (plans/paid-runs.md §10)", () => {
     assert.equal(byName["priced"]!["call_with"], "run_workflow");
     assert.equal(byName["test/echo"]!["call_with"], "call_tool");
     assert.deepEqual(byName["free"]!["input"]["text"], { type: "string", description: "What to write" });
-    assert.deepEqual(byName["free"]!["recent"], { days: 30, runs: 0, average: 0 });
+    assert.deepEqual(byName["free"]!["recent"], { days: 30, runs: 0, average: 0, charged: 0, daily: Array(30).fill(0) });
+    assert.deepEqual(byName["free"]!["total"], { runs: 0, charged: 0 });
     assert.deepEqual((await tool("list_public", { query: "echo" })).out["runnable"].map((r: { name: string }) => r.name), ["test/echo"]);
   });
 

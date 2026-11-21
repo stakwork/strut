@@ -17,6 +17,8 @@ import { callPaying, formatSats, formatUsd, type ClaimEnd, type PayOutcome, type
 import { bodyOf, errorOf, httpCallResult, inputOf, newLaunchKey, priceBadge, priceNotes, priceWords, runEnded, runFields, runFileUrl, type LaunchedRun, type LiveRunnableItem } from "../store-run";
 import { payWith, storePurse } from "../store-purse";
 import { remoteAppHref } from "../remote-app";
+import { Sparkline } from "./Sparkline";
+import type { LiveSales } from "../store-run";
 
 // ── The store front (plans/marketplace.md §7) ───────────────────────────────
 //
@@ -292,6 +294,33 @@ function AppGallery(props: { app: api.AppDetail; pkg: string; digest: string }) 
 }
 
 /** While a read is out: the shape of what comes, never a bare word. */
+/** A whole number as people read it: 12,431. */
+const whole = (n: number) => Math.round(n).toLocaleString("en-US");
+
+/** A `git+` ref as a person reads it: the repository, its branch, its folder. */
+function gitWhere(ref: string): string {
+  return ref.replace(/^git\+(https?:\/\/|file:\/\/)/, "").replace(/\.git(?=@|#|$)/, "");
+}
+
+/** A package's installs, as the index counted them: the last 30 days with
+ *  their chart, and all time. A box counts once per release it takes. */
+function InstallsCard(props: { installs: api.StoreInstalls }) {
+  const { total, boxes, recent } = props.installs;
+  return (
+    <section class="store-installs" data-testid="store-installs">
+      <h3>Installs</h3>
+      <div class="store-installs-row">
+        <strong class="store-installs-n">{whole(recent.installs)}</strong>
+        <Sparkline values={recent.daily} label={`${whole(recent.installs)} installs in the last ${recent.days} days, by day`} />
+      </div>
+      <div class="auto-meta">in the last {recent.days} days</div>
+      <div class="auto-meta">
+        {whole(total)} all time · {whole(boxes)} {boxes === 1 ? "box" : "boxes"}
+      </div>
+    </section>
+  );
+}
+
 function Loading() {
   return <div class="store-skel" role="status" aria-label="Loading"><span /><span /><span /></div>;
 }
@@ -529,6 +558,8 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
                     <span class="package-name">{h.package}</span>
                     <span class="package-version">{h.version}</span>
                     {h.license && <span class="badge">{h.license}</span>}
+                    {h.source && <span class="badge" title={`Installed from ${h.source}`}>git</span>}
+                    {h.bundle && <span class="badge" title="Followed, part by part, never installed">bundle</span>}
                     {h.detail && <CanChips can={h.detail.can} />}
                   </span>
                   {h.description && <span class="store-line-desc">{h.description}</span>}
@@ -537,6 +568,7 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
                       ? [count(h.detail.apps.length, "app"), count(h.detail.workflows, "workflow"), count(h.detail.steps, "tool"), count(h.detail.concepts, "concept")].map((t) => <span key={t}>{t}</span>)
                       : <span>archive not read yet</span>}
                     {h.detail?.secrets.length ? <span title={h.detail.secrets.join(", ")}>needs {count(h.detail.secrets.length, "secret")}</span> : null}
+                    {h.installs ? <span title={`${whole(h.installs.recent)} in the last 30 days`}>{count(h.installs.total, "install")}</span> : null}
                   </span>
                 </span>
                 <ArrowRightIcon size={14} class="store-line-go" />
@@ -659,11 +691,18 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
           </div>
         </div>
         <div class="store-package-install">
-          <InstallButton pkg={props.pkg} target={props.target} link={props.link} onNeedStrut={props.onNeedStrut} big />
+          {page.bundle ? (
+            <div class="store-paste">
+              A bundle is followed, not installed: add its repository under Packages, From a repository.
+              {page.source && <div><code class="store-wrap">{page.source}</code> <CopyButton value={page.source} label="Copy the repository's ref" /></div>}
+            </div>
+          ) : (
+            <InstallButton pkg={props.pkg} target={props.target} link={props.link} onNeedStrut={props.onNeedStrut} big />
+          )}
         </div>
       </header>
 
-      {d && (
+      {d && !page.bundle && (
         <div class="store-stats">
           <Stat n={d.apps.length} label={d.apps.length === 1 ? "App" : "Apps"} onClick={d.apps.length ? jump("store-apps") : undefined} />
           <Stat n={d.workflows.length} label={d.workflows.length === 1 ? "Workflow" : "Workflows"} onClick={d.workflows.length ? jump("store-workflows") : undefined} />
@@ -825,6 +864,14 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
         </div>
 
         <aside class="store-package-aside">
+          {page.installs && <InstallsCard installs={page.installs} />}
+          {page.bundle && (
+            <section>
+              <h3>Bundle</h3>
+              <ul class="store-releases">{page.bundle.map((ref) => <li key={ref}><code class="store-wrap">{gitWhere(ref)}</code></li>)}</ul>
+              <div class="auto-hint">Each part is followed on its own branch and waits for its own secrets.</div>
+            </section>
+          )}
           <section>
             <h3>Needs</h3>
             <dl class="store-facts">
@@ -845,9 +892,11 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
             <dl class="store-facts">
               <dt>Prefix</dt><dd><code>{page.publisher}</code></dd>
               <dt>Key</dt><dd><code class="package-digest" title={page.key}>{shortKey(page.key)}</code> <CopyButton value={page.key} label="Copy the publisher's key" /></dd>
-              <dt>Catalog</dt><dd class="auto-meta store-wrap">{page.urls.map((u) => u.replace(/^https?:\/\//, "")).join(", ")}</dd>
+              {page.source
+                ? <><dt>Source</dt><dd class="auto-meta store-wrap" title={page.commit ? `Read at commit ${page.commit}` : undefined}>{`${gitWhere(page.source)}${page.commit ? ` · ${page.commit.slice(0, 7)}` : ""}`}</dd></>
+                : <><dt>Catalog</dt><dd class="auto-meta store-wrap">{page.urls.map((u) => u.replace(/^https?:\/\//, "")).join(", ")}</dd></>}
             </dl>
-            <div class="auto-hint">Your install pins this key. A new row with another key is followed only when you say so.</div>
+            <div class="auto-hint">{page.source ? "Your install reads this repository's branch, as the index's signed card names it." : "Your install pins this key. A new row with another key is followed only when you say so."}</div>
           </section>
           <section>
             <h3>Releases</h3>
@@ -861,7 +910,7 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
                 </li>
               ))}
             </ul>
-            <div class="auto-meta">Catalog read {new Date(page.readAt).toLocaleString()}</div>
+            <div class="auto-meta">{page.source ? "Repository" : "Catalog"} read {new Date(page.readAt).toLocaleString()}</div>
           </section>
         </aside>
       </div>
@@ -1120,10 +1169,11 @@ function OpenInYourStrut(props: { base: string; name: string; target: string | n
 
 /** What anyone may run on a publisher's server: its `GET /public` listing's
  *  `runnable`, read fresh (the index's copy is for the lists). */
-function useRunnable(base: string, kind: "workflow" | "step", name: string): { item?: LiveRunnableItem; loaded: boolean } {
-  const listing = useLive<{ runnable?: LiveRunnableItem[] }>(base, "/public");
+function useRunnable(base: string, kind: "workflow" | "step", name: string): { item?: LiveRunnableItem; sales?: LiveSales; loaded: boolean } {
+  const listing = useLive<{ runnable?: LiveRunnableItem[]; sales?: LiveSales }>(base, "/public");
   const item = listing.data?.runnable?.find((r) => r.kind === kind && r.name === name);
-  return { ...(item ? { item } : {}), loaded: listing.data !== undefined || listing.error !== undefined };
+  const sales = listing.data?.sales;
+  return { ...(item ? { item } : {}), ...(sales ? { sales } : {}), loaded: listing.data !== undefined || listing.error !== undefined };
 }
 
 function LiveWorkflow(props: { base: string; name: string; publisher: string }) {
@@ -1174,7 +1224,7 @@ function LiveWorkflow(props: { base: string; name: string; publisher: string }) 
         )}
       </div>
       <aside class="store-package-aside">
-        {run.item && <PriceCard item={run.item} />}
+        {run.item && <PriceCard item={run.item} {...(run.sales ? { sales: run.sales } : {})} />}
         <section>
           <h3>Runs</h3>
           {!meta.data?.runs && <div class="auto-hint">Its runs are not public{run.item ? ": a run you start here is yours to read." : "."}</div>}
@@ -1237,7 +1287,7 @@ function LiveStep(props: { base: string; name: string; publisher: string }) {
       </div>
       {run.item && (
         <aside class="store-package-aside">
-          <PriceCard item={run.item} />
+          <PriceCard item={run.item} {...(run.sales ? { sales: run.sales } : {})} />
         </aside>
       )}
     </div>
@@ -1248,13 +1298,33 @@ function LiveStep(props: { base: string; name: string; publisher: string }) {
 
 /** The price, the credit a run needs, what recent runs were charged, and
  *  the visitor's own credit on that server. */
-function PriceCard(props: { item: LiveRunnableItem }) {
-  const { item } = props;
+function PriceCard(props: { item: LiveRunnableItem; sales?: LiveSales }) {
+  const { item, sales } = props;
+  const word = item.kind === "step" ? "call" : "run";
+  // With the chart drawn, its number says what the recent note would.
+  const { recent: _shown, ...withoutRecent } = item;
   return (
     <section class="store-price" data-testid="store-price">
       <h3>Price</h3>
       <div class="store-price-main">{priceWords(item)}</div>
-      {priceNotes(item).map((n) => <div class="auto-hint" key={n}>{n}</div>)}
+      {priceNotes(item.recent?.daily ? withoutRecent : item).map((n) => <div class="auto-hint" key={n}>{n}</div>)}
+      {item.recent?.daily && (
+        <>
+          <div class="store-installs-row store-price-runs">
+            <strong class="store-installs-n">{whole(item.recent.runs)}</strong>
+            <Sparkline values={item.recent.daily} label={`${whole(item.recent.runs)} ${word}s in the last ${item.recent.days} days, by day`} />
+          </div>
+          <div class="auto-meta">{word}s in the last {item.recent.days} days{item.recent.average > 0 ? `, ${formatUsd(item.recent.average)} each on average` : ""}</div>
+        </>
+      )}
+      {item.total && (
+        <div class="auto-meta">
+          {whole(item.total.runs)} {word}{item.total.runs === 1 ? "" : "s"} all time{item.total.charged > 0 ? `, ${formatUsd(item.total.charged)} charged` : ""}
+        </div>
+      )}
+      {sales && sales.sats > 0 && (
+        <div class="auto-meta">This server has been paid {formatSats(sales.sats)} for credit, {formatSats(sales.recent.sats)} of it in the last {sales.recent.days} days.</div>
+      )}
       {(item.base > 0 || item.markup > 0) && <div class="auto-hint">Paid over Lightning: any wallet pays the invoice. A run that fails is charged what it cost, no more.</div>}
       <div class="auto-hint">
         {item.kind === "step"

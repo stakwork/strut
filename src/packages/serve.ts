@@ -437,15 +437,18 @@ export async function createServe(deps: ServeDeps): Promise<ServeService> {
   const fetchRef = async (): Promise<{ info: ResolvedPackage | CachedPackage; ref: string; url?: string }> => {
     const { ref, url } = deps.serve;
     const opts = { cache: deps.cache, ...(deps.fetch ? { fetch: deps.fetch } : {}) };
-    if (ref.startsWith("git+")) {
+    const fromGit = async (gitRef: string) => {
       // The commit serving still the branch's: nothing to read out.
       const serving = state.serving;
-      const known = serving?.commit && serving.ref === ref ? { known: { commit: serving.commit, digest: serving.digest } } : {};
+      const known = serving?.commit && serving.ref === gitRef ? { known: { commit: serving.commit, digest: serving.digest } } : {};
       const git = { dataDir: deps.dataDir, ...(deps.gitSecret ? { gitSecret: deps.gitSecret } : {}), ...(deps.gitLocal ? { gitLocal: true } : {}), ...(deps.secret ? { secret: deps.secret } : {}), ...(deps.shell ? { shell: deps.shell } : {}), ...known };
-      return { info: await resolvePackage(ref, { ...opts, ...git }), ref };
-    }
+      return { info: await resolvePackage(gitRef, { ...opts, ...git }), ref: gitRef };
+    };
+    if (ref.startsWith("git+")) return fromGit(ref);
     if (!PACKAGE_NAME.test(ref)) return { info: await resolvePackage(ref, { ...opts, ...(url ? { url } : {}) }), ref, ...(url ? { url } : {}) };
     const named = await deps.resolveName(ref);
+    // A name the index lists from git (IndexRow.repos) is read from its repository.
+    if (named.ref.startsWith("git+")) return fromGit(named.ref);
     const parsed = parsePkRef(named.ref);
     if (typeof parsed === "object") followedKey = parsed.key;
     let last: unknown;
