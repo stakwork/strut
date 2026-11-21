@@ -10,7 +10,6 @@
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { isValidSecretName } from "../secret-store.js";
 import { loadYaml } from "../yaml.js";
 import { fileRefPath } from "./cache.js";
 import { MANIFEST_FILE, PACKAGE_DIGEST, PACKAGE_NAME } from "./format.js";
@@ -25,26 +24,26 @@ export interface BootPackage {
   ref: string;
   /** A `pk:` ref's catalog: the publisher's `…/packages/catalog?public=1`. */
   url?: string;
-  /** The digest `ref` must resolve to. */
+  /** The digest `ref` must resolve to. A `git+` ref is read with the token
+   *  for its host (src/git-hosts.ts). */
   digest?: string;
-  /** A `git+` ref's token: the NAME of the secret it is read with (default GITHUB_TOKEN). */
-  tokenSecret?: string;
 }
 
-const ENTRY = "{ ref, url?, digest?, tokenSecret? }";
+const ENTRY = "{ ref, url?, digest? }";
 const REFS = "publisher/name, pk:<key>/<publisher>/<name> with url, git+https://host/org/repo@<branch|tag|commit>[#<folder>], or file:/path";
 
 /** Why `p` is not a `BootPackage`, or null. */
 export function bootPackageProblem(p: unknown): string | null {
   if (!p || typeof p !== "object" || Array.isArray(p)) return `an entry is ${ENTRY}`;
-  const { ref, url, digest, tokenSecret, ...rest } = p as Record<string, unknown>;
+  // `tokenSecret`, from before 2026-11-20, is no longer read (a `git+` ref
+  // is read with the token for its host): left alone, so a box that still
+  // names one boots.
+  const { ref, url, digest, tokenSecret: _gone, ...rest } = p as Record<string, unknown>;
   const extra = Object.keys(rest);
   if (extra.length) return `unknown field ${extra.map((k) => JSON.stringify(k)).join(", ")}: an entry is ${ENTRY}`;
   if (typeof ref !== "string" || !ref) return `ref is required: ${REFS}`;
   if (url !== undefined && (typeof url !== "string" || !/^https?:\/\/\S+$/.test(url))) return `${ref}: url is the publisher's catalog, an http(s) URL`;
   if (digest !== undefined && (typeof digest !== "string" || !PACKAGE_DIGEST.test(digest))) return `${ref}: digest is sha256:<64 hex>`;
-  if (tokenSecret !== undefined && (typeof tokenSecret !== "string" || !isValidSecretName(tokenSecret))) return `${ref}: tokenSecret is the NAME of a secret (letters, digits, underscore), never the token`;
-  if (tokenSecret !== undefined && !ref.startsWith("git+")) return `${ref}: tokenSecret goes with a git+ ref`;
   if (PACKAGE_NAME.test(ref)) {
     if (url !== undefined) return `${ref} is a name, looked up in the indexes this strut follows; a url goes with a pk: ref`;
   } else if (ref.startsWith("pk:")) {
@@ -80,8 +79,8 @@ export function checkBootPackages(list: readonly unknown[], label = "packages"):
   return list.map((p, i) => {
     const problem = bootPackageProblem(p);
     if (problem) throw new Error(`${label}[${i}]: ${problem}`);
-    const { ref, url, digest, tokenSecret } = p as BootPackage;
-    return { ref, ...(url ? { url } : {}), ...(digest ? { digest } : {}), ...(tokenSecret ? { tokenSecret } : {}) };
+    const { ref, url, digest } = p as BootPackage;
+    return { ref, ...(url ? { url } : {}), ...(digest ? { digest } : {}) };
   });
 }
 
@@ -119,7 +118,7 @@ export interface BootPackageDeps {
   /** The packages installed here now (`listInstalledPackages`), each with
    *  the ref it was installed from. */
   installed(): Promise<Array<{ package: string; ref?: string }>>;
-  install(ref: string, opts: { url?: string; digest?: string; tokenSecret?: string }): Promise<InstallResult>;
+  install(ref: string, opts: { url?: string; digest?: string }): Promise<InstallResult>;
   log?(line: string): void;
   warn?(line: string): void;
 }
@@ -145,7 +144,7 @@ export async function installBootPackages(list: readonly BootPackage[], deps: Bo
       // so `installed` never lists it and every boot installs it again:
       // harmless — types are add-only and come back `present` — and the
       // report says so, which is all that is logged.
-      const r = await deps.install(p.ref, { ...(p.url ? { url: p.url } : {}), ...(p.digest ? { digest: p.digest } : {}), ...(p.tokenSecret ? { tokenSecret: p.tokenSecret } : {}) });
+      const r = await deps.install(p.ref, { ...(p.url ? { url: p.url } : {}), ...(p.digest ? { digest: p.digest } : {}) });
       const report = r.packages.find((m) => m.package === r.package);
       const status = report?.status === "present" ? "present" : "installed";
       const missing = [...r.missing.secrets.map((s) => `secret ${s}`), ...r.missing.binaries.map((b) => `binary ${b}`), ...r.missing.runtimes.map((t) => `runtime ${t}`)];

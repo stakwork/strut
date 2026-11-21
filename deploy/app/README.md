@@ -31,8 +31,10 @@ package layout at its root (or in a folder): `strut.yaml`, `serve.yaml`,
 `apps/`, `workflows/`, `steps/`. The ref is then
 `git+https://github.com/acme/moonlander@main` (`#<folder>` after it when the
 package is in one); any branch, tag or commit works, and any git host. A
-private repository is read with a token: put one that can read it in
-`GITHUB_TOKEN`, or in another secret named by `STRUT_SERVE_TOKEN_SECRET`.
+private repository is read with the token for its host: on GitHub, put one
+that can read it in `GITHUB_TOKEN` (another host's token is the secret a
+package's `provides.git` names for it, docs/security.md "Git credentials by
+host").
 
 **A release from a strut.** To publish one from a strut instead, name the
 fields as `serve` on the publish, and make its channel public:

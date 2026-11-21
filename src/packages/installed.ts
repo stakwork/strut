@@ -57,10 +57,14 @@ export interface InstalledPackage {
   commit?: string;
   /** What its steps may read (the fence, src/packages/fence.ts). */
   secrets?: string[];
+  /** `requires.git`: its steps read the run's token for a repository's
+   *  host themselves (`secrets.git`, src/packages/fence.ts). */
+  git?: true;
   /** What it provides (`provides` in its `strut.yaml`): `secrets`, the ones
    *  its steps manage — a person's own value, and on an admin's call from
-   *  its own `admin: true` app the deployment's (src/packages/fence.ts). */
-  provides?: { secrets?: string[] };
+   *  its own `admin: true` app the deployment's (src/packages/fence.ts);
+   *  `git`, the hosts a token it holds serves (src/git-hosts.ts). */
+  provides?: { secrets?: string[]; git?: Array<{ host: string; secret: string }> };
   /** Which door wrote it: a person's install, or the distro, whose package
    *  only the distro updates or removes (plans/marketplace.md §12). Absent
    *  for a package of Concepts alone, which records no door. */
@@ -142,8 +146,9 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
       releasedAt.set(upstream.package, at);
       const source = versions[installed]!.source;
       const door: PackageDoor = source === "distro" || source === "repo" ? source : "install";
-      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, ...(upstream.commit ? { commit: upstream.commit } : {}), secrets: upstream.secrets, ...(upstream.provides ? { provides: upstream.provides } : {}), door });
+      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, ...(upstream.commit ? { commit: upstream.commit } : {}), secrets: upstream.secrets, ...(upstream.git ? { git: true } : {}), ...(upstream.provides ? { provides: upstream.provides } : {}), door });
       if (!upstream.commit) delete p.commit;
+      if (!upstream.git) delete p.git;
       if (!upstream.provides) delete p.provides;
     }
     const helper = kind === "step" && name.split("/").pop()!.startsWith("_");

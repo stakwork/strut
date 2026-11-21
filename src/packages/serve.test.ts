@@ -129,7 +129,7 @@ describe("serve.yaml", () => {
     assert.throws(() => planServe(parseServeFile("app: game\nimage: apps/game/og.png\n"), info), /image: apps\/game\/og.png is not a file in the package/);
   });
 
-  it("the ref: from the options, else STRUT_SERVE (+ STRUT_SERVE_URL, STRUT_SERVE_TOKEN_SECRET)", () => {
+  it("the ref: from the options, else STRUT_SERVE (+ STRUT_SERVE_URL)", () => {
     assert.equal(serveRefOf(undefined, {}), undefined);
     assert.equal(serveRefOf(false, { STRUT_SERVE: "file:/x" }), undefined);
     assert.deepEqual(serveRefOf(undefined, { STRUT_SERVE: " acme/moon " }), { ref: "acme/moon" });
@@ -137,10 +137,9 @@ describe("serve.yaml", () => {
     const pk = `pk:${"y".repeat(52)}/acme/moon`;
     assert.deepEqual(serveRefOf(undefined, { STRUT_SERVE: pk, STRUT_SERVE_URL: "https://a.example/packages/catalog?public=1" }), { ref: pk, url: "https://a.example/packages/catalog?public=1" });
     assert.throws(() => serveRefOf(undefined, { STRUT_SERVE: pk }), /STRUT_SERVE: .*needs STRUT_SERVE_URL/);
-    assert.deepEqual(serveRefOf(undefined, { STRUT_SERVE: "git+https://github.com/acme/moon@main#strut", STRUT_SERVE_TOKEN_SECRET: "MOON_GH" }), { ref: "git+https://github.com/acme/moon@main#strut", tokenSecret: "MOON_GH" });
+    // STRUT_SERVE_TOKEN_SECRET is no longer read: a git+ ref is read with the token for its host.
+    assert.deepEqual(serveRefOf(undefined, { STRUT_SERVE: "git+https://github.com/acme/moon@main#strut", STRUT_SERVE_TOKEN_SECRET: "MOON_GH" }), { ref: "git+https://github.com/acme/moon@main#strut" });
     assert.deepEqual(serveRefOf({ ref: "git+https://github.com/acme/moon" }, {}), { ref: "git+https://github.com/acme/moon" });
-    assert.throws(() => serveRefOf(undefined, { STRUT_SERVE: "git+https://github.com/acme/moon@main", STRUT_SERVE_TOKEN_SECRET: "ghp-x" }), /STRUT_SERVE: .*STRUT_SERVE_TOKEN_SECRET is the NAME of a secret/);
-    assert.throws(() => serveRefOf(undefined, { STRUT_SERVE: "acme/moon", STRUT_SERVE_TOKEN_SECRET: "GH" }), /STRUT_SERVE_TOKEN_SECRET goes with a git\+ ref/);
     assert.throws(() => serveRefOf(undefined, { STRUT_SERVE: "git+https://github.com/acme/moon@" }), /STRUT_SERVE: .*nothing after @/);
     assert.throws(() => serveRefOf(undefined, { STRUT_SERVE: "moon" }), /a ref is publisher\/name/);
   });

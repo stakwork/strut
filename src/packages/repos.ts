@@ -26,21 +26,23 @@
  *           Otherwise the merged tree is applied through the repo door.
  *
  * Git merges, strut never does: strut writes files and applies trees. The
- * token is read from a named secret (the actor's first) and reaches git only
- * through `_shared.ts`' credential helper; `repos.json` keeps the secret's
- * NAME, and every error this module throws has the token masked out.
+ * token is the one for the repository's host (the secret that serves it,
+ * src/git-hosts.ts; the actor's own first) and reaches git only through
+ * `_shared.ts`' credential helper, for that host alone; every error this
+ * module throws has the token masked out.
  */
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { shellCapability, type HttpCapability, type SecretsCapability, type ShellCapability } from "../capabilities.js";
-import { cachePath, commitOf, fetchCache, git, gitOk, parseRepo, remoteDefaultBranch, withLock, type RepoRef } from "../steps/lib/git/_shared.js";
+import { cachePath, commitOf, fetchCache, git, gitOk, parseRepo, remoteDefaultBranch, withLock, type GitAuth, type RepoRef } from "../steps/lib/git/_shared.js";
+import { strutGitSecret, tokenHost, type GitSecretOf } from "../git-hosts.js";
 import { packagePrefixOf, type VersionSource } from "../workspace.js";
 import { packageFiles, type BuildRequest, type WholeDeps } from "./build.js";
 import type { CachedPackage, PackageCache } from "./cache.js";
 import { PACKAGE_NAME } from "./format.js";
-import { DEFAULT_TOKEN_SECRET, exportGitTree, parseGitRef, type GitPackageRef } from "./git-source.js";
+import { exportGitTree, parseGitRef, type GitPackageRef } from "./git-source.js";
 import type { InstallResult } from "./install.js";
 import { listInstalledPackages } from "./installed.js";
 
@@ -62,8 +64,6 @@ export interface RepoRecord {
   /** The commit last installed, and its package digest (kept in the cache). */
   commit: string;
   digest: string;
-  /** The NAME of the secret its token is read from; never a value. */
-  tokenSecret?: string;
   openedAt: string;
   by?: string;
   /** Create repo's: the bare items it was built from, offered for retirement. */
@@ -102,6 +102,12 @@ export interface ReposDeps {
   /** For the token's GitHub identity (a commit's author). */
   http?: HttpCapability;
   secrets?: SecretsCapability;
+  /** Which secret serves a repository's host (src/git-hosts.ts): the box's
+   *  map; default strut's own. */
+  gitSecret?: GitSecretOf;
+  /** A person's own machine (`STRUT_GIT_LOCAL`): with no token for the
+   *  repository's host, git keeps this machine's own credentials. */
+  gitLocal?: boolean;
   /** Install a tree the cache holds through the `repo` door. */
   install(ref: string, opts: { digest: string; commit: string; actor?: string; adoptPages?: boolean }): Promise<InstallResult>;
   /** Build a package into the cache (Create repo; src/packages/build.ts). */
@@ -118,7 +124,6 @@ export interface OpenInput {
   /** A branch (default: the remote's default branch). */
   ref?: string;
   path?: string;
-  tokenSecret?: string;
   actor?: string;
 }
 
@@ -127,7 +132,6 @@ export interface CreateInput extends Omit<BuildRequest, "requires"> {
   /** The branch the first commit makes (default `main`). */
   branch?: string;
   path?: string;
-  tokenSecret?: string;
   actor?: string;
 }
 
@@ -224,11 +228,16 @@ export function createRepos(deps: ReposDeps): Repos {
   };
   const save = async (rec: RepoRecord) => writeAll([...(await readAll()).filter((r) => r.package !== rec.package), rec]);
 
-  /** The token for a repo, read as the actor when the deployment keeps
-   *  per-actor secrets; undefined for none. */
-  const tokenOf = async (secretName: string | undefined, actor: string | undefined): Promise<string | undefined> => {
+  /** The token for a repository's host and the secret that serves it,
+   *  read as the actor when the deployment keeps per-actor secrets (theirs
+   *  first); `auth` absent for none. */
+  const authOf = async (url: string, actor: string | undefined): Promise<{ auth?: GitAuth; secret?: string }> => {
+    const secret = (deps.gitSecret ?? strutGitSecret)(url);
+    const host = tokenHost(url);
+    if (!secret || !host) return {};
     const view = actor && deps.secrets?.forPrincipal ? deps.secrets.forPrincipal(actor) : deps.secrets;
-    return (await view?.get(secretName ?? DEFAULT_TOKEN_SECRET).catch(() => undefined)) || undefined;
+    const token = (await view?.get(secret).catch(() => undefined)) || undefined;
+    return { secret, ...(token ? { auth: { token, host } } : {}) };
   };
   /** Run `fn` and take the token out of anything it throws. */
   const masked = async <T>(token: string | undefined, fn: () => Promise<T>): Promise<T> => {
@@ -260,8 +269,10 @@ export function createRepos(deps: ReposDeps): Repos {
     return ["-c", `user.name=${name}`, "-c", `user.email=${email}`, "-c", "commit.gpgsign=false"];
   };
 
-  const run = (args: string[], cwd: string, token?: string) => git(shell, args, { cwd, timeoutMs: GIT_TIMEOUT, ...(token ? { token } : {}) });
-  const ok = (args: string[], cwd: string, token?: string) => gitOk(shell, args, { cwd, timeoutMs: GIT_TIMEOUT, ...(token ? { token } : {}) });
+  /** With no token, a person's own machine keeps its own credentials (`gitLocal`). */
+  const access = (auth?: GitAuth) => (auth ? { auth } : deps.gitLocal ? { machine: true } : {});
+  const run = (args: string[], cwd: string, auth?: GitAuth) => git(shell, args, { cwd, timeoutMs: GIT_TIMEOUT, ...access(auth) });
+  const ok = (args: string[], cwd: string, auth?: GitAuth) => gitOk(shell, args, { cwd, timeoutMs: GIT_TIMEOUT, ...access(auth) });
   /** A commit with the message on stdin (a title starting with "-" is no flag). */
   const commitAs = async (cwd: string, identity: string[], message: string, extra: string[] = []) => {
     const r = await shell({ cmd: "git", args: [...identity, "commit", "--quiet", ...extra, "-F", "-"], cwd, stdin: `${message.trim()}\n`, timeoutMs: GIT_TIMEOUT });
@@ -425,10 +436,10 @@ export function createRepos(deps: ReposDeps): Repos {
   const open = async (input: OpenInput, originals?: RepoItem[]): Promise<RepoView & { install: InstallResult }> => {
     const asked = parseGitRef(`git+${input.url.trim().replace(/\/+$/, "")}${input.ref ? `@${input.ref}` : ""}${input.path ? `#${input.path}` : ""}`);
     if (typeof asked === "string") throw refusal("package_source_invalid", asked);
-    const token = await tokenOf(input.tokenSecret, input.actor);
-    return masked(token, async () => {
+    const { auth } = await authOf(asked.repo.url, input.actor);
+    return masked(auth?.token, async () => {
       const cacheDir = cachePath(deps.dataDir, asked.repo);
-      const o = { ...(token ? { token } : {}), timeoutMs: GIT_TIMEOUT };
+      const o = { ...access(auth), timeoutMs: GIT_TIMEOUT };
       const { branch, commit, tree } = await withLock(cacheDir, async () => {
         try {
           await fetchCache(shell, cacheDir, asked.repo.url, o);
@@ -463,7 +474,6 @@ export function createRepos(deps: ReposDeps): Repos {
         ref,
         commit,
         digest: tree.digest,
-        ...(input.tokenSecret ? { tokenSecret: input.tokenSecret } : {}),
         openedAt: (deps.now?.() ?? new Date()).toISOString(),
         ...(input.actor ? { by: input.actor } : {}),
         ...(originals?.length ? { originals } : {}),
@@ -532,14 +542,14 @@ export function createRepos(deps: ReposDeps): Repos {
         ...(await workspace.listApps()).map((a) => a.name),
       ].filter((n) => n.startsWith(prefix));
       if (taken.length) throw refusal("package_conflict", `${taken.join(", ")} ${taken.length === 1 ? "is" : "are"} already here under ${prefix} — Create repo names its items under a new package: pick another name`);
-      const { url: _u, branch: _b, path: _p, tokenSecret: _t, actor: _a, ...req } = input;
+      const { url: _u, branch: _b, path: _p, actor: _a, ...req } = input;
       const built = await deps.build(req);
-      const token = await tokenOf(input.tokenSecret, input.actor);
-      await masked(token, async () => {
+      const { auth } = await authOf(repo.url, input.actor);
+      await masked(auth?.token, async () => {
         const scratch = join(deps.cache.root, ".scratch", `create-${randomBytes(8).toString("hex")}`);
         await mkdir(scratch, { recursive: true });
         try {
-          const remote = await run(["ls-remote", "--heads", "--tags", repo.url], scratch, token);
+          const remote = await run(["ls-remote", "--heads", "--tags", repo.url], scratch, auth);
           if (remote.code !== 0) throw refusal("package_repo_unreachable", `could not reach ${repo.url}: ${(remote.stderr || remote.stdout).trim().slice(-500)}`);
           if (remote.stdout.trim()) throw refusal("package_repo_not_empty", `${repo.url} has commits already — Create repo pushes to an EMPTY repository; open one that holds a package with Open repo`);
           await ok(["init", "--quiet", "-b", branch], scratch);
@@ -550,8 +560,8 @@ export function createRepos(deps: ReposDeps): Repos {
             await copyFile(join(built.dir, ...rel.split("/")), to);
           }
           await ok(["add", "-A"], scratch);
-          await commitAs(scratch, await identityOf(repo, token, input.actor), `${input.package} ${input.version}\n\nCreated from a strut workspace.`);
-          const push = await run(["push", "--quiet", repo.url, `HEAD:refs/heads/${branch}`], scratch, token);
+          await commitAs(scratch, await identityOf(repo, auth?.token, input.actor), `${input.package} ${input.version}\n\nCreated from a strut workspace.`);
+          const push = await run(["push", "--quiet", repo.url, `HEAD:refs/heads/${branch}`], scratch, auth);
           if (push.code !== 0) throw refusal("push_rejected", `the push to ${repo.url} failed — ${(push.stderr || push.stdout).trim().slice(-500)}`);
         } finally {
           await rm(scratch, { recursive: true, force: true });
@@ -566,7 +576,7 @@ export function createRepos(deps: ReposDeps): Repos {
         const exists = i.kind === "workflow" ? !!(await ws.getWorkflowMetadata(bare)) : i.kind === "step" ? !!(await ws.getStepMetadata(bare)) : !!(await ws.getApp(bare));
         if (exists && !packagePrefixOf(bare)) originals.push({ kind: i.kind, name: bare });
       }
-      const opened = await open({ url: repo.url, ref: branch, ...(input.path ? { path: input.path } : {}), ...(input.tokenSecret ? { tokenSecret: input.tokenSecret } : {}), ...(input.actor ? { actor: input.actor } : {}) }, originals ?? []);
+      const opened = await open({ url: repo.url, ref: branch, ...(input.path ? { path: input.path } : {}), ...(input.actor ? { actor: input.actor } : {}) }, originals ?? []);
       return { ...opened, originals };
     },
 
@@ -589,16 +599,16 @@ export function createRepos(deps: ReposDeps): Repos {
       const parsed = parsedOf(rec);
       const work = workdirOf(pkg);
       const cacheDir = cachePath(deps.dataDir, parsed.repo);
-      const token = await tokenOf(rec.tokenSecret, input.actor);
+      const { auth, secret } = await authOf(rec.url, input.actor);
       const straight = input.branch === rec.branch;
-      return masked(token, async () => {
+      return masked(auth?.token, async () => {
         const done = await withLock(cacheDir, async () => {
           if (rec.merge || (await merging(work))) throw refusal("package_repo_merging", `a pull's merge waits in the working copy (${(await unmerged(work)).join(", ") || "resolved"}) — resolve it and Pull first`);
           const found = await writeEdits(rec);
           await ok(["add", "-A", "--", pathspec(rec)], work);
           const staged = await run(["diff", "--cached", "--quiet"], work);
           if (staged.code !== 0 && staged.code !== 1) throw new Error(`git diff --cached failed: ${(staged.stderr || staged.stdout).trim().slice(-2000)}`);
-          if (staged.code === 1) await commitAs(work, await identityOf(parsed.repo, token, input.actor), message);
+          if (staged.code === 1) await commitAs(work, await identityOf(parsed.repo, auth?.token, input.actor), message);
           const head = (await ok(["rev-parse", "HEAD"], work)).trim();
           const base = `refs/remotes/origin/${rec.branch}`;
           const ahead = (await run(["merge-base", "--is-ancestor", "HEAD", base], work)).code !== 0;
@@ -606,7 +616,7 @@ export function createRepos(deps: ReposDeps): Repos {
           if (!ahead) return { head, diff, found, pushed: false as const };
           const target = straight ? rec.branch : (input.branch ?? `strut/${pkg.split("/")[1]}-${head.slice(0, 8)}`);
           if ((await run(["check-ref-format", "--branch", target], work)).code !== 0) throw refusal("package_repo_branch", `"${target}" is not a valid branch name`);
-          const push = await run(["push", "--quiet", "origin", `HEAD:refs/heads/${target}`], work, token);
+          const push = await run(["push", "--quiet", "origin", `HEAD:refs/heads/${target}`], work, auth);
           if (push.code !== 0) {
             const detail = (push.stderr || push.stdout).trim().slice(-1000);
             if (/\b(401|403)\b|authentication failed|permission .*denied|could not read username/i.test(detail)) throw refusal("no_push_permission", `the push to ${rec.url} was refused — ${detail}`);
@@ -625,8 +635,8 @@ export function createRepos(deps: ReposDeps): Repos {
         let prSkipped: string | undefined;
         if (done.pushed && !straight && input.pr !== false) {
           if (parsed.repo.host !== "github.com") prSkipped = `${rec.url} is not on GitHub: open the pull request there`;
-          else if (!token) prSkipped = `no token in ${rec.tokenSecret ?? DEFAULT_TOKEN_SECRET} to open a pull request with`;
-          else pr = await (deps.pullRequest ?? githubPullRequest)({ owner: parsed.repo.owner, repo: parsed.repo.name, head: done.target!, base: rec.branch, title: message.split("\n")[0]!, body: message.split("\n").slice(1).join("\n").trim() || `From ${pkg}, committed in strut.` }, token);
+          else if (!auth) prSkipped = `no token in ${secret ?? "a secret that serves github.com"} to open a pull request with`;
+          else pr = await (deps.pullRequest ?? githubPullRequest)({ owner: parsed.repo.owner, repo: parsed.repo.name, head: done.target!, base: rec.branch, title: message.split("\n")[0]!, body: message.split("\n").slice(1).join("\n").trim() || `From ${pkg}, committed in strut.` }, auth.token);
         }
         // The commit applied through the repo door: every item stamped with it.
         const { install } = await apply(rec, input.actor);
@@ -649,10 +659,10 @@ export function createRepos(deps: ReposDeps): Repos {
       const parsed = parsedOf(rec);
       const work = workdirOf(pkg);
       const cacheDir = cachePath(deps.dataDir, parsed.repo);
-      const token = await tokenOf(rec.tokenSecret, opts.actor);
-      return masked(token, async () => {
+      const { auth } = await authOf(rec.url, opts.actor);
+      return masked(auth?.token, async () => {
         const step = await withLock(cacheDir, async (): Promise<{ conflict?: string[]; local?: string }> => {
-          const identity = await identityOf(parsed.repo, token, opts.actor);
+          const identity = await identityOf(parsed.repo, auth?.token, opts.actor);
           if (await merging(work)) {
             // A merge a person resolved: concluded, never written over.
             const left = await unmerged(work);
@@ -672,7 +682,7 @@ export function createRepos(deps: ReposDeps): Repos {
             }
           }
           try {
-            await fetchCache(shell, cacheDir, rec.url, { ...(token ? { token } : {}), timeoutMs: GIT_TIMEOUT });
+            await fetchCache(shell, cacheDir, rec.url, { ...access(auth), timeoutMs: GIT_TIMEOUT });
           } catch (err) {
             throw refusal("package_repo_unreachable", `could not fetch ${rec.url}: ${err instanceof Error ? err.message.slice(-500) : String(err)}`);
           }

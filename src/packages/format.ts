@@ -25,6 +25,15 @@
  * from the package's own `admin: true` app, `.deployment` reach those names
  * and no other (src/packages/fence.ts).
  *
+ * Its `provides.git` names the hosts a token it holds serves, each with the
+ * secret that holds it (`{ host: github.com, secret: GITHUB_TOKEN }`), one
+ * its steps may read: strut's git steps, `git+` sources and any step's
+ * `secrets.git(url)` read the run's value of that secret for a repository
+ * on that host, and send it nowhere else (src/git-hosts.ts). Its
+ * `requires.git: true` says its own steps read that token themselves, for
+ * any host the box serves (`secrets.git`); without it they never see one,
+ * though strut's git steps they call still use it (src/packages/fence.ts).
+ *
  * Its `schedules:` names workflows of the package strut runs on a schedule,
  * each an automation's draft (`name?`, `trigger`, `input?`) with the
  * `workflow` it runs, by its name inside the package. `readPackage`
@@ -59,6 +68,7 @@ import { z } from "zod";
 import { validateAppName } from "../apps/files.js";
 import { checkInputTemplates, triggerSchema, type TriggerDraft } from "../automations.js";
 import { globToRegExp } from "../closure.js";
+import { GIT_HOST_RE } from "../git-hosts.js";
 import { parseConceptFile } from "../concept-seed.js";
 import { hashTree } from "../version.js";
 import { validateStepName, validateWorkflowName } from "../workspace.js";
@@ -115,6 +125,10 @@ const manifestSchema = z
         packages: z
           .array(z.object({ package: packageName, digest: z.string().regex(PACKAGE_DIGEST, "a digest is sha256:<64 hex>"), source: z.string().min(1) }).strict())
           .optional(),
+        // Its steps read the run's token for a repository's host themselves
+        // (`secrets.git(url)`), to hand git where strut does not run it (a
+        // pod). Shown at install; without it a step never sees a token.
+        git: z.literal(true, { message: "requires.git is true or left out" }).optional(),
       })
       .strict()
       .optional(),
@@ -129,10 +143,27 @@ const manifestSchema = z
     // What the package PROVIDES to the server. `secrets`: the ones its steps
     // manage (src/packages/fence.ts) — read a person's own value apart from
     // the deployment's, set and delete it, and on an admin's call from the
-    // package's own `admin: true` app the deployment's too. Each is one its
-    // steps may read (`requires`). Strict like the rest: a strut from before
-    // a key refuses the package instead of installing it without it.
-    provides: z.object({ secrets: names.optional() }).strict().optional(),
+    // package's own `admin: true` app the deployment's too. `git`: the hosts
+    // a token it holds serves, each with its secret (src/git-hosts.ts). Each
+    // secret is one its steps may read (`requires`). Strict like the rest: a
+    // strut from before a key refuses the package instead of installing it
+    // without it.
+    provides: z
+      .object({
+        secrets: names.optional(),
+        git: z
+          .array(
+            z
+              .object({
+                host: z.string().regex(GIT_HOST_RE, "a host is a lowercase hostname, with :port when it is not the default (github.com, git.acme.com:3000)"),
+                secret: z.string().min(1),
+              })
+              .strict(),
+          )
+          .optional(),
+      })
+      .strict()
+      .optional(),
     // The package's own workflows strut runs on a schedule: an automation
     // each, made at install, followed at each release, dropped at uninstall
     // (src/packages/schedules.ts). An entry is an automation's draft — the
@@ -334,6 +365,12 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
   const readable = readableSecrets(manifest);
   for (const name of manifest.provides?.secrets ?? []) {
     if (!readable.includes(name)) problems.push(`${MANIFEST_FILE}: provides.secrets: ${name} is not in requires.secrets or requires.optional — a package's steps manage only secrets they may read`);
+  }
+  const hosts = new Set<string>();
+  for (const { host, secret } of manifest.provides?.git ?? []) {
+    if (!readable.includes(secret)) problems.push(`${MANIFEST_FILE}: provides.git: ${secret} (for ${host}) is not in requires.secrets or requires.optional — a package provides only a token its steps may read`);
+    if (hosts.has(host)) problems.push(`${MANIFEST_FILE}: provides.git names ${host} twice — a host is served by one secret`);
+    hosts.add(host);
   }
   const schedules = manifest.schedules ? resolveSchedules(pkg, manifest.schedules, items, problems) : undefined;
   if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);

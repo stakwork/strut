@@ -20,7 +20,8 @@ import { fileURLToPath } from "node:url";
 import type { ShellCapability } from "../capabilities.js";
 import { unpackArchive } from "./archive.js";
 import { PACKAGE_DIGEST, type PackageInfo, readPackage } from "./format.js";
-import { DEFAULT_TOKEN_SECRET, exportGitTree, fetchGitRef } from "./git-source.js";
+import { exportGitTree, fetchGitRef } from "./git-source.js";
+import type { GitSecretOf } from "../git-hosts.js";
 import { resolvePk } from "./pk.js";
 
 export type CachedPackage = PackageInfo & { dir: string };
@@ -129,10 +130,14 @@ export interface ResolveOptions {
   /** A `pk:` ref's catalog URL (src/packages/pk.ts). */
   url?: string;
   fetch?: typeof fetch;
-  /** A `git+` ref's token: the NAME of the secret it is read from
-   *  (default GITHUB_TOKEN), and the read. A public repo needs neither. */
-  tokenSecret?: string;
+  /** A `git+` ref's token: which secret serves the repository's host (the
+   *  box's map, src/git-hosts.ts; default strut's own), and the read. A
+   *  public repo needs neither. */
+  gitSecret?: GitSecretOf;
   secret?(name: string): Promise<string | undefined>;
+  /** A person's own machine (`STRUT_GIT_LOCAL`): with no token for the
+   *  repository's host, git keeps this machine's own credentials. */
+  gitLocal?: boolean;
   /** What a `git+` ref runs git with (default: a local shell). */
   shell?: ShellCapability;
   /** Where a `git+` ref's bare cache lives (`<dataDir>/repos/`); default
@@ -171,9 +176,14 @@ export async function resolvePackage(ref: string, opts: ResolveOptions): Promise
 /** A `git+` ref: fetched, its tree at the resolved commit written out
  *  beside the cache, then put in by digest (a pin refuses anything else). */
 async function resolveGit(ref: string, opts: ResolveOptions): Promise<ResolvedPackage> {
-  const tokenSecret = opts.tokenSecret ?? DEFAULT_TOKEN_SECRET;
-  const token = (await opts.secret?.(tokenSecret)) || undefined;
-  const git = { dataDir: opts.dataDir ?? dirname(opts.cache.root), tokenSecret, ...(token ? { token } : {}), ...(opts.shell ? { shell: opts.shell } : {}), ...(opts.branch ? { branch: true } : {}) };
+  const git = {
+    dataDir: opts.dataDir ?? dirname(opts.cache.root),
+    ...(opts.gitSecret ? { gitSecret: opts.gitSecret } : {}),
+    ...(opts.gitLocal ? { gitLocal: true } : {}),
+    ...(opts.secret ? { secret: opts.secret } : {}),
+    ...(opts.shell ? { shell: opts.shell } : {}),
+    ...(opts.branch ? { branch: true } : {}),
+  };
   return fetchGitRef(ref, git, async (got) => {
     if (opts.known?.commit === got.commit && (!opts.digest || opts.digest === opts.known.digest)) {
       const have = await opts.cache.get(opts.known.digest);

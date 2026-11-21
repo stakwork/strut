@@ -346,7 +346,7 @@ a VOICE DEMO (plans/private-voice.md), run from this folder like deploy/index: t
 
 ### `deploy/app/`
 
-a SERVED APP (plans/app-repos.md §4.5), run from this folder like deploy/index: the published strut image on Ladybug (one volume, `/data`) with `STRUT_SERVE` (+ `STRUT_SERVE_URL` for a `pk:` ref, `STRUT_SERVE_TOKEN_SECRET` for a private repo) naming the package — a repository's branch, `git+https://…@main`, by default, behind Caddy for TLS on one host (`STRUT_APP_HOST`), compose project `strut-app`; every line of `.env` reaches strut (`env_file`), so the model keys, the wallet and the package's `requires.secrets` values go there. README.md: a package's `serve.yaml`, a repository as its home or publishing one from a strut (`serve` on `POST /packages/publish`), the box, `GET /serve`, `/?shell=1`, and following new commits (the push webhook at `/serve/sync`) and releases
+a SERVED APP (plans/app-repos.md §4.5), run from this folder like deploy/index: the published strut image on Ladybug (one volume, `/data`) with `STRUT_SERVE` (+ `STRUT_SERVE_URL` for a `pk:` ref; a private repo is read with the token for its host, `GITHUB_TOKEN` for github.com) naming the package — a repository's branch, `git+https://…@main`, by default, behind Caddy for TLS on one host (`STRUT_APP_HOST`), compose project `strut-app`; every line of `.env` reaches strut (`env_file`), so the model keys, the wallet and the package's `requires.secrets` values go there. README.md: a package's `serve.yaml`, a repository as its home or publishing one from a strut (`serve` on `POST /packages/publish`), the box, `GET /serve`, `/?shell=1`, and following new commits (the push webhook at `/serve/sync`) and releases
 
 ### `tsconfig.json`
 

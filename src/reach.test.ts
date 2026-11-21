@@ -89,8 +89,9 @@ describe("builder.reach", () => {
     await refused("r-bash", stepYaml("a", "agent", "      prompt: hi\n      toolFilter: [bash]\n"), /the built-in "bash"/);
     await refused("r-grant", stepYaml("a", "agent", "      prompt: hi\n      toolFilter: [none]\n      agentTools: [slack/*]\n"), /the grant "slack\/\*" \(reaches "slack\/post-message"\)/);
     await refused("r-exec-tool", stepYaml("a", "agent", "      prompt: hi\n      toolFilter: [none]\n      agentTools: [exec]\n"), /the built-in "exec" \(agentTools\)/);
-    // A git step's tokenSecret defaults to GITHUB_TOKEN: a secret it names.
-    await refused("r-token", stepYaml("g", "git/checkout", "      repo: https://example.com/r.git\n"), /the secret "GITHUB_TOKEN"/);
+    // A git step names no secret (its token is the run's for the repository's
+    // host, src/git-hosts.ts): outside reach, it is the step that is.
+    await refused("r-token", stepYaml("g", "git/checkout", "      repo: https://example.com/r.git\n"), /the step "git\/checkout"/);
   });
 
   it("publishes what is inside: reach's steps and globs, its built-ins, its secrets, control flow", async () => {
@@ -201,7 +202,7 @@ describe("builder.reach", () => {
   const aiCtx = (reach: BuilderReach) =>
     ({ runId: "r", path: "p", scope: {}, input: {}, emit: async () => {}, services: { reach: { reach, aiWorkflow: async () => true } satisfies ReachPolicy }, aiAuthored: true }) as StepContext<unknown>;
 
-  it("names every way a config names a secret: secretsEnv, tokenSecret, storageStateSecret, http/verify's {NAME} templates", async () => {
+  it("names every way a config names a secret: secretsEnv, storageStateSecret, http/verify's {NAME} templates", async () => {
     await refused("r-storage", stepYaml("b", "browser/open", "      storageStateSecret: PEEL_BRIDGE_TOKEN\n"), /the secret "PEEL_BRIDGE_TOKEN"/);
     await refused(
       "r-verify",
@@ -217,10 +218,10 @@ describe("builder.reach", () => {
   });
 
   it("a tool call inside the AI's workflow is held to reach too (what the model passes)", () => {
-    const ctx = aiCtx({ tools: ["git/push"], secrets: ["OK_KEY"] });
-    assert.throws(() => withinReach("git/push", { tokenSecret: "PEEL_BRIDGE_TOKEN" }, ctx), /the secret "PEEL_BRIDGE_TOKEN"/);
-    assert.doesNotThrow(() => withinReach("git/push", { tokenSecret: "OK_KEY" }, ctx));
-    assert.doesNotThrow(() => withinReach("git/push", { tokenSecret: "PEEL_BRIDGE_TOKEN" }, { ...ctx, aiAuthored: undefined }));
+    const ctx = aiCtx({ tools: ["browser/open"], secrets: ["OK_KEY"] });
+    assert.throws(() => withinReach("browser/open", { storageStateSecret: "PEEL_BRIDGE_TOKEN" }, ctx), /the secret "PEEL_BRIDGE_TOKEN"/);
+    assert.doesNotThrow(() => withinReach("browser/open", { storageStateSecret: "OK_KEY" }, ctx));
+    assert.doesNotThrow(() => withinReach("browser/open", { storageStateSecret: "PEEL_BRIDGE_TOKEN" }, { ...ctx, aiAuthored: undefined }));
     assert.throws(() => withinReach("slack/post-message", { channel: "C1", text: "hi" }, ctx), /the step "slack\/post-message"/);
     // A sub-agent the model calls without a toolFilter would hold every built-in.
     assert.throws(() => withinReach("agent", { prompt: "go" }, ctx), /every built-in/);

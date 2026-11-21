@@ -40,6 +40,7 @@ import {
 import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js";
 import { bootEnv, hiddenFromSteps } from "./env.js";
 import { isValidSecretName } from "./secret-store.js";
+import { strutGitSecret, type GitSecretOf } from "./git-hosts.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { SphinxCapability } from "./payments/sphinx-dm.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
@@ -66,6 +67,15 @@ export interface SecretsCapability {
    *  principal, so a step never does — it just reads `secrets.get(NAME)`.
    *  Absent when the deployment has no actor secrets. */
   forPrincipal?(principal: string): SecretsCapability;
+  /** The run's token for the git repository at `url`: the secret that
+   *  serves the URL's host (src/git-hosts.ts — strut's own `github.com` →
+   *  `GITHUB_TOKEN`, and each installed package's `provides.git`), read as
+   *  `get` reads it. Undefined for a host no secret serves, a URL that is
+   *  not https (or http to this machine), or a secret with no value. On
+   *  every capability strut builds; on a PACKAGE's step only when its
+   *  package says `requires.git: true` (src/packages/fence.ts). Strut's own
+   *  git steps read it however they are called (`gitTokens`). */
+  git?(url: string): Promise<string | undefined>;
   /** The run's PERSON's own values — their actor secrets
    *  (src/actor-secrets.ts) — apart from the deployment's: what "connected
    *  as" reads, what Disconnect deletes, what a person pastes. Only on a
@@ -144,6 +154,17 @@ export interface SecretScopes {
   /** The package whose own `admin: true` app this call is, shown to an
    *  admin (`adminSecrets`): the one package whose steps get `deployment`. */
   admin?: string;
+  /** The token for a repository URL's host, as this capability reads it:
+   *  what `gitTokens` answers strut's own git steps. Kept on a package
+   *  step's fenced view too (`keepGitTokens`), which may hold no `git`. */
+  git?: (url: string) => Promise<string | undefined>;
+  /** On a package step's view: the run's own `shell` and `http`, the only
+   *  doors strut's git steps hand that token through — never ones the step
+   *  passes in the ctx it calls them with (`gitVia`). */
+  gitVia?: { shell?: ShellCapability; http?: HttpCapability };
+  /** A person's own machine (`STRUT_GIT_LOCAL`): with no token for a
+   *  host, git keeps this machine's own credentials (`gitLocalOf`). */
+  gitLocal?: true;
 }
 const SCOPES = new WeakMap<SecretsCapability, SecretScopes>();
 
@@ -151,6 +172,42 @@ const SCOPES = new WeakMap<SecretsCapability, SecretScopes>();
 export function secretScopesOf(cap: SecretsCapability | undefined): Readonly<SecretScopes> | undefined {
   return cap ? SCOPES.get(cap) : undefined;
 }
+
+/** The token for a repository URL's host as `cap` reads it: what strut's
+ *  own git steps and `git+` sources hand git, whoever calls them. A
+ *  package's step that calls `git/checkout` with its own ctx passes its
+ *  fenced view, which answers this though the step itself holds no `git`
+ *  (src/packages/fence.ts): it may USE the run's token through strut's
+ *  steps, never see it. A capability strut did not build answers with its
+ *  own `git`, else strut's own map (`github.com` → `GITHUB_TOKEN`) through
+ *  its `get`. */
+export function gitTokens(cap: SecretsCapability | undefined): (url: string) => Promise<string | undefined> {
+  const kept = cap ? (SCOPES.get(cap)?.git ?? cap.git?.bind(cap)) : undefined;
+  if (kept) return kept;
+  return async (url) => {
+    const name = strutGitSecret(url);
+    return name && cap ? cap.get(name) : undefined;
+  };
+}
+
+/** `view` answers `gitTokens` as `from` does: the fence's view of a
+ *  package's step, so strut's git steps it calls still read the run's
+ *  token — and hand it only through `via`, the run's own shell and http,
+ *  whatever the step puts in the ctx it calls them with. */
+export function keepGitTokens(view: SecretsCapability, from: SecretsCapability, via: { shell?: ShellCapability; http?: HttpCapability }): void {
+  SCOPES.set(view, { ...SCOPES.get(view), git: gitTokens(from), gitVia: via, ...(gitLocalOf(from) ? { gitLocal: true as const } : {}) });
+}
+
+/** Whether a run with no token for a host keeps this machine's own git
+ *  credentials: a person's own machine, where the server says so
+ *  (`STRUT_GIT_LOCAL`). Only strut sets it, on a capability it builds:
+ *  never a step. */
+export const gitLocalOf = (cap: SecretsCapability | undefined): boolean => !!(cap && SCOPES.get(cap)?.gitLocal);
+
+/** The doors a token read through `cap` may go through, when they are not
+ *  the caller's to choose (`keepGitTokens`). */
+export const gitVia = (cap: SecretsCapability | undefined): { shell?: ShellCapability; http?: HttpCapability } | undefined =>
+  cap ? SCOPES.get(cap)?.gitVia : undefined;
 
 /** `cap` as one call holds it from a package's own `admin: true` app shown
  *  to an admin (src/apps/tools.ts): that package's steps get `deployment`
@@ -163,10 +220,12 @@ export function adminSecrets(cap: SecretsCapability, pkg: string): SecretsCapabi
   const bind = cap.forPrincipal?.bind(cap);
   const admin: SecretsCapability = {
     get: (name: string) => cap.get(name),
+    ...(cap.git ? { git: cap.git } : {}),
     ...(bind ? { forPrincipal: (principal: string) => adminSecrets(bind(principal), pkg) } : {}),
   };
   SCOPES.set(admin, { ...scopes, admin: pkg });
-  if ((cap as { [HIDDEN]?: true })[HIDDEN]) Object.defineProperty(admin, HIDDEN, { value: true });
+  const hidden = (cap as { [HIDDEN]?: GitSecretOf })[HIDDEN];
+  if (hidden) Object.defineProperty(admin, HIDDEN, { value: hidden });
   return admin;
 }
 
@@ -200,9 +259,18 @@ function secretScope(read: (name: string) => Promise<string | undefined>, write:
  */
 export function secretsCapability(
   source: Record<string, string | undefined> | SecretReadable = bootEnv(),
-  opts: { envFallback?: Record<string, string | undefined>; actors?: ActorSecretReadable } = {},
+  opts: {
+    envFallback?: Record<string, string | undefined>;
+    actors?: ActorSecretReadable;
+    /** Which secret serves a repository URL's host (src/git-hosts.ts):
+     *  the box's map; default strut's own. */
+    gitSecret?: GitSecretOf;
+    /** A person's own machine: with no token for a host, git keeps this
+     *  machine's own credentials (`STRUT_GIT_LOCAL`). */
+    gitLocal?: boolean;
+  } = {},
 ): SecretsCapability {
-  return hideSecrets(unhiddenSecrets(source, opts));
+  return hideSecrets(unhiddenSecrets(source, opts), opts.gitSecret, opts.gitLocal);
 }
 
 const HIDDEN = Symbol("strut.hiddenSecrets");
@@ -211,17 +279,26 @@ const HIDDEN = Symbol("strut.hiddenSecrets");
  *  env.ts: the wallet's `LIGHTNING_*` credentials, `STRUT_SECRET_KEY`),
  *  whoever built it — strut builds every one of its own through this, and
  *  createStrut wraps a host's. A bound capability (`forPrincipal`) is
- *  wrapped too. */
-export function hideSecrets(cap: SecretsCapability): SecretsCapability {
-  if ((cap as { [HIDDEN]?: true })[HIDDEN]) return cap;
-  const hidden: SecretsCapability & { [HIDDEN]?: true } = {
-    get: (name: string) => (hiddenFromSteps(name) ? Promise.resolve(undefined) : cap.get(name)),
-    ...(cap.forPrincipal ? { forPrincipal: (principal: string) => hideSecrets(cap.forPrincipal!(principal)) } : {}),
+ *  wrapped too. It also answers `git(url)` over `gitSecret`, the box's map
+ *  of which secret serves which host (src/git-hosts.ts; default strut's
+ *  own), and says whether git keeps this machine's own credentials with no
+ *  token (`gitLocal`): wrapping again with others replaces them. */
+export function hideSecrets(cap: SecretsCapability, gitSecret: GitSecretOf = strutGitSecret, gitLocal = false): SecretsCapability {
+  if ((cap as { [HIDDEN]?: GitSecretOf })[HIDDEN] === gitSecret && gitLocalOf(cap) === gitLocal) return cap;
+  const get = (name: string) => (hiddenFromSteps(name) ? Promise.resolve(undefined) : cap.get(name));
+  const git = (url: string) => {
+    const name = gitSecret(url);
+    return name ? get(name) : Promise.resolve(undefined);
   };
-  Object.defineProperty(hidden, HIDDEN, { value: true });
+  const hidden: SecretsCapability = {
+    get,
+    git,
+    ...(cap.forPrincipal ? { forPrincipal: (principal: string) => hideSecrets(cap.forPrincipal!(principal), gitSecret, gitLocal) } : {}),
+  };
+  Object.defineProperty(hidden, HIDDEN, { value: gitSecret });
   // A scope refuses a hidden name itself (`secretScope`).
-  const scopes = SCOPES.get(cap);
-  if (scopes) SCOPES.set(hidden, scopes);
+  const { gitLocal: _was, ...scopes } = SCOPES.get(cap) ?? {};
+  SCOPES.set(hidden, { ...scopes, git, ...(gitLocal ? { gitLocal: true as const } : {}) });
   return hidden;
 }
 
@@ -673,13 +750,20 @@ export function standardServices(
     /** Per-actor secrets (actor-secrets.ts): lets the runner bind `secrets`
      *  to a run's principal. */
     actorSecretStore?: ActorSecretReadable;
+    /** Which secret serves a repository URL's host (src/git-hosts.ts):
+     *  `secrets.git`'s map; default strut's own. */
+    gitSecret?: GitSecretOf;
+    /** A person's own machine: with no token for a host, git keeps this
+     *  machine's own credentials (`STRUT_GIT_LOCAL`). */
+    gitLocal?: boolean;
     dataDir?: string;
   } = {},
 ): StrutCapabilities {
   const actors = opts.actorSecretStore;
+  const git = { ...(opts.gitSecret ? { gitSecret: opts.gitSecret } : {}), ...(opts.gitLocal ? { gitLocal: true } : {}) };
   const secrets = opts.secretStore
-    ? secretsCapability(opts.secretStore, { envFallback: bootEnv(), ...(actors ? { actors } : {}) })
-    : secretsCapability(opts.secretsSource, actors ? { actors } : {});
+    ? secretsCapability(opts.secretStore, { envFallback: bootEnv(), ...(actors ? { actors } : {}), ...git })
+    : secretsCapability(opts.secretsSource, { ...(actors ? { actors } : {}), ...git });
   return {
     http: httpCapability(opts.fetchImpl),
     secrets,

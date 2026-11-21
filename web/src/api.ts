@@ -2392,6 +2392,8 @@ export function getBrandStyles(): Promise<BrandStyles | null> {
 export interface PackageRequires {
   secrets?: string[];
   optional?: string[];
+  /** Its steps read the person's token for a repository's host themselves. */
+  git?: true;
   binaries?: string[];
   runtimes?: Array<{ name: string; image?: string; binaries?: string[] }>;
   packages?: Array<{ package: string; digest: string; source: string }>;
@@ -2545,7 +2547,6 @@ export interface RepoInfo {
   /** The commit last installed. */
   commit: string;
   digest: string;
-  tokenSecret?: string;
   openedAt: string;
   by?: string;
   /** Create repo's bare originals, offered for retirement. */
@@ -2594,12 +2595,12 @@ const repoPath = (pkg: string) => `/packages/repos/${pkg.split("/").map(encodeUR
 
 export const listRepos = () => fetchJSON<{ repos: RepoInfo[] }>("/packages/repos").then((r) => r.repos);
 
-export const openRepo = (req: { url: string; ref?: string; path?: string; tokenSecret?: string }) =>
+export const openRepo = (req: { url: string; ref?: string; path?: string }) =>
   fetchJSON<RepoInfo>("/packages/repos", { method: "POST", body: JSON.stringify(req) });
 
 /** `POST /packages/repos/create`: the picks built and pushed as the first
  *  commit of an EMPTY remote, then opened. */
-export const createRepo = (req: Omit<PublishRequest, "channel" | "public"> & { url: string; branch?: string; path?: string; tokenSecret?: string }) =>
+export const createRepo = (req: Omit<PublishRequest, "channel" | "public"> & { url: string; branch?: string; path?: string }) =>
   fetchJSON<RepoInfo & { originals: RepoItem[] }>("/packages/repos/create", { method: "POST", body: JSON.stringify(req) });
 
 /** What a Commit would push: the workspace's edits written into the working copy, staged. */
@@ -2733,7 +2734,8 @@ export interface SubscriptionInfo {
   url?: string;
   channel?: string;
   token?: boolean;
-  /** A git branch's: the `git+` ref and the NAME of the secret it is read with. */
+  /** A git branch's: the `git+` ref and the NAME of the secret that serves
+   *  its host, which it is read with (none: read with no token). */
   ref?: string;
   tokenSecret?: string;
   accepted?: { seq: number; digest: string; at: string };

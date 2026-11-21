@@ -257,10 +257,15 @@ export interface Upstream {
    *  re-resolves is `source.ref` — the branch or tag — never this. */
   commit?: string;
   secrets: string[];
+  /** The manifest's `requires.git`: the package's steps read the run's
+   *  token for a repository's host themselves (`secrets.git`,
+   *  src/packages/fence.ts). */
+  git?: true;
   /** The manifest's `provides` (src/packages/format.ts): `secrets`, the
    *  ones the package's steps manage — their fence's second list
-   *  (src/packages/fence.ts). Absent when the package provides nothing. */
-  provides?: { secrets?: string[] };
+   *  (src/packages/fence.ts); `git`, the hosts a token it holds serves
+   *  (src/git-hosts.ts). Absent when the package provides nothing. */
+  provides?: { secrets?: string[]; git?: Array<{ host: string; secret: string }> };
   /** When a package's door wrote this version or, a known one, stamped it
    *  the release's again (ISO; one time for the whole release): what the
    *  installed fold reads to tell which release is here once a fork is
