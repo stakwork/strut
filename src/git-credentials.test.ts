@@ -198,7 +198,13 @@ describe("git/remote-head and the token git is handed, against repositories serv
    * A machine that holds git credentials: a helper as a system gitconfig
    * sets one (macOS's osxkeychain), a global config's askpass and helper, a
    * ~/.netrc that git's curl reads on its own — each a password of its own,
-   * unless one is given. Its shell runs git on that machine.
+   * unless one is given. Its shell runs git on that machine, and on that
+   * machine alone: the real one's system layer is never read
+   * (`GIT_CONFIG_NOSYSTEM`; on a Mac, Apple Git reads its Xcode gitconfig,
+   * whose osxkeychain would ask the real keychain and could wait on its
+   * dialog, as part of that layer, which `GIT_CONFIG_SYSTEM` adds to rather
+   * than replaces), so the test's "system" helper comes on the command line,
+   * before strut's own arguments, as a system file is read before them.
    */
   const machineWith = async (name: string, passwords: { system?: string; global?: string; netrc?: string } = {}) => {
     const dir = join(root, `machine-${name}`);
@@ -211,7 +217,7 @@ describe("git/remote-head and the token git is handed, against repositories serv
     await writeFile(global, `[credential]\n\thelper = "!f() { echo username=machine; echo password=${passwords.global ?? "MACHINE_GLOBAL"}; }; f"\n[core]\n\taskPass = ${askpass}\n`);
     const system = `credential.helper=!f() { echo username=machine; echo password=${passwords.system ?? "MACHINE_SYSTEM"}; }; f`;
     const shell: StrutCapabilities["shell"] = (req) =>
-      runProcess(req.cmd !== "git" ? req : { ...req, args: ["-c", system, ...(req.args ?? [])], env: { HOME: home, GIT_CONFIG_GLOBAL: global, ...req.env } });
+      runProcess(req.cmd !== "git" ? req : { ...req, args: ["-c", system, ...(req.args ?? [])], env: { GIT_CONFIG_NOSYSTEM: "1", HOME: home, GIT_CONFIG_GLOBAL: global, ...req.env } });
     return { shell, on: (bag: StrutCapabilities): StrutCapabilities => ({ ...bag, shell }) };
   };
   const machinePasswords = (from: number) => [...new Set(priv.seen.slice(from).map((r) => r.password).filter((p): p is string => !!p && p.startsWith("MACHINE_")))];
@@ -242,6 +248,9 @@ describe("git/remote-head and the token git is handed, against repositories serv
     it("with no token for the host, git keeps the machine's own: its ~/.netrc, its helpers — on every git path", async () => {
       // ~/.netrc holds the one that works: curl sends it, the step reads the head.
       const byNetrc = await machineWith("netrc", { netrc: TOKEN });
+      // The machine is the test's own: git there knows no helper but the two made here, never the real keychain.
+      const helpers = await byNetrc.shell({ cmd: "git", args: ["config", "--get-all", "credential.helper"], cwd: root });
+      assert.deepEqual(helpers.stdout.trim().split("\n").map((h) => h.replace(/password=\S+;/, "password=…;")), Array(2).fill("!f() { echo username=machine; echo password=…; }; f"));
       let before = priv.seen.length;
       const asked = await run([ask(repoOf(priv))], byNetrc.on(local({})));
       assert.equal(asked.res.status, "success", asked.res.error?.message);
