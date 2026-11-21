@@ -55,8 +55,15 @@ export interface InstalledPackage {
   source?: { ref: string; url?: string };
   /** The commit a `git+` ref resolved at that release. */
   commit?: string;
-  /** What its steps may read (the fence, src/packages/fence.ts). */
+  /** What its steps may read (the fence, src/packages/fence.ts):
+   *  `requires.secrets` and `requires.optional` together. */
   secrets?: string[];
+  /** `requires.optional`: those of `secrets` its steps read only when set,
+   *  which neither an install nor a subscription's gate asks for — what a
+   *  host leaves out when it offers to set the secrets a package needs.
+   *  Absent when there are none, and for a release installed before
+   *  2026-11-21, until another release of the package goes in. */
+  optional?: string[];
   /** `requires.git`: its steps read the run's token for a repository's
    *  host themselves (`secrets.git`, src/packages/fence.ts). */
   git?: true;
@@ -146,8 +153,9 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
       releasedAt.set(upstream.package, at);
       const source = versions[installed]!.source;
       const door: PackageDoor = source === "distro" || source === "repo" ? source : "install";
-      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, ...(upstream.commit ? { commit: upstream.commit } : {}), secrets: upstream.secrets, ...(upstream.git ? { git: true } : {}), ...(upstream.provides ? { provides: upstream.provides } : {}), door });
+      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, ...(upstream.commit ? { commit: upstream.commit } : {}), secrets: upstream.secrets, ...(upstream.optional ? { optional: upstream.optional } : {}), ...(upstream.git ? { git: true } : {}), ...(upstream.provides ? { provides: upstream.provides } : {}), door });
       if (!upstream.commit) delete p.commit;
+      if (!upstream.optional) delete p.optional;
       if (!upstream.git) delete p.git;
       if (!upstream.provides) delete p.provides;
     }

@@ -235,6 +235,13 @@ describe("installing a package on a filesystem workspace", () => {
     );
     assert.equal(r.status, 201);
     assert.deepEqual(r.body.missing, { secrets: [], binaries: [], runtimes: [] }, "NOTION_KEY is unset, and optional");
+    // GET /packages tells them apart: what it may read, and which of those it reads only when set.
+    const [listed] = await api.list();
+    assert.deepEqual([listed!.secrets, listed!.optional], [
+      ["LINEAR_API_KEY", "GITHUB_TOKEN", "NOTION_KEY"],
+      ["GITHUB_TOKEN", "NOTION_KEY"],
+    ]);
+    assert.deepEqual((await ws.getWorkflowMetadata("acme/linear/sync"))!.versions["v1"]?.upstream?.optional, ["GITHUB_TOKEN", "NOTION_KEY"]);
     assert.deepEqual((await strut.run("acme/linear/sync", { secret: "GITHUB_TOKEN" })).output, { greeting: "hello", GITHUB_TOKEN: "ghp_456" });
     assert.deepEqual((await strut.run("acme/linear/sync", { secret: "NOTION_KEY" })).output, { greeting: "hello", NOTION_KEY: null });
     const fenced = await strut.run("acme/linear/sync", { secret: "OPENAI_API_KEY" });

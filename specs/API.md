@@ -3906,7 +3906,8 @@ refused), `remote_not_found:`, `remote_unreachable:` or `remote_empty:`
 // InstalledPackage
 {
   "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
-  "source": { "ref": "file:/srv/packages/acme-linear" }, "secrets": ["LINEAR_API_KEY"],
+  "source": { "ref": "file:/srv/packages/acme-linear" }, "secrets": ["LINEAR_API_KEY", "NOTION_KEY"],  // what its steps may read: requires.secrets and requires.optional
+  // "optional": ["NOTION_KEY"],      // requires.optional: read when set, never asked for (absent when none, and on a release installed before 2026-11-21)
   // "provides": { "secrets": ["LINEAR_API_KEY"] },  // its strut.yaml's provides, when it has one (`git` too)
   // "git": true,                     // requires.git: its steps read the run's token for a repository's host
   // "commit": "8f2c…",               // a git+ ref: the commit its newest installed version was read at

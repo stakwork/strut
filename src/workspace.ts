@@ -256,7 +256,15 @@ export interface Upstream {
   /** The commit a `git+` ref resolved (app-repos.md §3.1). What an update
    *  re-resolves is `source.ref` — the branch or tag — never this. */
   commit?: string;
+  /** What the package's steps may read, the fence's list
+   *  (src/packages/fence.ts): `requires.secrets` and `requires.optional`
+   *  together (`readableSecrets`, src/packages/format.ts). */
   secrets: string[];
+  /** The manifest's `requires.optional`: those of `secrets` its steps read
+   *  only when set, which neither an install's `missing` nor a
+   *  subscription's gate asks for. Absent when there are none, and on a
+   *  version written before 2026-11-21. */
+  optional?: string[];
   /** The manifest's `requires.git`: the package's steps read the run's
    *  token for a repository's host themselves (`secrets.git`,
    *  src/packages/fence.ts). */
