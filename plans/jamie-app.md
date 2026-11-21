@@ -175,7 +175,7 @@ waking its own relay thread would answer into a conversation nobody reads.
   goes when the session is free. Several ends that waited go as ONE turn,
   each job's reply in it, as the builder chat's notifier drains
   notifications (`src/ai/notifier.ts`).
-- **Loop cap.** Past `orchestrator.wakeMax` (default 4) wake turns since
+- **Loop cap.** Past `orchestrator.wakeMax` (default 30; 4 until plans/orchestrator-plans.md) wake turns since
   the last human turn, no turn. The job's `run.end`, which reaches the
   host anyway (it inherits the launching turn's callback), carries
   `wake: "capped"`, so the host shows the job's words as they are (Peel's

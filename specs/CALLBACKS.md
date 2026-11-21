@@ -563,7 +563,7 @@ the job's reply inline (6 000 chars at most) and its question. It runs:
 
 **Gates.** Once per job run. Queued, never dropped: while a turn of the
 conversation runs, the end waits, and every end that waited goes as one turn
-(`also` lists the others). At most four wake turns since the person's last
+(`also` lists the others). At most 30 wake turns since the person's last
 turn (`createStrut({ orchestrator: { wakeMax } })`): past it, `"capped"`. A
 conversation that came in from another strut (a person token, a peer) or an
 app is a relay and never woken: the head of the chain wakes itself. Durable:

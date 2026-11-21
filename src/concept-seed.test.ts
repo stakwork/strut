@@ -192,6 +192,31 @@ describe("concept files (pure)", () => {
     assert.deepEqual(STRUT_CONCEPTS.legacyPrefixes, ["lab/builder/concepts/", "lab/job/concepts/"]);
   });
 
+  it("ships Plan under Job: what the plan file holds, and one claim with its cases in place of a rule per failure", async () => {
+    const plan = parseConceptFile("Plan.md", await readFile(join(STRUT_CONCEPTS.dir, "Plan.md"), "utf-8"), STRUT_CONCEPTS.prefix);
+    // A kind of job work: the orchestrator lists it by its description and
+    // passes it as `kind`, and the job opens it every turn.
+    assert.deepEqual(plan.parents, ["Job"]);
+    assert.ok(plan.description);
+    // The file's parts are named, since several agents read and write it;
+    // the person reads the reply alone.
+    for (const must of ["`plan.md`", "Work items", "Contracts", "Open questions", "each with a default", "Progress", '"Go" takes every default']) assert.ok(plan.docs!.includes(must), must);
+    // plans/orchestrator-plans.md, ruling 7: what goes wrong (access control
+    // built too deep, a migration nobody needs) is a CASE of the page's one
+    // claim, never a rule on the page.
+    assert.doesNotMatch(plan.docs!, /auth|token|migrat|backward/i, "no rule per failure");
+    assert.doesNotMatch(plan.docs!, /hive|@<slug>|\bpod\b|pull request/i, "names nothing one deployment has");
+    assert.equal(plan.claims?.length, 1);
+    assert.deepEqual(
+      plan.claims![0]!.cases.map((c) => [c.workflow, (c.input as { kind?: string }).kind]),
+      [
+        ["job", "Plan"],
+        ["job", "Plan"],
+      ],
+      "each case is a plan job",
+    );
+  });
+
   it("ships Dream as a root with a page per kind of source under it: the dream's rules, general, none of them naming a kind of task", async () => {
     const read = async (file: string) => parseConceptFile(file, await readFile(join(STRUT_CONCEPTS.dir, file), "utf-8"), STRUT_CONCEPTS.prefix);
     const dream = await read("Dream.md");
@@ -415,7 +440,7 @@ for (const tb of testBackends()) {
       assert.equal(old.action, "create");
       const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
       assert.ok((await props(old.ref_id!))["deleted_at"] != null, "retired");
-      assert.deepEqual(await children(strut["Job"]!.ref_id!), [], "Job keeps only what strut ships under it — nothing, since Job App went too");
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Plan"]!.ref_id!], "Job keeps only what strut ships under it: Plan, since Job App went too");
     });
 
     it("the `Job App` page an earlier strut seeded under Job goes at the next boot", async () => {
@@ -424,7 +449,7 @@ for (const tb of testBackends()) {
       assert.equal(old.action, "create");
       const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
       assert.ok((await props(old.ref_id!))["deleted_at"] != null, "retired");
-      assert.deepEqual(await children(strut["Job"]!.ref_id!), []);
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Plan"]!.ref_id!], "Plan alone, the one kind strut ships under Job");
     });
 
     it("strut's pages seed, a host's page hangs under one, and the builder's section reads them", async () => {
@@ -434,7 +459,7 @@ for (const tb of testBackends()) {
         ["create", "create", "create"],
       );
       assert.equal(strut["Job App"], undefined, "no job side of an app ships");
-      assert.deepEqual(await children(strut["Job"]!.ref_id!), [], "strut ships no kind under Job; a deployment grows that tree");
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Plan"]!.ref_id!], "strut ships one kind under Job, Plan; a deployment grows that tree");
       await page("Janitor", "How a janitor is built here.", { description: "Cleans something up.", parent: "Workflow Builder" });
       const host = byName(await seedConcepts(b, [set()]));
       const wb = strut["Workflow Builder"]!.ref_id!;
@@ -560,13 +585,13 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     await make({ concepts: false });
     assert.deepEqual(await names(), []);
     await make();
-    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Orchestrator", "Worker Tasks", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Orchestrator", "Plan", "Worker Tasks", "Workflow Builder"]);
   });
 
   it("concepts: { personal: true } seeds Personal; an agent walks it with context/concept and graph_get, and the run records both reads", async () => {
     const store = new MemoryRunStore();
     const strut = await make({ concepts: { personal: true }, store });
-    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Orchestrator", "Personal", "Worker Tasks", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Orchestrator", "Personal", "Plan", "Worker Tasks", "Workflow Builder"]);
     const root = (await b.reader.namesLike("Concept", "Personal", 1))[0]!.ref_id;
     // A page the person taught, under the root.
     const cooking = (await b.nodes.write({ type: "Concept", data: { name: "Cooking", description: "How meals are planned", docs: "Plan on Sundays." } })).ref_id;

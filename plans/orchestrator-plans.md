@@ -1,9 +1,17 @@
 # Plans: the orchestrator carries a plan to its end
 
-Status: RULED, not built (2026-11-21). Evan ruled the six questions as
-recommended, with code landing as one pull request per repository. He then
-asked for the simple, generic version, which is this one. The first,
-longer version is in this file's history.
+Status: BUILT (2026-11-21), not yet run with a real model (see
+"Validation"). Evan ruled the six questions as recommended, with code
+landing as one pull request per repository. He then asked for the simple,
+generic version, which is this one. The first, longer version is in this
+file's history.
+
+Settled while building: the page's last paragraph says how an item is
+handed out, which the agreed text left open. A plan's job cannot start a
+job, and "hand out" alone could be read as running the item itself. So the
+page says it names the next item in its reply, that the item is started
+as a job of its own, and that the job is handed back when it ends. The
+wake sentence also tells the turn to point the item's job at the plan.
 
 ## The ask
 
@@ -96,9 +104,11 @@ schema or store.
 > The person reads only your reply: a short overview and the questions.
 > "Go" takes every default.
 >
-> After go, hand out one item at a time and check what comes back against
-> the plan. Decide what comes up the same way and tell the person at the
-> end; stop only for what cannot be undone.
+> After go, name ONE item in your reply, the next to do, with its kind and
+> its repositories. It is started as a job of its own, and that job is
+> handed back to you when it ends. Check what it made against the plan
+> before you name the next. Decide what comes up the same way and tell the
+> person at the end; stop only for what cannot be undone.
 
 The page names what the file holds, because several agents read and write
 it: the plan's job over many turns, each item's job, and the review. It
@@ -121,8 +131,8 @@ added.
 
 One sentence is added to the wake prompt's "continue" choice. A plan the
 person approved is a request not yet met: the turn starts the item the
-plan's job names next, as a job of its own, and when that job ends it
-hands it back to the plan's job.
+plan's job names next, as a job of its own pointed at the plan, and when
+that job ends it hands it back to the plan's job.
 
 Nothing else changes, because today's rules already cover the rest:
 

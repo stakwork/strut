@@ -38,7 +38,7 @@ export type OrchestratorSeedOptions = JobSeedOptions & {
    *  `params.wake`. `false` turns it off, for a host that still wakes
    *  itself. Not part of the template: changes nothing that is seeded. */
   wake?: boolean;
-  /** Wake turns since the person's last turn, at most (`WAKE_MAX`, 4): past
+  /** Wake turns since the person's last turn, at most (`WAKE_MAX`, 30): past
    *  it the job's `run.end` says `wake: "capped"` and no turn runs. */
   wakeMax?: number;
 };
