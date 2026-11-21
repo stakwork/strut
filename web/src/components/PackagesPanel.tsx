@@ -881,7 +881,7 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
               <div class="auto-card" key={s.id}>
                 <div class="auto-card-head">
                   <span class="package-name">{s.id}</span>
-                  <span class="badge">{s.ref ? "git branch" : (s.channel ?? "newest releases")}</span>
+                  <span class="badge">{s.parts ? "bundle" : s.ref ? "git branch" : (s.channel ?? "newest releases")}</span>
                 </div>
                 <div class="auto-meta">
                   <span class="package-url">{s.ref ?? s.url}</span>
@@ -890,6 +890,18 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
                 </div>
                 {s.error && <div class="auto-error">{s.error}</div>}
                 {s.warnings?.map((w, i) => <div class="auto-hint" key={i}>{w}</div>)}
+                {s.parts?.map((p) => (
+                  <div key={p.id}>
+                    <div class="auto-meta">
+                      <span class="package-url">{p.ref}</span>
+                      {p.applied?.commit && <code class="package-digest" title={p.applied.commit}>{p.applied.commit.slice(0, 8)}</code>}
+                    </div>
+                    {p.error && <div class="auto-error">{p.error}</div>}
+                    {p.waiting && <div class="auto-hint">Waits for {p.waiting.secrets.join(", ")}</div>}
+                    {p.held?.map((h) => <div class="auto-hint" key={h.package}>{h.package} is followed by {h.by.replace(/^subscription:/, "")}</div>)}
+                  </div>
+                ))}
+                {!s.parts && s.waiting && <div class="auto-hint">Waits for {s.waiting.secrets.join(", ")}</div>}
                 {s.packages.length === 0 && <div class="auto-hint">Nothing installed from it yet.</div>}
                 {s.packages.map((p) => (
                   <div class="package-release-head" key={p.package}>
