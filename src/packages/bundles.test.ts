@@ -185,6 +185,7 @@ describe("a bundle", () => {
       ],
     );
     assert.deepEqual(s.packages.map((p) => p.package), ["acme/one", "acme/two"], "the bundle's packages are its parts'");
+    assert.deepEqual(s.parts!.map((p) => p.checkedAt), [s.checkedAt, s.checkedAt], "the bundle's read is done when its parts' are");
     assert.match(part("one"), /^suite\/one-[0-9a-f]{8}$/);
     assert.deepEqual([await at("acme/one"), await at("acme/two")], [{ by: by("one"), version: "0.1.0" }, { by: by("two"), version: "0.1.0" }]);
     assert.equal((await installed("acme/one"))?.door, "distro");

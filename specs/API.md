@@ -4421,7 +4421,8 @@ as `subscription:<part id>`, and it belongs to the bundle's person: they
 own what it installs, its schedules run as them, and its repository is read
 with their own token for its host. Every sync of the bundle syncs every
 part, so a part moves when its own branch does, with no release of the
-bundle, and one that waits or fails holds back no other. A release of the
+bundle, and one that waits or fails holds back no other. The bundle's
+`checkedAt` moves once every part is read. A release of the
 bundle that adds a ref starts a part; one that drops a ref stops its part
 as `DELETE ?uninstall=1` stops a subscription (what it installed goes,
 forks kept). A part's id is `<id>/<repo name>-<8 hex>`, the same for that

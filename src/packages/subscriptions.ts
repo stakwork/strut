@@ -600,15 +600,18 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
     }
     const moved = last?.digest !== info.digest;
     const { error: _error, waiting: _waiting, held: _held, ...kept } = state;
-    // The list first: a part this release adds is a subscription here from now on.
-    await writeState(id, {
+    // The list first: a part this release adds is a subscription here from
+    // now on. `checkedAt` once every part is read: a page that waits for it
+    // to move waits for the whole bundle.
+    const next: SubscriptionState = {
       ...kept,
       applied: moved ? { ref, commit: to, digest: info.digest, at, packages: [], bundle: { package: info.manifest.package, version: info.manifest.version, refs } } : { ...last!, commit: to },
-      checkedAt: at,
       ...(moved || warnings.length ? { warnings } : {}),
-    });
+    };
+    await writeState(id, next);
     const outcomes: SyncOutcome[] = [];
     for (const part of parts) outcomes.push(await syncGit(part, await readState(part.id), at));
+    await writeState(id, { ...next, checkedAt: at });
     const secrets = [...new Set(outcomes.flatMap((o) => o.waiting?.secrets ?? []))].sort();
     return {
       id,
