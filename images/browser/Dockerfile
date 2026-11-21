@@ -7,43 +7,54 @@
 # BrowserContext per run inside it. Published as ghcr.io/stakwork/strut-browser
 # by .github/workflows/publish-browser.yml.
 #
-# The stock image ships node and the browsers but not the `playwright`
-# package; it is baked in here, so a container start fetches nothing.
+# Node and Chromium only (see below); the `playwright`
+# package is baked in, so a container start fetches nothing.
 #
 # PLAYWRIGHT_VERSION is the image's version and its tag. The CLIENT
 # (`playwright-core` in the host that connects) must be on the same
 # major.minor: the server refuses any other. Bump them together.
 
 ARG PLAYWRIGHT_VERSION=1.64.1
-FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble
+ARG NODE_VERSION=22
+FROM node:${NODE_VERSION}-bookworm-slim
 ARG PLAYWRIGHT_VERSION
 
 LABEL org.opencontainers.image.source="https://github.com/stakwork/strut"
 LABEL org.opencontainers.image.description="Playwright server for strut browser steps"
 
+# Only Chromium is ever launched (the host calls `chromium.connect`; nothing in
+# the repo asks for firefox, webkit or a branded Chrome channel on this server),
+# so the image is a plain node base plus Chromium, not the stock Playwright
+# image with all three browsers. Same location as the stock image.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 # tini reaps the Chromium processes a closed context leaves behind, so the
-# image needs no `--init` from whoever runs it. The browsers are already in
-# the base image (/ms-playwright), at this version.
+# image needs no `--init` from whoever runs it. `playwright` is baked in so a
+# container start fetches nothing.
 RUN apt-get update && apt-get install -y --no-install-recommends tini \
     && rm -rf /var/lib/apt/lists/* \
     && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install -g playwright@${PLAYWRIGHT_VERSION} \
-    && npm cache clean --force
+    && npm cache clean --force \
+    && useradd --create-home --shell /bin/bash pwuser
 
 # CHROME_VERSION pins the Chromium actually run. Playwright 1.64.1 bundles
 # 156.0.8078.4, older than the CVE-2026-118306 fix (FileSystem use-after-free,
 # fixed in 156.0.8078.73), so the bundled browsers are replaced with the same
 # Chrome for Testing builds Playwright itself uses on Linux, same layout.
 # MUST be bumped whenever a Chrome CVE fix lands (and PLAYWRIGHT_VERSION when
-# Playwright catches up, at which point this layer can go). The version is in
-# the RUN text, so changing the pin changes the layer key; the build fails if
+# Playwright catches up, at which point the replacement can go). The version is
+# in the RUN text, so changing the pin changes the layer key; the build fails if
 # the binary does not report this version. Chrome for Testing has no linux
 # arm64 build, so on arm64 the bundled Chromium is kept: it is older than the
 # CVE fix, so arm64 images are NOT CVE-patched.
+# One RUN: Chromium and its system libraries are installed, and the bundled
+# build overwritten, in the same layer, so the replaced bytes cost no space.
 ARG CHROME_VERSION=156.0.8078.73
 RUN set -eux; \
     echo "chrome pin: ${CHROME_VERSION}"; \
-    apt-get update && apt-get install -y --no-install-recommends unzip ca-certificates curl; \
-    rm -rf /var/lib/apt/lists/*; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends unzip ca-certificates curl; \
+    playwright install --with-deps chromium chromium-headless-shell; \
     case "$(uname -m)" in x86_64) cft=linux64;; *) echo "Chrome for Testing has no linux build for $(uname -m)"; cft=;; esac; \
     if [ -n "$cft" ]; then \
       base=https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/${cft}; \
@@ -59,7 +70,8 @@ RUN set -eux; \
       rm -rf /tmp/chrome* /tmp/shell.zip; \
       "$full/chrome" --version | tee /dev/stderr | grep -F "${CHROME_VERSION}"; \
       "$shell/chrome-headless-shell" --version | tee /dev/stderr | grep -F "${CHROME_VERSION}"; \
-    else echo "keeping bundled Chromium for $(uname -m)"; fi
+    else echo "keeping bundled Chromium for $(uname -m)"; fi; \
+    rm -rf /var/lib/apt/lists/* /root/.cache
 
 # Playwright launches Chromium without its sandbox, so not as root.
 USER pwuser
