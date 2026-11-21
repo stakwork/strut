@@ -68,6 +68,18 @@ services:
     networks:
       - browser
 
+  # A Browser MCP server instead (a visible Chromium, docs/browser.md): its
+  # operator's image, not strut's. In ./.env: BROWSER_MCP_URL=http://browser-mcp:3000/mcp,
+  # BROWSER_MCP_TOKEN=<a secret> and an empty BROWSER_WS_URL=.
+  # browser-mcp:
+  #   image: <the image's operator>/browser-mcp
+  #   environment:
+  #     BROWSER_MCP_TOKEN: "${BROWSER_MCP_TOKEN}"
+  #   volumes:
+  #     - browser-profile:/profile   # cookies and passed checks survive a restart
+  #   networks:
+  #     - browser
+
   strut:
     # Published by .github/workflows/publish-image.yml (amd64 + arm64).
     image: ghcr.io/stakwork/strut:${STRUT_IMAGE_TAG:-latest}
@@ -99,7 +111,7 @@ services:
       STRUT_WORKSPACE: /data/workspace
       STRUT_MODEL_DIR: /data/models
       # The browser/* steps' Playwright server (the `browser` service above).
-      BROWSER_WS_URL: ws://browser:3000
+      BROWSER_WS_URL: "${BROWSER_WS_URL-ws://browser:3000}"   # BROWSER_WS_URL= (empty) in ./.env for BROWSER_MCP_URL
       BROWSER_WS_PATH: "${BROWSER_WS_PATH:-strut-browser}"
       # STRUT_API_KEY: change-me     # shared secret for the API — unset, EVERY endpoint is open; set before exposing the port
       # STRUT_SECRET_KEY: …          # encrypts the secret store; see docs/security.md "Secrets"

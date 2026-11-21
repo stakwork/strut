@@ -230,6 +230,7 @@ import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
 import { searchWorkflows } from "./search.js";
 import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/lib/automation/_shared.js";
 import { BrowserService } from "./browser/service.js";
+import { browserFromEnv } from "./browser/mcp.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
 import { openHistory, type History, type HistoryCapability, type HistoryTouch } from "./history.js";
 import "./privacy/register.js";
@@ -2040,10 +2041,11 @@ export async function createStrut<TServices = unknown>(
     };
   }
 
-  let ownBrowser: BrowserService | undefined;
+  let ownBrowser: { close(): Promise<void> } | undefined;
   if (!(services as Record<string, unknown>)["browser"]) {
     try {
-      const browser = BrowserService.fromEnv();
+      // BROWSER_MCP_URL: a Browser MCP server (browser/mcp.ts); else strut's Playwright service.
+      const browser = browserFromEnv();
       const bag = services as Record<string, unknown>;
       const prior = (bag["onRunEnd"] as ((id: string, info?: RunEndInfo) => unknown) | undefined)?.bind(bag);
       bag["browser"] = browser;

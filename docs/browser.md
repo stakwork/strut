@@ -32,6 +32,33 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   cannot do throws, saying why, and the step fails with that. strut's
   seeded browser workflows lean on `capture`, `verify`, `walkthrough` and
   `keep`, so on such a browser they fail where it refuses those.
+- **A Browser MCP server** (`BROWSER_MCP_URL` + `BROWSER_MCP_TOKEN`,
+  `src/browser/mcp.ts`): `McpBrowser`, a `StrutBrowser` that drives a
+  visible Chromium through [Browser MCP](https://github.com/getcabal/browser-mcp)'s
+  extension, in a container its operator runs (no headless launch, no
+  remote-debugging port). Ported from conceptivehq/unblockable-browser's
+  host adapter (Apache-2.0), with the stdio spawn swapped for MCP Streamable
+  HTTP (the SDK, lazy-loaded) and strut's own deny list and screenshot
+  sink. `browserFromEnv` picks it when the URL is set, else
+  `BrowserService.fromEnv`; the URL beside `BROWSER_WS_URL` or
+  `BROWSER_CDP_URL`, or without a token, is a boot warning. One MCP session,
+  opened on the first call and again after the server drops it. Each run
+  is a window of its own (`new_page` → its `Tab ID`, closed by `dispose`).
+  Refs come from Browser MCP's aria snapshot (`[uid=@eN]` → `[ref=eN]`);
+  selectors are `text=`, `role=…[name=…]` or CSS, found in the page;
+  screenshots are the window's viewport. It refuses kept pages
+  (`session`), `storageState`, a right click, `observe`, `state`, `tap`,
+  `keydown`/`keyup`, `captcha`, `verify`, `walkthrough`, `look` and `keep`,
+  each saying why, so of the seeded workflows only `browser-capture` and
+  `browser-watch` run whole on it. **The server's contract:** MCP Streamable
+  HTTP at the URL, a request without `Authorization: Bearer <token>` a 401,
+  Browser MCP's own tools (`new_page`, `navigate_page`, `take_snapshot`,
+  `evaluate`, `get_text`, `click`, `drag`, `fill`, `type_text`,
+  `press_key`, `hover`, `wait_for_network_idle`, `wait_for_condition`,
+  `wait_for_url`, `take_screenshot`, `close_page`) with their answer texts
+  (`Tab ID:` / `Title:` / `URL:` lines; a snapshot's `Page changed:` line,
+  then `role "name" [uid=@eN]` lines and `/url:` lines under links), in
+  window isolation (`BROWSER_MCP_PAGE_ISOLATION=window`).
 - **Per run:** one context + page per `runId` (a subflow and an agent's tool
   calls share the run's), closed by the run-end teardown (`dispose`, chained
   into `services.onRunEnd`); `strut.close()` drops the connection.
@@ -85,4 +112,4 @@ browser/* — one Playwright call per step, each a thin wrapper over one verb of
 
 ### `src/browser/`
 
-the browser behind `ctx.services.browser` (the browser/* steps): service.ts — `StrutBrowser` (the verbs the steps call: what a host's own browser implements) and `BrowserService`, strut's own: ONE lazy Playwright connection and a context + page per run keyed by runId, closed by createStrut's run-end teardown (`dispose`); three backends from env (`fromEnv`): a Playwright SERVER (`BROWSER_WS_URL` + `BROWSER_WS_PATH`, images/browser), a real Chrome over CDP (`BROWSER_CDP_URL`: one page per run in the profile's own context — no viewport, storage state or state export), else a local headless Chrome; a per-call timeout whose loser closes the context, a per-run budget; a check (verify, walkthrough) in a session of its OWN, signed out, as the verify pass will replay it; a KEPT page (`job:<job>/<session>`) the job holds across runs — runs attach to it, `dispose` only detaches, an idle timer instead of the budget, at most `BROWSER_SESSIONS_MAX`, not over CDP. captcha.ts (the captcha manifest, to hive's parser), settle.ts (network idle → fonts → two frames, each bounded), shot.ts (where a PNG lands — the run's artifacts or the job's directory, `job.update` to a listening host — and the 0.6× model copy via sharp), walkthrough.ts (the recording directory + manifest), verdict.ts (verify's verdict, pure), deny.ts (`BROWSER_URL_DENY`: schemes, CIDRs, hosts — checked before a navigation and on the landed URL), seed.ts (seeds the four browser workflows at boot, `browserWorkflows: false` opts out). `npm run test:browser` runs service.live.test.ts against a real server
+the browser behind `ctx.services.browser` (the browser/* steps): mcp.ts — `McpBrowser` (a Browser MCP server over HTTP, `BROWSER_MCP_URL`) and `browserFromEnv`, which createStrut calls to build its own browser; service.ts — `StrutBrowser` (the verbs the steps call: what a host's own browser implements) and `BrowserService`, strut's own: ONE lazy Playwright connection and a context + page per run keyed by runId, closed by createStrut's run-end teardown (`dispose`); three backends from env (`fromEnv`): a Playwright SERVER (`BROWSER_WS_URL` + `BROWSER_WS_PATH`, images/browser), a real Chrome over CDP (`BROWSER_CDP_URL`: one page per run in the profile's own context — no viewport, storage state or state export), else a local headless Chrome; a per-call timeout whose loser closes the context, a per-run budget; a check (verify, walkthrough) in a session of its OWN, signed out, as the verify pass will replay it; a KEPT page (`job:<job>/<session>`) the job holds across runs — runs attach to it, `dispose` only detaches, an idle timer instead of the budget, at most `BROWSER_SESSIONS_MAX`, not over CDP. captcha.ts (the captcha manifest, to hive's parser), settle.ts (network idle → fonts → two frames, each bounded), shot.ts (where a PNG lands — the run's artifacts or the job's directory, `job.update` to a listening host — and the 0.6× model copy via sharp), walkthrough.ts (the recording directory + manifest), verdict.ts (verify's verdict, pure), deny.ts (`BROWSER_URL_DENY`: schemes, CIDRs, hosts — checked before a navigation and on the landed URL), seed.ts (seeds the four browser workflows at boot, `browserWorkflows: false` opts out). `npm run test:browser` runs service.live.test.ts against a real server

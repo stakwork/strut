@@ -730,6 +730,8 @@ export {
   type CaptureStep,
 } from "./browser/service.js";
 export type { Shot, ShotSink } from "./browser/shot.js";
+// BROWSER_MCP_URL: a Browser MCP server over HTTP (src/browser/mcp.ts).
+export { McpBrowser, browserFromEnv, type McpBrowserOptions } from "./browser/mcp.js";
 export { seedBrowserWorkflows, BROWSER_WORKFLOWS, BROWSER_CATEGORY } from "./browser/seed.js";
 // Pseudonymization (src/privacy/, specs/PRIVACY_SPEC.md): the privacy/* steps' logic and the `private-ask` seed.
 export * from "./privacy/index.js";
