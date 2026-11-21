@@ -656,10 +656,24 @@ instead of baked into env at deploy time.
   admin's install, shown as such: with `approve: [git/push]` each push is
   the person's yes, the gated `git/push` plans/proposals.md foresaw;
   without it the pull request it opens is the person's review (the
-  `Code Change` page's small change). Still open: `git/push` pushes HEAD
-  to whatever branch the model names, the remote's default branch
-  included when the person may push there; only the remote's branch
-  protection stops that.
+  `Code Change` page's small change). `git/push` holds two lines itself,
+  for every caller (a workflow's author wired `path` and `branch`; a
+  model types them, and an accepted proposal carries what it typed):
+  it never pushes origin's DEFAULT branch, asked of the remote at the
+  push (`ls-remote --symref origin HEAD`, as `git/remote-head` asks, with
+  the same token) — `push_rejected: <branch> is origin's default branch`
+  — and it pushes only a working copy `git/checkout` made for this run or
+  its job: an absolute `path` whose top level, every symlink resolved,
+  is under the run's own directory (an accepted proposal's: the run that
+  proposed it) or the job's, `<dataDir>/jobs/<job>`, and whose repository
+  is one of checkout's caches, `<dataDir>/repos/` (`notOwnWorkingCopy`).
+  Another job's checkout, a path out through `..` or a link, a repository
+  made by hand in the job's directory, a relative path (which resolved
+  against the server's own working directory) and any other repository on
+  the disk are refused before git touches it. It cannot force: the
+  refspec is `HEAD:refs/heads/<branch>`, so a push that is not a
+  fast-forward is `push_rejected:`. Not isolation: the agent's bash
+  reaches the disk; these hold what a caller hands the step.
 
 - **A person's SSH key is used, never held** (src/ssh-agent.ts,
   `ssh/keygen`). A job someone lets into a server logs in with ONE key per

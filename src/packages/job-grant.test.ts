@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import yaml from "js-yaml";
 import { createStrut, type Strut } from "../createStrut.js";
@@ -409,20 +409,30 @@ describe("the job agent pushes with a granted git/push, as the job's person", ()
     await install(strut, await writeTree(CODE("zeta/forge", "", "requires:\n  optional: [FORGE_TOKEN]\nprovides:\n  git:\n    - { host: git.zeta.test, secret: FORGE_TOKEN }\n")));
   };
   const url = () => `${priv.url}/acme/widgets.git`;
+  const call = (id: string, toolName: string, input: unknown) => [{ type: "tool-call", toolCallId: id, toolName, input: JSON.stringify(input) }];
+  const dirOf = (job: string) => jobRoot(join(root, "data"), job);
   /** ada's job turn: the repository checked out into the job's directory; the
    *  model stages a change with bash, pushes it with git_push and answers. */
-  const turn = async (job: string) => {
-    const path = join(jobRoot(join(root, "data"), job), "widgets");
-    const call = (id: string, toolName: string, input: unknown) => [{ type: "tool-call", toolCallId: id, toolName, input: JSON.stringify(input) }];
+  const turn = async (job: string, branch = "job/blue") => {
     script = [
       call("c1", "bash", { command: "cd widgets && echo 'The button is blue.' >> README.md && git add -A" }),
-      call("c2", "git_push", { path, branch: "job/blue", message: "Make the button blue" }),
+      call("c2", "git_push", { path: join(dirOf(job), "widgets"), branch, message: "Make the button blue" }),
       call("c3", "final_answer", { text: "Pushed.", artifacts: [] }),
     ];
     return strut.run("job", { prompt: "Make the button blue.", repos: [url()] }, { job, actor: "ada", principal: "ada" });
   };
-  /** What the model read back from its git_push call. */
-  const pushResult = () => JSON.stringify(model!.prompts.at(-1)!.filter((m) => m.role === "tool").at(-1)?.content ?? null);
+  /** What the model read back from each tool call of the last turn, by call id. */
+  const results = (): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const m of model!.prompts.at(-1)!) {
+      if (m.role !== "tool") continue;
+      for (const p of m.content as Array<{ toolCallId: string; output: { type?: string; value?: unknown } }>) {
+        out[p.toolCallId] = typeof p.output?.value === "string" ? p.output.value : JSON.stringify(p.output?.value ?? p.output);
+      }
+    }
+    return out;
+  };
+  const pushResult = () => results()["c2"] ?? "";
   const branches = () => git(join(repos, "acme", "widgets.git"), "for-each-ref", "--format=%(refname:short) %(authorname)", "refs/heads/");
 
   it("pushes as ada with ada's own token for the repository's host — never bob's, the box's, or her token for another host", async () => {
@@ -435,6 +445,48 @@ describe("the job agent pushes with a granted git/push, as the job's person", ()
     const pushes = priv.seen.filter((r) => r.path.includes("git-receive-pack"));
     assert.ok(pushes.length > 0 && pushes.some((r) => r.password === ADA), "the push carried ada's token");
     for (const r of priv.seen) assert.ok(r.password === undefined || r.password === ADA, `${r.path} carried ada's token or none`);
+  });
+
+  it("refuses the remote's default branch: nothing reaches the remote", async () => {
+    await packages("job:\n  tools: [look, git/push]\n");
+    const run = await turn("j-ada-main", "main");
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    assert.match(pushResult(), /push_rejected: main is origin's default branch — git\/push pushes a branch of its own, for a pull request/, pushResult());
+    assert.equal(branches(), "main test", "main as it was");
+    assert.ok(priv.seen.every((r) => !r.path.includes("git-receive-pack")), "no push reached the remote");
+  });
+
+  it("pushes only from a working copy of the job's own: never another job's, a path out through .. or a link, a repository made by hand, a relative path or the server's own", async () => {
+    await packages("job:\n  tools: [look, git/push]\n");
+    // Another job of ada's, its change staged in its own checkout.
+    script = [call("o1", "bash", { command: "cd widgets && echo other >> README.md && git add -A" }), call("o2", "final_answer", { text: "Staged.", artifacts: [] })];
+    const other = await strut.run("job", { prompt: "Stage a change.", repos: [url()] }, { job: "j-other", actor: "ada", principal: "ada" });
+    assert.equal(other.status, "success", JSON.stringify(other.error));
+    const theirs = join(dirOf("j-other"), "widgets");
+
+    const mine = dirOf("j-mine");
+    const push = (id: string, path: string) => call(id, "git_push", { path, branch: `job/${id}`, message: "m" });
+    script = [
+      // A link to the other job's checkout, and a repository made by hand with the same origin.
+      call("p0", "bash", { command: `ln -s '${theirs}' link && mkdir notes && cd notes && git init -q && git remote add origin '${url()}' && echo x > a && git add a` }),
+      push("p1", theirs),
+      push("p2", `${mine}/../${basename(dirOf("j-other"))}/widgets`),
+      push("p3", join(mine, "link")),
+      push("p4", join(mine, "notes")),
+      push("p5", "widgets"),
+      push("p6", process.cwd()),
+      call("p7", "final_answer", { text: "Refused.", artifacts: [] }),
+    ];
+    const run = await strut.run("job", { prompt: "Push the change.", repos: [url()] }, { job: "j-mine", actor: "ada", principal: "ada" });
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    const r = results();
+    for (const id of ["p1", "p2", "p3"]) assert.match(r[id]!, /git\/push: .* is not in this job's own directory — git\/push pushes a working copy git\/checkout made for this job/, `${id}: ${r[id]}`);
+    assert.match(r["p4"]!, /git\/push: .*notes is not a working copy git\/checkout made/, r["p4"]);
+    assert.match(r["p5"]!, /git\/push: "widgets" is not an absolute path — pass the `path` git\/checkout returned/, r["p5"]);
+    assert.match(r["p6"]!, /is not in this job's own directory/, r["p6"]);
+    assert.equal(branches(), "main test", "nothing pushed");
+    assert.ok(priv.seen.every((x) => !x.path.includes("git-receive-pack")));
+    assert.match(git(theirs, "diff", "--cached", "--name-only"), /README\.md/, "the other job's change is still only staged there");
   });
 
   it("asks first when the package approves git/push: the call is ada's proposal, and nothing is pushed", async () => {
