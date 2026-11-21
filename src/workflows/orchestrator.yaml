@@ -183,8 +183,8 @@ steps:
               brief: { type: string, minLength: 1, description: "Everything the job needs, as job/start's prompt: the job does not see this conversation." }
               title: { type: string, minLength: 1, description: "A short name for the job, as the person would say it." }
               kind: { type: string, description: "The kind of work, by its name under the first list, when the request is one of them. Not with workflow: builder." }
-              workflow: { type: string, enum: [job, builder], description: "builder for a workflow or an app that lives in a workspace; job (the default) for anything else." }
-              peer: { type: string, description: "With workflow: builder only: the workspace the workflow or app belongs to when it is not this one, by id (@acme-web → acme-web)." }
+              workflow: { type: string, enum: [job, builder], description: "builder for a workflow or an app published here or on a peer; job (the default) for anything else, code in a repository included, even an app's." }
+              peer: { type: string, description: "With workflow: builder only: the server the workflow or app is published on when it is not this one, by id (@acme-web → acme-web)." }
               repos: { type: array, items: { type: string }, description: "Repository URLs the job works on, checked out before it starts (a private one only this way). workflow: job only." }
               attachments: { type: array, items: { type: string }, description: "Files attached to THIS message that the job needs, by name as the message shows them. A file from an earlier message: call job/start instead." }
           artifacts:

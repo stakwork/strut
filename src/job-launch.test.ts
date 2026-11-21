@@ -447,7 +447,7 @@ describe("job/start and job/continue", () => {
     assert.deepEqual(await ran(2, plain.runId), { model: "claude-sonnet-4-5", params: undefined }, "no pick: the job's own model");
   });
 
-  it("start { workflow: builder, peer }: the builder workflow runs the turn with the peer; the job says which it is; continue names only the job and follows the record, peer included; peer and repos are refused on a code job", async () => {
+  it("start { workflow: builder, peer }: the builder workflow runs the turn with the peer; the job says which it is; continue names only the job and follows the record, peer included; peer and repos are refused on a code job, and a kind on a builder job's continue", async () => {
     const { strut, launch, settle, until, toolOutput, jobs } = await boot();
     orchTool = { name: "job_start", input: { prompt: "Build a daily digest workflow", title: "Digest workflow", workflow: "builder", peer: "acme-web" } };
     const first = await launch({ prompt: "make me a digest workflow on @acme-web" });
@@ -495,8 +495,17 @@ describe("job/start and job/continue", () => {
     const fourth = await launch({ prompt: "build with the repo" });
     await settle("orch", fourth);
     assert.ok(seen.orch.at(-1)!.includes("a builder job checks nothing out"), seen.orch.at(-1));
+    // A continue keeps the job's workflow, so it cannot make the build a
+    // code change: a kind on a builder job is refused, and the code is a
+    // new job (2026-11-21: a phone app's change, continued on a build on a
+    // peer as a Code Change, ended with no way to push).
+    orchTool = { name: "job_continue", input: { job: started.job, prompt: "It's the Swift app: change its repo", kind: "Code Change" } };
+    const fifth = await launch({ prompt: "i meant the ios app" });
+    await settle("orch", fifth);
+    assert.ok(seen.orch.at(-1)!.includes("code in a repository is a new job: job/start with its repos"), seen.orch.at(-1));
     assert.equal(posts.filter((p) => p.workflow === "job").length, 0);
     assert.equal(posts.filter((p) => p.workflow === "builder").length, 2);
+    assert.equal(seen.builder.length, 2, "the builder heard nothing more");
   });
 
   it("start { workflow: builder } on a strut with no builder is refused by name, and nothing launches", async () => {
