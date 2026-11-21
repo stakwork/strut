@@ -618,6 +618,56 @@ export function inviteOpen(i: Pick<Invite, "status">): boolean {
   return i.status === "sending" || i.status === "ready";
 }
 
+/** Newest first by createdAt; one without a time goes last, in its order. */
+export function sortInvites<T extends Pick<Invite, "createdAt">>(invites: T[]): T[] {
+  const t = (i: T) => (i.createdAt ? Date.parse(i.createdAt) : NaN);
+  return invites
+    .map((inv, n) => ({ inv, n }))
+    .sort((a, b) => {
+      const x = t(a.inv), y = t(b.inv);
+      if (Number.isNaN(x) !== Number.isNaN(y)) return Number.isNaN(x) ? 1 : -1;
+      return (Number.isNaN(x) ? 0 : y - x) || a.n - b.n;
+    })
+    .map((e) => e.inv);
+}
+
+/** The worker who took an invite, and when: the grant it made (`by: invite:<code>`).
+ *  None for an invite for open work (no grant) or one not yet used. */
+export function acceptedBy(invite: Pick<Invite, "code">, workers: Array<Pick<Worker, "actor" | "name" | "grants">> | undefined): { who: string; at: number } | null {
+  for (const w of workers ?? []) {
+    const g = w.grants.find((g) => g.by === `invite:${invite.code}`);
+    if (g) return { who: w.name || shortActor(w.actor), at: g.at };
+  }
+  return null;
+}
+
+/** Days an invite's link works; mirrors INVITE_TOKEN_DAYS (src/payments/invites.ts). */
+export const INVITE_LINK_DAYS = 90;
+
+/** When an invite's link stops working (ms): the server's `expiresAt`, else createdAt + INVITE_LINK_DAYS. */
+export function inviteExpiry(i: Pick<Invite, "createdAt" | "expiresAt">): number | null {
+  const e = i.expiresAt ? Date.parse(i.expiresAt) : NaN;
+  if (Number.isFinite(e)) return e;
+  const c = i.createdAt ? Date.parse(i.createdAt) : NaN;
+  return Number.isFinite(c) ? c + INVITE_LINK_DAYS * 86_400_000 : null;
+}
+
+/** An invite's badge: friendly label and colour classes. */
+export function inviteBadge(status: InviteStatus): { label: string; className: string } {
+  switch (status) {
+    case "ready":
+      return { label: "Ready · unused", className: "border-transparent bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200" };
+    case "used":
+      return { label: "Used", className: "border-transparent bg-green-100 text-green-900 dark:bg-green-900/40 dark:text-green-200" };
+    case "cancelled":
+      return { label: "Cancelled", className: "border-transparent bg-muted text-muted-foreground line-through" };
+    case "failed":
+      return { label: "Failed", className: "border-transparent bg-destructive/15 text-destructive" };
+    default:
+      return { label: "Sending", className: "animate-pulse border-transparent bg-muted text-muted-foreground" };
+  }
+}
+
 /** How often the invites are read (ms), or false for never: fast while one
  *  is being paid for, slowly while one waits to be used, as a backstop to the
  *  app's channel saying one was. */
@@ -644,10 +694,10 @@ export function whatsappUrl(link: string): string {
   return `https://wa.me/?text=${encodeURIComponent(inviteMessage(link))}`;
 }
 
-/** An invite's sats as typed: blank is the default; else a whole number 1 to 100,000. */
-export function inviteSatsOf(text: string): { sats?: number } | { problem: string } {
+/** An invite's sats as typed: a whole number 1 to 100,000. Blank is a problem (the box starts filled). */
+export function inviteSatsOf(text: string): { sats: number } | { problem: string } {
   const t = text.trim();
-  if (!t) return {};
+  if (!t) return { problem: "Enter the sats they start with." };
   const n = Number(t);
   return Number.isInteger(n) && n >= 1 && n <= 100_000 ? { sats: n } : { problem: "A whole number of sats, 1 to 100,000." };
 }

@@ -26,7 +26,7 @@ import cancelInviteStep from "../steps/lib/staff/cancel-invite.js";
 import { JOIN_HEADERS, JOIN_PAGE, JOIN_SCRIPT, joinLang, joinPage, PEEL_ANDROID_RELEASES } from "../public-join.js";
 import { LightningError } from "./lightning.js";
 import { NO_INVITES, SphinxDaemonPayer, type Payer, type WalletInvite } from "./payer.js";
-import { createInvites, fileInviteNotes, GRANT_LINK_PREFIX, InviteError, joinLink, memoryInviteNotes } from "./invites.js";
+import { createInvites, fileInviteNotes, GRANT_LINK_PREFIX, INVITE_TOKEN_DAYS, InviteError, joinLink, memoryInviteNotes } from "./invites.js";
 import { publicAppLinks } from "../public-routes.js";
 import { WORKER_APP } from "../apps/worker-seed.js";
 
@@ -177,6 +177,17 @@ describe("createInvites (§5.8)", () => {
     assert.deepEqual(await invites.cancel(first.code), { code: first.code, status: "cancelled" });
     await assert.rejects(invites.cancel("e".repeat(64)), refused("unknown_invite", 404));
     await assert.rejects(invites.cancel("../balance"), refused("bad_request", 400));
+  });
+
+  it("who made an invite and when its link stops: noted at create, listed; older invites show nothing", async () => {
+    const { payer } = invitePayer();
+    const invites = createInvites({ ...deps(), publicApps: async () => [WORKER_APP], payer: async () => payer, notes: memoryInviteNotes() });
+    const made = await invites.create({ base: BASE, by: "secp:abc" });
+    assert.equal(made.by, "secp:abc");
+    const [one] = (await invites.list({ base: BASE })).invites;
+    assert.equal(one!.by, "secp:abc");
+    assert.equal(one!.expiresAt, new Date(Date.parse(one!.createdAt!) + INVITE_TOKEN_DAYS * 86_400_000).toISOString());
+    assert.equal((await invites.create({ base: BASE })).by, undefined);
   });
 
   it("the notes on disk: written one after another, read back by the next process", async () => {

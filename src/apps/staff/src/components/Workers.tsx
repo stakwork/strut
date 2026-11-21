@@ -1,8 +1,8 @@
-// Workers (plans/human-steps.md §9.5): first the people who signed in and
-// wait to be let in, each with Let in (a grant of the kind of work picked:
-// one door call each; the page says which failed); then the workers, found
-// by name; below them, the invites (§5.8, ./Invite). An open type's worker
-// took it up themselves (ruling 9), and their grant says so. A worker shows
+// Workers (plans/human-steps.md §9.5): the workers, `new` first: the people
+// who signed in and wait, then the rest; above them the Invite a worker box (§5.8, ./Share), whose
+// body is the invites made, with who took each (a worker's grant `by` it). Several new ones may be granted a type at
+// once (one door call each; the page says which failed); an open type's
+// worker took it up themselves (ruling 9), and their grant says so. A worker shows
 // their status with its acts, their note, their grants (revoked ones with
 // when, who and why: an automatic revoke by `standing` too, §9.7), what they
 // did this week and their newest leases, and, when the server answers for
@@ -20,17 +20,19 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
-  balanceCells, fmtSats, fmtWhen, grantedBy, leaseOutcome, liveTypes, OPEN_GRANT_BY, reviewText, shortActor, standingLow, standingText, STATUS_WORDS, whoElse, whoOf, type Place, type Shown,
+  balanceCells, fmtSats, fmtWhen, grantedBy, leaseOutcome, OPEN_GRANT_BY, reviewText, standingLow, standingText, STATUS_WORDS, whoElse, whoOf, type Place, type Shown,
 } from "../lib/view";
-import type { TaskType, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
-import { Avatar, Back, Count, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
-import { Invites } from "./Invite";
+import type { TaskType, TypeShare, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
+import { Avatar, Back, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
+import { BringWorkersIn } from "./Share";
 
 interface Props {
   go: (p: Place) => void;
   place: Place;
   shown: Shown;
   types?: TaskType[];
+  /** Tasks' share (`staff/types`' `tasks`): every invite opens it. */
+  tasks?: TypeShare;
   workers?: Worker[];
   error: unknown;
 }
@@ -39,92 +41,11 @@ export function Workers(props: Props) {
   if (props.error) return <ErrorLine error={props.error} />;
   if (!props.workers) return <Loading>Reading the workers…</Loading>;
   if (props.place.worker) return <WorkerDetail {...props} actor={props.place.worker} />;
-  const fresh = props.workers.filter((w) => w.status === "new");
   return (
     <>
-      {fresh.length > 0 && <Waiting {...props} fresh={fresh} />}
-      <WorkerList {...props} workers={props.workers.filter((w) => w.status !== "new")} waiting={fresh.length} />
-      <Invites types={props.types} />
+      {props.types && <BringWorkersIn types={props.types} tasks={props.tasks} workers={props.workers} history />}
+      <WorkerList {...props} workers={props.workers} waiting={0} />
     </>
-  );
-}
-
-/** The people who signed in and wait: let in one at a time, or all at once,
- *  to the kind of work picked. */
-function Waiting(props: Props & { fresh: Worker[] }) {
-  const client = useStrutClient();
-  const { act, busy, error } = useAct();
-  const kinds = props.types ?? [];
-  // The one kind of work there is; with several, the first that is invite-only.
-  const [type, setType] = useState(() => (kinds.length === 1 ? kinds[0]!.name : (kinds.find((t) => t.open === false)?.name ?? "")));
-  const [result, setResult] = useState<string | null>(null);
-  /** One door call per worker; the page says which failed. */
-  const letIn = async (actors: string[]) => {
-    const failed: string[] = [];
-    let done = 0;
-    await act(actors.length === 1 ? actors[0]! : "all", async () => {
-      for (const actor of actors) {
-        try {
-          await client.run("staff/grant", { actor, type });
-          done++;
-        } catch (err) {
-          failed.push(`${shortActor(actor)}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    });
-    setResult(`Let ${done} ${done === 1 ? "person" : "people"} in to ${type}: they can take its tasks now.${failed.length ? ` Failed: ${failed.join("; ")}` : ""}`);
-  };
-  const n = props.fresh.length;
-  return (
-    <section className="flex flex-col gap-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4" aria-label="Waiting to be let in">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div className="flex min-w-0 flex-1 basis-80 flex-col gap-0.5">
-          <h2 className="flex items-center gap-2 text-[15px] font-semibold">
-            Waiting to be let in <Count n={n} warn />
-          </h2>
-          <Note>They signed in and asked for work. Invite-only work is theirs once you let them in.</Note>
-        </div>
-        {kinds.length === 0 ? (
-          <Note>There is no task type to let them in to yet.</Note>
-        ) : (
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Let them in to</span>
-            <NativeSelect aria-label="The work to let them in to" value={type} onChange={(e) => setType(e.target.value)}>
-              {kinds.length !== 1 && <NativeSelectOption value="">choose the work…</NativeSelectOption>}
-              {kinds.map((t) => (
-                <NativeSelectOption key={t.name} value={t.name}>
-                  {t.name}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            {n > 1 && (
-              <Button size="sm" disabled={!type || busy !== null} onClick={() => void letIn(props.fresh.map((w) => w.actor))}>
-                Let all {n} in
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
-      <ul className="flex flex-col">
-        {props.fresh.map((w) => (
-          <li key={w.actor} className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-amber-500/20 py-2.5">
-            <Avatar name={whoOf(w)} />
-            <button type="button" className="flex min-w-0 flex-1 basis-56 flex-col text-left" onClick={() => props.go({ tab: "workers", worker: w.actor })}>
-              <span className="font-semibold break-words underline-offset-2 hover:underline" title={w.actor}>
-                {whoOf(w)}
-              </span>
-              <span className="font-mono text-xs text-muted-foreground">{whoElse(w) || "no name yet"}</span>
-            </button>
-            <span className="text-sm text-muted-foreground">signed in {fmtWhen(w.firstSeen)}</span>
-            <Button size="sm" variant={n === 1 ? "default" : "outline"} disabled={!type || busy !== null} onClick={() => void letIn([w.actor])}>
-              Let in
-            </Button>
-          </li>
-        ))}
-      </ul>
-      {result && <p className="text-sm text-muted-foreground" role="status">{result}</p>}
-      <ErrorLine error={error} />
-    </section>
   );
 }
 

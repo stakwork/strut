@@ -404,6 +404,10 @@ export interface Invite {
   createdAt?: string;
   /** The kind of work it is for (and gives, when invite-only); none: open work. */
   type?: string;
+  /** When its link stops working (ISO). */
+  expiresAt?: string;
+  /** The admin who made it (an actor), when it was noted. */
+  by?: string;
 }
 
 export interface InvitesAnswer {
