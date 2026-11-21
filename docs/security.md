@@ -612,6 +612,52 @@ instead of baked into env at deploy time.
   the token to its host alone, through those alone — a shell or http the
   step puts in the ctx it calls them with never carries it.
 
+- **A package's grant of strut's steps** (stadeum plans/software.md §5,
+  item 16). A package's `strut.yaml` `job:` may name strut's own steps for
+  the `job` workflow's agent, one by one (`job: { tools: [repositories,
+  git/push] }`: a name the package does not ship is strut's; a glob is
+  over its own steps alone). The host's own grant (`createStrut({ job:
+  { tools } })`, `STRUT_HOST_CONFIG`) is held to nothing: any type or
+  glob, an unknown one skipped at run time. Strut keeps a step from an
+  agent at the CALL: one that is a page's alone (`ctx.app`: the admin
+  doors, `proposal/decide`), one that refuses `ctx.agentTool`
+  (`task/reply`) and one that parks (`human`) refuse an agent's call
+  whoever granted it. A package's grant is narrower, held to
+  `strutGrantProblem` (src/job-seed.ts) at the install (`bad_package:
+  strut.yaml: job.tools: <why>`) and again at every seed against the
+  registry in force: strut's own step (core or lib — never a workspace's or
+  another package's), not sealed (src/sealed.ts: the meta surface and the
+  graders — which of those the agent holds is strut's own template's to
+  say), its config naming no secret (`configSecretField`: the model would
+  choose which secret it reads — `exec`, `agent`, `browser/open`,
+  `http/verify`), and declaring its `effect` (what `GET /steps` lists for a
+  host's connector list and `approve:` defaults, and what the store shows
+  the admin). `git/push` (`effect: write`) and `github/create-pr` pass.
+  The admin sees it before installing: the store's Tools section lists
+  strut's steps as "strut's step" with acts/reads, `package/install`'s card
+  says "strut's git/push (acts)", a search hit counts them. A granted
+  step runs as the job's PERSON, like every tool the agent calls: with the
+  run's ctx, its `secrets` bound to the run's principal. `git/push` takes
+  the token for origin's host (`secrets.git`: that person's own value of
+  the secret that serves the host, then the deployment's, never another
+  person's) and sends it to that host alone; `github/create-pr` reads
+  `GITHUB_TOKEN` the same way. A grant only adds: a tool is granted once
+  whoever names it, an uninstall keeps another package's grant of it, and
+  it asks first when any grant says so. Why the job agent had
+  `git/checkout` and not `git/push`: checkout is a READ as the person (a
+  private repository found mid-turn, 104fd643); a push is a WRITE as the
+  person, and the line was plans/code-change.md §2's — the agent's bash
+  structurally cannot push (no credential in the checkout), and landing is
+  deterministic after the person approved the diff, no model between the
+  approval and the pull request. A package's grant crosses it on the
+  admin's install, shown as such: with `approve: [git/push]` each push is
+  the person's yes, the gated `git/push` plans/proposals.md foresaw;
+  without it the pull request it opens is the person's review (the
+  `Code Change` page's small change). Still open: `git/push` pushes HEAD
+  to whatever branch the model names, the remote's default branch
+  included when the person may push there; only the remote's branch
+  protection stops that.
+
 - **A person's SSH key is used, never held** (src/ssh-agent.ts,
   `ssh/keygen`). A job someone lets into a server logs in with ONE key per
   person: `ssh/keygen` makes it in code and stores the private half as the

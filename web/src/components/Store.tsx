@@ -634,6 +634,8 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
   const held = (digest: string) => Object.entries(page.channels).filter(([, dg]) => dg === digest).map(([ch]) => ch);
   const [publisher, name] = props.pkg.split("/");
   const steps = d?.steps.filter((s) => !s.helper).length ?? 0;
+  /** Strut's own steps the package gives the job agent (strut.yaml's job:). */
+  const strutTools = d?.job?.strut ?? [];
   const jump = (id: string) => () => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   const n = (count: number, w: string) => `${count} ${w}${count === 1 ? "" : "s"}`;
   return (
@@ -665,7 +667,7 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
         <div class="store-stats">
           <Stat n={d.apps.length} label={d.apps.length === 1 ? "App" : "Apps"} onClick={d.apps.length ? jump("store-apps") : undefined} />
           <Stat n={d.workflows.length} label={d.workflows.length === 1 ? "Workflow" : "Workflows"} onClick={d.workflows.length ? jump("store-workflows") : undefined} />
-          <Stat n={steps} label={steps === 1 ? "Tool" : "Tools"} onClick={d.steps.length ? jump("store-steps") : undefined} />
+          <Stat n={steps} label={steps === 1 ? "Tool" : "Tools"} onClick={d.steps.length || strutTools.length ? jump("store-steps") : undefined} />
           <Stat n={d.concepts.length} label={d.concepts.length === 1 ? "Concept" : "Concepts"} onClick={d.concepts.length ? jump("store-concepts") : undefined} />
         </div>
       )}
@@ -763,7 +765,7 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
               </div>
             </section>
           )}
-          {d && d.steps.length > 0 && (
+          {d && (d.steps.length > 0 || strutTools.length > 0) && (
             <section id="store-steps">
               <SectionHead title="Tools" count={steps} />
               <div class="store-lines">
@@ -788,6 +790,21 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
                     </span>
                     {s.lint.length === 0 && <span class="badge badge-ok" title="Nothing past ctx.services: no child_process, fs, net, process.env or global fetch">clean</span>}
                     <span class="store-line-side">{formatBytes(s.bytes)}</span>
+                  </div>
+                ))}
+                {strutTools.map((s) => (
+                  <div class="store-line is-static" key={`strut:${s.name}`}>
+                    <span class="store-line-main">
+                      <span class="store-line-title">
+                        <span class="package-name">{s.name}</span>
+                        <span class="badge badge-accent" title="One of strut's own steps, not the package's: strut.yaml's job: gives it to the job agent, which calls it as the job's person">strut's step</span>
+                        {s.effect && <span class="badge" title="As strut declares it">{s.effect === "write" ? "acts" : "reads"}</span>}
+                        <span class="badge" title="strut.yaml's job: gives it to the job agent as a tool">job agent</span>
+                        {d.job!.approve.includes(s.name) && <span class="badge badge-warning" title="The job agent's call is a proposal you accept first">asks first</span>}
+                        {(s.secrets ?? []).map((k) => <code key={k} class="store-secret" title="A secret it reads: the job's person's own, else the server's">{k}</code>)}
+                      </span>
+                      {s.description && <span class="store-line-desc" title={s.description}>{s.description}</span>}
+                    </span>
                   </div>
                 ))}
               </div>

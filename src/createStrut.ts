@@ -121,7 +121,7 @@ import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { FileWaitingIndex, MemoryWaitingIndex, createParking, type ParkSource, type ParkWaker } from "./park.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
-import { packageJobGrants, seedJobWorkflow, withJobGrants, type JobSeedOptions } from "./job-seed.js";
+import { packageJobGrants, seedJobWorkflow, strutGrantProblem, withJobGrants, type JobSeedOptions } from "./job-seed.js";
 import { installedSchedules } from "./packages/schedules.js";
 import { findConcept, PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
@@ -2283,7 +2283,9 @@ export async function createStrut<TServices = unknown>(
   const seedJob = async (): Promise<void> => {
     if (opts.job === false) return;
     try {
-      const grants = await packageJobGrants({ workspace, cache: packageStore, ...(graph ? { graph } : {}) });
+      // Strut's steps a package names, held to what a package may grant
+      // against the registry in force (src/job-seed.ts).
+      const grants = await packageJobGrants({ workspace, cache: packageStore, ...(graph ? { graph } : {}) }, (t) => strutGrantProblem(t, registry, stepSources));
       const key = JSON.stringify(grants);
       if (key === jobGrants) return;
       const { version, changed } = await seedJobWorkflow(workspace, withJobGrants(opts.job, grants));
@@ -5466,6 +5468,7 @@ export async function createStrut<TServices = unknown>(
       await rebuildRegistry();
       return registry;
     },
+    stepSources: () => stepSources,
   };
   // Every install as it goes, whichever door (src/packages/progress.ts).
   const installs = createInstallTracker();

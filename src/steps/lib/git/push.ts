@@ -35,6 +35,7 @@ const AUTH_FAIL_RE = /\b(401|403)\b|authentication failed|permission .*denied|co
  */
 export default defineStep({
   type: "git/push",
+  effect: "write",
   description:
     `Commit everything staged in a working copy (git/apply stages) as the token's GitHub identity and push HEAD to a new branch on origin — never --force. ` +
     `Auth: the run's token for origin's host (GITHUB_TOKEN for github.com; a package's provides.git for another host); when it is GitHub's, its owner (GET /user) is the commit author, so the change is the user's. Otherwise the author is "strut", and without a token only a remote that needs no credential (a local repository) accepts the push. ` +

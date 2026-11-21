@@ -232,4 +232,22 @@ describe("package/install's card — the job agent's tools", () => {
     assert.match(card.summary!, /It gives the job agent 2 steps: claim, workspace \(workspace asks you first\)\./);
     assert.deepEqual(card.fields!.find((f) => f.label === "Job agent's tools")?.value, "2 steps: claim, workspace (workspace asks you first)");
   });
+
+  it("names strut's own steps as strut's, with whether they act", async () => {
+    const def = (await import("./install.js")).default;
+    const job = { tools: ["git/push", "graph/graph-get", "repositories"], approve: ["git/push"], strut: [{ name: "git/push", effect: "write" }, { name: "graph/graph-get", effect: "read" }] };
+    const hit = {
+      package: "stadeum/code",
+      publisher: "stadeum",
+      key: "k".repeat(52),
+      index: "idx",
+      version: "0.3.0",
+      digest: `sha256:${"b".repeat(64)}`,
+      detail: { apps: [], workflows: 0, steps: 1, concepts: 1, secrets: [], job, can: { spends: false, acts: true, code: true }, readme: false },
+    };
+    const card = await def.describe!({ package: "stadeum/code" }, { services: { packages: { search: async () => ({ packages: [hit], peers: [] }) } } } as unknown as StepContext);
+    const tools = "3 steps: strut's git/push (acts), strut's graph/graph-get (reads), repositories (git/push asks you first)";
+    assert.ok(card.summary!.includes(`It gives the job agent ${tools}.`), card.summary);
+    assert.equal(card.fields!.find((f) => f.label === "Job agent's tools")?.value, tools);
+  });
 });

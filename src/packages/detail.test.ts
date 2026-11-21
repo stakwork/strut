@@ -10,7 +10,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { readPackage } from "./format.js";
-import { derivePackageDetail, stepFactsFromSource, summarizeDetail } from "./detail.js";
+import { derivePackageDetail, stepFactsFromSource, summarizeDetail, type StepFacts } from "./detail.js";
 
 const FILES: Record<string, string> = {
   "strut.yaml": "package: acme/linear\nversion: 1.4.0\ndescription: Linear issues\nrequires:\n  secrets: [LINEAR_API_KEY]\n",
@@ -176,6 +176,17 @@ describe("a package's detail", () => {
       assert.deepEqual(d.job, { tools: ["list-issues", "update-issue"], approve: ["update-issue"] });
       assert.deepEqual(summarizeDetail(d).job, d.job);
       assert.equal((await derivePackageDetail({ ...(await readPackage(root)), job: undefined, dir: root })).job, undefined, "no job: key, no line");
+
+      // Strut's own steps it names, as such, with what the strut deriving it says of them.
+      await writeFile(join(root, "strut.yaml"), "package: acme/linear\nversion: 1.4.0\njob:\n  tools: [list-issues, git/push, github/create-pr]\n  approve: [github/create-pr]\n");
+      const facts: Record<string, StepFacts> = { "git/push": { effect: "write", description: "Push a branch." }, "github/create-pr": { effect: "write", secrets: ["GITHUB_TOKEN"] } };
+      const named = await derivePackageDetail({ ...(await readPackage(root)), dir: root }, { stepInfo: (t) => facts[t] });
+      assert.deepEqual(named.job, {
+        tools: ["list-issues", "git/push", "github/create-pr"],
+        approve: ["github/create-pr"],
+        strut: [{ name: "git/push", effect: "write", description: "Push a branch." }, { name: "github/create-pr", effect: "write", secrets: ["GITHUB_TOKEN"] }],
+      });
+      assert.deepEqual(summarizeDetail(named).job, named.job);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -175,7 +175,9 @@ params:
   # its directory; the job-app runtime (plans/apps.md §6) is still served
   # for a directory with an app.yaml, but nothing here scaffolds or builds
   # one. A host appends its own (`createStrut({ job: { tools } })`): the
-  # lab adds `pod/*`. Never the
+  # lab adds `pod/*`. An installed package appends what its strut.yaml's
+  # `job:` names — its own steps, and strut's named one by one (`git/push`
+  # for a change that ends as a pull request; src/job-seed.ts). Never the
   # authoring writes (meta/publish-workflow, meta/create-step, edit-step):
   # a workflow, or an app that lives in a workspace, is the `builder`
   # workflow's, which this agent runs through meta/run-workflow when such a

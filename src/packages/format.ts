@@ -10,14 +10,18 @@
  *   apps/<name>/                 → the app <package>/<name>, a directory with app.yaml
  *   graph/<Type>.yaml            → the graph type <Type> and its edges (./graph-types.ts)
  *
- * The manifest's `job:` names steps of the package the `job` workflow's
- * agent may call (plans/followed-repos.md §3): `tools`, by their names
- * inside the package or globs over them, and `approve`, the ones among them
- * whose call is a proposal. `readPackage` resolves them over the package's
- * OWN steps (`claim` → `<package>/claim`, `*` → every step it has) and
- * refuses a name that matches none, so a grant never reaches strut's steps
- * or another package's; the `job` seed grants what each installed package
- * names (src/job-seed.ts).
+ * The manifest's `job:` names the steps the `job` workflow's agent may call
+ * (plans/followed-repos.md §3; stadeum plans/software.md §5, item 16):
+ * `tools`, and `approve`, the ones among them whose call is a proposal. A
+ * name is the package's own step first, as every bare name in a package is
+ * (src/package-lookup.ts): `claim` → `<package>/claim` when it ships
+ * `steps/claim.ts`. A name it does not ship is STRUT's step of that type
+ * (`git/push`), which the install holds to what a package may grant
+ * (`strutGrantProblem`, src/job-seed.ts). A glob is over the package's own
+ * steps alone (`*` → every step it has), so an older manifest reads as it
+ * did, and strut's steps are named one by one. Another package's step is
+ * never granted: a name of three segments or more is refused. The `job`
+ * seed grants what each installed package names (src/job-seed.ts).
  *
  * Its `provides.secrets` names the secrets the package's steps MANAGE, each
  * one they may read (`requires.secrets` or `requires.optional`, else the
@@ -70,6 +74,7 @@ import { checkInputTemplates, triggerSchema, type TriggerDraft } from "../automa
 import { globToRegExp } from "../closure.js";
 import { GIT_HOST_RE } from "../git-hosts.js";
 import { parseConceptFile } from "../concept-seed.js";
+import { packagePrefixOf } from "../package-lookup.js";
 import { hashTree } from "../version.js";
 import { validateStepName, validateWorkflowName } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
@@ -132,12 +137,13 @@ const manifestSchema = z
       })
       .strict()
       .optional(),
-    // The package's own steps the job agent may call, and among them the
-    // ones that ask first (plans/followed-repos.md §3). Strict like the rest,
-    // so an older strut refuses the package instead of installing it
-    // without the tools it is for.
+    // The steps the job agent may call — the package's own, and strut's
+    // named one by one — and among them the ones that ask first
+    // (plans/followed-repos.md §3). Strict like the rest, so an older strut
+    // refuses the package instead of installing it without the tools it is
+    // for.
     job: z
-      .object({ tools: z.array(z.string().min(1)).min(1, "job.tools names at least one step of the package"), approve: names.optional() })
+      .object({ tools: z.array(z.string().min(1)).min(1, "job.tools names at least one step"), approve: names.optional() })
       .strict()
       .optional(),
     // What the package PROVIDES to the server. `secrets`: the ones its steps
@@ -215,8 +221,8 @@ export interface PackageInfo {
   /** Every file the digest covers, sorted, `/`-joined. */
   files: string[];
   items: PackageItem[];
-  /** The manifest's `job:`, resolved over the package's own steps: full
-   *  types, deduplicated and sorted. */
+  /** The manifest's `job:`, resolved: full types — the package's own steps
+   *  and strut's (`strutGrants`) — deduplicated and sorted. */
   job?: JobGrant;
   /** The manifest's `schedules:`, each on a workflow of the package. */
   schedules?: PackageSchedule[];
@@ -232,12 +238,17 @@ export interface PackageSchedule {
   input: Record<string, unknown>;
 }
 
-/** What a package gives the `job` workflow's agent: step types of the
- *  package, and the ones among them whose call becomes a proposal. */
+/** What a package gives the `job` workflow's agent: step types — the
+ *  package's own (`<package>/<name>`) and strut's (`git/push`) — and the
+ *  ones among them whose call becomes a proposal. */
 export interface JobGrant {
   tools: string[];
   approve: string[];
 }
+
+/** The types among a package's grant that are strut's steps, not its own:
+ *  the ones not under its prefix. */
+export const strutGrants = (pkg: string, types: readonly string[]): string[] => types.filter((t) => !t.startsWith(`${pkg}/`));
 
 /** What a package digest leaves out, and an archive may never hold:
  *  dotfiles and `node_modules/` at any depth, and an app's derived document
@@ -397,19 +408,38 @@ function resolveSchedules(pkg: string, entries: NonNullable<PackageManifest["sch
   });
 }
 
-/** The manifest's `job:` over the package's own steps (helpers are not
- *  steps): each name, or glob, matched against a step's name inside the
- *  package. One that matches none is a problem, and so is an `approve`
- *  step that is not among the tools. */
+/** The manifest's `job:`: a name is the package's own step first (helpers
+ *  are not steps), else strut's step of that type, which this reads only
+ *  for its form — whether this strut has it, and may hand it out, is the
+ *  install's (`strutGrantProblem`). A glob is matched against the
+ *  package's own steps alone, and one that matches none is a problem; so
+ *  are a helper, a name of three segments or more (another package's
+ *  step, or this one's by its full type) and an `approve` step that is not
+ *  among the tools. */
 function jobGrant(pkg: string, job: NonNullable<PackageManifest["job"]>, items: PackageItem[], problems: string[]): JobGrant {
-  const own = items.filter((i) => i.kind === "step" && !i.helper).map((i) => i.name.slice(pkg.length + 1));
+  const steps = items.filter((i) => i.kind === "step");
+  const own = steps.filter((i) => !i.helper).map((i) => i.name.slice(pkg.length + 1));
+  const helpers = new Set(steps.filter((i) => i.helper).map((i) => i.name.slice(pkg.length + 1)));
   const resolve = (field: string, names: string[]): string[] => {
     const out = new Set<string>();
+    const problem = (name: string, why: string) => problems.push(`${MANIFEST_FILE}: job.${field}: ${JSON.stringify(name)} ${why}`);
     for (const name of names) {
-      const re = globToRegExp(name);
-      const hit = own.filter((s) => re.test(s));
-      if (!hit.length) problems.push(`${MANIFEST_FILE}: job.${field}: ${JSON.stringify(name)} matches no step of the package — a grant names the package's own steps (steps/<name>.ts) by <name>, never strut's or another package's`);
-      for (const s of hit) out.add(`${pkg}/${s}`);
+      if (name.includes("*")) {
+        const re = globToRegExp(name);
+        const hit = own.filter((s) => re.test(s));
+        if (!hit.length) problem(name, "matches no step of the package — a glob is over the package's own steps (steps/<name>.ts); strut's steps are named one by one");
+        for (const s of hit) out.add(`${pkg}/${s}`);
+      } else if (own.includes(name)) out.add(`${pkg}/${name}`);
+      else if (helpers.has(name)) problem(name, "is a helper (a `_` file), not a step");
+      else if (packagePrefixOf(name)) problem(name, "is another package's step, or this one's by its full type — a grant names the package's own steps by <name> (steps/<name>.ts) and strut's by their type (git/push), never another package's");
+      else {
+        try {
+          validateStepName(name);
+          out.add(name);
+        } catch (err) {
+          problem(name, `is not a step's name — ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     }
     return [...out].sort();
   };
