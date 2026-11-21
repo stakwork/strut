@@ -1,6 +1,6 @@
 {
   "name": "@strut/kit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "The app kit for strut apps (plans/apps.md §3): the frozen vendor layer every app build resolves against, the base stylesheet, the bootstrap and the hooks over one tool, step_run.",
   "type": "module",
   "sideEffects": [
@@ -87,6 +87,7 @@
     "@dnd-kit/utilities": "3.2.2",
     "@happy-dom/global-registrator": "21.0.4",
     "@hookform/resolvers": "6.0.0",
+    "@mermaid-js/tiny": "12.3.0",
     "@modelcontextprotocol/client": "2.3.1",
     "@modelcontextprotocol/core": "2.3.1",
     "@react-three/drei": "10.7.9",

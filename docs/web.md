@@ -377,7 +377,11 @@ drag handle for events panel height
 
 ### `web/src/components/Markdown.tsx`
 
-tiny markdown renderer for chat output (headers, lists, fenced code, quotes, pipe tables, inline marks); `resolveLink` (the viewer's) turns a link whose target the caller can show into an in-place open, and is the only way an image renders — nothing but the scope's own files is loaded
+tiny markdown renderer for chat output (headers, lists, fenced code, quotes, pipe tables, inline marks); `resolveLink` (the viewer's) turns a link whose target the caller can show into an in-place open, and is the only way an image renders — nothing but the scope's own files is loaded. A ```mermaid block is MermaidBlock (below): a Concept page's map of its systems in the Store, a markdown file in the viewer, a chat message
+
+### `web/src/components/MermaidBlock.tsx`
+
+a ```mermaid block drawn as a diagram: `mermaid` (the full package, web/package.json) is a chunk of its own — Vite splits `mermaid.core` (~670 KB) and each diagram type's chunk (a flowchart's ~66 KB) out of the main bundle — loaded the first time a page has a block. Drawn in Mermaid's `dark` (the UI is dark) as an IMAGE through the kit's `diagramImage` (kit/src/folds/diagram.ts, the same as strut/views' MermaidDiagram), so nothing in it runs or reaches the page; text Mermaid cannot read stays a code block under "Diagram not drawn:" and where it stopped (`.md-diagram*` in components.css)
 
 ### `web/src/components/RunInputPopover.tsx`
 

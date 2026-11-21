@@ -1,11 +1,14 @@
 import { h, Fragment, JSX } from "preact";
+import { MermaidBlock } from "./MermaidBlock";
 
 // ── Tiny markdown renderer ─────────────────────────────────────────────────
 // Supports: headers (#..######), unordered lists (- / *), ordered lists (1.),
-// fenced code blocks (```), blockquotes (>), pipe tables (a header row, a
-// `---` separator row, then rows), inline code (`x`), bold (**x**),
-// italic (*x* / _x_), links [text](url), images ![alt](src), horizontal
-// rules (---), paragraphs. Deliberately small — no external deps.
+// fenced code blocks (```; a ```mermaid one drawn as a diagram,
+// MermaidBlock, whose Mermaid is a chunk loaded the first time a page has
+// one), blockquotes (>), pipe tables (a header row, a `---` separator row,
+// then rows), inline code (`x`), bold (**x**), italic (*x* / _x_), links
+// [text](url), images ![alt](src), horizontal rules (---), paragraphs.
+// Deliberately small — no external deps on the way in.
 //
 // A link opens in a new tab. A caller that knows where a link LEADS — the
 // artifact viewer, for a file whose links name its siblings — passes
@@ -153,6 +156,10 @@ export function Markdown(props: { source: string; class?: string; resolveLink?: 
         i++;
       }
       i++; // closing fence
+      if (lang === "mermaid") {
+        out.push(<MermaidBlock key={out.length} source={codeLines.join("\n")} />);
+        continue;
+      }
       out.push(
         <pre key={out.length} class="md-code-block" data-lang={lang || undefined}>
           <code>{codeLines.join("\n")}</code>

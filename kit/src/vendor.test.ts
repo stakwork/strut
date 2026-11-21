@@ -99,6 +99,15 @@ describe("the vendor build — a frozen module tree", () => {
     assert.equal(built.modules["files/src/components/ui/button.mjs"]!.links["@/lib/utils"], "files/src/lib/utils.mjs", "the kit's own @/ resolved to the kit");
   });
 
+  it("freezes a package's classic script as a CommonJS module: Mermaid's tiny build exports mermaid, not a global it reads back", () => {
+    const file = "files/_m/@mermaid-js/tiny/dist/mermaid.tiny.js";
+    assert.equal(relative(outdir, readImportMap(outdir)["@mermaid-js/tiny"]!), file);
+    const text = readFileSync(join(outdir, file), "utf8");
+    assert.match(text.trimEnd(), /\nmodule\.exports = __esbuild_esm_mermaid_nm\["mermaid"\]\.default;$/);
+    assert.doesNotMatch(text, /globalThis\.__esbuild_esm_mermaid_nm/, "the global's read-back is gone");
+    assert.deepEqual(built.modules[file]!.links, {}, "one file, nothing it imports");
+  });
+
   it("carries each package's sideEffects declaration, which esbuild does not read for a plugin's path", () => {
     assert.equal(built.modules["files/_m/lucide-react/dist/esm/icons/alarm-clock.mjs"]?.pure, true, "lucide: sideEffects false");
     assert.equal(built.modules["files/_m/zod/v4/classic/schemas.mjs"]?.pure, true, "zod: an array that names only compile");

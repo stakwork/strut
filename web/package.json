@@ -21,6 +21,7 @@
     "d3-zoom": "^3.0.0",
     "diff": "^5.2.0",
     "js-yaml": "^4.1.1",
+    "mermaid": "^12.3.0",
     "preact": "^10.28.0",
     "qrcode-generator": "2.0.4",
     "react-diff-view": "^3.2.1",
