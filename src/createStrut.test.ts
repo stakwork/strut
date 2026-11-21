@@ -2119,6 +2119,84 @@ describe("the API key gate", () => {
     assert.deepEqual(health["workspace"], { backend: "fs" });
   });
 
+  it("the UI is framed only by strut and the host a live ticket named (frame-ancestors), which the session it buys keeps; a page that only names embed_origin gets strut alone", async () => {
+    // A page with a <head>, as the real build's, for the meta.
+    const ui = "<!doctype html><html><head><title>strut</title></head><body>the strut ui</body></html>";
+    await writeFile(join(tempDir, "dist", "index.html"), ui);
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    const json = { "content-type": "application/json" };
+    const BOX = "https://box.test";
+    /** What a request for the UI's page is told: its frame-ancestors (null:
+     *  none), the origin the page's meta vouches for (null: no meta). */
+    const page = async (query: string, headers: Record<string, string> = {}) => {
+      const res = await strut.app.request(`/${query}`, { headers });
+      assert.equal(res.status, 200, query);
+      const html = await res.text();
+      assert.match(html, /the strut ui/);
+      return {
+        frame: res.headers.get("content-security-policy"),
+        meta: html.match(/<meta name="strut-embed-origin" content="([^"]*)" \/>/)?.[1] ?? null,
+        cache: res.headers.get("cache-control"),
+      };
+    };
+    const mint = async (actor = "evan-1", role = "member") =>
+      ((await (await strut.app.request("/auth/ticket", { method: "POST", headers: { ...json, ...auth.headers }, body: JSON.stringify({ actor, role }) })).json()) as { ticket: string }).ticket;
+    const trade = (body: Record<string, unknown>) => strut.app.request("/auth/session", { method: "POST", headers: { ...json, "x-strut-ui": "1" }, body: JSON.stringify(body) });
+
+    // Strut's own UI, opened directly: framed by strut alone, the page told of no host.
+    assert.deepEqual(await page(""), { frame: "frame-ancestors 'self'", meta: "", cache: "no-store" });
+    assert.deepEqual(await page("?wf=a&run=1"), { frame: "frame-ancestors 'self'", meta: "", cache: "no-store" });
+
+    // A page that only NAMES a host (a neighbour box framing strut, a crafted
+    // link) gets nothing: no ticket to name it beside.
+    const evil = "?app=x&solo=1&embed_origin=https%3A%2F%2Fevil.test&embed_page=https%3A%2F%2Fevil.test%2Fphish";
+    assert.deepEqual(await page(evil), { frame: "frame-ancestors 'self'", meta: "", cache: "no-store" });
+    assert.equal((await page(`${evil}&ticket=strut-ticket.forged.forged`)).frame, "frame-ancestors 'self'", "a forged ticket");
+
+    // A host's frame, as stadeum builds it: a ticket its server minted with
+    // the key, its own origin beside it. That origin may frame the page, and
+    // the page is told it is the host's.
+    const ticket = await mint();
+    const framed = `?ticket=${encodeURIComponent(ticket)}&app=x&solo=1&embed_origin=${encodeURIComponent(BOX)}&embed_page=${encodeURIComponent(`${BOX}/apps/x`)}`;
+    assert.deepEqual(await page(framed), { frame: `frame-ancestors 'self' ${BOX}`, meta: BOX, cache: "no-store" });
+    // Looking does not spend it, and an origin that is not bare is none.
+    assert.equal((await page(`?ticket=${encodeURIComponent(ticket)}&embed_origin=${encodeURIComponent(`${BOX}/path`)}`)).frame, "frame-ancestors 'self'");
+    assert.equal((await page(`?ticket=${encodeURIComponent(ticket)}&embed_origin=javascript%3Aalert(1)`)).meta, "");
+
+    // The page trades it with the origin it was told; the session keeps it,
+    // so a later load (a reload: the cookie, no ticket) is framed by the same
+    // host — whatever another embed_origin on the address says.
+    const traded = await trade({ ticket, embed_origin: BOX });
+    assert.equal(traded.status, 200);
+    assert.equal(((await traded.json()) as { embedOrigin?: string }).embedOrigin, BOX);
+    const cookie = traded.headers.get("set-cookie")!.split(";")[0]!;
+    assert.deepEqual(await page("?app=x&solo=1", { cookie }), { frame: `frame-ancestors 'self' ${BOX}`, meta: BOX, cache: "no-store" });
+    assert.deepEqual(await page(evil, { cookie }), { frame: `frame-ancestors 'self' ${BOX}`, meta: BOX, cache: "no-store" });
+    assert.equal(((await (await strut.app.request("/auth/session", { headers: { cookie } })).json()) as { embedOrigin?: string }).embedOrigin, BOX);
+    // Spent, the ticket names nothing more: the session (here, none) decides.
+    assert.equal((await page(framed)).frame, "frame-ancestors 'self'");
+
+    // A ticket traded with no origin (a host that loads strut top-level) and
+    // the key login make sessions no host frames.
+    const plain = (await trade({ ticket: await mint() })).headers.get("set-cookie")!.split(";")[0]!;
+    assert.equal((await page("", { cookie: plain })).frame, "frame-ancestors 'self'");
+    assert.equal((await trade({ ticket: await mint(), embed_origin: "https://box.test/x" })).status, 200, "an origin that is not bare is dropped, the sign-in stands");
+    const keyLogin = (await trade({ key: KEY })).headers.get("set-cookie")!.split(";")[0]!;
+    assert.equal((await page("", { cookie: keyLogin })).frame, "frame-ancestors 'self'");
+
+    // A visitor's page of a public app is anyone's to frame (an index's
+    // store frames it from another server); it is still told no host.
+    assert.deepEqual(await page("?app=x&solo=1&public=1"), { frame: null, meta: "", cache: "no-store" });
+    assert.equal((await page("?app=x&public=1")).frame, "frame-ancestors 'self'", "not alone: it may be the shell");
+
+    // No key: no session to ride, no ticket to trust — the page as it was.
+    delete process.env["STRUT_API_KEY"];
+    const open = await strut.app.request(`/${framed}`);
+    assert.equal(open.headers.get("content-security-policy"), null);
+    assert.equal(await open.text(), ui);
+  });
+
   it("no path under the UI's prefix reaches a route: /assets/../secrets, as the wire carries it", async () => {
     const strut = await boot();
     const put = await strut.app.request("/secrets/PROBE", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: "v" }) });

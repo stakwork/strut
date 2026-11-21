@@ -26,7 +26,9 @@ export function appLink(name: string, input?: AppLinkInput): string {
 /** The host context key a host puts its PAGE's address under: where a
  *  person opens this app on that host (Stadeum's `https://box/`, strut's own
  *  `https://strut/?app=<name>`), without the app's `input`. A host with no
- *  address to give (a native app's web view) leaves it out. */
+ *  address to give (a native app's web view) leaves it out. Strut's UI puts
+ *  a framing host's page here only on the origin of a host that signed the
+ *  person in (strut `specs/API.md` §14.3), so an app may take it as it is. */
 export const PAGE_CONTEXT = "strut/page";
 
 /** The address a person can paste to open the app at `input`: the host's

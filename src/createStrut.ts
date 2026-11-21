@@ -40,7 +40,7 @@ import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { inviteOf, principalRequired } from "./auth.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostKeys, hostOf, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, linkChallenge, readLinkChallenge, redeemLinkChallenge, LINKED_TOKEN_DAYS, RENEW_CHALLENGE_MS, type LinkChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostKeys, hostOf, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, trustedEmbedOrigin, frameAncestors, foreignUpgrade, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, linkChallenge, readLinkChallenge, redeemLinkChallenge, LINKED_TOKEN_DAYS, RENEW_CHALLENGE_MS, type LinkChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
 import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, keptSphinxAddress, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
 import type { ArtifactsCapability, HttpCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
@@ -2929,12 +2929,14 @@ export async function createStrut<TServices = unknown>(
   // key configured there is nothing to sign in to.
   app.post("/auth/session", async (c) => {
     if (!bootEnv()["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
-    const body = (await c.req.json().catch(() => ({}))) as { key?: unknown; actor?: unknown; ticket?: unknown };
+    const body = (await c.req.json().catch(() => ({}))) as { key?: unknown; actor?: unknown; ticket?: unknown; embed_origin?: unknown };
     // A host's sign-in ticket (auth.ts "Sign-in tickets"): the same cookie,
     // naming the ticket's actor — never a field beside it. No pause: a
-    // ticket is signed, so there is nothing to guess.
+    // ticket is signed, so there is nothing to guess. `embed_origin`: the
+    // host origin the ticket arrived beside, which the session keeps as the
+    // host that frames it (auth.ts "The host that frames it").
     if (body.ticket !== undefined) {
-      const redeemed = typeof body.ticket === "string" ? redeemSignInTicket(body.ticket.trim()) : undefined;
+      const redeemed = typeof body.ticket === "string" ? redeemSignInTicket(body.ticket.trim(), undefined, undefined, body.embed_origin) : undefined;
       if (!redeemed) return c.json({ error: "unauthorized: this sign-in ticket has expired, was already used, or is not this strut's" }, 401);
       // A visitor's (plans/app-repos.md §5.3, `ticket`): its own cookie, and
       // the token, which a page framed by another site keeps and sends as a
@@ -7674,6 +7676,11 @@ export async function createStrut<TServices = unknown>(
     const base = opts.basePath ?? "";
     const which = url.pathname === `${base}/rooms` ? "rooms" : url.pathname === `${base}/channels` ? "channels" : undefined;
     if (!which) return false;
+    // A page of another origin — a neighbour box on the same site, whose
+    // handshake the browser gives the person's cookie — opens a room or a
+    // channel only with a credential of its own (a channel ticket, a key),
+    // never this origin's session (auth.ts `foreignUpgrade`).
+    if (foreignUpgrade(req.headers)) delete req.headers.cookie;
     const failed = () => refuseUpgrade(socket, 500, JSON.stringify({ error: "the upgrade failed" }));
     void (async () => {
       if (which === "rooms") {
@@ -8625,6 +8632,11 @@ export async function createStrut<TServices = unknown>(
         ...(mcp?.length ? { mcp } : {}),
         ...(attachments?.length ? { attachments } : {}),
       });
+      // The WORK (src/work.ts): the job is recorded under the turn that
+      // started it NOW, before this returns and the turn can end — never
+      // only when its detached run reaches `run.start`, which can come after
+      // the turn's end has found a work of one run, done, and judged it.
+      if (verifier && startedBy) await recordCaused(dataDir, flow.name, { runId, startedBy }).catch((err) => console.error(`[work] ${flow.name}/${runId} was not recorded under the turn that started it:`, err));
       return { runId, callback: !!url, workflow };
     };
   }
@@ -11139,6 +11151,21 @@ export async function createStrut<TServices = unknown>(
           const icon = info?.icon ? lucideIconSvg(opts.kit ?? {}, info.icon) : undefined;
           const page = info ? { app: domainApp, title: info.title, ...(info.description ? { description: info.description } : {}), ...(icon ? { icon } : {}) } : null;
           return c.html(servedHtml(html, page, `${requestProto(c)}://${host}`));
+        }
+        // Framed only by a host strut trusts (auth.ts "The host that frames
+        // it"): with a key of its own, the page tells the browser so —
+        // strut's own origin and the one host origin a live ticket or this
+        // browser's session names — and tells the page which origin that
+        // is. A visitor's page of a public app (`?app=…&solo=1&public=1`),
+        // like a served box's above, is anyone's to frame (an index's store
+        // frames it from another server, plans/public-surface.md §8): it
+        // shows nothing of a signed-in person's.
+        if (bootEnv()["STRUT_API_KEY"]) {
+          const origin = trustedEmbedOrigin(c);
+          const visitorPage = c.req.query("public") === "1" && c.req.query("solo") === "1" && !!c.req.query("app");
+          if (!visitorPage) c.header("content-security-policy", frameAncestors(origin));
+          c.header("cache-control", "no-store");
+          return c.html(html.replace(/<head>/i, `<head>\n    <meta name="strut-embed-origin" content="${origin ?? ""}" />`));
         }
         return c.html(html);
       } catch {

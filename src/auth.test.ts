@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { inviteOf, inviteToken } from "./auth.js";
-import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, scopeFromKey, actorFromHeader, _resetAuthState, sessionToken, verifySessionToken, personToken, verifyPersonToken, channelTicket, verifyChannelTicket, issueSession, sessionCookie, sessionOf, sessionFromCookie, sessionTtlMs, apiKeyMatches, carriesApiKey } from "./auth.js";
+import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, scopeFromKey, actorFromHeader, _resetAuthState, sessionToken, verifySessionToken, personToken, verifyPersonToken, channelTicket, verifyChannelTicket, issueSession, sessionCookie, sessionOf, sessionFromCookie, sessionTtlMs, apiKeyMatches, carriesApiKey, foreignUpgrade, bareOrigin } from "./auth.js";
 
 /**
  * Tests for the deployment-scoped shared-secret middleware.
@@ -501,6 +501,28 @@ describe("sessions (the login)", () => {
     assert.equal(await (await scope.request("/x", { headers: { cookie, authorization: "Bearer peer" } })).text(), "full");
     assert.equal(await (await scope.request("/x", { headers: { authorization: "Bearer peer" } })).text(), "peer");
     delete process.env["STRUT_PEER_KEY"];
+  });
+});
+
+describe("the host that frames it", () => {
+  it("bareOrigin takes an http(s) origin as it is, and nothing that could carry more into a CSP or a meta", () => {
+    assert.equal(bareOrigin("https://box.example"), "https://box.example");
+    assert.equal(bareOrigin("http://box.localhost:4100"), "http://box.localhost:4100");
+    for (const bad of ["https://box.example/", "https://box.example/apps", "https://u:p@box.example", "https://box.example?x=1", "javascript:alert(1)", "data:text/html,x", "null", "box.example", "https://box.example 'unsafe-inline'", "", 7, undefined]) {
+      assert.equal(bareOrigin(bad), undefined, String(bad));
+    }
+  });
+});
+
+describe("a WebSocket from a page of another origin (foreignUpgrade)", () => {
+  it("is the browser's word (Sec-Fetch-Site), else Origin against the host it asked for; a client that is no browser is not", () => {
+    assert.equal(foreignUpgrade({ "sec-fetch-site": "same-origin", origin: "https://strut.box.example" }), false);
+    for (const site of ["same-site", "cross-site", "none"]) assert.equal(foreignUpgrade({ "sec-fetch-site": site, host: "strut.box.example" }), true, site);
+    assert.equal(foreignUpgrade({ origin: "https://strut.box.example", host: "strut.box.example" }), false);
+    assert.equal(foreignUpgrade({ origin: "https://other.stakwork.ai", host: "strut.box.stakwork.ai" }), true, "a neighbour box");
+    assert.equal(foreignUpgrade({ origin: "https://strut.box.example", host: "strut:3000", "x-forwarded-host": "strut.box.example" }), false, "behind a proxy");
+    assert.equal(foreignUpgrade({ origin: "null", host: "strut.box.example" }), true, "an opaque origin");
+    assert.equal(foreignUpgrade({ host: "strut.box.example" }), false, "no Origin: a server's client");
   });
 });
 

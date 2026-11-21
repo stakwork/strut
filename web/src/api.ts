@@ -1,6 +1,7 @@
 import type { ConnectionRequest } from "@strut/kit/wallet";
 import { fileScopeOf, isPeerPath, type AccessedNode, type RunApp, type TokenUsage, type WorkersView } from "@strut/kit/folds";
 import { takeTicket } from "./ticket";
+import { vouchedEmbedOrigin } from "./embed";
 import { claimAnswerOf, type ClaimAnswer } from "./visitor-pay";
 import { setVisitorSession } from "./visitor-signin";
 
@@ -365,13 +366,16 @@ export function onHostSignInEnd(fn: (() => void) | null): void {
 }
 
 async function tradeTicket(ticket: string): Promise<TicketSignIn> {
+  const embedOrigin = vouchedEmbedOrigin();
   setApiKey("");
   setSignedInByHost(true);
   try {
     const res = await fetch(`${BASE}/auth/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-strut-ui": "1" },
-      body: JSON.stringify({ ticket }),
+      // The host origin the server saw beside this ticket (./embed): the
+      // session keeps it as the host that frames this page, for a reload.
+      body: JSON.stringify({ ticket, ...(embedOrigin ? { embed_origin: embedOrigin } : {}) }),
     });
     const body = (await res.json().catch(() => null)) as (SessionInfo & { token?: string }) | null;
     // A VISITOR's ticket (plans/app-repos.md §5.3, `ticket`): its own
