@@ -86,7 +86,17 @@ schema or store.
 
 ### 1. The `Plan` page
 
-`src/concepts/Plan.md`, a child of `Job`. This is the whole page:
+`src/concepts/Plan.md`, a child of `Job`. Its description is the one line
+the orchestrator reads to route a request, so it says who writes a plan
+and that a plan can be made of anything:
+
+> Work too large for one job, or that the person wants planned first,
+> whatever it is made of: code in repositories, workflows and apps here,
+> documents. A job writes the plan, work items and open questions each
+> with a default, and runs it once the person says go. Nothing is built
+> before.
+
+This is the whole page:
 
 > Work too large for one job, or that the person wants planned first.
 >
@@ -210,6 +220,12 @@ After the runs with a real model:
 13. **An item's job need not open the plan.** Its brief carries what it
     needs and says where the plan is. A large plan is not every item's
     reading.
+14. **The plan file stays in the plan job's folder.** People keep docs in
+    their repositories in their own ways, and strut forces none. The plan
+    is a deliverable of its job, shown under its reply.
+15. **Always a plan job, when the work is big enough to plan**, whatever
+    it is made of. One way keeps it simple, and the plan's job is the
+    checker too.
 
 ## Work items
 
@@ -255,16 +271,32 @@ line's 6 pass, and the agreement script passes against the real server.
   default to the small answer (read-only, existing accounts only), with
   invites and public links left for later.
 
+**Workflows and apps, no repository** (two more runs: a word-count
+workflow and an app that runs it, then only "go"):
+
+| Run | What changed before it | What happened |
+| --- | --- | --- |
+| 7 | Nothing | The orchestrator opened the `Plan` page itself and wrote the plan in its own reply; no plan job. On "go" it started a builder job for the workflow, then one for the app, a line each. Both were published. No plan file, and nothing checked either against a plan. Its first reply reached the person as the letter "x" (see below). |
+| 8 | The description says a job writes the plan and runs it | The same loop as code. The plan's job named each item as a workflow or an app built by the builder, with no repository; the orchestrator started builder jobs one at a time; each went back. The plan's job re-ran the published workflow to check it. It could not check the app: a job has no tool to open one. 8 orchestrator turns, 6 minutes. |
+
 **What the runs leave open:**
 
 - **The last item, once.** In runs 4 and 5 the orchestrator closed the
   plan itself after the last job, so that job was not checked and the plan
   file was left open. "The last one too" went into the sentence, and run 6
   handed every item back. That is one run.
-- **Where the plan file lives** (asked 2026-11-21, not ruled). `plan.md`
-  in the plan job's folder is not in the pull request, and an item's job
-  cannot see it. For work in a repository it could be
-  `plans/<feature>.md` on the plan's branch, as this repo's own plans are.
+- **An app is not checked.** The plan's job can list, read and run a
+  published workflow, but has no tool to open an app: it reads what the
+  builder reported.
+- **A reply lost as "x".** In run 7 one model step held two answers: the
+  real one, refused because its question was malformed, and a throwaway
+  "x", which the agent step accepted. Once in about 60 orchestrator turns.
+  It is the agent step's fault, not a plan's, and is being fixed in its
+  own pull request.
+- **Nothing reads a finished plan.** The plan and the pull requests are
+  deliverables of their jobs, in the job index. The dream reads
+  conversations only, and the lab builds feature Concepts from pull
+  requests and commits. Finished jobs as a source is its own plan.
 - **The test repositories are still on GitHub**, each with its open pull
   request: `Evanfeenstra/plan-run-tally-server` and
   `Evanfeenstra/plan-run-tally-cli`, private, to delete when done.

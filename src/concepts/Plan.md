@@ -1,5 +1,5 @@
 ---
-description: "Work too large for one job, or that the person wants planned first: a plan of work items and open questions, each with a default. Nothing is built until the person says go."
+description: "Work too large for one job, or that the person wants planned first, whatever it is made of: code in repositories, workflows and apps here, documents. A job writes the plan, work items and open questions each with a default, and runs it once the person says go. Nothing is built before."
 parent: Job
 claims:
   - text: What it could not know it asks, each question with a default, rather than planning around a guess.

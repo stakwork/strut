@@ -197,7 +197,11 @@ describe("concept files (pure)", () => {
     // A kind of job work: the orchestrator lists it by its description and
     // passes it as `kind`, and the job opens it every turn.
     assert.deepEqual(plan.parents, ["Job"]);
-    assert.ok(plan.description);
+    // The description is the one line the orchestrator routes by. It says a JOB writes the plan, whatever
+    // the work is made of: without that, asked to plan a workflow and an app, a real model wrote the plan
+    // in its own reply and started no plan job (2026-11-21).
+    assert.match(plan.description!, /A job writes the plan/);
+    assert.match(plan.description!, /code in repositories, workflows and apps here, documents/);
     // The file's parts are named, since several agents read and write it;
     // the person reads the reply alone.
     for (const must of ["`plan.md`", "Work items", "Contracts", "Open questions", "each with a default", "Progress", '"Go" takes every default']) assert.ok(plan.docs!.includes(must), must);
