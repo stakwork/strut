@@ -139,6 +139,29 @@ describe("a box's install pings", () => {
     const failing = createInstallPings({ boxId: async () => BOX(7), indexes: { listedAt: async () => ({ index: "x", base: "https://down.example" }) }, fetch: (async () => { throw new Error("down"); }) as unknown as typeof fetch });
     await failing.after(result);
   });
+
+  it("writes nothing for an install no index lists, and settles every ping before a close", async () => {
+    let made = 0;
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const pings = createInstallPings({
+      boxId: async () => (made++, BOX(7)),
+      indexes: { listedAt: async (name) => (name === "acme/listed" ? { index: "x", base: "https://index.example" } : undefined) },
+      fetch: (async () => (await held, new Response("{}", { status: 202 }))) as unknown as typeof fetch,
+    });
+    const only = (pkg: string, ref: string): InstallResult => ({ package: pkg, digest: DIGEST(1), packages: [{ package: pkg, version: "1.0.0", digest: DIGEST(1), source: { ref }, status: "installed", items: [] }], missing: { secrets: [], binaries: [], runtimes: [] }, warnings: [] });
+    await pings.after(only("acme/local", "file:/tmp/local"));
+    await pings.after(only("acme/other", `pk:${"y".repeat(52)}/acme/other`));
+    assert.equal(made, 0, "no id is made, so nothing lands in the data dir, for a ping that never goes");
+    let settled = false;
+    void pings.after(only("acme/listed", `pk:${"y".repeat(52)}/acme/listed`));
+    const closing = pings.settle().then(() => (settled = true));
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(settled, false, "a close waits for the ping on its way");
+    release();
+    await closing;
+    assert.equal(made, 1);
+  });
 });
 
 describe("a live server's run totals, as the index reads them", () => {

@@ -11395,7 +11395,8 @@ export async function createStrut<TServices = unknown>(
     wakeJobFeeds(dataDir);
     for (const t of subscriptionTimers) clearTimeout(t);
     requestsDesk?.close();
-    // The index's installs file.
+    // A ping still on its way to an index, and the index's installs file.
+    await installPings?.settle();
     index?.close();
     // The browser connection, when strut built it: every run's context goes with it.
     await ownBrowser?.close();

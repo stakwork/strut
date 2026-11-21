@@ -57,7 +57,8 @@ const files = process.argv.length > 2 ? process.argv.slice(2) : ["src/graph/*.te
 // CI's graph job runs its shards in parallel, each against a Neo4j of its own.
 const shard = process.env.STRUT_TEST_SHARD;
 if (shard && !/^\d+\/\d+$/.test(shard)) throw new Error(`STRUT_TEST_SHARD must be <index>/<total>, got ${shard}`);
-const child = spawn("tsx", ["--test", "--test-concurrency=1", ...(shard ? [`--test-shard=${shard}`] : []), ...files], { stdio: "inherit" });
+// No index followed, as `npm test` runs: a test never reaches index.stakwork.ai.
+const child = spawn("tsx", ["--test", "--test-concurrency=1", ...(shard ? [`--test-shard=${shard}`] : []), ...files], { stdio: "inherit", env: { STRUT_PACKAGE_INDEXES: "[]", ...process.env } });
 for (const s of ["SIGINT", "SIGTERM"]) process.on(s, () => child.kill(s));
 child.on("exit", (code, signal) => {
   release();

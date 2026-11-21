@@ -59,27 +59,48 @@ export interface InstallPingsDeps {
   fetch?: typeof fetch;
 }
 
-/** The pings an install's result calls for: every package it wrote that a
- *  followed index lists from that source. Each goes on its own; a failure
- *  is dropped (a count, never the install's business). */
-export function createInstallPings(deps: InstallPingsDeps): { after(result: InstallResult): Promise<void> } {
+export interface InstallPings {
+  /** The pings an install's result calls for: every package it wrote that a
+   *  followed index lists from that source. Each goes on its own; a failure
+   *  is dropped (a count, never the install's business). */
+  after(result: InstallResult): Promise<void>;
+  /** Every ping still on its way, settled: what `close()` waits for, so
+   *  nothing is written after the strut is closed. */
+  settle(): Promise<void>;
+}
+
+export function createInstallPings(deps: InstallPingsDeps): InstallPings {
   const doFetch = deps.fetch ?? fetch;
+  const pending = new Set<Promise<unknown>>();
+  // The id is made only once a ping goes: a box that never pings writes nothing.
+  let box: Promise<string> | undefined;
+  const send = async (result: InstallResult): Promise<void> => {
+    const written = result.packages.filter((p) => p.status !== "present");
+    await Promise.allSettled(
+      written.map(async (p) => {
+        const source = deps.sourceOf ? await deps.sourceOf(p.source.ref, p.package) : p.source.ref;
+        if (!source || !/^(pk:|git\+)/.test(source)) return;
+        const at = await deps.indexes.listedAt(p.package, source);
+        if (!at) return;
+        box ??= deps.boxId().catch((err: unknown) => {
+          box = undefined;
+          throw err;
+        });
+        const ping: InstallPing = { package: p.package, box: await box, digest: p.digest, source, ...(p.commit ? { commit: p.commit } : {}) };
+        const res = await doFetch(`${at.base}/index/installs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ping), signal: AbortSignal.timeout(PING_TIMEOUT_MS) });
+        await res.body?.cancel();
+      }),
+    );
+  };
   return {
-    async after(result) {
-      const written = result.packages.filter((p) => p.status !== "present");
-      if (!written.length) return;
-      const box = await deps.boxId();
-      await Promise.allSettled(
-        written.map(async (p) => {
-          const source = deps.sourceOf ? await deps.sourceOf(p.source.ref, p.package) : p.source.ref;
-          if (!source || !/^(pk:|git\+)/.test(source)) return;
-          const at = await deps.indexes.listedAt(p.package, source);
-          if (!at) return;
-          const ping: InstallPing = { package: p.package, box, digest: p.digest, source, ...(p.commit ? { commit: p.commit } : {}) };
-          const res = await doFetch(`${at.base}/index/installs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ping), signal: AbortSignal.timeout(PING_TIMEOUT_MS) });
-          await res.body?.cancel();
-        }),
-      );
+    after(result) {
+      const p = send(result).catch(() => undefined);
+      pending.add(p);
+      void p.finally(() => pending.delete(p));
+      return p;
+    },
+    async settle() {
+      await Promise.allSettled([...pending]);
     },
   };
 }
