@@ -51,7 +51,7 @@ export const WAKE_SILENT = "[silent]";
 /** The job's reply as the prompt carries it, at most. */
 export const WAKE_REPLY_MAX = 6_000;
 /** Wake turns since the person's last turn, at most. */
-export const WAKE_MAX = 4;
+export const WAKE_MAX = 30;
 /** Job runs remembered per session, so an end heard twice wakes once. */
 const SEEN_MAX = 500;
 /** How long a busy session is waited on when no run of ours will end it. */
