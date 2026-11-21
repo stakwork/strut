@@ -588,7 +588,17 @@ instead of baked into env at deploy time.
   (`protocol.ssh.allow=never`: a URL rewrite would log in with the
   machine's key). Before, a run with no token for a host fell through to
   all of these and acted as the machine's user; now a private repository
-  with no token fails. `git/push` asks GitHub who the token is (`GET /user`, the
+  with no token fails. ONE exception, a person's own machine: with
+  `STRUT_GIT_LOCAL=1` (`createStrut({ git: { local: true } })`; off by
+  default, and the desktop launcher, `scripts/desktop.js`, which Peel
+  runs, turns it on), a run with no token for the repository's host keeps
+  that machine's git as its person set it up — its helpers, config,
+  `~/.netrc`, askpass and ssh, as before this rule (`machine` in
+  `credentialArgs` / `gitEnv`, from `gitLocalOf` on strut's own capability,
+  which no step can set). With a token the token wins there too, for its
+  host alone, and nothing of the machine's goes beside it. Never inferred
+  from the operating system or a hostname: a server never uses its
+  machine's credentials unless someone turned this on. `git/push` asks GitHub who the token is (`GET /user`, the
   commit's author) only with GitHub's own token — the one
   `https://github.com` gets — and a token for another host is never sent
   there. A PACKAGE's step holds `secrets.git` only when its package says

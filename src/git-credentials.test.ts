@@ -194,42 +194,90 @@ describe("git/remote-head and the token git is handed, against repositories serv
     assert.ok(!said.includes(TOKEN));
   });
 
-  it("uses none of the machine's own credentials — with no token, or for another host — on every git path", async () => {
-    // A machine that holds credentials: a helper as a system gitconfig sets
-    // one (macOS's osxkeychain), a global config's askpass and helper, a
-    // ~/.netrc that git's curl reads on its own.
-    const home = join(root, "machine-home");
+  /**
+   * A machine that holds git credentials: a helper as a system gitconfig
+   * sets one (macOS's osxkeychain), a global config's askpass and helper, a
+   * ~/.netrc that git's curl reads on its own — each a password of its own,
+   * unless one is given. Its shell runs git on that machine.
+   */
+  const machineWith = async (name: string, passwords: { system?: string; global?: string; netrc?: string } = {}) => {
+    const dir = join(root, `machine-${name}`);
+    const home = join(dir, "home");
     await mkdir(home, { recursive: true });
-    await writeFile(join(home, ".netrc"), "machine 127.0.0.1 login machine password MACHINE_NETRC\n");
-    const askpass = join(root, "machine-askpass.sh");
+    await writeFile(join(home, ".netrc"), `machine 127.0.0.1 login machine password ${passwords.netrc ?? "MACHINE_NETRC"}\n`);
+    const askpass = join(dir, "askpass.sh");
     await writeFile(askpass, "#!/bin/sh\necho MACHINE_ASKPASS\n", { mode: 0o755 });
-    const global = join(root, "machine-gitconfig");
-    await writeFile(global, `[credential]\n\thelper = "!f() { echo username=machine; echo password=MACHINE_GLOBAL; }; f"\n[core]\n\taskPass = ${askpass}\n`);
-    const machine: StrutCapabilities["shell"] = (req) =>
-      runProcess(
-        req.cmd !== "git"
-          ? req
-          : {
-              ...req,
-              args: ["-c", 'credential.helper=!f() { echo username=machine; echo password=MACHINE_SYSTEM; }; f', ...(req.args ?? [])],
-              env: { HOME: home, GIT_CONFIG_GLOBAL: global, ...req.env },
-            },
-      );
-    const onMachine = (bag: StrutCapabilities): StrutCapabilities => ({ ...bag, shell: machine });
+    const global = join(dir, "gitconfig");
+    await writeFile(global, `[credential]\n\thelper = "!f() { echo username=machine; echo password=${passwords.global ?? "MACHINE_GLOBAL"}; }; f"\n[core]\n\taskPass = ${askpass}\n`);
+    const system = `credential.helper=!f() { echo username=machine; echo password=${passwords.system ?? "MACHINE_SYSTEM"}; }; f`;
+    const shell: StrutCapabilities["shell"] = (req) =>
+      runProcess(req.cmd !== "git" ? req : { ...req, args: ["-c", system, ...(req.args ?? [])], env: { HOME: home, GIT_CONFIG_GLOBAL: global, ...req.env } });
+    return { shell, on: (bag: StrutCapabilities): StrutCapabilities => ({ ...bag, shell }) };
+  };
+  const machinePasswords = (from: number) => [...new Set(priv.seen.slice(from).map((r) => r.password).filter((p): p is string => !!p && p.startsWith("MACHINE_")))];
+
+  it("uses none of the machine's own credentials — with no token, or for another host — on every git path", async () => {
+    const machine = await machineWith("server");
     const before = priv.seen.length;
 
     // No token for the host: strut's git steps, and a git+ read.
-    const asked = await run([ask(repoOf(priv))], onMachine(services({})));
+    const asked = await run([ask(repoOf(priv))], machine.on(services({})));
     assert.match(asked.res.error!.message, /^remote_denied: /);
-    const checked = await run([step("co", "git/checkout", { repo: repoOf(priv) })], onMachine(services({})));
+    const checked = await run([step("co", "git/checkout", { repo: repoOf(priv) })], machine.on(services({})));
     assert.equal(checked.res.status, "error");
-    await assert.rejects(resolvePackage(`git+${repoOf(priv)}@trunk`, { cache: packageCache(join(root, "pkgs")), shell: machine, dataDir }), /^Error: package_repo_denied: /);
+    await assert.rejects(resolvePackage(`git+${repoOf(priv)}@trunk`, { cache: packageCache(join(root, "pkgs")), shell: machine.shell, dataDir }), /^Error: package_repo_denied: /);
     // A token for one host, sent on to another: that one gets no machine's either.
-    const movedOn = await run([ask(repoOf(moved))], onMachine(services({ LAB_TOKEN: TOKEN }, [moved])));
+    const movedOn = await run([ask(repoOf(moved))], machine.on(services({ LAB_TOKEN: TOKEN }, [moved])));
     assert.equal(movedOn.res.status, "error");
 
     assert.ok(priv.seen.length > before, "the host was asked");
     assert.deepEqual(priv.seen.slice(before).filter((r) => r.password !== undefined), [], "and got no credential at all");
+  });
+
+  describe("on a person's own machine (STRUT_GIT_LOCAL)", () => {
+    /** The box with git local: strut's own entry, and `hosts` → LAB_TOKEN. */
+    const local = (secrets: Record<string, string>, hosts: GitServer[] = []) =>
+      standardServices({ secretsSource: secrets, dataDir, gitLocal: true, gitSecret: gitSecretOf([...STRUT_GIT_HOSTS, ...hosts.map((s) => ({ host: s.host, secret: "LAB_TOKEN" }))]) });
+
+    it("with no token for the host, git keeps the machine's own: its ~/.netrc, its helpers — on every git path", async () => {
+      // ~/.netrc holds the one that works: curl sends it, the step reads the head.
+      const byNetrc = await machineWith("netrc", { netrc: TOKEN });
+      let before = priv.seen.length;
+      const asked = await run([ask(repoOf(priv))], byNetrc.on(local({})));
+      assert.equal(asked.res.status, "success", asked.res.error?.message);
+      assert.deepEqual(asked.res.output, { branch: "trunk", head });
+      assert.ok(priv.seen.slice(before).some((r) => r.password === TOKEN), "the machine's ~/.netrc");
+
+      // A helper holds it (the global config's here): checkout, and a git+ read, use it.
+      const byHelper = await machineWith("helper", { global: TOKEN });
+      before = priv.seen.length;
+      const checked = await run([step("co", "git/checkout", { repo: repoOf(priv) })], byHelper.on(local({})));
+      assert.equal(checked.res.status, "success", checked.res.error?.message);
+      await assert.rejects(
+        resolvePackage(`git+${repoOf(priv)}@trunk`, { cache: packageCache(join(root, "pkgs-local")), shell: byHelper.shell, dataDir, gitLocal: true }),
+        /^Error: package_source_invalid: .*holds no strut\.yaml/,
+        "fetched with the machine's helper — and no package there",
+      );
+      assert.ok(priv.seen.slice(before).some((r) => r.password === TOKEN), "the machine's helper");
+    });
+
+    it("with a token for the host, the token wins — and goes to its host alone", async () => {
+      // The machine's own would be refused: the run's token is what reads the repository.
+      const machine = await machineWith("token");
+      let before = priv.seen.length;
+      const { res, said } = await run([ask(repoOf(priv))], machine.on(local({ LAB_TOKEN: TOKEN }, [priv])));
+      assert.equal(res.status, "success", res.error?.message);
+      assert.ok(priv.seen.slice(before).some((r) => r.password === TOKEN));
+      assert.deepEqual(machinePasswords(before), [], "none of the machine's beside it");
+      assert.ok(!said.includes(TOKEN));
+
+      // A host the token serves sends git on to another: that one gets nothing, the machine's included.
+      before = priv.seen.length;
+      const movedOn = await run([ask(repoOf(moved))], machine.on(local({ LAB_TOKEN: TOKEN }, [moved])));
+      assert.equal(movedOn.res.status, "error");
+      assert.ok(priv.seen.length > before, "git followed the redirect");
+      assert.deepEqual(priv.seen.slice(before).filter((r) => r.password !== undefined), []);
+    });
   });
 
   describe("a package's step", () => {

@@ -118,6 +118,9 @@ export interface PackageDeps extends InstalledDeps {
   /** Which secret serves a `git+` ref's host (src/git-hosts.ts): the box's
    *  map; default strut's own. */
   gitSecret?: GitSecretOf;
+  /** A person's own machine (`STRUT_GIT_LOCAL`): with no token for the
+   *  repository's host, git keeps this machine's own credentials. */
+  gitLocal?: boolean;
 }
 
 /** What happened to one item: `installed` new here; `present` already here
@@ -574,6 +577,7 @@ async function resolveSet(
   const secrets = actor && deps.secrets?.forPrincipal ? deps.secrets.forPrincipal(actor) : deps.secrets;
   const git = {
     ...(deps.gitSecret ? { gitSecret: deps.gitSecret } : {}),
+    ...(deps.gitLocal ? { gitLocal: true } : {}),
     ...(deps.shell ? { shell: deps.shell } : {}),
     ...(deps.dataDir ? { dataDir: deps.dataDir } : {}),
   };

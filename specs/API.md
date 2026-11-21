@@ -3865,7 +3865,11 @@ steps (`git/checkout`, `git/push`, `git/remote-head`), `git+` installs,
 subscriptions (a person's: their own value alone), serve mode,
 `STRUT_PACKAGES` and the repo door all read it, and hand git the token for
 that host alone: git's credential helper answers no other host, so a
-redirect elsewhere gets nothing. No caller names the secret any more: a
+redirect elsewhere gets nothing. Git gets no other credential — none of the
+machine's helpers, config, `~/.netrc`, askpass or ssh — except on a
+person's own machine (`STRUT_GIT_LOCAL=1`, which the desktop launcher
+sets): there a run with no token for the host uses the machine's own git
+as before, and a token still wins. No caller names the secret any more: a
 `tokenSecret` (gone 2026-11-20) is 400 at a route.
 
 A step reads it as `ctx.services.secrets.git(url)`. A package's step holds

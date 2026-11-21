@@ -177,6 +177,9 @@ export interface SubscriptionsDeps {
   /** Which secret serves a `git+` ref's host (src/git-hosts.ts): the box's
    *  map; default strut's own. */
   gitSecret?: GitSecretOf;
+  /** A person's own machine (`STRUT_GIT_LOCAL`): with no token for the
+   *  repository's host, git keeps this machine's own credentials. */
+  gitLocal?: boolean;
   shell?: ShellCapability;
 }
 
@@ -407,6 +410,7 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
         branch: true,
         ...(deps.dataDir ? { dataDir: deps.dataDir } : {}),
         ...(deps.gitSecret ? { gitSecret: deps.gitSecret } : {}),
+        ...(deps.gitLocal ? { gitLocal: true } : {}),
         ...(secret ? { secret } : {}),
         ...(deps.shell ? { shell: deps.shell } : {}),
         // The branch still at the commit applied: nothing read out of git.

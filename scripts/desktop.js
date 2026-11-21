@@ -16,7 +16,9 @@
  * the embeddings stack came along; the app build's esbuild binary from
  * native/ (ESBUILD_BINARY_PATH); bind 127.0.0.1 on an OS-picked port;
  * workspace under the platform app-support dir, models under the platform
- * cache dir, a random API key per launch. `--open` launches the web UI in
+ * cache dir, a random API key per launch, and git keeping this machine's
+ * own credentials for a run with no token for a repository's host
+ * (`STRUT_GIT_LOCAL=1`: this is one person's own machine). `--open` launches the web UI in
  * the default browser, which has dictation built in — the quickest way to
  * try the recognizer.
  */
@@ -54,8 +56,10 @@ Env overrides (all optional): STRUT_WORKSPACE, STRUT_CACHE_DIR, STRUT_API_KEY,
 STRUT_HOST, STRUT_PORT, STRUT_WORKSPACE_BACKEND (ladybug when the package
 carries it, else fs), STRUT_GRAPH_DB, STRUT_LADYBUG_EXTENSION_DIR,
 STRUT_GRAPH_EMBEDDINGS, STRUT_SECRET_KEY, STRUT_STT_MODEL,
-STRUT_STT_PARTIAL_MODEL, ESBUILD_BINARY_PATH (native/esbuild when the
-package carries it), ANTHROPIC_API_KEY.
+STRUT_STT_PARTIAL_MODEL, STRUT_GIT_LOCAL (1, this machine's own git
+credentials for a run with no token for the host; 0 turns it off),
+ESBUILD_BINARY_PATH (native/esbuild when the package carries it),
+ANTHROPIC_API_KEY.
 
 STRUT_EXIT_ON_STDIN_EOF=1 exits when stdin closes: a host that spawns strut
 with a stdin pipe it never writes to gets it shut down when the host dies,
@@ -105,6 +109,9 @@ if (ladybug) {
 const esbuildBin = join(nativeDir, os === "win32" ? "esbuild.exe" : "esbuild");
 if (existsSync(esbuildBin)) dflt("ESBUILD_BINARY_PATH", esbuildBin);
 dflt("STRUT_HOST", "127.0.0.1");
+// One person's own machine: a run with no token for a repository's host
+// keeps this machine's git credentials (src/git-hosts.ts). A server leaves it off.
+dflt("STRUT_GIT_LOCAL", "1");
 dflt("STRUT_PORT", "0");
 dflt("STRUT_WORKSPACE", join(appSupport, "strut", "workspace"));
 dflt("STRUT_CACHE_DIR", cacheRoot); // models land at <cacheRoot>/strut/models

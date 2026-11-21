@@ -370,6 +370,9 @@ export interface ServeDeps {
    *  src/git-hosts.ts; default strut's own), and the read by name. */
   gitSecret?: GitSecretOf;
   secret?(name: string): Promise<string | undefined>;
+  /** A person's own machine (`STRUT_GIT_LOCAL`): with no token for the
+   *  repository's host, git keeps this machine's own credentials. */
+  gitLocal?: boolean;
   /** What a `git+` ref runs git with (default: a local shell). */
   shell?: ShellCapability;
   /** `ping`'s minimum interval (default `SERVE_PING_INTERVAL_MS`). */
@@ -438,7 +441,7 @@ export async function createServe(deps: ServeDeps): Promise<ServeService> {
       // The commit serving still the branch's: nothing to read out.
       const serving = state.serving;
       const known = serving?.commit && serving.ref === ref ? { known: { commit: serving.commit, digest: serving.digest } } : {};
-      const git = { dataDir: deps.dataDir, ...(deps.gitSecret ? { gitSecret: deps.gitSecret } : {}), ...(deps.secret ? { secret: deps.secret } : {}), ...(deps.shell ? { shell: deps.shell } : {}), ...known };
+      const git = { dataDir: deps.dataDir, ...(deps.gitSecret ? { gitSecret: deps.gitSecret } : {}), ...(deps.gitLocal ? { gitLocal: true } : {}), ...(deps.secret ? { secret: deps.secret } : {}), ...(deps.shell ? { shell: deps.shell } : {}), ...known };
       return { info: await resolvePackage(ref, { ...opts, ...git }), ref };
     }
     if (!PACKAGE_NAME.test(ref)) return { info: await resolvePackage(ref, { ...opts, ...(url ? { url } : {}) }), ref, ...(url ? { url } : {}) };

@@ -135,6 +135,9 @@ export interface ResolveOptions {
    *  public repo needs neither. */
   gitSecret?: GitSecretOf;
   secret?(name: string): Promise<string | undefined>;
+  /** A person's own machine (`STRUT_GIT_LOCAL`): with no token for the
+   *  repository's host, git keeps this machine's own credentials. */
+  gitLocal?: boolean;
   /** What a `git+` ref runs git with (default: a local shell). */
   shell?: ShellCapability;
   /** Where a `git+` ref's bare cache lives (`<dataDir>/repos/`); default
@@ -176,6 +179,7 @@ async function resolveGit(ref: string, opts: ResolveOptions): Promise<ResolvedPa
   const git = {
     dataDir: opts.dataDir ?? dirname(opts.cache.root),
     ...(opts.gitSecret ? { gitSecret: opts.gitSecret } : {}),
+    ...(opts.gitLocal ? { gitLocal: true } : {}),
     ...(opts.secret ? { secret: opts.secret } : {}),
     ...(opts.shell ? { shell: opts.shell } : {}),
     ...(opts.branch ? { branch: true } : {}),

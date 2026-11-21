@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { cancelSignal, git, gitAuth, gitOk, shellOf, withLock, type GitCtx } from "./_shared.js";
+import { cancelSignal, git, gitAccess, gitAuth, gitOk, shellOf, withLock, type GitCtx } from "./_shared.js";
 
 const EXAMPLE = `- id: push
   type: git/push
@@ -71,7 +71,8 @@ export default defineStep({
 
       // The token for where the push goes: origin's host, and only there.
       const origin = (await gitOk(shell, ["remote", "get-url", "--push", "origin"], o)).trim();
-      const auth = await gitAuth(services?.secrets, origin);
+      const access = await gitAccess(services?.secrets, origin);
+      const { auth } = access;
       // GitHub's own token, which alone may ask GitHub who it is.
       const github = auth && auth.token === (await gitAuth(services?.secrets, "https://github.com"))?.token ? auth.token : undefined;
 
@@ -116,7 +117,7 @@ export default defineStep({
       // copy of the branch), so hold the cache's lock like checkout does.
       const common = resolve(cfg.path, (await gitOk(shell, ["rev-parse", "--git-common-dir"], o)).trim());
       await withLock(common, async () => {
-        const push = await git(shell, ["push", "--quiet", "origin", `HEAD:refs/heads/${cfg.branch}`], { ...o, ...(auth ? { auth } : {}) });
+        const push = await git(shell, ["push", "--quiet", "origin", `HEAD:refs/heads/${cfg.branch}`], { ...o, ...access });
         if (push.code !== 0) {
           const detail = (push.stderr || push.stdout).trim().slice(-2000);
           const why = push.timedOut ? "timed out" : detail || `exit ${push.code ?? push.signal}`;

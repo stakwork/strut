@@ -444,6 +444,13 @@ export interface StrutOptions<TServices = unknown> {
    *  `local`: an http seller on loopback or the LAN is allowed (a dev box,
    *  a home box), as `STRUT_REMOTE_LOCAL=1`; never a link-local address. */
   remote?: { http?: HttpCapability; local?: boolean };
+  /** GIT on a person's own machine (src/git-hosts.ts): `local: true`, as
+   *  `STRUT_GIT_LOCAL=1`, keeps this machine's own git credentials for a
+   *  run with no token for the repository's host — its helpers, config,
+   *  `~/.netrc`, askpass and ssh — as git has them set up. Off by default:
+   *  a server uses no credential but the run's. With a token, the token
+   *  wins, for its host alone, either way. */
+  git?: { local?: boolean };
   /** Public runs (plans/paid-runs.md §6): `principal`, the ONE principal
    *  every public run is billed to — a Mothership delegation of its own (say
    *  `public-runs`), so strangers' runs draw on a budget apart from any
@@ -1610,8 +1617,10 @@ export async function createStrut<TServices = unknown>(
   // read go through.
   let boxGitSecret: GitSecretOf = gitSecretOf(STRUT_GIT_HOSTS);
   const gitSecret: GitSecretOf = (url) => boxGitSecret(url);
+  // A person's own machine: with no token, git keeps its own credentials.
+  const gitLocal = opts.git?.local ?? bootEnv()["STRUT_GIT_LOCAL"] === "1";
   const services = {
-    ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir, gitSecret }) as unknown as Record<
+    ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir, gitSecret, gitLocal }) as unknown as Record<
       string,
       unknown
     >),
@@ -1693,7 +1702,7 @@ export async function createStrut<TServices = unknown>(
   // Strut's own is built hiding them (capabilities.ts `secretsCapability`).
   if (secretsInjected) {
     const bag = services as Record<string, unknown>;
-    bag["secrets"] = hideSecrets(bag["secrets"] as SecretsCapability, gitSecret);
+    bag["secrets"] = hideSecrets(bag["secrets"] as SecretsCapability, gitSecret, gitLocal);
   }
   // Paid runs: the wallet and the rate (plans/paid-runs.md §9,
   // src/payments/wallet.ts). The wallet's credentials live in an encrypted
@@ -5446,6 +5455,7 @@ export async function createStrut<TServices = unknown>(
     ...(verifier ? { verifyPublish: (subject) => verifier.verifyPublish(subject) } : {}),
     ...(secretsCap ? { secrets: secretsCap } : {}),
     gitSecret,
+    gitLocal,
     path: bootEnv()["PATH"] ?? "",
     apps,
     dataDir,
@@ -5712,6 +5722,7 @@ export async function createStrut<TServices = unknown>(
     ...((services as unknown as StrutCapabilities).http ? { http: (services as unknown as StrutCapabilities).http } : {}),
     ...(secretsCap ? { secrets: secretsCap } : {}),
     gitSecret,
+    gitLocal,
     install: repoInstall,
     build: async (req) => {
       const built = await buildPackage(buildDeps, req);
@@ -6161,6 +6172,7 @@ export async function createStrut<TServices = unknown>(
     // the one for the branch's host.
     own: (actor: string, name: string) => actorSecrets.get(actor, name),
     gitSecret,
+    gitLocal,
     ...(packageDeps.shell ? { shell: packageDeps.shell } : {}),
   });
 
@@ -6179,6 +6191,7 @@ export async function createStrut<TServices = unknown>(
           install: (ref, o) => packages.install(ref, { ...o, door: "distro" }),
           ...(secretsCap ? { secret: (name: string) => secretsCap.get(name) } : {}),
           gitSecret,
+          gitLocal,
           ...(packageDeps.shell ? { shell: packageDeps.shell } : {}),
           apps,
           workspace,

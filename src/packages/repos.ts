@@ -105,6 +105,9 @@ export interface ReposDeps {
   /** Which secret serves a repository's host (src/git-hosts.ts): the box's
    *  map; default strut's own. */
   gitSecret?: GitSecretOf;
+  /** A person's own machine (`STRUT_GIT_LOCAL`): with no token for the
+   *  repository's host, git keeps this machine's own credentials. */
+  gitLocal?: boolean;
   /** Install a tree the cache holds through the `repo` door. */
   install(ref: string, opts: { digest: string; commit: string; actor?: string; adoptPages?: boolean }): Promise<InstallResult>;
   /** Build a package into the cache (Create repo; src/packages/build.ts). */
@@ -266,8 +269,10 @@ export function createRepos(deps: ReposDeps): Repos {
     return ["-c", `user.name=${name}`, "-c", `user.email=${email}`, "-c", "commit.gpgsign=false"];
   };
 
-  const run = (args: string[], cwd: string, auth?: GitAuth) => git(shell, args, { cwd, timeoutMs: GIT_TIMEOUT, ...(auth ? { auth } : {}) });
-  const ok = (args: string[], cwd: string, auth?: GitAuth) => gitOk(shell, args, { cwd, timeoutMs: GIT_TIMEOUT, ...(auth ? { auth } : {}) });
+  /** With no token, a person's own machine keeps its own credentials (`gitLocal`). */
+  const access = (auth?: GitAuth) => (auth ? { auth } : deps.gitLocal ? { machine: true } : {});
+  const run = (args: string[], cwd: string, auth?: GitAuth) => git(shell, args, { cwd, timeoutMs: GIT_TIMEOUT, ...access(auth) });
+  const ok = (args: string[], cwd: string, auth?: GitAuth) => gitOk(shell, args, { cwd, timeoutMs: GIT_TIMEOUT, ...access(auth) });
   /** A commit with the message on stdin (a title starting with "-" is no flag). */
   const commitAs = async (cwd: string, identity: string[], message: string, extra: string[] = []) => {
     const r = await shell({ cmd: "git", args: [...identity, "commit", "--quiet", ...extra, "-F", "-"], cwd, stdin: `${message.trim()}\n`, timeoutMs: GIT_TIMEOUT });
@@ -434,7 +439,7 @@ export function createRepos(deps: ReposDeps): Repos {
     const { auth } = await authOf(asked.repo.url, input.actor);
     return masked(auth?.token, async () => {
       const cacheDir = cachePath(deps.dataDir, asked.repo);
-      const o = { ...(auth ? { auth } : {}), timeoutMs: GIT_TIMEOUT };
+      const o = { ...access(auth), timeoutMs: GIT_TIMEOUT };
       const { branch, commit, tree } = await withLock(cacheDir, async () => {
         try {
           await fetchCache(shell, cacheDir, asked.repo.url, o);
@@ -677,7 +682,7 @@ export function createRepos(deps: ReposDeps): Repos {
             }
           }
           try {
-            await fetchCache(shell, cacheDir, rec.url, { ...(auth ? { auth } : {}), timeoutMs: GIT_TIMEOUT });
+            await fetchCache(shell, cacheDir, rec.url, { ...access(auth), timeoutMs: GIT_TIMEOUT });
           } catch (err) {
             throw refusal("package_repo_unreachable", `could not fetch ${rec.url}: ${err instanceof Error ? err.message.slice(-500) : String(err)}`);
           }

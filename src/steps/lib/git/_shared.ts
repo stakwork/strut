@@ -13,7 +13,9 @@
  * RESET on every command, and git reads none of the machine's own — no
  * keychain, no `~/.gitconfig`, `~/.netrc` or askpass, no ssh key
  * (`credentialArgs`, `gitEnv`). With no token a private repository fails;
- * the machine's user never stands in. A checkout carries no credential
+ * the machine's user never stands in — but on a person's own machine
+ * (`STRUT_GIT_LOCAL`, `gitAccess`), where with no token for the host git
+ * keeps that person's own setup. A checkout carries no credential
  * either: an agent's `bash` in it cannot push, whatever it tries.
  */
 
@@ -24,7 +26,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { StepContext } from "../../../core.js";
 import { withLock } from "../../../jobs.js";
-import { gitTokens, gitVia, shellCapability, type HttpCapability, type SecretsCapability, type ShellCapability, type ShellResult, type StrutCapabilities } from "../../../capabilities.js";
+import { gitLocalOf, gitTokens, gitVia, shellCapability, type HttpCapability, type SecretsCapability, type ShellCapability, type ShellResult, type StrutCapabilities } from "../../../capabilities.js";
 import { tokenHost } from "../../../git-hosts.js";
 
 // One writer per cache: the same in-process lock the job directory uses
@@ -64,9 +66,22 @@ export async function gitAuth(secrets: SecretsCapability | undefined, url: strin
   return { token, host, ...(via?.shell ? { shell: via.shell } : {}), ...(via?.http ? { http: via.http } : {}) };
 }
 
-/** `gitAuth` from a step's ctx. */
-export const gitAuthOf = (ctx: GitCtx, url: string): Promise<GitAuth | undefined> =>
-  gitAuth((ctx.services as Partial<StrutCapabilities> | undefined)?.secrets, url);
+/** What git may use for the repository at `url`: the run's token for its
+ *  host (`auth`), else — on a person's own machine (`STRUT_GIT_LOCAL`,
+ *  `gitLocalOf`) — the machine's own credentials (`machine`), else none. */
+export interface GitAccess {
+  auth?: GitAuth;
+  machine?: true;
+}
+
+export async function gitAccess(secrets: SecretsCapability | undefined, url: string): Promise<GitAccess> {
+  const auth = await gitAuth(secrets, url);
+  return auth ? { auth } : gitLocalOf(secrets) ? { machine: true } : {};
+}
+
+/** `gitAccess` from a step's ctx. */
+export const gitAccessOf = (ctx: GitCtx, url: string): Promise<GitAccess> =>
+  gitAccess((ctx.services as Partial<StrutCapabilities> | undefined)?.secrets, url);
 
 // ── the repository ────────────────────────────────────────────────────────
 
@@ -166,12 +181,15 @@ const HELPER =
   `test "$(printf %s "$h" | tr '[:upper:]' '[:lower:]')" = "$${HOST_ENV}" || return 0; ` +
   `echo username=x-access-token; echo "password=$${TOKEN_ENV}"; }; f`;
 
-/** Git's own credentials, every time, token or not: the helper list RESET
- *  (the machine's — macOS's `osxkeychain` in Xcode's system gitconfig, a
- *  `store` or a manager — and one a repository's config names), and no ssh
- *  (a URL rewrite to `git@…` would log in with the machine's key). Then,
- *  with a token, the one helper that answers for its host alone. */
-export function credentialArgs(auth: GitAuth | undefined): string[] {
+/** Git's own credentials: the helper list RESET (the machine's —
+ *  macOS's `osxkeychain` in Xcode's system gitconfig, a `store` or a
+ *  manager — and one a repository's config names), and no ssh (a URL
+ *  rewrite to `git@…` would log in with the machine's key). Then, with a
+ *  token, the one helper that answers for its host alone. The ONE
+ *  exception is `machine` with no token — a person's own machine
+ *  (`STRUT_GIT_LOCAL`): git as that person set it up, nothing reset. */
+export function credentialArgs(auth: GitAuth | undefined, machine = false): string[] {
+  if (!auth && machine) return [];
   return ["-c", "credential.helper=", "-c", "protocol.ssh.allow=never", ...(auth ? ["-c", `credential.helper=${HELPER}`] : [])];
 }
 
@@ -180,8 +198,11 @@ export function credentialArgs(auth: GitAuth | undefined): string[] {
  *  with no token fails fast; no system config, and a HOME with nothing in
  *  it, so no `~/.gitconfig`, `~/.git-credentials` or `~/.netrc` (which git's
  *  curl reads on its own) — the machine's user never stands in for the
- *  run's person. */
-export function gitEnv(auth: GitAuth | undefined): Record<string, string> {
+ *  run's person, and with a token, the token wins. On a person's own
+ *  machine with no token (`machine`), the machine's own, as `credentialArgs`
+ *  says; never a prompt either way. */
+export function gitEnv(auth: GitAuth | undefined, machine = false): Record<string, string> {
+  if (!auth && machine) return { GIT_TERMINAL_PROMPT: "0" };
   return {
     GIT_TERMINAL_PROMPT: "0",
     GIT_ASKPASS: "",
@@ -195,6 +216,9 @@ export interface GitOpts {
   cwd: string;
   /** The token for the remote's host and that host (`gitAuth`). */
   auth?: GitAuth;
+  /** With no `auth`: keep this machine's own credentials (a person's own
+   *  machine, `STRUT_GIT_LOCAL`; `gitAccess`). */
+  machine?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
   maxOutputChars?: number;
@@ -205,9 +229,9 @@ export interface GitOpts {
 export function git(shell: ShellCapability, args: string[], o: GitOpts): Promise<ShellResult> {
   return (o.auth?.shell ?? shell)({
     cmd: "git",
-    args: [...credentialArgs(o.auth), ...args],
+    args: [...credentialArgs(o.auth, o.machine), ...args],
     cwd: o.cwd,
-    env: gitEnv(o.auth),
+    env: gitEnv(o.auth, o.machine),
     timeoutMs: o.timeoutMs ?? 600_000,
     ...(o.signal ? { signal: o.signal } : {}),
     ...(o.maxOutputChars ? { maxOutputChars: o.maxOutputChars } : {}),

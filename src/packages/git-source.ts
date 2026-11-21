@@ -102,6 +102,9 @@ export interface GitSourceOptions {
   /** Reads that secret as the caller may: the installer's view, a
    *  subscriber's own value, the deployment's. Absent: no token. */
   secret?(name: string): Promise<string | undefined>;
+  /** A person's own machine (`STRUT_GIT_LOCAL`): with no token for the
+   *  repository's host, git keeps this machine's own credentials. */
+  gitLocal?: boolean;
   /** The ref must name a branch (a subscription follows one): a tag or a
    *  commit is refused. */
   branch?: boolean;
@@ -128,7 +131,7 @@ export async function fetchGitRef<T>(ref: string, opts: GitSourceOptions, then: 
   const secret = (opts.gitSecret ?? strutGitSecret)(parsed.repo.url);
   const token = secret ? (await opts.secret?.(secret)) || undefined : undefined;
   const auth: GitAuth | undefined = token && host ? { token, host } : undefined;
-  const o = { ...(auth ? { auth } : {}), timeoutMs: opts.timeoutMs ?? 600_000 };
+  const o = { ...(auth ? { auth } : opts.gitLocal ? { machine: true } : {}), timeoutMs: opts.timeoutMs ?? 600_000 };
   const masked = <E>(fn: () => Promise<E>) => maskToken(fn, token);
   return masked(() =>
     withLock(cacheDir, async () => {

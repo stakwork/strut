@@ -13,7 +13,7 @@ import {
   dataDirOf,
   fetchCache,
   git,
-  gitAuthOf,
+  gitAccessOf,
   gitOk,
   parseRepo,
   remoteDefaultBranch,
@@ -97,7 +97,7 @@ export default defineStep({
     const shell = shellOf(ctx);
     const dataDir = dataDirOf(ctx);
     const r = parseRepo(cfg.repo);
-    const auth = await gitAuthOf(ctx, r.url);
+    const access = await gitAccessOf(ctx, r.url);
     const cacheDir = cachePath(dataDir, r);
     const kept = cfg.workdir;
     if (kept !== undefined) {
@@ -137,7 +137,7 @@ export default defineStep({
     const cancel = cancelSignal(ctx);
     try {
       return await withLock(cacheDir, async () => {
-        const o = { ...(auth ? { auth } : {}), timeoutMs: cfg.timeoutMs, signal: cancel.signal };
+        const o = { ...access, timeoutMs: cfg.timeoutMs, signal: cancel.signal };
         await fetchCache(shell, cacheDir, r.url, o);
         await ctx.control?.checkpoint();
 

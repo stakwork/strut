@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { cancelSignal, git, gitAuthOf, parseRepo, parseSymref, shellOf, type GitCtx } from "./_shared.js";
+import { cancelSignal, git, gitAccessOf, parseRepo, parseSymref, shellOf, type GitCtx } from "./_shared.js";
 
 const EXAMPLE = `- id: head
   type: git/remote-head
@@ -42,14 +42,15 @@ export default defineStep({
   }),
   async run(cfg, ctx: GitCtx) {
     const r = parseRepo(cfg.repo);
-    const auth = await gitAuthOf(ctx, r.url);
+    const access = await gitAccessOf(ctx, r.url);
+    const { auth } = access;
     const cancel = cancelSignal(ctx);
     try {
       const res = await git(shellOf(ctx), ["ls-remote", "--symref", r.url, "HEAD"], {
         cwd: tmpdir(),
         timeoutMs: cfg.timeoutMs,
         signal: cancel.signal,
-        ...(auth ? { auth } : {}),
+        ...access,
       });
       const masked = (s: string) => (auth ? s.split(auth.token).join("***") : s);
       if (res.code !== 0) {
