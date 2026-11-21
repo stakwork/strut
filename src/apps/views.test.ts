@@ -15,6 +15,7 @@ import { CHILD_EVENTS, CHILD_RUN_ID, REF, RUN_EVENTS } from "./views/src/fixture
 import { createFixtureClient } from "./views/src/fixtures/client.js";
 import { REPORT_EVENTS } from "./views/src/fixtures/report.js";
 import { RunGraphReader } from "./views/src/components/run-graph/reader.js";
+import { RING, apart, ringPlaces } from "./views/src/lib/ring.js";
 import { MATTER, MATTER_EVENTS, MATTER_LIVE_RUN_ID, MATTER_WORKFLOW } from "./views/src/fixtures/matter.js";
 import { NDA_FRAMES, NDA_SHEET, NDA_SOURCES } from "./views/src/fixtures/sheets.js";
 
@@ -203,5 +204,27 @@ describe("strut/views — seeded at boot, imported by apps", () => {
     assert.doesNotMatch(html, /react-flow__/, "NodeGraph and its stylesheet stay out of an app that does not draw one");
     assert.doesNotMatch(html, /SPRINT-AF/, "the gallery's fixtures stay out");
     assert.ok(built.bytes < 1_200_000, `${built.bytes} bytes`);
+  });
+});
+
+describe("strut/views: where NodeGraph places an opening's nodes", () => {
+  it("a few sit on one ring round the first node; many widen it into two, and none overlap", () => {
+    const few = ringPlaces(6, { x: 0, y: 0 });
+    assert.ok(few.every((p) => Math.abs(Math.hypot(p.x, p.y) - RING) < 1e-6));
+    for (const n of [1, 6, 9, 20, 45, 120]) assert.ok(apart(ringPlaces(n, { x: 0, y: 0 })), `${n} round the first node`);
+    // Forty-five stay within reach: the ring grows with what it holds, no further.
+    assert.ok(Math.max(...ringPlaces(45, { x: 0, y: 0 }).map((p) => Math.hypot(p.x, p.y))) < 1400);
+    assert.equal(apart([{ x: 0, y: 0 }, { x: 100, y: 20 }]), false);
+    assert.deepEqual(ringPlaces(0, { x: 0, y: 0 }), []);
+  });
+
+  it("a later opening fans out on the side away from the node it was opened from, wherever that was dragged to", () => {
+    const at = { x: 300, y: 0 }, parent = { x: 0, y: 0 };
+    for (const n of [1, 3, 8, 30]) {
+      const ps = ringPlaces(n, at, parent);
+      assert.ok(ps.every((p) => p.x > at.x), `${n}: all beyond it`);
+      assert.ok(apart(ps), `${n} on an arc`);
+    }
+    assert.ok(ringPlaces(3, { x: 0, y: -300 }, { x: 0, y: 0 }).every((p) => p.y < -300));
   });
 });

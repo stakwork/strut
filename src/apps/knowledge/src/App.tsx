@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import { useChanges, useClaimed, useConceptTree, useCycles, useOntology, useSearch } from "./lib/read";
 import { changesByConcept, waitingAcross } from "./lib/learning";
 import { opening, pathToRoot, rowKey, TREE_TYPE } from "./lib/tree";
-import { typePlural } from "./lib/ontology";
+import { isSystemType, typePlural } from "./lib/ontology";
 import { Tree } from "./components/Tree";
 import { TypeList } from "./components/TypeList";
 import { TypesMenu } from "./components/TypesMenu";
@@ -305,6 +305,7 @@ export default function App() {
       <NodeGraph
         refId={centre}
         hiddenTypes={hidden}
+        skipType={isSystemType}
         selected={sel?.ref_id ?? null}
         height={Math.max(320, graphH)}
         className="rounded-none border-0"
