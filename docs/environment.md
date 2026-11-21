@@ -105,6 +105,8 @@ index. A change in this area updates this file, not AGENTS.md.
 | `BROWSER_WS_URL`     | (unset)        | The browser/* steps' Playwright server, `ws://host:port` (images/browser; the compose file sets `ws://browser:3000`). Unset with no `BROWSER_CDP_URL`: a local headless Chrome. Setting both is refused. |
 | `BROWSER_WS_PATH`    | (unset)        | The server's secret endpoint path — the browser container's one door; it refuses to start without one. |
 | `BROWSER_CDP_URL`    | (unset)        | A real Chrome started with `--remote-debugging-port` on a dedicated, logged-in profile instead: one page per run in the profile's own context (runs share its cookies; `viewport`, `storageStateSecret` and `browser/state` are refused). |
+| `BROWSER_MCP_URL`    | (unset)        | A Browser MCP server's MCP endpoint (Streamable HTTP, `http://browser-mcp:3000/mcp`): the browser/* steps drive a visible Chromium in that container through Browser MCP's extension instead of Playwright (`src/browser/mcp.ts`). Refused beside `BROWSER_WS_URL` or `BROWSER_CDP_URL`. `BROWSER_STEP_TIMEOUT_MS`, `BROWSER_RUN_BUDGET_MS` and `BROWSER_URL_DENY` apply; the viewport is the window's own. |
+| `BROWSER_MCP_TOKEN`  | (unset)        | Sent to that server as `Authorization: Bearer <token>`; `BROWSER_MCP_URL` without it is refused. |
 | `BROWSER_EXECUTABLE` / `BROWSER_CHANNEL` | (unset) / `chrome` | Local launch only: a browser binary, else a branded channel (the machine's own Chrome, no download). |
 | `BROWSER_VIEWPORT`   | `1280x800`     | Default viewport for `browser/open`, `WIDTHxHEIGHT`. |
 | `BROWSER_STEP_TIMEOUT_MS` | `10000`   | Per-call cap; a call that overruns it (plus settle's slack) closes the run's context. |
