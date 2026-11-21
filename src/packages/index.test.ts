@@ -226,6 +226,8 @@ describe("the package index", () => {
       package: "acme/linear", publisher: "acme", key: pub, urls: [catalogUrl], version: "1.0.0", digest: linear.digest, description: "Linear issues", license: "MIT", requires: { secrets: ["LINEAR_API_KEY"] },
       // The archive was fetched from the route beside the catalog and read (./detail.ts): the store's face of the package.
       detail: { apps: [], workflows: 1, steps: 1, concepts: 0, secrets: ["LINEAR_API_KEY"], can: { spends: false, acts: false, code: true }, readme: false },
+      // No box has said it installed it yet (./index-installs.ts).
+      installs: { total: 0, recent: 0 },
     });
     assert.equal(listed.crawled[0]!.derived, 1);
     assert.equal((await search("notion")).length, 0);

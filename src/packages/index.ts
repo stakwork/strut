@@ -17,13 +17,19 @@
  * as on any strut.
  */
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { searchSteps } from "../search.js";
 import { SCREENSHOT_TYPES } from "../apps/manifest.js";
 import type { SecretStore } from "../secret-store.js";
+import type { ShellCapability } from "../capabilities.js";
 import { fetchArchive } from "./archive.js";
-import type { PackageCache } from "./cache.js";
+import { resolvePackage, type PackageCache, type ResolvedPackage } from "./cache.js";
+import { sameRepoFolder } from "./git-source.js";
+import { INSTALL_RECENT_DAYS, InstallCounts, installPingProblem, type InstallPing, type InstallStats, type InstallSummary } from "./index-installs.js";
+export type { InstallStats, InstallSummary } from "./index-installs.js";
+import { reposProblem } from "./listing.js";
 import { CARD_VERSION, PUBLISHER_PREFIX, Z32_KEY, canonicalJson, keyFromSeed, releaseFor, sealCard, type Catalog, type CatalogRelease, type IndexCatalog, type IndexLiveRow, type IndexRow, type UnsignedIndexCatalog } from "./card.js";
 export type { IndexLiveRow, IndexRow } from "./card.js";
 import { derivePackageDetail, summarizeDetail, type ConceptDetail, type DetailSummary, type PackageDetail, type StepFacts } from "./detail.js";
@@ -73,6 +79,8 @@ export interface LiveListing {
   /** What anyone may RUN there, and for how much (plans/paid-runs.md §2,
    *  decision 25), as the crawl read it — absent from a view read before. */
   runnable?: LiveRunnable[];
+  /** What the server says it has been paid, in sats. */
+  sales?: LiveSales;
 }
 
 /** One item a publisher's server lets anyone run, as the index keeps it:
@@ -92,7 +100,37 @@ export interface LiveRunnable {
   /** The credit a run needs to start, in dollars. */
   reserve: number;
   results: "output" | "run";
-  recent?: { days: number; runs: number; average: number };
+  /** The last 30 days: runs, the average charge, and — from a server that
+   *  reports them — what they were charged and the runs each day. */
+  recent?: { days: number; runs: number; average: number; charged?: number; daily?: number[] };
+  /** Every run there, all time, and what they were charged in dollars. */
+  total?: { runs: number; charged: number };
+}
+
+/** What a server's view says it has been paid for credit, in sats
+ *  (src/public-runnable.ts `PublicSales`), as the crawl read it. */
+export interface LiveSales {
+  sats: number;
+  recent: { days: number; sats: number; daily: number[] };
+}
+
+/** A list of counts a stranger sent, checked: at most a year of whole numbers. */
+function countsOf(v: unknown): number[] | undefined {
+  if (!Array.isArray(v) || v.length > 366) return undefined;
+  const out = v.map((n) => (typeof n === "number" && Number.isFinite(n) && n >= 0 && n < 1e12 ? Math.floor(n) : NaN));
+  return out.every((n) => !Number.isNaN(n)) ? out : undefined;
+}
+
+/** `GET <url>/public`'s `sales`, checked; undefined when absent or malformed. */
+export function liveSalesOf(raw: unknown): LiveSales | undefined {
+  const o = raw as Record<string, unknown> | undefined;
+  const rec = o?.["recent"] as Record<string, unknown> | undefined;
+  const whole = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 1e15 ? Math.floor(v) : undefined);
+  const sats = whole(o?.["sats"]);
+  const days = whole(rec?.["days"]);
+  const recentSats = whole(rec?.["sats"]);
+  const daily = countsOf(rec?.["daily"]);
+  return sats !== undefined && days !== undefined && recentSats !== undefined && daily ? { sats, recent: { days, sats: recentSats, daily } } : undefined;
 }
 
 /** The most runnable items the index keeps of one server's view. */
@@ -122,6 +160,11 @@ export function liveRunnableOf(raw: unknown): LiveRunnable[] {
     const days = money(rec?.["days"]);
     const runs = money(rec?.["runs"]);
     const average = money(rec?.["average"]);
+    const charged = money(rec?.["charged"]);
+    const daily = countsOf(rec?.["daily"]);
+    const tot = o["total"] as Record<string, unknown> | undefined;
+    const totalRuns = money(tot?.["runs"]);
+    const totalCharged = money(tot?.["charged"]);
     out.push({
       kind,
       name,
@@ -131,7 +174,10 @@ export function liveRunnableOf(raw: unknown): LiveRunnable[] {
       capUsd: cap,
       reserve,
       results: o["results"] === "run" ? "run" : "output",
-      ...(days !== undefined && runs !== undefined && average !== undefined ? { recent: { days, runs: Math.floor(runs), average } } : {}),
+      ...(days !== undefined && runs !== undefined && average !== undefined
+        ? { recent: { days, runs: Math.floor(runs), average, ...(charged !== undefined ? { charged } : {}), ...(daily ? { daily } : {}) } }
+        : {}),
+      ...(totalRuns !== undefined && totalCharged !== undefined ? { total: { runs: Math.floor(totalRuns), charged: totalCharged } } : {}),
     });
   }
   return out;
@@ -170,6 +216,9 @@ export interface CrawlState {
   packages?: number;
   /** How many of them have a page derived from their archive (./detail.ts). */
   derived?: number;
+  /** The packages the row lists from git (`IndexRow.repos`), and how many
+   *  of those repositories the last crawl read. */
+  repos?: { listed: number; read: number };
 }
 
 /** One search hit: a package's newest public release, with where to get it. */
@@ -186,6 +235,15 @@ export interface IndexHit {
   /** What the release holds — the apps' faces and the counts — once its
    *  archive has been read (./detail.ts). */
   detail?: DetailSummary;
+  /** A package the publisher keeps in git: the `git+` ref a box installs
+   *  it from, and the commit the index last read. */
+  source?: string;
+  commit?: string;
+  /** A bundle (followed, never installed): the packages it lists. */
+  bundle?: string[];
+  /** Installs the index counted (./index-installs.ts): all time, and the
+   *  last `INSTALL_RECENT_DAYS` days. */
+  installs?: InstallSummary;
 }
 
 /** A package's page: its releases newest first and the public channels that hold them. */
@@ -203,6 +261,13 @@ export interface IndexPackage {
   detail?: PackageDetail;
   /** Why it has no `detail`: the archive could not be fetched or read. */
   detailError?: string;
+  /** Kept in git (`IndexRow.repos`): the ref a box installs it from, the
+   *  commit the index last read, and a bundle's packages. */
+  source?: string;
+  commit?: string;
+  bundle?: string[];
+  /** The installs the index counted (./index-installs.ts). */
+  installs?: InstallStats;
 }
 
 /** A package's page without its Concept pages' text: what a reader that
@@ -249,6 +314,30 @@ interface PageFile {
   error?: string;
 }
 
+/** The page of a package a row lists from git, as kept on disk: what the
+ *  repository's branch held when the index last read it, or why it could
+ *  not. A read that fails keeps what the one before read. */
+interface RepoPageFile {
+  package: string;
+  /** The ref the row lists. */
+  source: string;
+  checkedAt: string;
+  digest?: string;
+  version?: string;
+  commit?: string;
+  derivedAt?: string;
+  description?: string;
+  license?: string;
+  requires?: CatalogRelease["requires"];
+  bundle?: string[];
+  detail?: PackageDetail;
+  error?: string;
+}
+
+/** How long one read of a listed repository may take. */
+const REPO_TIMEOUT_MS = 120_000;
+
+
 export interface IndexDeps {
   /** The encrypted store the index key is kept in (the publisher's file). */
   secrets: SecretStore;
@@ -261,6 +350,11 @@ export interface IndexDeps {
   unsafe?: () => string | undefined;
   /** This strut's registry, for a derived page's flags (./detail.ts). */
   stepInfo?: (type: string) => StepFacts | undefined;
+  /** Where a listed repository's bare cache is kept (`<dataDir>/repos/`);
+   *  default the package cache's parent. */
+  dataDir?: string;
+  /** What git runs with (tests). */
+  shell?: ShellCapability;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -304,6 +398,19 @@ export interface PackageIndex {
   removeLive(prefix: string): Promise<boolean>;
   /** The items the live rows' public views show (every word of `q` in the name, title, description or publisher). */
   live(q?: string): Promise<IndexLiveItem[]>;
+  /** Read each repository as the crawl would, anonymously: throws
+   *  `listing_repo_invalid:` naming the first that cannot be read or holds
+   *  another package than its name (the requests desk's check). */
+  checkRepos(repos: Record<string, string>): Promise<void>;
+  /** A box's ping (./index-installs.ts): counted when the package is listed
+   *  here and the ping's source is where the row says it comes from — the
+   *  row's key for a catalog's package, the row's repository for one kept
+   *  in git. Throws `index_install_invalid:` for a ping of the wrong shape. */
+  countInstall(ping: InstallPing): Promise<{ counted: boolean; reason?: string }>;
+  /** A package's installs; zeros when none was counted. */
+  installs(name: string): InstallStats;
+  /** Close the installs file. */
+  close(): void;
 }
 
 interface IndexRecord {
@@ -316,10 +423,16 @@ interface IndexRecord {
 export function indexRowProblem(prefix: unknown, row: unknown): string | undefined {
   if (typeof prefix !== "string" || !PUBLISHER_PREFIX.test(prefix)) return "the prefix is a publisher's: [a-z][a-z0-9-]*, at most 64 characters";
   const r = row as Partial<IndexRow> | undefined;
-  if (!r || typeof r !== "object") return "a row is { key, urls, description?, url? }";
+  if (!r || typeof r !== "object") return "a row is { key, urls, description?, url?, repos? }";
   if (typeof r.key !== "string" || !Z32_KEY.test(r.key)) return "key is the publisher's PUBLIC key in z-base-32 (52 characters)";
-  if (!Array.isArray(r.urls) || r.urls.length === 0 || !r.urls.every((u) => typeof u === "string" && /^https?:\/\/\S+$/.test(u))) {
-    return "urls is a non-empty list of http(s) URLs where the publisher's public catalog is served";
+  if (r.repos !== undefined) {
+    const problem = reposProblem(prefix, r.repos, { local: true });
+    if (problem) return problem;
+  }
+  // A publisher that keeps every package in git may have no catalog to read.
+  const gitOnly = !!r.repos && Object.keys(r.repos).length > 0;
+  if (!Array.isArray(r.urls) || (r.urls.length === 0 && !gitOnly) || !r.urls.every((u) => typeof u === "string" && /^https?:\/\/\S+$/.test(u))) {
+    return "urls is a non-empty list of http(s) URLs where the publisher's public catalog is served (empty only beside repos)";
   }
   if (r.description !== undefined && typeof r.description !== "string") return "description is a string";
   if (r.url !== undefined && (typeof r.url !== "string" || !/^https?:\/\/\S+$/.test(r.url))) return "url is a homepage, an http(s) URL";
@@ -359,6 +472,21 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
   // A live row's view, apart from the catalog state files.
   const liveDir = join(crawlDir, "live");
   const liveFile = (prefix: string) => join(liveDir, `${prefix}.json`);
+  // The pages of the packages a row lists from git, apart from the catalog's.
+  const repoPagesDir = (prefix: string) => join(crawlDir, "repos", prefix);
+  const repoPageFile = (prefix: string, name: string) => join(repoPagesDir(prefix), `${name.slice(prefix.length + 1)}.json`);
+  const now = () => deps.now?.() ?? Date.now();
+
+  // The installs (./index-installs.ts): opened on the first ping; a read
+  // before any ping reads zeros and makes no file.
+  const installsFile = join(deps.dir, "installs.db");
+  let installsDb: InstallCounts | undefined;
+  const counts = (create: boolean): InstallCounts | undefined => {
+    if (installsDb) return installsDb;
+    if (!create && !existsSync(installsFile)) return undefined;
+    return (installsDb = InstallCounts.open(installsFile));
+  };
+  const noInstalls = (): InstallStats => ({ total: 0, boxes: 0, recent: { days: INSTALL_RECENT_DAYS, installs: 0, boxes: 0, daily: Array.from({ length: INSTALL_RECENT_DAYS }, () => 0) } });
 
   const read = async (): Promise<IndexRecord | undefined> => {
     const raw = await deps.secrets.get(KEY_NAME);
@@ -466,7 +594,95 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
     }
     return derived;
   };
+  const readRepoPage = async (prefix: string, name: string): Promise<RepoPageFile | undefined> => {
+    try {
+      return JSON.parse(await readFile(repoPageFile(prefix, name), "utf8")) as RepoPageFile;
+    } catch (err: any) {
+      if (err?.code === "ENOENT") return undefined;
+      throw err;
+    }
+  };
+  /** A listed repository's branch, read as anyone reads it — no token,
+   *  whatever this strut holds, so a private repository is never shown —
+   *  into the cache by digest. Refuses a branch whose package is not `name`. */
+  const resolveRepo = async (name: string, ref: string, known?: { commit: string; digest: string }): Promise<ResolvedPackage> => {
+    const info = await resolvePackage(ref, {
+      cache: deps.cache,
+      dataDir: deps.dataDir ?? dirname(deps.cache.root),
+      gitSecret: () => undefined,
+      branch: true,
+      timeoutMs: REPO_TIMEOUT_MS,
+      ...(deps.shell ? { shell: deps.shell } : {}),
+      ...(known ? { known } : {}),
+    });
+    if (info.manifest.package !== name) throw new Error(`index_repo_mismatch: ${ref} holds the package ${info.manifest.package}, and the row lists it as ${name}`);
+    return info;
+  };
+  /** One listed package's page: its branch read again, and its page derived
+   *  when the commit holds another release. A failed read keeps the page
+   *  read before and says why; a branch holding another package has none. */
+  const readRepoInto = async (name: string, ref: string, prev: RepoPageFile | undefined): Promise<RepoPageFile> => {
+    const at = new Date(now()).toISOString();
+    const same = prev?.source === ref ? prev : undefined;
+    try {
+      const info = await resolveRepo(name, ref, same?.commit && same.digest ? { commit: same.commit, digest: same.digest } : undefined);
+      if (same?.digest === info.digest && same.detail) {
+        const { error: _gone, ...kept } = same;
+        return { ...kept, ...(info.commit ? { commit: info.commit } : {}), checkedAt: at };
+      }
+      const m = info.manifest;
+      const page: RepoPageFile = {
+        package: name,
+        source: ref,
+        checkedAt: at,
+        digest: info.digest,
+        version: m.version,
+        ...(info.commit ? { commit: info.commit } : {}),
+        derivedAt: at,
+        ...(m.description !== undefined ? { description: m.description } : {}),
+        ...(m.license ? { license: m.license } : {}),
+        ...(m.requires ? { requires: m.requires as CatalogRelease["requires"] } : {}),
+        ...(m.bundle ? { bundle: [...m.bundle] } : {}),
+      };
+      try {
+        page.detail = await derivePackageDetail(info, { ...(deps.stepInfo ? { stepInfo: deps.stepInfo } : {}) });
+      } catch (err) {
+        page.error = err instanceof Error ? err.message : String(err);
+      }
+      return page;
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      // Another package on the branch: nothing of the page before is this name's.
+      if (same && !error.startsWith("index_repo_mismatch:")) return { ...same, checkedAt: at, error };
+      return { package: name, source: ref, checkedAt: at, error };
+    }
+  };
+  /** Every package the row lists from git, one at a time; the pages of
+   *  names it no longer lists go. */
+  const deriveRepoPages = async (prefix: string, row: IndexRow): Promise<{ listed: number; read: number }> => {
+    const repos = row.repos ?? {};
+    const names = Object.keys(repos).filter((n) => underPrefix(prefix, n)).sort();
+    let read = 0;
+    for (const name of names) {
+      const page = await readRepoInto(name, repos[name]!, await readRepoPage(prefix, name));
+      if (page.digest && !page.error) read++;
+      await mkdir(repoPagesDir(prefix), { recursive: true });
+      await writeFileAtomic(repoPageFile(prefix, name), JSON.stringify(page));
+    }
+    for (const f of await readdir(repoPagesDir(prefix)).catch(() => [] as string[])) {
+      if (f.endsWith(".json") && !names.includes(`${prefix}/${f.slice(0, -".json".length)}`)) await rm(join(repoPagesDir(prefix), f), { force: true });
+    }
+    return { listed: names.length, read };
+  };
+  /** The catalog's packages and the git ones, a row at a time. */
   const crawlOne = async (prefix: string, row: IndexRow): Promise<CrawlState> => {
+    const state = row.urls.length ? await crawlCatalog(prefix, row) : { prefix, key: row.key, checkedAt: new Date(now()).toISOString() };
+    if (row.repos && Object.keys(row.repos).length) state.repos = await deriveRepoPages(prefix, row);
+    else await rm(repoPagesDir(prefix), { recursive: true, force: true });
+    await writeFileAtomic(stateFile(prefix), JSON.stringify(state));
+    return state;
+  };
+  const crawlCatalog = async (prefix: string, row: IndexRow): Promise<CrawlState> => {
     const prev = await readState(prefix);
     const at = new Date().toISOString();
     const state: CrawlState = { prefix, key: row.key, ...(prev?.key === row.key && prev.accepted ? { accepted: prev.accepted, packages: prev.packages, ...(prev.derived !== undefined ? { derived: prev.derived } : {}) } : {}), checkedAt: at };
@@ -519,7 +735,8 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       const listing = (await get("/public")) as Partial<LiveListing>;
       const tree = listing.concepts?.length ? ((await get("/public/concepts")) as { concepts?: LiveState["concepts"] }).concepts ?? [] : [];
       const runnable = liveRunnableOf((listing as { runnable?: unknown }).runnable);
-      state.listing = { workflows: listing.workflows ?? [], steps: listing.steps ?? [], concepts: listing.concepts ?? [], apps: listing.apps ?? [], ...(runnable.length ? { runnable } : {}) };
+      const sales = liveSalesOf((listing as { sales?: unknown }).sales);
+      state.listing = { workflows: listing.workflows ?? [], steps: listing.steps ?? [], concepts: listing.concepts ?? [], apps: listing.apps ?? [], ...(runnable.length ? { runnable } : {}), ...(sales ? { sales } : {}) };
       state.concepts = tree.map((c) => ({ name: c.name, ...(c.description ? { description: c.description } : {}), ...(c.parent ? { parent: c.parent } : {}), root: c.root }));
       state.readAt = state.checkedAt;
       delete state.error;
@@ -582,14 +799,43 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
     };
   };
 
+  /** A row's git packages that have a page: read, and holding their name. */
+  const repoPagesOf = async (prefix: string, row: IndexRow): Promise<Array<RepoPageFile & { digest: string; version: string }>> => {
+    const out: Array<RepoPageFile & { digest: string; version: string }> = [];
+    for (const name of Object.keys(row.repos ?? {}).sort()) {
+      if (!underPrefix(prefix, name)) continue;
+      const page = await readRepoPage(prefix, name);
+      if (page?.digest && page.version && page.source === row.repos![name]) out.push(page as RepoPageFile & { digest: string; version: string });
+    }
+    return out;
+  };
   const hitsOf = async (): Promise<IndexHit[]> => {
     const out: IndexHit[] = [];
     for (const [prefix, row] of Object.entries(await rows())) {
+      for (const page of await repoPagesOf(prefix, row)) {
+        out.push({
+          package: page.package,
+          publisher: prefix,
+          key: row.key,
+          urls: row.urls,
+          version: page.version,
+          digest: page.digest,
+          ...(page.description !== undefined ? { description: page.description } : {}),
+          ...(page.license ? { license: page.license } : {}),
+          ...(page.requires ? { requires: page.requires } : {}),
+          ...(page.detail ? { detail: summarizeDetail(page.detail) } : {}),
+          source: page.source,
+          ...(page.commit ? { commit: page.commit } : {}),
+          ...(page.bundle ? { bundle: page.bundle } : {}),
+        });
+      }
       const card = await cardOf(prefix);
       if (!card) continue;
       for (const [pkg, entry] of Object.entries(card.packages)) {
         // The row binds the prefix to the key: a name under another prefix is not this row's to list.
         if (!underPrefix(prefix, pkg)) continue;
+        // A name the row lists from git is read from git.
+        if (row.repos && Object.hasOwn(row.repos, pkg)) continue;
         const release = releaseFor(card, pkg);
         if (!release) continue;
         const page = await readPage(prefix, pkg);
@@ -610,13 +856,15 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
     return out.sort((a, b) => a.package.localeCompare(b.package));
   };
   /** Every derived page, at the release the catalog lists today. */
-  const pagesOf = async (): Promise<Array<PageFile & { detail: PackageDetail }>> => {
-    const out: Array<PageFile & { detail: PackageDetail }> = [];
-    for (const [prefix] of Object.entries(await rows())) {
+  const pagesOf = async (): Promise<Array<{ package: string; version: string; detail: PackageDetail }>> => {
+    const out: Array<{ package: string; version: string; detail: PackageDetail }> = [];
+    for (const [prefix, row] of Object.entries(await rows())) {
+      for (const page of await repoPagesOf(prefix, row)) if (page.detail) out.push({ package: page.package, version: page.version, detail: page.detail });
       const card = await cardOf(prefix);
       if (!card) continue;
       for (const pkg of Object.keys(card.packages)) {
         if (!underPrefix(prefix, pkg)) continue;
+        if (row.repos && Object.hasOwn(row.repos, pkg)) continue;
         const release = releaseFor(card, pkg);
         const page = release ? await readPage(prefix, pkg) : undefined;
         if (page?.detail && page.digest === release!.digest) out.push(page as PageFile & { detail: PackageDetail });
@@ -679,7 +927,13 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       const problem = indexRowProblem(prefix, row);
       if (problem) throw new Error(`index_row_invalid: ${problem}`);
       const card = await base();
-      const clean: IndexRow = { key: row.key, urls: [...row.urls], ...(row.description !== undefined ? { description: row.description } : {}), ...(row.url !== undefined ? { url: row.url } : {}) };
+      const clean: IndexRow = {
+        key: row.key,
+        urls: [...row.urls],
+        ...(row.description !== undefined ? { description: row.description } : {}),
+        ...(row.url !== undefined ? { url: row.url } : {}),
+        ...(row.repos && Object.keys(row.repos).length ? { repos: { ...row.repos } } : {}),
+      };
       card.publishers = { ...card.publishers, [prefix]: clean };
       await seal(card);
       // A row with another key starts the crawl over: the old catalog is not this key's.
@@ -697,6 +951,7 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       await rm(stateFile(prefix), { force: true });
       await rm(cardFile(prefix), { force: true });
       await rm(pagesDir(prefix), { recursive: true, force: true });
+      await rm(repoPagesDir(prefix), { recursive: true, force: true });
       return true;
     },
     async setLive(prefix, row, opts = {}) {
@@ -768,13 +1023,35 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       const hits = await hitsOf();
       const words = q.trim();
       const found = words ? searchSteps(hits.map((h) => ({ type: h.package, description: [h.description, h.publisher].filter(Boolean).join(" "), h })), words).map((m) => m.h) : hits;
-      return found.slice(0, Math.max(1, Math.min(limit, 500)));
+      const sums = counts(false)?.summaries(now());
+      return found.slice(0, Math.max(1, Math.min(limit, 500))).map((h) => ({ ...h, installs: sums?.get(h.package) ?? { total: 0, recent: 0 } }));
     },
     async package(name) {
       const prefix = name.split("/")[0]!;
       const all = await rows();
       const row = Object.hasOwn(all, prefix) ? all[prefix] : undefined;
       if (!row) return undefined;
+      const repo = row.repos && Object.hasOwn(row.repos, name) ? row.repos[name] : undefined;
+      if (repo !== undefined) {
+        const page = await readRepoPage(prefix, name);
+        if (!page?.digest || !page.version || page.source !== repo) return undefined;
+        return {
+          package: name,
+          publisher: prefix,
+          key: row.key,
+          urls: row.urls,
+          ...(page.description !== undefined ? { description: page.description } : {}),
+          releases: [{ version: page.version, digest: page.digest, ...(page.license ? { license: page.license } : {}), ...(page.requires ? { requires: page.requires } : {}) }],
+          channels: {},
+          readAt: page.checkedAt,
+          ...(page.detail ? { detail: page.detail } : {}),
+          ...(page.error ? { detailError: page.error } : !page.detail ? { detailError: "its repository has not been read yet" } : {}),
+          source: page.source,
+          ...(page.commit ? { commit: page.commit } : {}),
+          ...(page.bundle ? { bundle: page.bundle } : {}),
+          installs: index.installs(name),
+        };
+      }
       const state = await readState(prefix);
       const card = await cardOf(prefix);
       const entry = card?.packages[name];
@@ -795,7 +1072,41 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
         readAt: state.accepted.at,
         ...(current?.detail ? { detail: current.detail } : {}),
         ...(current?.error ? { detailError: current.error } : !release ? { detailError: "every release is yanked" } : !current ? { detailError: "its archive has not been read yet" } : {}),
+        installs: index.installs(name),
       };
+    },
+    async checkRepos(repos) {
+      for (const [name, ref] of Object.entries(repos)) {
+        try {
+          await resolveRepo(name, ref);
+        } catch (err) {
+          throw new Error(`listing_repo_invalid: ${(err instanceof Error ? err.message : String(err)).replace(/^[a-z_]+: /, "")}`);
+        }
+      }
+    },
+    async countInstall(ping) {
+      const problem = installPingProblem(ping);
+      if (problem) throw new Error(`index_install_invalid: ${problem}`);
+      const prefix = ping.package.split("/")[0]!;
+      const all = await rows();
+      const row = Object.hasOwn(all, prefix) ? all[prefix] : undefined;
+      if (!row) return { counted: false, reason: `no publisher ${prefix} is listed here` };
+      const repo = row.repos && Object.hasOwn(row.repos, ping.package) ? row.repos[ping.package] : undefined;
+      if (repo !== undefined) {
+        if (!ping.source.startsWith("git+") || !sameRepoFolder(ping.source, repo)) return { counted: false, reason: `${ping.package} is listed from ${repo}` };
+      } else {
+        if (!ping.source.startsWith(`pk:${row.key}/`)) return { counted: false, reason: `${ping.package} is listed under the key ${row.key}` };
+        if (!(await cardOf(prefix))?.packages[ping.package]) return { counted: false, reason: `the publisher's catalog lists no ${ping.package}` };
+      }
+      return { counted: counts(true)!.add({ package: ping.package, box: ping.box, digest: ping.digest, source: ping.source, ...(ping.commit ? { commit: ping.commit } : {}) }, now()) };
+    },
+    installs(name) {
+      const db = counts(false);
+      return db ? db.stats(name, now()) : noInstalls();
+    },
+    close() {
+      installsDb?.close();
+      installsDb = undefined;
     },
     async screenshot(name, path, digest) {
       const page = await index.package(name);

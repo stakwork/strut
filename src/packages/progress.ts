@@ -60,7 +60,7 @@ export interface InstallTracker {
 export const INSTALLS_KEPT = 20;
 export const INSTALL_KEPT_MS = 60 * 60_000;
 
-export function createInstallTracker(opts: { now?: () => number } = {}): InstallTracker {
+export function createInstallTracker(opts: { now?: () => number; onDone?: (result: InstallResult, door: InstallState["door"]) => Promise<void> | void } = {}): InstallTracker {
   const now = opts.now ?? Date.now;
   const states = new Map<string, InstallState>();
   const prune = () => {
@@ -91,6 +91,12 @@ export function createInstallTracker(opts: { now?: () => number } = {}): Install
       const done = install(progress).then(
         (result) => {
           Object.assign(state, { status: "done", result, finishedAt: now(), updatedAt: now() });
+          // What follows a finished install (the index's ping): never its outcome.
+          try {
+            void Promise.resolve(opts.onDone?.(result, state.door)).catch(() => undefined);
+          } catch {
+            // Dropped, as a failed ping is.
+          }
           return result;
         },
         (err: unknown) => {

@@ -468,7 +468,7 @@ const usd = (n: number) => (n > 0 && n < 0.01 ? `$${n.toFixed(4).replace(/0+$/, 
 
 /** What one item costs, in a line: free, a fixed price, metered, or both;
  *  the credit a run needs to start; what recent runs were charged. */
-export function priceWords(r: Pick<ListedRunnable, "base" | "markup" | "capUsd" | "reserve" | "recent" | "kind">): string {
+export function priceWords(r: Pick<ListedRunnable, "base" | "markup" | "capUsd" | "reserve" | "kind"> & { recent: Pick<ListedRunnable["recent"], "days" | "runs" | "average">; total?: ListedRunnable["total"] }): string {
   const unit = r.kind === "step" ? "a call" : "a run";
   const price =
     !r.base && !r.markup
@@ -478,7 +478,9 @@ export function priceWords(r: Pick<ListedRunnable, "base" | "markup" | "capUsd" 
         : `${r.base ? `${usd(r.base)} + ` : ""}${r.markup}× what ${unit} costs${r.capUsd !== null ? `, at most ${usd(r.capUsd)} of cost` : ""}`;
   const reserve = r.reserve > 0 ? `; needs ${usd(r.reserve)} of credit to start` : "";
   const recent = r.recent.runs ? `; ${r.recent.runs} in the last ${r.recent.days} days, ${usd(r.recent.average)} charged on average` : "";
-  return `${price}${reserve}${recent}`;
+  // All time, once it says more than the last 30 days do.
+  const total = r.total && r.total.runs > r.recent.runs ? `; ${r.total.runs} in all` : "";
+  return `${price}${reserve}${recent}${total}`;
 }
 
 /** An `input:` block (or a step's JSON Schema) as one line of fields. */

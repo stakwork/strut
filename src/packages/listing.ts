@@ -14,6 +14,8 @@
  */
 import type { KeyObject } from "node:crypto";
 import { CARD_VERSION, PUBLISHER_PREFIX, Z32_KEY, canonicalJson, fingerprintOf, sealCard, sealVerifies, type UnsignedCatalog } from "./card.js";
+import { PACKAGE_NAME } from "./format.js";
+import { branchRefProblem, parseGitRef, type GitPackageRef } from "./git-source.js";
 
 /** The largest request an index reads. */
 export const LISTING_MAX_BYTES = 8 * 1024;
@@ -39,6 +41,9 @@ export interface UnsignedListing {
   remove?: true;
   /** `true`: also list the server's public view (a live row at the base); `false`: drop it. */
   live?: boolean;
+  /** The packages the publisher keeps in git (`IndexRow.repos`): the whole
+   *  list, `{}` to drop it; absent, the row keeps the one it has. */
+  repos?: Record<string, string>;
   /** Microseconds since the epoch at signing. */
   seq: number;
 }
@@ -47,7 +52,7 @@ export interface Listing extends UnsignedListing {
   sig: string;
 }
 
-const MEMBERS = new Set(["v", "index", "prefix", "key", "base", "description", "url", "remove", "live", "seq", "sig"]);
+const MEMBERS = new Set(["v", "index", "prefix", "key", "base", "description", "url", "remove", "live", "repos", "seq", "sig"]);
 const SEGMENT = /^[A-Za-z0-9._~-]+$/;
 
 /** A base as a request names it, checked: `https` (or `http`, on an index
@@ -65,13 +70,45 @@ export function baseProblem(base: unknown, opts: { allowHttp?: boolean } = {}): 
   if (u.username || u.password) return "base carries no credentials";
   // An open route makes the index fetch it: a public name only, never an
   // address or a name inside a network (a LAN index allows them with http).
-  const host = u.hostname.toLowerCase();
-  if (!opts.allowHttp && (!host.includes(".") || /^[\d.]+$/.test(host) || host.startsWith("[") || /\.(local|localhost|internal|lan|home\.arpa)$/.test(host))) {
+  if (!opts.allowHttp && !isPublicName(u.hostname)) {
     return `base ${JSON.stringify(base)} is not a public name: an index reads only a server it can reach by its name over https`;
   }
   if (u.search || u.hash || base.includes("?") || base.includes("#")) return "base has no query and no fragment: the index builds the catalog's URL itself";
   const segments = u.pathname.split("/").filter(Boolean);
   if (segments.length > 1 || !segments.every((s) => SEGMENT.test(s))) return "base is the server's root or its mount: at most one path segment (/lab)";
+  return undefined;
+}
+
+/** A host a stranger may make the index read: a name with a dot, never an
+ *  address or a name inside a network. */
+function isPublicName(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host.includes(".") && !/^[\d.]+$/.test(host) && !host.startsWith("[") && !/\.(local|localhost|internal|lan|home\.arpa)$/.test(host);
+}
+
+/** The most packages one row lists from git. */
+export const REPOS_MAX = 50;
+
+/**
+ * A row's `repos` (./card.ts `IndexRow`) as it is written — a package name
+ * under the prefix → the `git+` ref of the branch it is read from — checked,
+ * or why it is not one. A listing request (`local` unset) names only https
+ * repositories at public names, since the index reads each one; the
+ * operator's own row may name any repository git reads (`local`).
+ */
+export function reposProblem(prefix: string, repos: unknown, opts: { local?: boolean } = {}): string | undefined {
+  if (!repos || typeof repos !== "object" || Array.isArray(repos)) return "repos is an object: package name → git+https://host/org/repo[@branch][#folder]";
+  const entries = Object.entries(repos as Record<string, unknown>);
+  if (entries.length > REPOS_MAX) return `repos lists at most ${REPOS_MAX} packages`;
+  for (const [name, ref] of entries) {
+    if (!PACKAGE_NAME.test(name) || !name.startsWith(`${prefix}/`)) return `repos: ${JSON.stringify(name)} is not a package name under ${prefix}/`;
+    if (typeof ref !== "string" || ref.length > 500) return `repos: ${name}: a git+ ref of at most 500 characters`;
+    const problem = branchRefProblem(ref);
+    if (problem) return `repos: ${name}: ${problem.replace(/^ref /, "")}`;
+    if (opts.local) continue;
+    const url = new URL((parseGitRef(ref) as GitPackageRef).repo.url);
+    if (url.protocol !== "https:" || !isPublicName(url.hostname)) return `repos: ${name}: ${ref} is not an https repository at a public name — the index reads it as anyone would`;
+  }
   return undefined;
 }
 
@@ -135,6 +172,7 @@ export function listingProblem(card: unknown, opts: { allowHttp?: boolean } = {}
   if (bad) return bad;
   if (r.description !== undefined && (typeof r.description !== "string" || r.description.length > LISTING_DESCRIPTION_MAX)) return `description is a string of at most ${LISTING_DESCRIPTION_MAX} characters`;
   if (r.url !== undefined && (typeof r.url !== "string" || r.url.length > 500 || !/^https?:\/\/\S+$/.test(r.url))) return "url is a homepage, an http(s) URL";
+  if (r.repos !== undefined) return reposProblem(r.prefix, r.repos, { local: !!opts.allowHttp });
   return undefined;
 }
 

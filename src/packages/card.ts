@@ -48,6 +48,12 @@ export interface IndexRow {
   url?: string;
   /** Where the publisher's public catalog is served, tried in order. */
   urls: string[];
+  /** Packages the publisher keeps in git rather than in its catalog: a
+   *  name under the prefix → the `git+https://…[@branch][#folder]` ref the
+   *  package is read from. A box installs the name from that repository,
+   *  and the index reads the repository for the package's page. A reader
+   *  from before it ignores the member, which is still under the seal. */
+  repos?: Record<string, string>;
 }
 
 /** A LIVE row (plans/public-surface.md §8): where a publisher's server
@@ -325,6 +331,9 @@ function indexShapeProblem(card: IndexCatalog): string | undefined {
     if (!PUBLISHER_PREFIX.test(prefix)) return `${JSON.stringify(prefix)} is not a publisher prefix`;
     if (!row || typeof row.key !== "string" || !Z32_KEY.test(row.key)) return `${prefix} has no key in z-base-32`;
     if (!Array.isArray(row.urls) || !row.urls.every((u) => typeof u === "string")) return `${prefix} has no urls list`;
+    if (row.repos !== undefined && !(row.repos && typeof row.repos === "object" && !Array.isArray(row.repos) && Object.values(row.repos).every((r) => typeof r === "string"))) {
+      return `${prefix}'s repos is an object of package name → git ref`;
+    }
   }
   if (card.urls !== undefined && !(Array.isArray(card.urls) && card.urls.every((u) => typeof u === "string"))) return "urls is a list of strings";
   return undefined;

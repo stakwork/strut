@@ -101,6 +101,14 @@ export function refSource(parsed: GitPackageRef): string {
   return `${parsed.repo.host}/${parsed.repo.owner}/${parsed.repo.name}#${parsed.path ?? ""}`.toLowerCase();
 }
 
+/** Whether two `git+` refs read one repository folder, whatever their
+ *  branches: a box's install of a package and the index's row for it. */
+export function sameRepoFolder(a: string, b: string): boolean {
+  const pa = parseGitRef(a);
+  const pb = parseGitRef(b);
+  return typeof pa !== "string" && typeof pb !== "string" && refSource(pa) === refSource(pb);
+}
+
 /** The host a `git+` ref's token would be sent to (`github.com`);
  *  undefined for a repository no token may go to (`file://`, plain http to
  *  another machine), or a ref that is not one. */

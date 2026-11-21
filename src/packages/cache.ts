@@ -148,6 +148,8 @@ export interface ResolveOptions {
   known?: { commit: string; digest: string };
   /** A `git+` ref must name a branch: a tag or a commit is refused. */
   branch?: boolean;
+  /** How long one `git+` read may take (default git-source's). */
+  timeoutMs?: number;
 }
 
 /**
@@ -183,6 +185,7 @@ async function resolveGit(ref: string, opts: ResolveOptions): Promise<ResolvedPa
     ...(opts.secret ? { secret: opts.secret } : {}),
     ...(opts.shell ? { shell: opts.shell } : {}),
     ...(opts.branch ? { branch: true } : {}),
+    ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
   };
   return fetchGitRef(ref, git, async (got) => {
     if (opts.known?.commit === got.commit && (!opts.digest || opts.digest === opts.known.digest)) {

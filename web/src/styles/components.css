@@ -5726,6 +5726,12 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .store-facts dt { color: var(--text-dim); }
 .store-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; display: flex; align-items: center; gap: 4px 6px; flex-wrap: wrap; }
 .store-wrap { overflow-wrap: anywhere; }
+/* Installs (and a live item's runs): the last 30 days as a number and a
+   sparkline with a fade beneath it, as npm shows weekly downloads. */
+.sparkline { display: block; flex: 1 1 auto; min-width: 0; width: 100%; height: 36px; color: var(--accent); overflow: visible; }
+.store-installs-row { display: flex; align-items: flex-end; gap: var(--sp-3); }
+.store-installs-n { flex: 0 0 auto; font-size: 22px; font-weight: 650; line-height: 1.1; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.store-price-runs { margin: var(--sp-3) 0 2px; }
 .store-releases { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .store-releases li { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 .store-releases li.is-yanked .package-version { text-decoration: line-through; color: var(--text-dim); }
