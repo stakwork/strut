@@ -636,6 +636,19 @@ and `useTaskHistory()` again, so a balance on the page moves as the answer
 goes in. `useTaskHistory()` (grant `task/history`) is what they did here,
 newest first: each task's `ask`, how it ended, what it earned and when it
 clears.
+
+Money is SATS: what a task pays and what a worker earns is in sats, and
+every amount the page shows is sats first. A worker may want to see what
+that is worth in their own money, beside it, never instead of it:
+`useWorker().data.rate` is the server's exchange rate (`{ perBtc, at,
+source }`, units of each currency per bitcoin by its three-letter code —
+USD, EUR, GBP, CAD, CHF, AUD, JPY today), absent when none could be read,
+and `fiatOfMsat(msat, rate, "EUR")` from `@strut/kit` turns msat into that
+currency (undefined when the rate has no figure for it: show sats alone).
+Which currency is the person's to say when they ask for the app; write it
+the worker's way with `Intl.NumberFormat(useLocale(), { style: "currency",
+currency })`, and sats with `useFormats().sats(msat)`. Rates move, so say
+"≈": `2,100 sats ≈ 1,20 €`.
 Pay is the task type's, an admin's: no step sets it. `useTask("pet-match")` asks
 for one type alone. `useTaskFileUrl(task, path)` is one of `task.files`
 as a `blob:` URL for an `<img>`; nothing off that list opens. A type whose
