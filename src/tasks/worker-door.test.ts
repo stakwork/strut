@@ -673,8 +673,10 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
   it("withdraw through the door (plans/human-steps.md §8.2): the page names an amount alone; until sign-in keeps an address it answers no_address, as a member's page always does", async () => {
     const w = await signIn();
     const amount = { msat: 1_000_000 };
-    // A worker app with a withdraw section grants task/withdraw ("other" grants task/*).
-    assert.match((await call(w.token, "task/withdraw", amount)).error ?? "", /refused/);
+    // An app that grants task/me grants task/withdraw too ("workers" lists no task/withdraw): it reaches the step.
+    assert.match((await call(w.token, "task/withdraw", amount)).error ?? "", /^no_address: /);
+    // One that grants neither is refused ("plain" grants nothing).
+    assert.match((await call(w.token, "task/withdraw", amount, ungranted)).error ?? "", /refused/);
     // Where the money goes is the session's: a page that names an address is refused.
     const named = await call(w.token, "task/withdraw", { ...amount, address: `02${"a".repeat(64)}_03${"b".repeat(64)}_1` }, otherIdentity);
     assert.match(named.error ?? "", /unrecognized_keys[\s\S]*"address"/);
