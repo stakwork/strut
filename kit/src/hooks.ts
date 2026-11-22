@@ -1063,6 +1063,17 @@ export interface WorkerInfo {
   pendingMsat?: number;
   /** Withdrawing what passed its hold (`useWithdraw`). Absent on a server without it. */
   payout?: WorkerPayout;
+  /** The exchange rate this server trusts, to show fiat beside sats (sats are
+   *  what is paid): units of each currency per bitcoin by ISO 4217 code
+   *  (`perBtc.USD`, `perBtc.EUR`, …; `fiatOfMsat`). Absent when none can be read. */
+  rate?: { perBtc: Record<string, number>; at: string; source: string };
+}
+
+/** What `msat` is worth in `currency` at a `useWorker()` rate, or undefined
+ *  when the rate has no figure for it. */
+export function fiatOfMsat(msat: number, rate: { perBtc: Record<string, number> } | undefined, currency = "USD"): number | undefined {
+  const perBtc = rate?.perBtc[currency.toUpperCase()];
+  return perBtc ? (msat / 1000 / 100_000_000) * perBtc : undefined;
 }
 
 /** The refusal code a task call's error begins with (`not_active`,

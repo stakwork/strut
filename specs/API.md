@@ -3242,7 +3242,14 @@ change shows the next time a page loads.
 ```
 GET /brand          any credential
 PUT /brand          full scope: { name?, color?, colorDark?, radius?, font? }
+GET /public/brand   no credential: { styles } (the look alone, for a visitor's page)
 ```
+
+A visitor's page has no credential, so strut's host reads `GET /public/brand`
+for it (`cache-control: public, max-age=60`) and sends it the same styles.
+The host draws its own frame around an app alone (`?solo=1`: the loading
+screen, the Back bar) in the brand's font on the kit's neutral surface, so the
+page reads as one from its first paint.
 
 Both answer `{ brand, styles }`. `PUT` replaces the whole brand: a field
 left out (or `""`, `null`) is unset, and `{}` resets it (`styles: null`).
@@ -4760,6 +4767,7 @@ a `404`, as if it were not there.
 | `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account?, link, peelLink }]` — each at the version the public view serves; `link` the visitor's page (`<base>/?app=<name>&solo=1&public=1`, base `STRUT_PUBLIC_URL`, else the request's origin with `x-forwarded-host` / `-proto` / `-prefix`), `peelLink` the same opened in Peel (`peel://open?url=<link, percent-encoded>`); `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
+| `GET /public/brand` | `{ styles }`: the brand's look (§14.12), what strut's host hands a visitor's page; `styles: null` when none is set. Never the brand's `name` (that rides in each document) |
 | `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds, but for the server's name ("‹name› invites you", HTML-escaped; "You're invited" with none, §14.12) and the worker's language: English or Spanish ("‹name› te invita", "Tienes una invitación"), from `?lang=` on the link, else the `join_lang` cookie, else the first tag of `Accept-Language`, else English (`Vary: Accept-Language, Cookie`). The page is an invitation card (the employer's initial, "Invite", the heading, a ticket meta row) with a two-button switcher, "English · Español", top right: a click sets `join_lang` (`Path=/public/join`, a year) and reloads with `?lang=`, the `#` invite kept. Its script reads the invite after `#` — which no browser sends — and on Android links the one "Open in Peel" button to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on it also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; on an iPhone/iPad it shows "Get Peel" (TestFlight) and "Open in Peel" (`peel://join?<invite>`), both copying the same clipboard text; anywhere else it says to open the link on a phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
 | `GET /public/join/qrcode.js` | qrcode-generator's browser build, for that page |
 
@@ -5458,7 +5466,9 @@ dictation) would reach it through the frame's `allow`. So:
 **Paying** is §17.6, with the seller as the server:
 - the challenge is checked, and the sheet's price is the invoice's sats,
   in dollars at the HOSTING strut's rate alone: `GET /rate` (any
-  credential, a member's session included) → `{ usdPerBtc, at, source }`,
+  credential, a member's session included) → `{ usdPerBtc, perBtc, at, source }`
+  (`perBtc`: units of every currency the source answered per bitcoin, by
+  ISO 4217 code, `USD` among them — mempool's USD, EUR, GBP, CAD, CHF, AUD, JPY),
   read a minute at a time from src/payments/rate.ts, `503` with none to be
   had. A visitor with no credential on the hosting strut sees sats alone;
 - in Peel, the native wallet is asked first (specs/WALLET.md §1.2, naming
@@ -6158,7 +6168,7 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 | `task/submit` | `{ lease, answer, attachments? }` | `{ ok: true }` |
 | `task/skip` | `{ lease, reason?, all? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
-| `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, title?, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, pendingMsat?, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }`: `pendingMsat`, what their answers on types that pay on ok will earn once OK'd (not in `balance`; absent when nothing waits) |
+| `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, title?, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, pendingMsat?, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? }, rate?: { perBtc, at, source } }`: `rate`, the exchange rate this server trusts (`GET /rate`'s, src/payments/rate.ts), units of each currency per bitcoin by ISO 4217 code (`perBtc.USD`, `perBtc.EUR`, …), for a page to show fiat beside sats — sats are what is paid; absent when no rate can be read (waited on at most 1.5 s; the kit's `fiatOfMsat(msat, rate, "EUR")`); `pendingMsat`, what their answers on types that pay on ok will earn once OK'd (not in `balance`; absent when nothing waits) |
 | `task/history` | `{ all?, group?, groups? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, pending?: { msat }, reply?: { show?, files?, at }, group?, review?: { verdict, why?, at } }], groups?: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last }] }`: with `group`, every answer of theirs in it (at most 1000) instead of the newest 50; `groups: true` adds their own groups, their answers alone counted ("A run's reply", §22) |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 

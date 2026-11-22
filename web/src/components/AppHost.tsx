@@ -181,9 +181,10 @@ export function AppHost(props: {
     setState({ status: "loading" });
     void (async () => {
       try {
-        // This strut's brand, read beside the document (once per page): a
-        // visitor's page has no credential to read it with.
-        const brand = visitor ? Promise.resolve(null) : api.getBrandStyles();
+        // This strut's brand, read beside the document (once per page); a
+        // visitor's page reads its look in public. Another server's app is
+        // shown in none: this host's brand is not its.
+        const brand = from ? Promise.resolve(null) : api.getBrandStyles(visitor);
         // The version's build.json beside it — what its frame is granted;
         // a visitor's from the public view's listing of the app. Unread, the
         // frame gets what every app gets.

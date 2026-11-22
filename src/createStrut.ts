@@ -64,7 +64,7 @@ import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createPayouts, walletBalanceMsat } from "./payments/payouts.js";
 import { createInvites, fileInviteNotes, GRANT_LINK_PREFIX } from "./payments/invites.js";
-import { WORKER_ADDRESS, WORKER_APPS, type WorkerApps } from "./steps/lib/task/_shared.js";
+import { WORKER_ADDRESS, WORKER_APPS, WORKER_RATE, type WorkerApps } from "./steps/lib/task/_shared.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
 import { guardedHttp as strangerHttp } from "./guarded-http.js";
@@ -1893,7 +1893,9 @@ export async function createStrut<TServices = unknown>(
    *  { all }`) — the public view's for a visitor; left out on a member's
    *  door, which opens every app. */
   const workerServicesOf = (address: string | undefined, apps?: WorkerApps) =>
-    workerTasks ? { workerServices: { tasks: workerTasks, ...(address ? { [WORKER_ADDRESS]: address } : {}), ...(apps ? { [WORKER_APPS]: apps } : {}) } } : {};
+    workerTasks
+      ? { workerServices: { tasks: workerTasks, [WORKER_RATE]: () => payments.rate.read(), ...(address ? { [WORKER_ADDRESS]: address } : {}), ...(apps ? { [WORKER_APPS]: apps } : {}) } }
+      : {};
   /** The Sphinx address a visitor's session carries (plans/human-steps.md
    *  §8.2): kept by `POST /visitors/session` in the session's signed claims
    *  when it is the signing key's own. With none, `task/withdraw` answers
@@ -4467,6 +4469,7 @@ export async function createStrut<TServices = unknown>(
     fileHeaders: (path) => artifactHeaders(path),
     documentHeaders: (path) => artifactHeaders(path, true),
     serverName,
+    brandStyles: async () => brandStyles(await readBrand(dataDir)),
     liveStatus,
     apps: {
       info: publicAppInfo,
@@ -7154,7 +7157,7 @@ export async function createStrut<TServices = unknown>(
   app.get("/rate", async (c) => {
     try {
       const r = await payments.rate.read();
-      return c.json({ usdPerBtc: r.usdPerBtc, at: r.at, source: r.source }, 200, { "cache-control": "private, max-age=60" });
+      return c.json({ usdPerBtc: r.usdPerBtc, perBtc: r.perBtc ?? { USD: r.usdPerBtc }, at: r.at, source: r.source }, 200, { "cache-control": "private, max-age=60" });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 503);
     }
