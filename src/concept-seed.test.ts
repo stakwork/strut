@@ -192,7 +192,7 @@ describe("concept files (pure)", () => {
     assert.deepEqual(STRUT_CONCEPTS.legacyPrefixes, ["lab/builder/concepts/", "lab/job/concepts/"]);
   });
 
-  it("ships Plan under Job: what the plan file holds, and one claim with its cases in place of a rule per failure", async () => {
+  it("ships Plan under Job: what the plan file holds, and claims with their cases in place of a rule per failure", async () => {
     const plan = parseConceptFile("Plan.md", await readFile(join(STRUT_CONCEPTS.dir, "Plan.md"), "utf-8"), STRUT_CONCEPTS.prefix);
     // A kind of job work: the orchestrator lists it by its description and
     // passes it as `kind`, and the job opens it every turn.
@@ -216,12 +216,25 @@ describe("concept files (pure)", () => {
     assert.equal(plan.docs!.match(/repositor/g)?.length, 2);
     assert.match(plan.docs!, /Work in\s+a repository goes on one branch there for the whole plan, and ends as\s+one pull request\./);
     assert.match(plan.docs!, /its repositories if it has any/);
-    assert.equal(plan.claims?.length, 1);
+    // The person may never have built software, or may be a developer (2026-11-22): the questions are about
+    // what gets built, in words the person can answer; how it is built the job decides and records, where a
+    // developer reads it. And a plan always looks for a smaller one.
+    assert.match(plan.docs!, /someone who has never\s+built software can answer it, unless the request shows the person\s+builds software themselves/);
+    assert.match(plan.docs!, /How it is built is yours either way/);
+    assert.match(plan.docs!, /First look for a smaller plan/);
+    // The questions are the reply's `ask`, named beside `text`: "put the same way: a short overview, and the
+    // questions as your `ask`" sent them in the text alone 5 times of 10 (2026-11-22; main's page 0 of 9).
+    assert.match(plan.docs!, /a short overview as\s+your `text`, and the questions as your `ask`/);
+    assert.match(plan.docs!, /The detail is in `plan\.md`\s+for whoever wants it/);
+    assert.equal(plan.claims?.length, 2);
     assert.deepEqual(
-      plan.claims![0]!.cases.map((c) => [c.workflow, (c.input as { kind?: string }).kind]),
+      plan.claims!.map((claim) => claim.cases.map((c) => [c.workflow, (c.input as { kind?: string }).kind])),
       [
-        ["job", "Plan"],
-        ["job", "Plan"],
+        [
+          ["job", "Plan"],
+          ["job", "Plan"],
+        ],
+        [["job", "Plan"]],
       ],
       "each case is a plan job",
     );
@@ -244,6 +257,10 @@ describe("concept files (pure)", () => {
     // The page such a lesson goes on may not exist yet (made later in the run, or waiting on a person): its claim is
     // written now, on the page the new one will sit under (a real model held it back otherwise).
     assert.match(dream.docs!, /does not exist yet, write the claim on the page the new one\s+will sit under/);
+    // A page from git is put back on every start, so where a change to one is skipped (a deployed strut), the
+    // lesson goes on a page under it, the workspace's own (2026-11-22): otherwise a box never learns about a page
+    // strut ships, such as Plan.
+    assert.match(dream.docs!, /comes from git, and a change to it is skipped[^]*Make the change on a page under it instead/);
     // The first source: the conversations dream/turns hands over.
     const convs = await read("Assistant Conversations.md");
     assert.deepEqual(convs.parents, ["Dream"]);
