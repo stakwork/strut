@@ -414,6 +414,8 @@ export interface Invite {
   expiresAt?: string;
   /** The admin who made it (an actor), when it was noted. */
   by?: string;
+  /** The worker who redeemed it through Tasks (an existing account: the daemon never says `used`), when `status` is `used`. */
+  takenBy?: string;
 }
 
 export interface InvitesAnswer {

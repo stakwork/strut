@@ -112,7 +112,7 @@ export function InviteList(props: { types?: TaskType[] | undefined; workers?: Wo
               </span>
               <div className="flex basis-full flex-wrap items-center gap-x-3 text-xs text-muted-foreground">
                 <span>Made {i.createdAt ? new Date(i.createdAt).toLocaleString() : "—"}{maker && ` by ${maker}`}</span>
-                {took && <span className="text-foreground">Taken by {took.who}, {fmtWhen(took.at)}</span>}
+                {took && <span className="text-foreground">Taken by {took.who}{took.at !== undefined && `, ${fmtWhen(took.at)}`}</span>}
                 {until !== null && <span>link valid until {new Date(until).toLocaleDateString()}</span>}
               </div>
               {inviteOpen(i) && (

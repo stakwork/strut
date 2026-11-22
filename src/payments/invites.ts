@@ -162,6 +162,10 @@ export interface InviteView {
   expiresAt?: string;
   /** Who made it (an actor), when known. */
   by?: string;
+  /** The worker who redeemed it, when `status` is `used` because Tasks
+   *  granted work by it (an existing Peel account never makes the daemon
+   *  say `used`). */
+  takenBy?: string;
 }
 
 export interface InvitesList {
@@ -184,6 +188,9 @@ export interface InvitesDeps {
   typeApp(name: string): Promise<string | undefined>;
   /** What each invite is for. Left out: kept in memory. */
   notes?: InviteNotes;
+  /** The worker whose grants came by this invite (the task store's
+   *  `grantedBy("invite:"+code)`, the first), if any. Left out: no one. */
+  takenBy?(code: string): Promise<string | undefined>;
 }
 
 export interface Invites {
@@ -287,9 +294,25 @@ export function createInvites(deps: InvitesDeps): Invites {
         return fromWallet(err);
       }
       const noted = await notes.all();
+      // An invite that has made a grant is used, whatever the daemon says: an
+      // existing account redeems it in Tasks and the daemon never hears (it
+      // marks `used` only for a new sign-up). Only those the daemon still
+      // holds as open (or cancelled by strut on that redeem) are read.
+      const taken = new Map<string, string>();
+      if (deps.takenBy) {
+        for (const inv of invites) {
+          if (inv.status !== "ready" && inv.status !== "sending" && inv.status !== "cancelled") continue;
+          const who = await deps.takenBy(inv.code).catch(() => undefined);
+          if (who) taken.set(inv.code, who);
+        }
+      }
       // Newest first; one with no time keeps the daemon's order, last.
       const sorted = invites.map((inv, i) => ({ inv, i })).sort((a, b) => (b.inv.createdAt ?? "").localeCompare(a.inv.createdAt ?? "") || a.i - b.i);
-      return { invites: sorted.map(({ inv }) => view(inv, o.base, online, noted[inv.code])), ...head };
+      return { invites: sorted.map(({ inv }) => {
+        const v = view(inv, o.base, online, noted[inv.code]);
+        const who = taken.get(inv.code);
+        return who ? { ...v, status: "used" as const, takenBy: who } : v;
+      }), ...head };
     },
 
     async cancel(code) {

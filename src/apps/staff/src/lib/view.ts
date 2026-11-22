@@ -640,13 +640,14 @@ export function sortInvites<T extends Pick<Invite, "createdAt">>(invites: T[]): 
 }
 
 /** The worker who took an invite, and when: the grant it made (`by: invite:<code>`).
- *  None for an invite for open work (no grant) or one not yet used. */
-export function acceptedBy(invite: Pick<Invite, "code">, workers: Array<Pick<Worker, "actor" | "name" | "grants">> | undefined): { who: string; at: number } | null {
+ *  None for an invite for open work (no grant) or one not yet used; else the server's `takenBy`. */
+export function acceptedBy(invite: Pick<Invite, "code" | "takenBy">, workers: Array<Pick<Worker, "actor" | "name" | "grants">> | undefined): { who: string; at?: number } | null {
   for (const w of workers ?? []) {
     const g = w.grants.find((g) => g.by === `invite:${invite.code}`);
     if (g) return { who: w.name || shortActor(w.actor), at: g.at };
   }
-  return null;
+  // No worker row (not loaded, or a host's own store): the server's own word on who took it, no time.
+  return invite.takenBy ? { who: shortActor(invite.takenBy) } : null;
 }
 
 /** Days an invite's link works; mirrors INVITE_TOKEN_DAYS (src/payments/invites.ts). */

@@ -91,10 +91,61 @@ export const JOIN_SCRIPT = `(function () {
   // The invite, as the app takes it after "sphinx.chat://?".
   var q = location.hash.slice(1).replace(/^sphinx\\.chat:\\/\\/\\?/i, "");
   if (!/^action=i&/.test(q) || !/(^|&)d=[^&]+/.test(q) || /[#\\s]/.test(q)) { document.getElementById("card").hidden = true; show("bad"); return; }
+  // The page's language rides along into the worker app's link: the invite's single a= section is
+  // that app's URL, whose locale is ?lang= else the browser's. A page in en leaves it to auto-detect.
+  var lang = document.documentElement && document.documentElement.lang;
+  if (lang && lang !== "en") {
+    try {
+      var parts = q.split("&");
+      var at = -1, n = 0;
+      for (var j = 0; j < parts.length; j++) if (/^a=/.test(parts[j])) { n++; at = j; }
+      if (n === 1) {
+        var app = decodeURIComponent(parts[at].slice(2));
+        var u = new URL(app);
+        if (!u.searchParams.has("lang")) {
+          u.searchParams.append("lang", lang);
+          parts[at] = "a=" + encodeURIComponent(u.toString());
+          q = parts.join("&");
+        }
+      }
+    } catch (e) {}
+  }
   // A tap that gets or opens the app also hands it the invite, through the clipboard.
   var copy = function () {
     try { navigator.clipboard.writeText("sphinx.chat://?" + q).catch(function () {}); } catch (e) {}
   };
+  // The visible fallback: a button that copies the same text, with execCommand when the
+  // clipboard API is missing or refuses. Its labels come in data attributes (this script is
+  // the same in every language, its hash is the CSP's).
+  var btn = document.getElementById("copy");
+  if (btn) {
+    var text = "sphinx.chat://?" + q;
+    var label = btn.textContent;
+    var done = function () {
+      btn.textContent = btn.getAttribute("data-copied") || label;
+      setTimeout(function () { btn.textContent = label; }, 2000);
+    };
+    var old = function () {
+      try {
+        var inp = document.createElement("input");
+        inp.readOnly = true;
+        inp.value = text;
+        inp.style.position = "absolute";
+        inp.style.left = "-9999px";
+        document.body.appendChild(inp);
+        inp.select();
+        var ok = document.execCommand("copy");
+        document.body.removeChild(inp);
+        if (ok) done();
+      } catch (e) {}
+    };
+    btn.onclick = function () {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, old);
+        else old();
+      } catch (e) { old(); }
+    };
+  }
   if (/Android/i.test(navigator.userAgent)) {
     var point = function (fallback) {
       var href = "intent://?" + q + "#Intent;scheme=sphinx.chat;package=" + PKG + ";S.browser_fallback_url=" + encodeURIComponent(fallback) + ";end";
@@ -156,6 +207,8 @@ p { margin: 0; }
 .meta { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.8rem; color: var(--muted); }
 #bad { text-align: center; }
 #android, #ios { position: sticky; bottom: 0; margin-top: auto; padding: 2rem 0 1.25rem; text-align: center; background: linear-gradient(to bottom, transparent, var(--bg) 40%); display: flex; flex-direction: column; gap: 0.6rem; }
+.copy { display: block; width: 100%; margin-top: 1rem; padding: 12px; border-radius: 999px; border: 1px solid var(--accent); background: transparent; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; }
+.copy + .muted { margin-top: 0.4rem; font-size: 0.8rem; }
 .button { display: block; padding: 17px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 700; text-decoration: none; }
 [hidden] { display: none !important; }
 `;
@@ -183,6 +236,9 @@ const en = {
   qr: "A QR code of this invite's link",
   bad: "This link has no invite in it. Ask whoever sent it for a new one.",
   language: "Language",
+  copyInvite: "Copy invite",
+  pasteHint: "Then open Peel and paste it at Join with an invite.",
+  copied: "Copied",
 };
 type JoinWords = typeof en;
 /** Neutral Latin American Spanish, `tú` (plans/i18n.md). */
@@ -204,6 +260,9 @@ const es: JoinWords = {
   qr: "Un código QR del enlace de esta invitación",
   bad: "Este enlace no tiene ninguna invitación. Pídele uno nuevo a quien te lo envió.",
   language: "Idioma",
+  copyInvite: "Copiar invitación",
+  pasteHint: "Luego abre Peel y pégala en Unirme con una invitación.",
+  copied: "Copiada",
 };
 const JOIN_WORDS = { en, es };
 export type JoinLang = keyof typeof JOIN_WORDS;
@@ -258,6 +317,8 @@ export function joinPage(name?: string, lang: JoinLang = "en"): string {
 </div>
 <div class="perf"></div>
 <div class="meta"><span>${n ? `${w.from} <b>${escape(n)}</b>` : ""}</span><span>${w.app}</span></div>
+<button type="button" id="copy" class="copy" data-copied="${w.copied}">${w.copyInvite}</button>
+<p class="muted">${w.pasteHint}</p>
 </div>
 <p id="bad" hidden>${w.bad}</p>
 <div id="android" hidden>
