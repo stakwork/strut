@@ -60,6 +60,10 @@ short page that stays as it is; the tree grows under it.
 - It applies on almost every turn: put it on a page directly under the
   root, with a description that says when it applies. The root's list of
   names and descriptions is what the assistant always sees.
+- The page's text comes from git, and a change to it is skipped: it is
+  put back on every start. Make the change on a page under it instead,
+  one made for this workspace, with a description that says when to open
+  it.
 - The page already says it plainly, and it went wrong again: do not
   reword it once more. Name it as stuck: the tree may not be able to fix
   this, and a person should look.
