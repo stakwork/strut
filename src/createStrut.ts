@@ -1823,10 +1823,13 @@ export async function createStrut<TServices = unknown>(
         const inv = (await payer.invites()).find((i) => i.code === code);
         return !!inv && (inv.status === "sending" || inv.status === "ready" || inv.status === "used");
       },
-      // Invites are for NEW accounts. A new account's sign-up makes the daemon
-      // say "used" before Tasks opens; an existing one never does, so an
-      // invite still "ready" when strut makes its first grant was redeemed by
-      // an existing account: cancel it. The daemon (stakwork/sphinx
+      // Invites are for NEW accounts. An account Peel already had ignores the
+      // invite and opens Tasks, so its sats stay at the LSP and the daemon
+      // never says "used": cancel any invite still "ready" at its first
+      // grant. A new account's sign-up redeems it as it registers, but the
+      // daemon says "used" only once that account adds the server's, which
+      // can come after Tasks' first ask: that cancel finds nothing at the LSP
+      // and ends `cancel_unconfirmed`, harmless. The daemon (stakwork/sphinx
       // wasm/daemon/src/wallet.ts, cancelInvite → cancelReady) cancels only a
       // `ready` invite (sending/failed/used: 409 not_cancellable). It asks the
       // LSP for the invite's sats back and marks it `cancelled` only once the

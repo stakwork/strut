@@ -405,7 +405,7 @@ index. A change in this area updates this file, not AGENTS.md.
   open work alone — signed, 90 days from the invite's creation, so a listing
   shows the link sent), the page's tool input; the kit's `useTask` /
   `useWorker` send it as `invite` on `task/next` / `task/me`, and the
-  service's `enterInvite` (deps `invite: { read, live }`, createStrut's:
+  service's `enterInvite` (deps `invite: { read, live, spent? }`, createStrut's:
   `inviteOf`, and the daemon listing the invite `sending` / `ready` /
   `used`) gives that worker the invite-only, enabled types the token names
   that they hold no row of — whichever app draws them — by `invite:<code>`
@@ -413,6 +413,23 @@ index. A change in this area updates this file, not AGENTS.md.
   included; two first asks with one link taken one after the other), never
   a revoked type, never a suspended or banned worker; a token that does not
   hold or opens another app is ignored (invite-grants.test.ts, both stores).
+  An invite that made its grant is SPENT: the service tells the host
+  (`spent`), not waited for (a cancel can take the daemon's 20 s, and this
+  is the worker's first look at Tasks), and a failure is only logged, never
+  undoing the grant. createStrut's cancels the Sphinx invite while the
+  daemon still lists it `ready`, so its starting sats come back: an account
+  Peel already had ignores the invite and opens `a=`, leaving the sats at
+  the LSP. A new account's sign-up redeems the invite as it registers, and
+  the daemon says `used` only once that account adds the server's (its
+  first key exchange), which can come after Tasks' first ask; that cancel
+  finds nothing to return and ends `cancel_unconfirmed`, harmless (the
+  daemon's `cancelReady` counts an invite `cancelled` only once its balance
+  rises by at most the invite's sats). The staff's list (`GET
+  /tasks/invites`; `createInvites`' `takenBy`, the task store's
+  `grantedBy("invite:<code>")`, the first) shows an invite that made a grant
+  as `used`, with `takenBy`, whatever the daemon says (`ready`, `sending`,
+  `cancelled`), and Cancel is not offered for it; Taken by names the worker
+  from their grant, else from `takenBy` (`acceptedBy`, strut/staff).
   A token with no `t` (made before) gives every invite-only type of the app
   it opens, as it did. The daemon keeps the invites (code, sats, status);
   strut notes only each one's work (`InviteNotes`,

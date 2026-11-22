@@ -27,9 +27,10 @@ for (const impl of ["SQLite", "memory"] as const) {
     /** The invites the daemon still has. */
     let live: Set<string>;
     let asked: string[];
-    /** The codes `spent` was told of, and whether it throws. */
+    /** The codes `spent` was told of, and whether it throws or never answers. */
     let spent: string[];
     let spentFails: boolean;
+    let spentHangs: boolean;
     const tasks = () => svc.capability;
 
     beforeEach(async () => {
@@ -38,6 +39,7 @@ for (const impl of ["SQLite", "memory"] as const) {
       asked = [];
       spent = [];
       spentFails = false;
+      spentHangs = false;
       svc = createTasks({
         open: impl === "SQLite" ? () => openTaskStores({ dataDir: dir }) : async () => memoryTaskStores(),
         ...(impl === "SQLite" ? { exists: () => existsSync(tasksPath(dir)) } : {}),
@@ -53,6 +55,7 @@ for (const impl of ["SQLite", "memory"] as const) {
           spent: async (code) => {
             spent.push(code);
             if (spentFails) throw new Error("the daemon is down");
+            if (spentHangs) await new Promise(() => {});
           },
         },
       });
@@ -144,6 +147,18 @@ for (const impl of ["SQLite", "memory"] as const) {
       assert.equal(ed.status, "active");
       assert.deepEqual(await held("ed"), ["calls:invite:c3", "visits:invite:c3"]);
       assert.deepEqual(spent, ["c1", "c3"]);
+    });
+
+    it("spent is not waited for: a cancel that never answers (the daemon waits up to 20 s for its refund) never holds the worker's first ask", async () => {
+      spentHangs = true;
+      const waited = new Promise<never>((_, no) => setTimeout(() => no(new Error("task/me waited for spent")), 2000).unref());
+      const ann = await Promise.race([tasks().me("ann", { app: "workers", invite: token("c1") }), waited]);
+      assert.equal(ann.status, "active");
+      assert.deepEqual(spent, ["c1"]);
+      // The next ask with the link finds the grant at once, as before.
+      const cy = await Promise.race([tasks().me("cy", { app: "workers", invite: token("c1") }), waited]);
+      assert.equal(cy.status, "new");
+      assert.deepEqual(await held("ann"), ["calls:invite:c1", "visits:invite:c1"]);
     });
 
     it("gives nothing once the daemon no longer has the invite (cancelled, failed), nor when it cannot say", async () => {
