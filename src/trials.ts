@@ -97,6 +97,10 @@ export interface TestView {
   change: TestSide;
   /** One of the two is the page now, so it can be run again and the other used. */
   live: boolean;
+  /** Which side is the wording the test tried, the other being what it was
+   *  tried against: `change` until it is used, then `page`. A rewording is
+   *  drawn in that order. */
+  tried: "page" | "change";
 }
 
 /** What is running: samples started and not yet judged. */
@@ -434,7 +438,7 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
         })),
         tests: tests.map((t) => {
           const o = orient(t, page.version);
-          return { id: t.id, at: t.createdAt, ...(t.by ? { by: t.by } : {}), page: side(t.sides[o.page]), change: side(t.sides[o.page === 0 ? 1 : 0]), live: o.live };
+          return { id: t.id, at: t.createdAt, ...(t.by ? { by: t.by } : {}), page: side(t.sides[o.page]), change: side(t.sides[o.page === 0 ? 1 : 0]), live: o.live, tried: o.page === 1 ? "page" : "change" };
         }),
         running: [...batches.values()].filter((b) => b.concept === concept).map((b) => ({ ...b, errors: [...b.errors] })),
         ...(problems.has(concept) ? { problem: problems.get(concept)! } : {}),

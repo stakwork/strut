@@ -27,7 +27,7 @@ import {
 } from "./knowledge/src/lib/learning.js";
 import { cycleSpan, cycleWords, cyclesFor, cyclesUnavailable, runsOf, CYCLES_STEP, type DreamCycle } from "./knowledge/src/lib/cycles.js";
 import {
-  DOTS_MAX, allSamples, capped, caseFor, caseLabel, heldOf, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, tally, tallyWords, workflowFor, type Sample,
+  DOTS_MAX, allSamples, capped, caseFor, caseLabel, drawnOf, heldOf, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, tally, tallyWords, useLabel, verdictOf, workflowFor, type Sample,
 } from "./knowledge/src/lib/checks.js";
 import { readDiff, readLog, readPage, readProposalEntry } from "./views/src/lib/history.js";
 import { foldConceptDiff } from "../../kit/src/folds/concept-diff.js";
@@ -249,6 +249,38 @@ describe("strut/knowledge: a Concept's checks and the tests of its page", () => 
     assert.equal(outcomeOf(pass(4), []), "none");
     assert.equal(outcomeOf([], fail(4)), "none");
     assert.equal(allSamples({ samples: { a: pass(2), b: fail(1) } }).length, 3, "every check's verdicts on a wording");
+  });
+
+  it("a test is drawn as its piece going in, whichever side the page is; a rewording in the order it was tried", () => {
+    const side = (docs: string) => ({ version: docs, docs, samples: {} });
+    const full = "Talk here.\nYou are ONE assistant who works.\nAnswer from what is known.";
+    const without = "Talk here.\nAnswer from what is known.";
+    // A piece of the page taken out to test it (every seeded page's tests): the piece reads as added, the page second.
+    const seeded = drawnOf({ page: side(full), change: side(without), tried: "change" });
+    assert.deepEqual(seeded, { piece: true, order: ["change", "page"], labels: ["Without it", "With it"] });
+    assert.deepEqual(verdictOf(seeded, "page"), { words: "It helps", good: true });
+    assert.equal(useLabel(seeded, "page"), null, "the page did better: nothing to use");
+    assert.deepEqual(verdictOf(seeded, "change"), { words: "It hurts", good: false });
+    assert.equal(useLabel(seeded, "change"), "Take it out");
+    // A piece tried on the page: the same card, the page first.
+    const added = drawnOf({ page: side(without), change: side(full), tried: "change" });
+    assert.deepEqual(added, { piece: true, order: ["page", "change"], labels: ["Without it", "With it"] });
+    assert.deepEqual(verdictOf(added, "change"), { words: "It helps", good: true });
+    assert.equal(useLabel(added, "change"), "Put it in");
+    // Once used, the same test reads from the page's new wording: the diff and the rows stay, the page's badge moves.
+    const used = drawnOf({ page: side(full), change: side(without), tried: "page" });
+    assert.deepEqual(used.order, ["change", "page"]);
+    assert.deepEqual(verdictOf(used, "same"), { words: "No difference" });
+    assert.equal(verdictOf(used, "none"), null);
+    // A rewording: before, then after, in the order it was tried.
+    const reworded = "Talk here.\nYou are one assistant.\nAnswer from what is known.";
+    const tried = drawnOf({ page: side(full), change: side(reworded), tried: "change" });
+    assert.deepEqual(tried, { piece: false, order: ["page", "change"], labels: ["Before", "After"] });
+    assert.deepEqual(verdictOf(tried, "change"), { words: "After is better", good: true });
+    assert.equal(useLabel(tried, "change"), "Use it");
+    assert.deepEqual(drawnOf({ page: side(reworded), change: side(full), tried: "page" }).order, ["change", "page"], "used: the page is after");
+    assert.deepEqual(verdictOf(drawnOf({ page: side(reworded), change: side(full), tried: "page" }), "change"), { words: "Before is better", good: false });
+    assert.deepEqual(drawnOf({ page: side(full), change: side(reworded) }).order, ["page", "change"], "a server that does not say: the page first");
   });
 
   it("a case in a line, and a message as a new case shaped like the check's own", () => {

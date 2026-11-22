@@ -1,7 +1,8 @@
 // A Concept's CHECKS and TESTS (plans/claim-trials.md §4–§5): what its
 // readers are held to, each check with the messages that test it and a dot
 // per verdict, and the changes tried against the page, each a diff with two
-// rows of dots — the page, and the page with the change. An admin runs a
+// rows of dots — without the piece and with it (before and after, for a
+// rewording), the page a badge on its own row (`drawnOf`). An admin runs a
 // check, adds one, tests a change and puts the wording that did better on
 // the page; a member reads.
 import { useMemo, useState } from "react";
@@ -15,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useChecks } from "../lib/read";
 import {
-  OUTCOME, allSamples, capped, caseFor, caseLabel, heldOf, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, tally, tallyWords, workflowFor,
+  allSamples, capped, caseFor, caseLabel, drawnOf, heldOf, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, tally, tallyWords, useLabel, verdictOf, workflowFor,
   type Check, type ChecksView, type PageTest, type Sample,
 } from "../lib/checks";
 import { CLAIM_STATUS, byStatus, claimsUnavailable, evidenceLine } from "../lib/learning";
@@ -60,12 +61,19 @@ function Dots({ samples, at, picked, onPick }: { samples: readonly Sample[]; at:
   );
 }
 
-/** A row of a test, or of the page: a label, the dots, the count. */
-function Row({ label, samples, at, picked, onPick }: { label: string; samples: readonly Sample[]; at: string; picked: Picked | null; onPick: (p: Picked) => void }) {
+/** A row of a test: a label (with the concept's badge on the page's own row), the dots, the count. */
+function Row({ label, concept, samples, at, picked, onPick }: { label: string; concept?: boolean; samples: readonly Sample[]; at: string; picked: Picked | null; onPick: (p: Picked) => void }) {
   const t = tally(samples);
   return (
     <div className="flex items-center gap-3 py-0.5">
-      <span className="w-28 shrink-0 text-xs">{label}</span>
+      <span className="flex w-36 shrink-0 items-center gap-1.5 text-xs">
+        {label}
+        {concept && (
+          <span className="rounded bg-sky-500/10 px-1.5 text-[11px] text-sky-700 dark:text-sky-300" data-testid="test-concept">
+            concept
+          </span>
+        )}
+      </span>
       <span className="min-w-0 flex-1">
         <Dots samples={samples} at={at} picked={picked} onPick={onPick} />
       </span>
@@ -125,7 +133,7 @@ function SamplePanel({ sample, admin }: { sample: Sample; admin: boolean }) {
   );
 }
 
-/** Two wordings, line by line: what the change takes out of the page and what it puts in. */
+/** Two wordings, line by line: what the second has that the first lacks (added), and the reverse (taken out). */
 function TextDiff({ before, after }: { before: string; after: string }) {
   const lines = useMemo(() => foldDiffLines(lineDiff(before, after), 1), [before, after]);
   return (
@@ -146,11 +154,13 @@ function TextDiff({ before, after }: { before: string; after: string }) {
   );
 }
 
-const CHIP: Record<"page" | "same" | "change", string> = {
-  page: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  same: "text-muted-foreground",
-  change: "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300",
-};
+/** A verdict's chip: green when the second row (with it, after) did better, amber when the first did, plain when neither. */
+const chip = (good: boolean | undefined) =>
+  good === undefined
+    ? "text-muted-foreground"
+    : good
+      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+      : "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300";
 
 interface Acts {
   admin: boolean;
@@ -257,6 +267,9 @@ function TestCard({ test, view, acts, onUsed }: { test: PageTest; view: ChecksVi
   const client = useStrutClient();
   const running = view.running.some((b) => b.test === test.id);
   const outcome = running ? "none" : outcomeOf(allSamples(test.page), allSamples(test.change));
+  const drawn = useMemo(() => drawnOf(test), [test]);
+  const verdict = verdictOf(drawn, outcome);
+  const useIt = useLabel(drawn, outcome);
   const at = `test:${test.id}`;
   // A page from git with nowhere to write it here: its wording is its file's.
   const usable = test.live && !(view.fromGit && !view.fromGit.checkout);
@@ -271,27 +284,36 @@ function TestCard({ test, view, acts, onUsed }: { test: PageTest; view: ChecksVi
     });
   return (
     <li className="space-y-2 rounded-lg border p-3" data-testid="concept-test">
-      <TextDiff before={test.page.docs} after={test.change.docs} />
+      <TextDiff before={test[drawn.order[0]].docs} after={test[drawn.order[1]].docs} />
       {view.checks.map((c) => (
         <div key={c.id}>
           {view.checks.length > 1 && <p className="truncate pt-1 text-xs text-muted-foreground">{c.text}</p>}
-          <Row label={test.live ? "The concept" : "The concept then"} samples={test.page.samples[c.id] ?? []} at={`${at}:page:${c.id}`} picked={acts.picked} onPick={acts.onPick} />
-          <Row label="With the change" samples={test.change.samples[c.id] ?? []} at={`${at}:change:${c.id}`} picked={acts.picked} onPick={acts.onPick} />
+          {drawn.order.map((s, i) => (
+            <Row
+              key={s}
+              label={drawn.labels[i]!}
+              concept={s === "page" && test.live}
+              samples={test[s].samples[c.id] ?? []}
+              at={`${at}:${s}:${c.id}`}
+              picked={acts.picked}
+              onPick={acts.onPick}
+            />
+          ))}
         </div>
       ))}
       <div className="flex flex-wrap items-center gap-2">
-        {outcome === "none" ? (
-          <span className="text-xs text-muted-foreground">{running ? "Running…" : "Not run yet"}</span>
-        ) : (
-          <span className={cn("rounded border px-1.5 text-[11px]", CHIP[outcome])} data-testid="test-outcome" data-outcome={outcome}>
-            {OUTCOME[outcome]}
+        {verdict ? (
+          <span className={cn("rounded border px-1.5 text-[11px]", chip(verdict.good))} data-testid="test-outcome" data-outcome={outcome}>
+            {verdict.words}
           </span>
+        ) : (
+          <span className="text-xs text-muted-foreground">{running ? "Running…" : "Not run yet"}</span>
         )}
         {!test.live && <span className="text-xs text-muted-foreground">On an earlier wording of the concept</span>}
         <span className="flex-1" />
-        {acts.admin && usable && outcome === "change" && (
+        {acts.admin && usable && useIt && (
           <Button size="sm" variant="outline" className="h-7" disabled={acts.busy} onClick={() => void use()} data-testid="test-use">
-            Use it
+            {useIt}
           </Button>
         )}
         {acts.admin && test.live && (
