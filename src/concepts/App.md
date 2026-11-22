@@ -684,7 +684,7 @@ const take = async () => {
 <TaskForm task={task} onSubmit={(answer) => submit(answer, photos).then(() => setPhotos([]))} onSkip={() => skip()} />
 ```
 
-A worker app with a withdraw section also grants `task/withdraw`.
+A worker app with a withdraw section also grants `task/withdraw` (granting `task/me` grants it too, for the account widget's Withdraw).
 `useWorker().data.payout` says whether the viewer may withdraw now — `on`,
 else `why` (`no_address`: they must sign in with Peel, which sends their
 account's address; say "Withdraw in Peel") — with `minMsat`, `maxMsat` (the

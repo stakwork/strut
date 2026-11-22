@@ -201,6 +201,13 @@ export function grantRefusal(
     }
     return null;
   }
+  // The account widget's worker section runs `task/me` and then offers Withdraw
+  // (`task/withdraw`), so a page that grants the first grants the second: it
+  // pays only the calling worker's own withdrawable balance to the address
+  // their session carries (`msat` the one input), which gives the app nothing
+  // new. The page's own list only: a host's list (`hosts.<name>.steps`) stays
+  // exactly what it names.
+  if (type === "task/withdraw" && steps === manifest.grants.steps && granted(steps, "task/me")) return null;
   if (!granted(steps, type)) {
     return `step "${type}" is not granted to this app — its grants.steps: ${steps.length ? steps.join(", ") : "(none)"}`;
   }
