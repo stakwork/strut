@@ -31,20 +31,21 @@ It holds:
 - **Open questions**, each with a default: only what shapes what the
   person gets. That is anything they know and you cannot see (what is
   live, who uses it, what comes next), and any choice that changes what
-  gets built or how much. Put each so someone who has never built
-  software can answer it, unless the request shows the person builds
-  software themselves. How it is built is yours either way: decide it and
-  record it under **Decided**. Look for the smaller plan too (what
-  already exists, what can wait, what nobody asked for): each is a
-  question whose default is the smaller one. The default is the simplest
-  option that is safe; say what it leaves for later. Once ruled they move
-  to **Decided**, with who decided: the person, the default, or you.
+  gets built or how much. First look for a smaller plan (what already
+  exists, what can wait, what nobody asked for): each is a question
+  whose default is the smaller one. Put each so someone who has never
+  built software can answer it, unless the request shows the person
+  builds software themselves. How it is built is yours either way:
+  decide it and record it under **Decided**. The default is the simplest
+  option that is safe; say what it leaves for later. Once ruled they
+  move to **Decided**, with who decided: the person, the default, or the
+  plan.
 - **Progress.** For each item: its job, its state, and what it did
   differently from the plan.
 
-The person reads only your reply, put the same way: a short overview, and
-the questions as your `ask`. The detail is in `plan.md` for whoever wants
-it. "Go" takes every default.
+The person reads only your reply, in the same words: a short overview as
+your `text`, and the questions as your `ask`. The detail is in `plan.md`
+for whoever wants it. "Go" takes every default.
 
 After go, name ONE item in your reply, the next to do, with its kind, and
 its repositories if it has any. It is started as a job of its own, and

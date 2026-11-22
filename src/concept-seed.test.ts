@@ -219,10 +219,13 @@ describe("concept files (pure)", () => {
     // The person may never have built software, or may be a developer (2026-11-22): the questions are about
     // what gets built, in words the person can answer; how it is built the job decides and records, where a
     // developer reads it. And a plan always looks for a smaller one.
-    assert.match(plan.docs!, /someone who has never built\s+software can answer it, unless the request shows the person builds\s+software themselves/);
+    assert.match(plan.docs!, /someone who has never\s+built software can answer it, unless the request shows the person\s+builds software themselves/);
     assert.match(plan.docs!, /How it is built is yours either way/);
-    assert.match(plan.docs!, /Look for the smaller plan too/);
-    assert.match(plan.docs!, /The detail is in `plan\.md` for whoever wants\s+it/);
+    assert.match(plan.docs!, /First look for a smaller plan/);
+    // The questions are the reply's `ask`, named beside `text`: "put the same way: a short overview, and the
+    // questions as your `ask`" sent them in the text alone 5 times of 10 (2026-11-22; main's page 0 of 9).
+    assert.match(plan.docs!, /a short overview as\s+your `text`, and the questions as your `ask`/);
+    assert.match(plan.docs!, /The detail is in `plan\.md`\s+for whoever wants it/);
     assert.equal(plan.claims?.length, 2);
     assert.deepEqual(
       plan.claims!.map((claim) => claim.cases.map((c) => [c.workflow, (c.input as { kind?: string }).kind])),
