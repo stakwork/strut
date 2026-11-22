@@ -442,6 +442,10 @@ export interface TakeBackInput {
   why: string;
   by?: string;
   at?: number;
+  /** Take it back even when its hold has ended (or there was none). Only a
+   *  review's rejection sets it (plans/human-steps.md §9.6); staff and
+   *  grading take-backs keep the hold guard. */
+  pastHold?: boolean;
 }
 
 /** A take-back's outcome for one earning: `taken` (now, or already — the
@@ -459,6 +463,8 @@ export interface RestoreInput {
   lease: string;
   by?: string;
   at?: number;
+  /** Undo a take-back past the hold: only for a REVIEW take-back (§9.6). */
+  pastHold?: boolean;
 }
 
 /** A restore's outcome: `restored` (now), `released` (past its hold: the

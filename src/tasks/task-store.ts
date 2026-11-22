@@ -875,7 +875,8 @@ export class MemoryTaskStore implements TaskStore {
       if (l.status === "submitted") {
         r.answered++;
         r.workMs += Math.max(0, (l.closed ?? l.taken) - l.taken);
-        r.payMsat += l.payMsat ?? 0;
+        // §9.6: an answer rejected in review is never paid, so is no spend.
+        if (this.reviewRows.get(reviewKey(l.task, l.worker))?.verdict !== "rejected") r.payMsat += l.payMsat ?? 0;
       } else if (l.status === "open" && l.expires > q.now) {
         r.open++;
         r.openPayMsat += l.payMsat ?? 0;

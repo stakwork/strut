@@ -1819,7 +1819,8 @@ Evan ruled on 8.1's questions on 2026-11-12, agreeing with every
 recommendation. They are listed at its end, and where the text below rests
 on one it says so. The rest of 8.1 is proposed.
 
-An accepted answer is owed to its worker. 5a
+An accepted answer is owed to its worker. (2026-11-22: a review rejection
+takes the earning back whenever it comes, hold or none, §9.6.) 5a
 writes what is owed, holds it, shows it to the worker and to the admin,
 and marks the run with it. No sats move: the wallet pays nobody until 5b.
 
@@ -3283,9 +3284,12 @@ So review is a mark on the answer, never an undo of the run.
   filter on `GET /tasks`.
 - **What a rejection does later:** with item 4 it counts against the
   worker's standing as a failed test does (§7 decides how). With item 5a
-  a rejection inside the earning's hold takes the earning back, as a
-  failed test inside the hold does (§8); after the hold it changes no
-  money.
+  a rejection takes the earning back whenever it comes (amended
+  2026-11-22: a retake is a new task, so an untaken-back rejected answer
+  would be paid twice), inside the hold, past it or with no hold; `ok`
+  restores it. Money already withdrawn is not clawed back: the take-back
+  records and later earnings net it off. Staff and failed-test take-backs
+  keep the hold rule (§8). The Tasks app's spend leaves rejected answers out.
 - **Checking before the run goes on** is the workflow's: a second `human`
   step of a review type after the first, or copies (§7).
 

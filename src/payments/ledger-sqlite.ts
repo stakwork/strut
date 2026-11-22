@@ -414,13 +414,13 @@ export class SqliteLedgerStore implements LedgerStore {
       // The one guarded write of a take-back: held, and not taken back yet.
       takeBack: p(
         `update pay set taken_back = ?1, taken_back_why = ?2, taken_back_by = ?3
-          where lease = ?4 and taken_back is null and releases > ?1`,
+          where lease = ?4 and taken_back is null and (releases > ?1 or ?5 = 1)`,
       ),
       payeeTakenBack: p("update payees set taken_back = taken_back + ? where worker = ?"),
       // The one guarded write of a restore: taken back, and still held.
       restore: p(
         `update pay set taken_back = null, taken_back_why = null, taken_back_by = null
-          where lease = ?1 and taken_back is not null and releases > ?2`,
+          where lease = ?1 and taken_back is not null and (releases > ?2 or ?3 = 1)`,
       ),
       insertRestore: p("insert into pay_restores (lease, taken_back, taken_back_why, taken_back_by, restored, restored_by) values (?, ?, ?, ?, ?, ?)"),
       restoresOf: p("select * from pay_restores where lease = ? order by rowid"),
@@ -777,7 +777,7 @@ export class SqliteLedgerStore implements LedgerStore {
     return this.tx<TakeBackResult>(() => {
       const row = this.s.payOf.get(input.lease) as Row | undefined;
       if (!row) return { lease: input.lease, result: "none" };
-      if (Number(this.s.takeBack.run(at, input.why, input.by ?? null, input.lease).changes) === 1) {
+      if (Number(this.s.takeBack.run(at, input.why, input.by ?? null, input.lease, input.pastHold ? 1 : 0).changes) === 1) {
         this.s.payeeTakenBack.run(row.msat as number, row.worker as string);
         this.s.payDayTakenBack.run(row.msat as number, dayOf(row.at as number), row.type as string);
         return { lease: input.lease, result: "taken", earning: earningRow(this.s.payOf.get(input.lease) as Row) };
@@ -796,7 +796,7 @@ export class SqliteLedgerStore implements LedgerStore {
       if (!row) return { lease: input.lease, result: "none" };
       const before = earningRow(row);
       if (before.takenBack === undefined) return { lease: input.lease, result: "none", earning: before };
-      if (Number(this.s.restore.run(input.lease, at).changes) !== 1) return { lease: input.lease, result: "released", earning: before };
+      if (Number(this.s.restore.run(input.lease, at, input.pastHold ? 1 : 0).changes) !== 1) return { lease: input.lease, result: "released", earning: before };
       this.s.insertRestore.run(input.lease, before.takenBack, before.takenBackWhy ?? "", before.takenBackBy ?? null, at, input.by ?? null);
       this.s.payeeRestored.run(before.msat, before.worker);
       this.s.payDayRestored.run(before.msat, dayOf(before.at), before.type);

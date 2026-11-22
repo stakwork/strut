@@ -2257,16 +2257,21 @@ export function createTasks(deps: TasksDeps): TasksService {
     if (before && at >= until) {
       throw new TaskError("final", `final: the hold on ${l.worker}'s answer to task ${t.id} ended at ${new Date(until).toISOString()}, so its verdict (${before.verdict}) can no longer change`);
     }
-    // The money (§9.6, ruled 2026-11-13: option A): inside the hold a
-    // rejection takes the earning back, and `ok` undoes a take-back a
-    // rejection made (its why begins `REVIEW_TAKE_BACK`), never a staff or a
-    // grading one. Past the hold nothing moves: paid money never moves back.
-    if (earning && at < until && deps.ledger) {
+    // The money (§9.6, ruled 2026-11-13: option A, amended 2026-11-22): a
+    // rejection takes the earning back whenever it comes — inside the hold,
+    // past it, or with no hold — because a retake is a new task and would
+    // otherwise be paid on top of the rejected answer. `ok` undoes a
+    // take-back a rejection made (its why begins `REVIEW_TAKE_BACK`), never a
+    // staff or a grading one. Both pass `pastHold`; the "final" rule above
+    // still stops a verdict changing once the hold has ended. Money already
+    // withdrawn is not clawed back: the take-back records and later earnings
+    // net it off.
+    if (earning && deps.ledger) {
       const ledger = await deps.ledger();
       if (o.verdict === "rejected") {
-        earning = (await ledger.takeBack({ lease: l.id, why: `${REVIEW_TAKE_BACK}${why}`, ...(o.by ? { by: o.by } : {}), at })).earning ?? earning;
+        earning = (await ledger.takeBack({ lease: l.id, why: `${REVIEW_TAKE_BACK}${why}`, ...(o.by ? { by: o.by } : {}), at, pastHold: true })).earning ?? earning;
       } else if (earning.takenBack !== undefined && earning.takenBackWhy?.startsWith(REVIEW_TAKE_BACK)) {
-        earning = (await ledger.restore({ lease: l.id, ...(o.by ? { by: o.by } : {}), at })).earning ?? earning;
+        earning = (await ledger.restore({ lease: l.id, ...(o.by ? { by: o.by } : {}), at, pastHold: true })).earning ?? earning;
       }
     }
     const row = await s.tasks.putReview({ task: t.id, worker: l.worker, verdict: o.verdict, ...(why ? { why } : {}), ...(o.by ? { by: o.by } : {}), at });
