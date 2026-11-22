@@ -51,7 +51,6 @@ import { randomBytes } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ArtifactRef } from "./artifact-refs.js";
-import type { Scope } from "./auth.js";
 import type { Flow, RunAttachment, RunEvent, RunSummary, WakeMark } from "./core.js";
 import { jobRoot, readJobRecord, withLock, type JobRun } from "./jobs.js";
 import { briefOf, listProposals, proposalsRoot, type Proposal, type ProposalBrief } from "./proposals.js";
@@ -347,8 +346,7 @@ export interface ConversationViewer {
   /** The deployment's credential with no actor named: reads any
    *  conversation (it reads every run's log anyway). */
   all?: true;
-  /** A person's token (`peer:person`): proposals as it sees them in a list
-   *  (`visibleTo`), and a fork's id must be its own. */
+  /** A person's token (`peer:person`): a fork's id must be its own. */
   person?: true;
   /** An ADMIN's read of every conversation on this strut (plans/jamie-app.md
    *  §2.3; the caller checks the role): `list` lists every one on file,
@@ -986,14 +984,18 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const runIds = new Set(page.map((t) => t.runId));
       const jobs = [...new Set(reads.flatMap((r) => r.jobs.map((j) => j.job)))];
       // This page's runs' proposals, and those of the jobs its turns started
-      // (a `builder` job's): only what the reader may see, decided on the
-      // index, so a read never opens another conversation's records. An
-      // admin's Everyone sees every one, as their session does at /proposals.
+      // (a `builder` job's): every card made IN this conversation, whoever's
+      // ask made it, for whoever may read it — a card waiting in a thread its
+      // reader cannot see is one nobody decides (2026-11-22: Evan's card in
+      // Tom's shared conversation showed to neither). Not the lists' rule
+      // (`visibleTo`, a person's own threads): this is where it was made.
+      // Who may DECIDE it is the decision's rule (`decideProposal`); the card
+      // says so (`proposal/get`'s `viewer.decides`). `turnOf` keeps a job's
+      // card made in another conversation out.
       const root = proposalsRoot(deps.dataDir);
-      const viewer = { scope: (by.person && !by.everyone ? "peer:person" : "full") as Scope, ...(by.actor ? { actor: by.actor } : {}) };
       const [own, ofJobs] = await Promise.all([
-        listProposals(root, { runId: [...runIds], viewer }).catch(() => []),
-        jobs.length ? listProposals(root, { job: jobs, viewer }).catch(() => []) : Promise.resolve([]),
+        listProposals(root, { runId: [...runIds] }).catch(() => []),
+        jobs.length ? listProposals(root, { job: jobs }).catch(() => []) : Promise.resolve([]),
       ]);
       // Each on the turn whose run made it, else on the turn that started
       // (or continued) the job run that made it, under that job's card. A

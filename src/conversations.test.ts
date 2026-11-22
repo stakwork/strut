@@ -447,10 +447,11 @@ describe("conversations through a whole strut", () => {
       ["by the job's run", "by a run inside the job", "by the job, for bob"],
       "made elsewhere, or by a job not started here, it shows nowhere here",
     );
-    // A person's token: only their own, as visibleTo decides.
+    // A person's token: every card made in this conversation, whoever's ask
+    // made it — bob's too, since a card nobody can see is decided by nobody
+    // (2026-11-22). Deciding stays bob's (decideProposal).
     const mine = (await get("alice", session, "", "peer:person")).body.turns.flatMap((t: any) => t.proposals.map((p: any) => p.id));
-    assert.deepEqual(mine, [ofRun.id, ofChild.id]);
-    assert.ok(!mine.includes(bobs.id));
+    assert.deepEqual(mine, [ofRun.id, ofChild.id, bobs.id]);
   });
 
   it("a wake turn carries what the job run it woke on delivered, resolved, with the run's workflow", async () => {

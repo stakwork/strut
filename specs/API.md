@@ -1126,7 +1126,7 @@ interface ConversationTurn {
   ask?: string;             // its question
   artifacts?: ArtifactRef[]; // resolved, as GET …/runs/:runId/artifacts
   error?: string;
-  proposals: ProposalBrief[]; // as run.end carries them (§12)
+  proposals: ProposalBrief[]; // as run.end carries them (§12): every card made in this conversation, whoever's ask made it, for whoever reads it; who decides one is proposal/get's viewer.decides
   jobs: Array<{ job: string; runId: string; workflow?: string }>; // what it started (job/start) or continued; `workflow` the run's (job, builder), absent on a continue logged before job/continue returned it
 }
 ```
@@ -1496,9 +1496,13 @@ a person token's; strut's own page, in its own call, also lists an ADMIN
 viewer the proposals made in no conversation (`pageSees`: an automation's,
 the dream's changes to the Concept tree, §14.13), which their session
 already reads at `GET /proposals`. A page's own
-`proposal/get` also answers `viewer: { admin }`: whether its viewer is an
-admin here (`AppRef.admin`, §14.1), so a card shows "An admin must approve
-this" in place of an Accept the decision would refuse. `proposal/standing`
+`proposal/get` also answers `viewer: { admin, decides }`: whether its
+viewer is an admin here (`AppRef.admin`, §14.1), so a card shows "An admin
+must approve this" in place of an Accept the decision would refuse; and
+whether they decide this one at all (`decides`: their own ask's card, any
+card only an admin accepts for an admin, one made in no conversation for an
+admin), so someone else's card in a shared conversation says whose it is in
+place of buttons. `proposal/standing`
 ({} → `{ admin? }`) says whether the person a run is for is an admin here,
 by the same records (`AppRef.admin`, else the launch the run came from),
 `admin` left out when nothing says; the orchestrator puts a line before an
@@ -1506,7 +1510,8 @@ admin's message from it. `proposal/decide`
 ({ id, action: "accept" | "reject", input?, reason? } → the record after the
 decision) is the decide route for strut's own app (§14.10): it runs only as
 a first-party page's own call, decides only its viewer's proposals — and,
-for an admin, one made in no conversation — accepts one only an admin
+for an admin, one made in no conversation and any one only an admin accepts,
+whoever's ask made it — accepts one only an admin
 accepts only when the viewer is an admin, and an agent never runs it.
 
 ## 13. Sessions — a browser signs in
