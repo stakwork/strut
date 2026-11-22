@@ -32,8 +32,8 @@ It holds:
   one pull request.
 - **Contracts.** The names and shapes that two items both depend on,
   written once, here.
-- **Open questions**, each with a default: only the few whose answer
-  would change the plan, three or four at most. That is anything the
+- **Open questions**, each with a default: the few whose answer would
+  change the plan, often three or four. That is anything the
   person knows and you cannot see (what is live, who uses it, what comes
   next), and any choice that changes what gets built or how much. Put
   each so someone who has never built software can answer it, unless the
