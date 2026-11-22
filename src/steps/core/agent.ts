@@ -508,12 +508,18 @@ export function degenerateSchemaFields(schema: unknown, output: unknown): string
 /**
  * The answer a terminal loop produced: the OUTPUT of the newest executed
  * `final_answer` call (its text in finalAnswer mode, the object in schema
- * mode), or undefined when no step called it. A call the tool refused is a
- * `tool-error`, not a result — it does not count, so the model answers it.
+ * mode), or undefined when no step called it. A refused call (input that
+ * did not parse, or the tool's own refusal) is a `tool-error`, not a result,
+ * and a step with one answers nothing, whatever else it called: the model
+ * reads the refusal and answers again. On 2026-11-21 one step held the real
+ * answer, refused for malformed JSON, and a second `final_answer` call
+ * `{ text: "x" }`, which ran: a person was sent "x".
  */
 export function finalAnswerOf(steps: Array<{ content?: any[] }>): unknown {
   for (const step of [...steps].reverse()) {
-    const fa = step.content?.find((c: any) => c.type === "tool-result" && c.toolName === "final_answer");
+    const calls = (step.content ?? []).filter((c: any) => c.toolName === "final_answer");
+    if (calls.some((c: any) => c.type === "tool-error")) continue;
+    const fa = calls.find((c: any) => c.type === "tool-result");
     if (fa) return (fa as { output?: unknown }).output;
   }
   return undefined;
@@ -681,7 +687,9 @@ export interface ReplyTap {
  * `reply.delta` run event `{ path, call, text, reset? }`, buffered and
  * written about every `batchMs` (REPLY_DELTA_MS) and at the stream's end. A
  * new answer after text was said (a refused `final_answer`, a resumed
- * stream, the forced turn) starts with `reset: true`.
+ * stream, the forced turn) starts with `reset: true`. A `final_answer` that
+ * starts after another in the same model step was refused is passed over:
+ * that step answers nothing (`finalAnswerOf`).
  */
 export function createReplyTap(opts: {
   emit: (e: Record<string, unknown>) => Promise<void>;
@@ -700,6 +708,7 @@ export function createReplyTap(opts: {
   let resetNext = false;
   let objects = 0; // forced answers streamed as text so far (`object()`)
   let inObject = false; // this stream's `text-delta` parts are the answer's JSON
+  let refused = false; // a `final_answer` of this model step was refused
   let buf = "";
   let bufCall = "";
   let bufReset = false;
@@ -751,9 +760,14 @@ export function createReplyTap(opts: {
         return;
       }
       if (mode !== "schema") return;
-      if (p.type === "tool-input-start" && p.toolName === "final_answer" && p.id) {
+      if (p.type === "start-step") {
+        refused = false;
+      } else if (p.type === "tool-error" && p.toolName === "final_answer") {
+        refused = true;
+      } else if (p.type === "tool-input-start" && p.toolName === "final_answer" && p.id) {
         inObject = false;
-        begin(p.id);
+        if (refused) call = undefined;
+        else begin(p.id);
       } else if (p.type === "tool-input-delta" && call && p.id === call && p.delta) {
         await take(call, p.delta);
       } else if (inObject && call && p.type === "text-delta" && typeof p.text === "string" && p.text) {
@@ -1786,8 +1800,9 @@ export default defineStep({
     const calls = { n: 0 };
     wrapToolsWithEmit(tools, ctx, calls);
 
-    /** The terminal condition: the newest step EXECUTED final_answer. (The
-     *  SDK's `hasToolCall` would also stop on a call the tool refused.) */
+    /** The terminal condition: the newest step EXECUTED final_answer and
+     *  refused none (`finalAnswerOf`). (The SDK's `hasToolCall` would also
+     *  stop on a call the tool refused.) */
     const finalAnswered = ({ steps }: { steps: any[] }) => finalAnswerOf(steps.slice(-1)) !== undefined;
 
     // Resolved LAST (after all config validation): the key lookup throws when

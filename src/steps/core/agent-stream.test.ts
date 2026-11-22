@@ -147,6 +147,31 @@ describe("agent step: stream: true", () => {
     }
   });
 
+  it("schema mode, a refused final_answer and another one in the same model step: the other call's `text` is never the reply, and the answer given next starts with reset", async () => {
+    // 2026-11-21: the real answer, its JSON malformed, then `{ text: "x" }`.
+    const block = (index: number, id: string, pieces: string[]) =>
+      sse({ type: "content_block_start", index, content_block: { type: "tool_use", id, name: "final_answer", input: {} } }) +
+      pieces.map((p) => sse({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: p } })).join("") +
+      sse({ type: "content_block_stop", index });
+    const both =
+      block(0, "toolu_1", ['{"text":"Shall I go ', 'with these defaults?",', '"start": \n<parameter name="brief">x}']) +
+      block(1, "toolu_2", ['{"text":"x"}']) +
+      sse({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 20 } }) +
+      sse({ type: "message_stop" });
+    const events: any[] = [];
+    const s = await serve([both, toolPieces("toolu_3", "final_answer", [JSON.stringify({ text: "Shall I go with these defaults?" })])]);
+    try {
+      const { out, deltas } = await run({ schema, stream: true }, events);
+      assert.equal(out.object.text, "Shall I go with these defaults?");
+      assert.deepEqual([...new Set(deltas.map((d) => d.call))], ["toolu_1", "toolu_3"], "nothing of the call that ran beside the refused one");
+      assert.equal(deltas.filter((d) => d.call === "toolu_1").map((d) => d.text).join(""), "Shall I go with these defaults?");
+      assert.deepEqual(deltas.filter((d) => d.reset).map((d) => d.call), ["toolu_3"]);
+      assert.equal(deltas.filter((d) => d.call === "toolu_3").map((d) => d.text).join(""), "Shall I go with these defaults?");
+    } finally {
+      s.close();
+    }
+  });
+
   it("off by default: no reply.delta in the log", async () => {
     const s = await serve([toolPieces("toolu_1", "final_answer", [JSON.stringify({ text: "hello" })])]);
     try {
@@ -204,6 +229,27 @@ describe("the reply tap", () => {
       tap,
     );
     assert.deepEqual(events.map((e) => [e.call, e.text, e.reset ?? false]), [["a", "first", false], ["b", "second", true]]);
+  });
+
+  it("a final_answer that starts after another in the same model step was refused is passed over; the next step's answer is tapped again", async () => {
+    const refused = (id: string, toolName = "final_answer") => ({ type: "tool-error", toolCallId: id, toolName, error: "Invalid input for tool final_answer" });
+    const { events, tap } = tapOf("schema");
+    await streamFailure(
+      stream([
+        { type: "start-step" },
+        start("a"), delta("a", '{"text":"real'), refused("a"),
+        start("b"), delta("b", '{"text":"x"}'),
+        { type: "start-step" },
+        start("c"), delta("c", '{"text":"real again"}'),
+      ]),
+      tap,
+    );
+    assert.deepEqual(events.map((e) => [e.call, e.text, e.reset ?? false]), [["a", "real", false], ["c", "real again", true]]);
+
+    // Another tool's error passes nothing over.
+    const other = tapOf("schema");
+    await streamFailure(stream([{ type: "start-step" }, refused("t", "bash"), start("a"), delta("a", '{"text":"fine"}')]), other.tap);
+    assert.deepEqual(other.events.map((e) => e.text), ["fine"]);
   });
 
   it("other tools' input and model chatter are not the reply (schema mode)", async () => {

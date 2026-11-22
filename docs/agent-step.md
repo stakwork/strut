@@ -123,7 +123,17 @@ index. A change in this area updates this file, not AGENTS.md.
   or the final assistant text. A no-op loop guard runs in every mode: after
   three consecutive steps that are one identical tool call with an
   identical result, the next step offers only `final_answer` (no tools in
-  text mode). Provider-direct via aieo
+  text mode). A `final_answer` call that is refused goes back to the model
+  as the tool's error, and the model answers again: input that is not JSON
+  (the SDK refuses it) or, in schema mode, a missing required field
+  (`missingRequired`). A model step with a refused `final_answer` answers
+  nothing, whatever else it called (`finalAnswerOf`): another `final_answer`
+  in the same step that ran does not end the run, and with `stream: true`
+  its `text` is not sent as `reply.delta` when it starts after the refusal.
+  With no steps left, the forced final-answer turn answers. (2026-11-21: one
+  orchestrator step held the real answer, refused for malformed JSON, and a
+  second call `{ text: "x" }`, which ran: a person was sent "x".)
+  Provider-direct via aieo
   (anthropic|openai|google|openrouter|xai — inferred from the model
   name, which may be an alias like `sonnet`/`grok` or slash format like
   `openrouter/moonshotai/kimi-k2.6`), lazy-loaded; needs the provider
