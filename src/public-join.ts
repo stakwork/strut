@@ -91,16 +91,16 @@ export const JOIN_SCRIPT = `(function () {
   // The invite, as the app takes it after "sphinx.chat://?".
   var q = location.hash.slice(1).replace(/^sphinx\\.chat:\\/\\/\\?/i, "");
   if (!/^action=i&/.test(q) || !/(^|&)d=[^&]+/.test(q) || /[#\\s]/.test(q)) { document.getElementById("card").hidden = true; show("bad"); return; }
+  // A tap that gets or opens the app also hands it the invite, through the clipboard.
+  var copy = function () {
+    try { navigator.clipboard.writeText("sphinx.chat://?" + q).catch(function () {}); } catch (e) {}
+  };
   if (/Android/i.test(navigator.userAgent)) {
     var point = function (fallback) {
       var href = "intent://?" + q + "#Intent;scheme=sphinx.chat;package=" + PKG + ";S.browser_fallback_url=" + encodeURIComponent(fallback) + ";end";
       document.getElementById("open").href = href;
     };
     point(RELEASES);
-    // The tap that downloads the app also hands it the invite, through the clipboard.
-    var copy = function () {
-      try { navigator.clipboard.writeText("sphinx.chat://?" + q).catch(function () {}); } catch (e) {}
-    };
     document.getElementById("open").onclick = copy;
     show("android");
     // The newest APK itself, so no app yet is one tap to download.
@@ -117,12 +117,8 @@ export const JOIN_SCRIPT = `(function () {
   } else if (/iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)) {
     document.getElementById("testflight").href = TESTFLIGHT;
     document.getElementById("open-ios").href = "peel://join?" + q;
-    // Either tap hands the app the invite through the clipboard, as Android's does.
-    var copyIos = function () {
-      try { navigator.clipboard.writeText("sphinx.chat://?" + q).catch(function () {}); } catch (e) {}
-    };
-    document.getElementById("testflight").onclick = copyIos;
-    document.getElementById("open-ios").onclick = copyIos;
+    document.getElementById("testflight").onclick = copy;
+    document.getElementById("open-ios").onclick = copy;
     show("ios");
   } else {
     show("elsewhere");

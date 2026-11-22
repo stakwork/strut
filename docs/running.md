@@ -302,7 +302,7 @@ What else a paid flow needs, each learned the hard way:
   /settle/:code`; `failed` fails it), `POST /use-invite/:code` marks it
   used, and `GET /invites` and `POST /invite/:code/cancel` answer as the
   daemon's do. Open the link's `/public/join` in a desktop browser for the
-  QR code, or with an Android user agent for Peel's `intent://`.
+  QR code, with an Android user agent for Peel's `intent://`, or with an iPhone one for "Get Peel" and `peel://join`.
 - **A worker withdraws only to the Sphinx address their session carries**
   (docs/tasks.md, "Withdraw"; else `no_address`). A `sphinx` sign-in keeps
   it (`keptSphinxAddress`, src/visitors.ts): `POST /visitors/session
