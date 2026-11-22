@@ -1029,7 +1029,7 @@ function Screen({ icon, heading, text, bar, tone = "accent", loading = false, ch
 }
 
 /** The worker's fiat choice: Sats only, or a currency to show beside every
- *  amount (`btc/price`, lib/fiat.tsx). Kept per worker by strut. */
+ *  amount (lib/fiat.tsx, from GET /rate). Kept per worker by strut. */
 function FiatPicker() {
   const w = useWorkerWords();
   const [choice, set] = useFiatChoice();

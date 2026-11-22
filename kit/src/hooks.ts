@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { StrutError, isPublicView, paymentRequiredOf, publicRunnableItems, serverName, type AppIdentity, type PublicResults, type StrutClient } from "./client.js";
 import type { DisplayMode, HostState, Theme } from "./host.js";
-import { appLink, pageOf, shareLink, type AppLinkInput } from "./links.js";
+import { appLink, pageOf, shareLink, RATE_CONTEXT, type AppLinkInput } from "./links.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
 import { foldWorkProducts, type WorkProduct, type WorkProductEvent } from "./folds/work-products.js";
 import { formats, wordsFor, type Formats, type Words } from "./folds/words.js";
@@ -1717,6 +1717,19 @@ function useHostState(): HostState {
 export function useLocale(): string {
   const s = useHostState();
   return s.locale || (typeof navigator !== "undefined" && navigator.language) || "en-US";
+}
+
+/** The rate the host hands the page (`strut/rate`, strut's UI: `GET /rate`):
+ *  fiat per bitcoin by currency and its time; undefined where a host sends
+ *  none (or none yet). Nothing is asked here: the host reads it. */
+export function useHostRate(): { perBtc: Record<string, number>; at?: string } | undefined {
+  const raw = useHostState().context[RATE_CONTEXT] as { perBtc?: unknown; at?: unknown } | undefined;
+  return useMemo(() => {
+    if (!raw || typeof raw.perBtc !== "object" || !raw.perBtc) return undefined;
+    const perBtc: Record<string, number> = {};
+    for (const [code, v] of Object.entries(raw.perBtc)) if (typeof v === "number" && Number.isFinite(v) && v > 0) perBtc[code] = v;
+    return Object.keys(perBtc).length ? { perBtc, ...(typeof raw.at === "string" ? { at: raw.at } : {}) } : undefined;
+  }, [raw]);
 }
 
 /** A screen's words in the page's language (`{ en, es }`: the folds'

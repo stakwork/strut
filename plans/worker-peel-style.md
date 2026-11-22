@@ -9,7 +9,7 @@ Workers reach tasks from Peel. The loading screen, the Tasks app (`strut/worker`
 - **Host.** web/src/app-theme.ts, SoloApp.tsx, AppHost.tsx, components.css "The Peel look around a Peel app": `.peel-host` scopes Peel variables to the loading screen (`.app-solo > .empty`, `.app-host-overlay`), the account widget and the host's sheets. A Peel app with no `&theme=` follows prefers-color-scheme.
 - **Worker app.** src/apps/views/src/components/WorkerTask.tsx and TaskForm.tsx restyled (Screen / loading, WorkHome, Stat panels, rows, badges, in-hand callout, buttons size lg).
 - **Staff app.** src/apps/staff/src/ restyled; the Workers list is stacked rows below 768 px.
-- **Price.** `btc/price` lib step (src/steps/lib/btc/price.ts), src/payments/rate.ts generalised to a currency (USD unchanged), kit/src/lib/fiat.ts helpers and kit/src/btc-hooks.ts `useBtcPrice`. The Tasks page: lib/fiat.tsx, a picker (Show value in) kept per worker with `app/state`.
+- **Fiat from the rate strut already has.** mempool's `/api/v1/prices` carries every currency, so `urlRateSource` (src/payments/rate.ts) keeps them as `ExchangeRate.perBtc` and `GET /rate` answers them beside `usdPerBtc` (same cache, same single source; `usdPerBtc` unchanged). A visitor's session may read `GET /rate` (read only). The app's frame has no network, so strut's UI (AppHost.tsx, Peel apps only) reads `/rate` as the viewer, each minute, and hands it in the host context as `strut/rate`; kit `useHostRate()` reads it. kit/src/lib/fiat.ts: `satsToFiat`, `fiatToSats`, `formatFiat`. The Tasks page: lib/fiat.tsx and the Show value in picker, kept per worker with `app/state`. No new step, no second source.
 - **Docs:** docs/apps.md ("The Peel theme"), docs/web.md (`app-theme.ts`), docs/tasks.md, docs/payments.md, docs/steps.md.
 
 ## Tokens
@@ -31,9 +31,9 @@ Workers reach tasks from Peel. The loading screen, the Tasks app (`strut/worker`
 
 Radii 7 (control) / 9 (card) / 12 (panel); font stack system / SF Mono; sizes 10–28 only.
 
-## `btc/price`
+## Fiat: where the numbers come from
 
-Input `{ currency = "USD", sats? }` (currency case-insensitive). Output `{ currency, perBtc, at, source, cached, fiat? }`. mempool.space first, Coinbase when it throws, answers non-200 or a bad reading. Cached 60 s per currency; concurrent reads share one request. An unknown currency is an error naming USD, EUR, GBP, CAD, AUD, JPY, CHF. A signed-in visitor calls it through `POST /public/mcp` `step_run` when the app grants it (`grants.steps`) and the public view lists it under the app's `reads` (Tasks online does).
+`GET /rate` → `{ usdPerBtc, at, source, perBtc? }`, `perBtc` = `{ USD, EUR, GBP, CAD, CHF, AUD, JPY }` as mempool gives them. The host hands `{ perBtc, at }` to a Peel app as host context `strut/rate`, refreshed each minute; the page shows sats alone when it is absent or lacks the chosen currency.
 
 ## Before / after (430×900, dark)
 

@@ -39,7 +39,6 @@
     "check:fixer": "tsc -p fixer/tsconfig.json",
     "test:privacy": "STRUT_PRIVACY_LIVE=1 tsx --test src/privacy/privacy.live.test.ts",
     "test:browser": "tsx --test src/browser/service.live.test.ts",
-    "test:btc-price": "STRUT_TEST_BTC_PRICE=1 tsx --test src/steps/lib/btc/price.live.test.ts",
     "test:app-look": "STRUT_TEST_APP_LOOK=1 tsx --test src/apps/look.live.test.ts",
     "test:gateway": "tsx scripts/gateway-smoke.ts",
     "bench:memory-graph": "tsx scripts/bench-memory-graph.ts",

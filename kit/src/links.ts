@@ -30,6 +30,9 @@ export function appLink(name: string, input?: AppLinkInput): string {
  *  a framing host's page here only on the origin of a host that signed the
  *  person in (strut `specs/API.md` §14.3), so an app may take it as it is. */
 export const PAGE_CONTEXT = "strut/page";
+/** The host context key strut's UI hands a worker app the rate in: `{ perBtc, at }`
+ *  (`GET /rate`, fiat per bitcoin by currency). Absent where a host sends none. */
+export const RATE_CONTEXT = "strut/rate";
 
 /** The address a person can paste to open the app at `input`: the host's
  *  `page` with `input` as its one query param, in place of any it had.

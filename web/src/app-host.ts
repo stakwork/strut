@@ -34,7 +34,7 @@ import { createHostWalletProbe, sellerOf as sellerBase, signInAsk, walletAsk, ty
 import { remoteAppLink, remoteHere } from "./remote-app";
 import { storePurse } from "./store-purse";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
-import { PAGE_CONTEXT } from "../../kit/src/links";
+import { PAGE_CONTEXT, RATE_CONTEXT } from "../../kit/src/links";
 import { CAMERA_CAPABILITY, CAMERA_CAPTURE_METHOD, CAMERA_PASS_THROUGH, parseCaptureParams, type CameraCapture, type CameraPhoto } from "@strut/kit/camera";
 import { ACCOUNT_CAPABILITY, ACCOUNT_PLACEMENT_METHOD, VISITOR_CAPABILITY, VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD } from "@strut/kit/visitor";
 import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, liveCredit, type BrandStyles } from "./api";
@@ -165,6 +165,8 @@ export interface AppHostConnection {
   accountApi?: AccountApi;
   /** A theme change → `ui/notifications/host-context-changed`. */
   setTheme(theme: McpUiTheme): void;
+  /** The rate to hand the page (`strut/rate`), or null for none. */
+  setRate(rate: HostRate | null): void;
   /** What the page is opened with (`?input=`, ./app-links `appToolInput`)
    *  → `ui/notifications/tool-input`, sent once the page has initialized.
    *  Called again (a link to the same app) it is sent in place, `{}` for
@@ -270,7 +272,7 @@ export function createRelayClient(base = "", visitor = false, from?: string): { 
 /** The host context the page is handed at `ui/initialize`, and again on a
  *  theme change: the brand's variables for that theme with it, and the
  *  page's address when it has one (`strut/page`, @strut/kit `PAGE_CONTEXT`). */
-export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null, page?: string): McpUiHostContext {
+export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null, page?: string, rate?: HostRate | null): McpUiHostContext {
   // The spec types the variables as every standard name; the brand sets a
   // few, and the page reads a missing one as unset.
   const variables = brand?.[theme]?.variables as NonNullable<McpUiHostContext["styles"]>["variables"] | undefined;
@@ -286,7 +288,14 @@ export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null, pa
     userAgent: "strut-ui",
     platform: "web",
     ...(page ? { [PAGE_CONTEXT]: page } : {}),
+    ...(rate ? { [RATE_CONTEXT]: rate } : {}),
   };
+}
+
+/** What `strut/rate` carries (`GET /rate`): fiat per bitcoin by currency. */
+export interface HostRate {
+  perBtc: Record<string, number>;
+  at?: string;
 }
 
 /**
@@ -420,6 +429,8 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   };
   // `tool-input` goes after the page's `initialized`, as the spec orders it.
   let initialized = false;
+  let rate: HostRate | null = null;
+  let lastTheme = opts.theme;
   let toolInput: Record<string, string> | undefined;
   bridge.oninitialized = () => {
     initialized = true;
@@ -510,7 +521,14 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   return {
     bridge,
     ...(accountApi ? { accountApi } : {}),
-    setTheme: (theme) => bridge.setHostContext({ ...hostContextFor(theme, opts.brand, opts.page), theme }),
+    setTheme: (theme) => {
+      lastTheme = theme;
+      bridge.setHostContext({ ...hostContextFor(theme, opts.brand, opts.page, rate), theme });
+    },
+    setRate(next) {
+      rate = next;
+      bridge.setHostContext(hostContextFor(lastTheme, opts.brand, opts.page, rate));
+    },
     setToolInput(args) {
       toolInput = args;
       if (initialized) void bridge.sendToolInput({ arguments: args ?? {} });

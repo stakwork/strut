@@ -18,7 +18,6 @@ grants:
   workflows: []
   sqlite: true
   steps:
-    - btc/price
     - staff/stats
     - staff/numbers
     - staff/types

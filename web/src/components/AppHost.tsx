@@ -16,7 +16,7 @@ import { CameraSheet } from "./CameraSheet";
 import type { CameraCapture, CameraPhoto } from "@strut/kit/camera";
 import { SignInSheet } from "./SignInSheet";
 import { words } from "../words";
-import { signInSilently, signInWithKey, signInWithSphinx, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
+import { signInSilently, signInWithKey, signInWithSphinx, usableMethods, visitorRate, type SignInMethod, type VisitorSession } from "../visitor-signin";
 
 // ── An app's page, hosted (plans/apps.md §7.3) ─────────────────────────────
 //
@@ -87,6 +87,9 @@ const hostOf = (base: string) => {
 
 /** What the host renders: a workspace app at a version — here, or on `peer`
  *  — or, with `from`, another strut server's public app (a visitor's page). */
+/** How often a Peel app is handed the rate again. */
+const RATE_REFRESH_MS = 60_000;
+
 export type HostedApp = { name: string; version: string; peer?: string; from?: string; title?: string };
 
 export function AppHost(props: {
@@ -173,6 +176,7 @@ export function AppHost(props: {
     let conn: AppHostConnection | null = null;
     let readyTimer: ReturnType<typeof setTimeout> | undefined;
     let disposePlacement = () => {};
+    let stopRate = () => {};
     const markReady = () => {
       clearTimeout(readyTimer);
       if (!cancelled) handlers.current.onReady?.();
@@ -328,6 +332,15 @@ export function AppHost(props: {
         });
         if (cancelled) { await conn.close(); return; }
         connRef.current = conn;
+        // A Peel app (a worker's page) is handed the rate it shows fiat from
+        // (`strut/rate`, GET /rate as this viewer), again each minute.
+        if (isPeelApp(app.name, info?.theme)) {
+          const hand = conn;
+          const read = () => void (visitor ? visitorRate(from) : api.readRate()).then((r) => { if (!cancelled) hand.setRate(r); });
+          read();
+          const timer = setInterval(read, RATE_REFRESH_MS);
+          stopRate = () => clearInterval(timer);
+        }
         if (placement && conn.accountApi) setAccount({ placement, api: conn.accountApi });
         // Before the document loads: what initialize is followed by — the
         // input as it is NOW, should it have changed while connecting.
@@ -357,6 +370,7 @@ export function AppHost(props: {
       signInRef.current?.done(null);
       cameraRef.current?.done(null);
       clearTimeout(readyTimer);
+      stopRate();
       frame.removeEventListener("load", onLoad);
       connRef.current = null;
       void conn?.close();

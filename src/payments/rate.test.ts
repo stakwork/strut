@@ -12,6 +12,7 @@ import {
   urlRateSource,
   usdForMsat,
   type ExchangeRate,
+  checkReading,
 } from "./rate.js";
 
 /** An http capability answering mempool's shape, counting its calls. */
@@ -31,7 +32,8 @@ describe("the exchange rate", () => {
   it("reads mempool's { time, USD } as dollars per bitcoin, named by its host", async () => {
     const m = mempool(() => ok({ time: 1_793_000_000, USD: 73_176, EUR: 63_000 }));
     const source = rateSourceFor({ http: m.http });
-    assert.deepEqual(await source(), { usdPerBtc: 73_176, at: new Date(1_793_000_000_000).toISOString(), source: "mempool.space" });
+    // The other currencies of the same answer ride along; `usdPerBtc` is the USD one.
+    assert.deepEqual(await source(), { usdPerBtc: 73_176, at: new Date(1_793_000_000_000).toISOString(), source: "mempool.space", perBtc: { USD: 73_176, EUR: 63_000 } });
     assert.deepEqual(m.calls, [DEFAULT_RATE_URL]);
 
     const own = mempool(() => ok({ time: 1_793_000_000, USD: 70_000 }));
@@ -41,6 +43,15 @@ describe("the exchange rate", () => {
     assert.equal(await rateSourceFor({ source: async () => hostRate, url: "https://x.example", http: own.http })(), hostRate);
     assert.throws(() => urlRateSource("ftp://x", own.http), /http/);
     assert.throws(() => urlRateSource("not a url", own.http), /not a URL/);
+  });
+
+  it("keeps the other currencies of mempool's answer: finite figures above zero, never `time`", async () => {
+    const m = mempool(() => ok({ time: 1_793_000_000, USD: 73_176, EUR: 63_000, GBP: 0, CAD: "x", JPY: 11_000_000, note: null }));
+    const r = await urlRateSource(DEFAULT_RATE_URL, m.http)();
+    assert.deepEqual(r.perBtc, { USD: 73_176, EUR: 63_000, JPY: 11_000_000 });
+    // A custom source that gives none stays exactly as it was.
+    const custom: ExchangeRate = checkReading({ usdPerBtc: 1, at: new Date(0).toISOString(), source: "host" }, "host");
+    assert.deepEqual(custom, { usdPerBtc: 1, at: new Date(0).toISOString(), source: "host" });
   });
 
   it("refuses an answer that cannot price anything", async () => {

@@ -79,6 +79,27 @@ export function visitorAuth(beside = false, from?: string): Record<string, strin
   return { ...(from ? {} : { "x-strut-ui": "1" }), ...(s ? (beside ? { "x-strut-visitor": s.token } : { authorization: `Bearer ${s.token}` }) : {}) };
 }
 
+/** The rate this strut trusts (`GET /rate`), read as the visitor: fiat per
+ *  bitcoin by currency, for a worker app that shows what sats are worth
+ *  (the host hands it in, `strut/rate`). Null when it cannot be read. */
+export async function visitorRate(from?: string): Promise<{ perBtc: Record<string, number>; at?: string } | null> {
+  try {
+    const res = await fetch(`${sellerBase(from)}/rate`, { ...fetchInit(from), headers: visitorAuth(false, from), cache: "no-store" });
+    return res.ok ? rateOf(await res.json()) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `perBtc` and time of a `GET /rate` answer, or null with no currency in it. */
+export function rateOf(body: unknown): { perBtc: Record<string, number>; at?: string } | null {
+  const o = (body && typeof body === "object" ? body : {}) as { perBtc?: unknown; at?: unknown };
+  if (!o.perBtc || typeof o.perBtc !== "object") return null;
+  const perBtc: Record<string, number> = {};
+  for (const [code, v] of Object.entries(o.perBtc)) if (typeof v === "number" && Number.isFinite(v) && v > 0) perBtc[code] = v;
+  return Object.keys(perBtc).length ? { perBtc, ...(typeof o.at === "string" ? { at: o.at } : {}) } : null;
+}
+
 /** What `GET /visitors` says: the methods this server offers, and who this
  *  page is signed in as. */
 export interface VisitorInfo {

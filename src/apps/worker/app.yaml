@@ -18,4 +18,4 @@ account:
   corner: top-right
 grants:
   workflows: []
-  steps: [btc/price, task/next, task/submit, task/skip, task/file, task/me, task/history, task/withdraw]
+  steps: [task/next, task/submit, task/skip, task/file, task/me, task/history, task/withdraw]

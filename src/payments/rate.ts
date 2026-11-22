@@ -26,6 +26,10 @@ export interface ExchangeRate {
   at: string;
   /** Where it came from: a host name (`mempool.space`) or a host's label. */
   source: string;
+  /** Fiat per 1 BTC by currency code, when the source carries them (mempool's
+   *  answer does: USD, EUR, GBP, CAD, CHF, AUD, JPY). `usdPerBtc` is the one
+   *  credit sales price by; this only lets a page show other currencies. */
+  perBtc?: Record<string, number>;
 }
 
 /** A source of readings: anything that answers one, or throws. */
@@ -59,14 +63,18 @@ export function checkReading(r: unknown, from: string): ExchangeRate {
   const at = typeof o["at"] === "string" && !Number.isNaN(Date.parse(o["at"])) ? new Date(o["at"]).toISOString() : null;
   if (!at) throw new Error(`${from} answered no time for its rate`);
   const source = typeof o["source"] === "string" && o["source"].trim() ? o["source"].trim() : from;
-  return { usdPerBtc, at, source };
+  const given = o["perBtc"];
+  const perBtc: Record<string, number> = {};
+  if (given && typeof given === "object") {
+    for (const [code, v] of Object.entries(given)) if (typeof v === "number" && Number.isFinite(v) && v > 0) perBtc[code] = v;
+  }
+  return { usdPerBtc, at, source, ...(Object.keys(perBtc).length ? { perBtc } : {}) };
 }
 
 /** The source at `url`, read through `http`: an endpoint of mempool's shape,
  *  `{ time: <unix seconds>, USD: <dollars per BTC>, … }`. `source` is the
  *  URL's host. */
-export function urlRateSource(url: string, http: HttpCapability, opts: { timeoutMs?: number; currency?: string } = {}): RateSource {
-  const cur = (opts.currency ?? "USD").toUpperCase();
+export function urlRateSource(url: string, http: HttpCapability, opts: { timeoutMs?: number } = {}): RateSource {
   let u: URL;
   try {
     u = new URL(url);
@@ -81,31 +89,9 @@ export function urlRateSource(url: string, http: HttpCapability, opts: { timeout
     const b = (res.body && typeof res.body === "object" ? res.body : {}) as Record<string, unknown>;
     const time = b["time"];
     if (typeof time !== "number" || !Number.isFinite(time) || time <= 0) throw new Error(`${host} answered no time`);
-    if (b[cur] === undefined) throw new CurrencyMissingError(host, cur);
-    return checkReading({ usdPerBtc: b[cur], at: new Date(time * 1000).toISOString(), source: host }, host);
-  };
-}
-
-/** A source that does not quote the currency asked (not an outage). */
-export class CurrencyMissingError extends Error {
-  constructor(host: string, readonly currency: string) {
-    super(`${host} has no ${currency} price`);
-    this.name = "CurrencyMissingError";
-  }
-}
-
-/** Coinbase's `exchange-rates?currency=BTC` (`{ data: { rates: { USD: "…" } } }`):
- *  the fallback for the BTC price step. It carries no time, so `at` is now. */
-export function coinbaseRateSource(http: HttpCapability, currency: string, opts: { timeoutMs?: number; now?: () => number } = {}): RateSource {
-  const cur = currency.toUpperCase();
-  const host = "api.coinbase.com";
-  return async () => {
-    const res = await http(`https://${host}/v2/exchange-rates?currency=BTC`, { headers: { accept: "application/json" }, timeout: opts.timeoutMs ?? RATE_TIMEOUT_MS });
-    if (!res.ok) throw new Error(`${host} answered HTTP ${res.status}`);
-    const b = res.body as { data?: { rates?: Record<string, unknown> } } | null;
-    const raw = b?.data?.rates?.[cur];
-    if (raw === undefined) throw new CurrencyMissingError(host, cur);
-    return checkReading({ usdPerBtc: Number(raw), at: new Date((opts.now ?? Date.now)()).toISOString(), source: host }, host);
+    // The other currencies of the same answer (every finite figure above zero but `time`).
+    const perBtc = Object.fromEntries(Object.entries(b).filter(([k, v]) => k !== "time" && typeof v === "number"));
+    return checkReading({ usdPerBtc: b["USD"], at: new Date(time * 1000).toISOString(), source: host, perBtc }, host);
   };
 }
 

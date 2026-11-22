@@ -1866,6 +1866,32 @@ describe("the API key gate", () => {
     assert.equal((await strut.app.request("/secrets/X", { method: "PUT", headers: { cookie, "x-strut-ui": "1", authorization: `Bearer ${PEER}`, "content-type": "application/json" }, body: "{}" })).status, 403);
   });
 
+  it("GET /rate answers the rate with every currency the source carries (`perBtc`), to the key, a member and a visitor alike", async () => {
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(join(tempDir, "ws-rate")),
+      store: new MemoryRunStore(),
+      webDist: join(tempDir, "dist"),
+      scheduler: false,
+      payments: { rate: async () => ({ usdPerBtc: 60_000, at: "2026-01-01T00:00:00.000Z", source: "test", perBtc: { USD: 60_000, EUR: 55_000, JPY: 9_000_000 } }) },
+    });
+    process.env["STRUT_API_KEY"] = KEY;
+    const json = { "content-type": "application/json" };
+    const want = { usdPerBtc: 60_000, at: "2026-01-01T00:00:00.000Z", source: "test", perBtc: { USD: 60_000, EUR: 55_000, JPY: 9_000_000 } };
+    assert.deepEqual(await (await strut.app.request("/rate", { headers: auth.headers })).json(), want);
+    assert.equal((await strut.app.request("/rate")).status, 401, "no credential, no rate");
+    for (const role of ["member", "visitor"]) {
+      const minted = await strut.app.request("/auth/ticket", { method: "POST", headers: { ...json, ...auth.headers }, body: JSON.stringify({ actor: `${role}-9`, role }) });
+      const { ticket } = (await minted.json()) as { ticket: string };
+      const traded = await strut.app.request("/auth/session", { method: "POST", headers: { ...json, "x-strut-ui": "1" }, body: JSON.stringify({ ticket }) });
+      const cookie = traded.headers.get("set-cookie")!.split(";")[0]!;
+      const got = (await traded.json()) as { token: string };
+      const res = await strut.app.request("/rate", { headers: { cookie } });
+      assert.equal(res.status, 200, `${role}'s session reads the rate`);
+      assert.deepEqual(await res.json(), want);
+      if (role === "visitor") assert.deepEqual(await (await strut.app.request("/rate", { headers: { authorization: `Bearer ${got.token}` } })).json(), want, "and its bearer token");
+    }
+  });
+
   it("a visitor's session (plans/app-repos.md §5.1) passes its own routes and nothing else — 403 on every other, reads included, as cookie and as bearer", async () => {
     const strut = await boot();
     process.env["STRUT_API_KEY"] = KEY;
@@ -1891,7 +1917,7 @@ describe("the API key gate", () => {
     assert.deepEqual(await (await strut.app.request("/health", { headers: { cookie } })).json(), { ok: true });
 
     const routes = everyRoute(strut).filter((r) => !openToAnyone(r));
-    const allowed = ["GET /auth/session", "POST /apps/x/channel-ticket"];
+    const allowed = ["GET /auth/session", "GET /rate", "POST /apps/x/channel-ticket"];
     for (const r of allowed) assert.ok(routes.includes(r), r);
     assert.ok(routes.length > 100, `swept ${routes.length} routes`);
     assert.ok(routes.includes("GET /host/mounted") && routes.includes("POST /mcp") && routes.includes("GET /apps"), "Jamie's door and the apps list are swept");

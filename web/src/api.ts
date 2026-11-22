@@ -3,7 +3,7 @@ import { fileScopeOf, isPeerPath, type AccessedNode, type RunApp, type TokenUsag
 import { takeTicket } from "./ticket";
 import { vouchedEmbedOrigin } from "./embed";
 import { claimAnswerOf, type ClaimAnswer } from "./visitor-pay";
-import { setVisitorSession } from "./visitor-signin";
+import { rateOf, setVisitorSession } from "./visitor-signin";
 
 // Mount-path-agnostic API base. Derived at runtime from the app's own
 // script URL so the UI works whether strut is served at the root (`/`) or
@@ -3257,6 +3257,18 @@ export function trustedRate(): Promise<{ usdPerBtc: number; source: string } | n
       (r) => (r && typeof r.usdPerBtc === "number" && r.usdPerBtc > 0 && typeof r.source === "string" ? { usdPerBtc: r.usdPerBtc, source: r.source } : null),
       () => null,
     ));
+}
+
+/** `GET /rate` as a member or admin (fresh each call): fiat per bitcoin by
+ *  currency, for a worker app's page (the host hands it in). Null when it
+ *  cannot be read. */
+export async function readRate(): Promise<{ perBtc: Record<string, number>; at?: string } | null> {
+  try {
+    const res = await fetch(`${BASE}/rate`, { headers: authHeaders(), cache: "no-cache" });
+    return res.ok ? rateOf(await res.json()) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** That app's document, its visitor's identity written in by its server. */

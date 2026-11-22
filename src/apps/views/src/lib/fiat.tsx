@@ -1,9 +1,10 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
-import { FIAT_CURRENCIES, formatFiat, satsToFiat, useAppState, useBtcPrice, useLocale, type FiatCurrency } from "@strut/kit";
+import { FIAT_CURRENCIES, formatFiat, satsToFiat, useAppState, useHostRate, useLocale, type FiatCurrency } from "@strut/kit";
 
 // The worker's fiat display (plans/worker-peel-style.md): sats stay the money,
 // and a currency the worker picks puts its value beside them, "125 sats · $0.12",
-// from `btc/price`. Their pick is kept by strut per viewer (`useAppState`), so
+// from the rate mempool gives strut (`GET /rate`'s `perBtc`, which strut's UI
+// reads and hands the page: `useHostRate`). Their pick is kept by strut per viewer (`useAppState`), so
 // it follows them across visits and devices. "off" is sats only, and so is a
 // price that cannot be had: nothing says so, nothing breaks.
 
@@ -27,8 +28,8 @@ export function useFiatChoice(): [FiatChoice, (c: FiatChoice) => void] {
 export function FiatProvider({ children }: { children: ReactNode }) {
   const [choice] = useFiatChoice();
   const locale = useLocale();
-  const price = useBtcPrice(choice === "off" ? null : choice);
-  const perBtc = price.perBtc;
+  const rate = useHostRate();
+  const perBtc = choice === "off" ? undefined : rate?.perBtc[choice];
   const of = useMemo<FiatOf>(
     () => (choice === "off" || !perBtc ? none : (msat) => formatFiat(satsToFiat(msat / 1000, perBtc), choice, locale)),
     [choice, perBtc, locale],

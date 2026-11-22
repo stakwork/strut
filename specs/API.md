@@ -5458,7 +5458,10 @@ dictation) would reach it through the frame's `allow`. So:
 **Paying** is §17.6, with the seller as the server:
 - the challenge is checked, and the sheet's price is the invoice's sats,
   in dollars at the HOSTING strut's rate alone: `GET /rate` (any
-  credential, a member's session included) → `{ usdPerBtc, at, source }`,
+  credential, a member's or a visitor's session included, read only) →
+  `{ usdPerBtc, at, source, perBtc? }` — `perBtc` the fiat per bitcoin by
+  currency code (USD, EUR, GBP, CAD, CHF, AUD, JPY) from the same mempool
+  reading, which strut's UI hands a worker app to show what sats are worth —
   read a minute at a time from src/payments/rate.ts, `503` with none to be
   had. A visitor with no credential on the hosting strut sees sats alone;
 - in Peel, the native wallet is asked first (specs/WALLET.md §1.2, naming

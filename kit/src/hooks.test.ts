@@ -15,10 +15,9 @@ import {
   useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
   useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS,
   useRunFile, useRunFileUrl, runFileBlob, type RunFile,
-  useTask, useWorker, useTaskHistory, useWithdraw, useTaskFile, taskErrorCode, TASK_STEPS, TASK_WAIT_S,
+  useHostRate, useTask, useWorker, useTaskHistory, useWithdraw, useTaskFile, taskErrorCode, TASK_STEPS, TASK_WAIT_S,
 } from "./hooks.js";
-import { useBtcPrice, BTC_PRICE_STEP } from "./btc-hooks.js";
-import { PAGE_CONTEXT, appLink, shareLink } from "./links.js";
+import { PAGE_CONTEXT, RATE_CONTEXT, appLink, shareLink } from "./links.js";
 
 useActEnvironment();
 
@@ -241,26 +240,6 @@ describe("the run hooks name their step and pass what they were given", () => {
     await until(() => h.result().workers.data?.["w-1"] === "Wendy W", "the first list to take the newer name");
     assert.equal(h.result().workers.data?.["a-1"], "Ada", "a person only the first list holds keeps their name");
     await h.unmount();
-  });
-
-  it("useBtcPrice → btc/price for the currency; null asks nothing; a failure leaves perBtc null", async () => {
-    const { client, calls } = fakeClient({ [BTC_PRICE_STEP]: (c) => ({ currency: c.config!.currency, perBtc: 100_000, at: "2026-01-01T00:00:00.000Z" }) });
-    const h = await renderHook(() => useBtcPrice("EUR"), { client });
-    await until(() => h.result().perBtc !== null, "price");
-    assert.deepEqual(calls, [{ type: BTC_PRICE_STEP, config: { currency: "EUR" } }]);
-    assert.equal(h.result().at, "2026-01-01T00:00:00.000Z");
-    await h.unmount();
-    const none = fakeClient();
-    const h2 = await renderHook(() => useBtcPrice(null), { client: none.client });
-    await sleep(20);
-    assert.equal(none.calls.length, 0);
-    assert.deepEqual(h2.result(), { perBtc: null, isLoading: false });
-    await h2.unmount();
-    const bad = fakeClient({ [BTC_PRICE_STEP]: () => { throw new Error("down"); } });
-    const h3 = await renderHook(() => useBtcPrice("USD"), { client: bad.client });
-    await until(() => h3.result().error !== undefined, "error");
-    assert.equal(h3.result().perBtc, null);
-    await h3.unmount();
   });
 
   it("useSql → sqlite/query as a query; useSqlMutation's exec and batch write, then every useSql read refetches", async () => {
@@ -604,6 +583,20 @@ describe("the host hooks", () => {
     assert.equal(h.result()?.({ session: "s1" }), "https://box.example/?input=session%3Ds1");
     await act(async () => { host.update({ context: { [PAGE_CONTEXT]: "javascript:alert(1)" } }); });
     assert.equal(h.result(), undefined, "only an http(s) page");
+    await h.unmount();
+  });
+});
+
+describe("useHostRate: the rate the host hands the page", () => {
+  it("is undefined until the host sends strut/rate, then its finite figures above zero", async () => {
+    const { client } = fakeClient();
+    const host = createStaticHost({});
+    const h = await renderHook(() => useHostRate(), { client, host });
+    assert.equal(h.result(), undefined);
+    await act(async () => { host.update({ context: { [RATE_CONTEXT]: { perBtc: { USD: 60_000, EUR: 55_000, GBP: 0, CAD: "x" }, at: "2026-01-01T00:00:00.000Z" } } }); });
+    assert.deepEqual(h.result(), { perBtc: { USD: 60_000, EUR: 55_000 }, at: "2026-01-01T00:00:00.000Z" });
+    await act(async () => { host.update({ context: { [RATE_CONTEXT]: { perBtc: "no" } } }); });
+    assert.equal(h.result(), undefined);
     await h.unmount();
   });
 });

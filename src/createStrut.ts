@@ -2828,9 +2828,12 @@ export async function createStrut<TServices = unknown>(
   /** What a VISITOR's session may call past what is open to anyone (the
    *  public apps' pages and files, `POST /public/mcp`, `/visitors/*`): who
    *  it is, and its app's channel ticket — which names it, for a public
-   *  app at the version the public view serves (plans/app-repos.md §5.1). */
+   *  app at the version the public view serves (plans/app-repos.md §5.1);
+   *  and `GET /rate`, the rate every credential reads (the page shows
+   *  what sats are worth: strut's UI hands it to a worker app). */
   const VISITOR_ROUTES: Array<[method: string, path: RegExp]> = [
     ["GET", /^\/auth\/session$/],
+    ["GET", /^\/rate$/],
     ["POST", /^\/apps\/[^/]+\/channel-ticket$/],
   ];
   const visitorMay = (method: string, path: string) =>
@@ -7151,11 +7154,12 @@ export async function createStrut<TServices = unknown>(
   // What strut's UI prices a STRANGER's invoice at (specs/API.md §17.9): the
   // sats an invoice asks are the price, and dollars beside them come from
   // here, never from the seller's own quote. Any credential, a member's
-  // session included (it hosts apps alone); read a minute at a time.
+  // and a visitor's session included (they host apps alone); read a minute
+  // at a time. `perBtc`: fiat per bitcoin by currency, from the same reading.
   app.get("/rate", async (c) => {
     try {
       const r = await payments.rate.read();
-      return c.json({ usdPerBtc: r.usdPerBtc, at: r.at, source: r.source }, 200, { "cache-control": "private, max-age=60" });
+      return c.json({ usdPerBtc: r.usdPerBtc, at: r.at, source: r.source, ...(r.perBtc ? { perBtc: r.perBtc } : {}) }, 200, { "cache-control": "private, max-age=60" });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 503);
     }
