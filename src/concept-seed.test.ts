@@ -219,12 +219,19 @@ describe("concept files (pure)", () => {
     // The person may never have built software, or may be a developer (2026-11-22): the questions are about
     // what gets built, in words the person can answer; how it is built the job decides and records, where a
     // developer reads it. And a plan always looks for a smaller one.
-    assert.match(plan.docs!, /someone who has never\s+built software can answer it, unless the request shows the person\s+builds software themselves/);
-    assert.match(plan.docs!, /How it is built is yours either way/);
-    assert.match(plan.docs!, /First look for a smaller plan/);
-    // The questions are the reply's `ask`, named beside `text`: "put the same way: a short overview, and the
-    // questions as your `ask`" sent them in the text alone 5 times of 10 (2026-11-22; main's page 0 of 9).
-    assert.match(plan.docs!, /a short overview as\s+your `text`, and the questions as your `ask`/);
+    assert.match(plan.docs!, /someone\s+who\s+has\s+never\s+built\s+software\s+can\s+answer\s+it,\s+unless\s+the\s+request\s+shows\s+the\s+person\s+builds\s+software\s+themselves/);
+    // Few questions, whatever the brief lists: the orchestrator's real briefs ("Consider: … unit conversion, stock
+    // tracking, saving past days, scaling") drew 6 to 8 questions, a bakery owner's whole conversation 7 and 8
+    // (2026-11-22). The number is how many there often are, never a cap: a plan can be a dozen lines or a thousand,
+    // and a large one can have ten real questions. The smaller plan is planned and its cuts named, not each asked.
+    assert.match(plan.docs!, /the few whose answer would\s+change the plan, often three or four\./);
+    assert.doesNotMatch(plan.docs!, /at most|\bmust\b|never more/, "no hard cap on the questions");
+    assert.match(plan.docs!, /Every other\s+choice is yours, how it is built above all, even when the request\s+raises it/);
+    assert.match(plan.docs!, /First look for a smaller plan[^]*plan that one, and say what it leaves out/);
+    // The questions are the reply's `ask`, named beside `text`, and tied to the job's own rule for one ("if you
+    // cannot go on without a decision"): with defaults on every question, the real briefs left them in the text
+    // 4 times of 6 on main's page; with the reason, 13 of 15 cases sent `ask` (2026-11-22).
+    assert.match(plan.docs!, /a short overview as\s+your `text`, and the questions as your `ask`, since you cannot go on\s+without their go/);
     assert.match(plan.docs!, /The detail is in `plan\.md`\s+for whoever wants it/);
     // The review reads the item's work (its job, what it published), not the reply that hands it back: told
     // "finished and verified", the plan's job only edited its file (2026-11-22, a whole conversation).
@@ -237,7 +244,10 @@ describe("concept files (pure)", () => {
           ["job", "Plan"],
           ["job", "Plan"],
         ],
-        [["job", "Plan"]],
+        [
+          ["job", "Plan"],
+          ["job", "Plan"],
+        ],
       ],
       "each case is a plan job",
     );
