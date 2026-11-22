@@ -1,4 +1,4 @@
-import { withLock } from "./jobs.js";
+import { withLock } from "./lock.js";
 import { readFile, writeFile, readdir, mkdir, stat, unlink, rmdir, rm, rename } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import yaml from "js-yaml";

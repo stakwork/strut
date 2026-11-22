@@ -37,8 +37,8 @@ It never blocks or fails a publish. A throw, a 20 s timeout
 `[apps] summary for <name>@<v> not generated: …`.
 
 Model: alias `haiku`, through `resolveModel` with the secrets boundary and the
-`llmAuth` gateway hook. No environment variable. With no model available, the
-first version reads "Initial version"; later versions stay empty. Tests inject
+`llmAuth` gateway hook. No environment variable. With no model available nothing
+is written (a warning is logged) and the summary stays empty. Tests inject
 their own summarizer (`AppsDeps.summarize`).
 
 ## Limits

@@ -56,20 +56,15 @@ export function oneLine(text: string): string {
 
 /** The default summarizer: a small fast model (`haiku`) through the same
  *  resolver as the llm step — the secrets boundary and the `llmAuth`
- *  gateway seam. The first version with no model reads "Initial version". */
+ *  gateway seam. With no model it throws and nothing is written. */
 export function llmSummarizer(deps: { secrets?: SecretsCapability; llmAuth?: LlmAuth }): AppSummarizer {
   return async ({ name, manifest, diff }) => {
-    let model: any;
-    try {
-      ({ model } = await resolveModel({
-        model: "haiku",
-        ...(deps.secrets ? { secrets: deps.secrets } : {}),
-        ...(deps.llmAuth ? { llmAuth: deps.llmAuth, auth: { kind: "chat" as const, chatId: `app-summary:${name}`, turn: 0 } } : {}),
-      }));
-    } catch (err) {
-      if (diff === undefined) return "Initial version";
-      throw err;
-    }
+    // No model here: throw, and nothing is written (the caller warns).
+    const { model } = await resolveModel({
+      model: "haiku",
+      ...(deps.secrets ? { secrets: deps.secrets } : {}),
+      ...(deps.llmAuth ? { llmAuth: deps.llmAuth, auth: { kind: "chat" as const, chatId: `app-summary:${name}`, turn: 0 } } : {}),
+    });
     const { generateText } = await import("ai");
     const about = `App "${manifest.title}"${manifest.description ? ` — ${manifest.description}` : ""}.`;
     const prompt = diff === undefined
