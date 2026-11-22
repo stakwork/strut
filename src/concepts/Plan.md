@@ -50,5 +50,6 @@ for whoever wants it. "Go" takes every default.
 After go, name ONE item in your reply, the next to do, with its kind, and
 its repositories if it has any. It is started as a job of its own, and
 that job is handed back to you when it ends. Check what it made against
-the plan before you name the next. Decide what comes up the same way and
+the plan, from its job's work rather than the report, before you name the
+next. Decide what comes up the same way and
 tell the person at the end; stop only for what cannot be undone.
