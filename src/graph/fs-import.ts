@@ -131,6 +131,7 @@ export async function importFileWorkspace(dataDir: string, target: GraphWorkspac
         if (r.version !== label) {
           throw new Error(`fs_import_conflict: app "${app.name}" ${label} landed as ${r.version} — the graph already holds other versions of it`);
         }
+        if (info.summary) await target.setAppVersionSummary(app.name, label, info.summary);
         report.appVersions++;
       }
       // Releases in order keep their ids; the active pointer as it was, then

@@ -1,3 +1,4 @@
+import { withLock } from "./jobs.js";
 import { readFile, writeFile, readdir, mkdir, stat, unlink, rmdir, rm, rename } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import yaml from "js-yaml";
@@ -426,6 +427,10 @@ export interface AppVersionInfo extends Pick<WorkflowVersionInfo, "source" | "ac
   manifest: AppManifest;
   publisher?: string;
   upstream?: Upstream;
+  /** One plain line on what this version changed, written by a small model
+   *  after the publish (src/apps/summary.ts). Absent until it arrives, and
+   *  on versions older than the feature. */
+  summary?: string;
 }
 
 export type AppVersionSummary = Omit<AppVersionInfo, "manifest">;
@@ -767,6 +772,9 @@ export interface WorkspaceStore extends SubflowResolver {
   /** Pin the app as a tab, or unpin it (`AppMetadata.pinned`). Throws when
    *  the app does not exist. */
   setAppPinned(name: string, pinned: boolean): Promise<void>;
+  /** Record a version's one-line `summary` (written after the publish). Throws
+   *  when the app or version does not exist. */
+  setAppVersionSummary(name: string, version: string, summary: string): Promise<void>;
   /** Remove the pointers; the directories stay. False when there was none. */
   deleteApp(name: string): Promise<boolean>;
   /** The directory a version's files live in (`<dataDir>/apps/<name>/<vN>`)
@@ -1387,7 +1395,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
     return appRecord(name, meta, label, info);
   }
 
-  async publishApp(name: string, hash: string, manifest: AppManifest, opts?: PublishAppOptions): Promise<{ version: string; changed: boolean }> {
+  publishApp(name: string, hash: string, manifest: AppManifest, opts?: PublishAppOptions): Promise<{ version: string; changed: boolean }> {
+    return withLock(`app-meta:${name}`, () => this.publishAppLocked(name, hash, manifest, opts));
+  }
+
+  private async publishAppLocked(name: string, hash: string, manifest: AppManifest, opts?: PublishAppOptions): Promise<{ version: string; changed: boolean }> {
     validateAppName(name);
     const meta = await this.readAppMetadata(name);
     if (!meta) await refuseUnderInstalledPackage("app", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
@@ -1446,7 +1458,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
     return { version: vid, changed: true };
   }
 
-  async setActiveAppVersion(name: string, version: string): Promise<void> {
+  setActiveAppVersion(name: string, version: string): Promise<void> {
+    return withLock(`app-meta:${name}`, () => this.setActiveAppVersionLocked(name, version));
+  }
+
+  private async setActiveAppVersionLocked(name: string, version: string): Promise<void> {
     validateAppName(name);
     const meta = await this.readAppMetadata(name);
     if (!meta) throw new Error(`App "${name}" not found`);
@@ -1458,7 +1474,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
     await this.writeAppMetadata(name, meta);
   }
 
-  async addAppRelease(name: string, release: { version: string; lock: AppLock; createdAt?: string; by?: string }): Promise<AppRelease> {
+  addAppRelease(name: string, release: { version: string; lock: AppLock; createdAt?: string; by?: string }): Promise<AppRelease> {
+    return withLock(`app-meta:${name}`, () => this.addAppReleaseLocked(name, release));
+  }
+
+  private async addAppReleaseLocked(name: string, release: { version: string; lock: AppLock; createdAt?: string; by?: string }): Promise<AppRelease> {
     validateAppName(name);
     const meta = await this.readAppMetadata(name);
     if (!meta) throw new Error(`App "${name}" not found`);
@@ -1471,7 +1491,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
     return made;
   }
 
-  async setAppLive(name: string, live: string | null): Promise<void> {
+  setAppLive(name: string, live: string | null): Promise<void> {
+    return withLock(`app-meta:${name}`, () => this.setAppLiveLocked(name, live));
+  }
+
+  private async setAppLiveLocked(name: string, live: string | null): Promise<void> {
     validateAppName(name);
     const meta = await this.readAppMetadata(name);
     if (!meta) throw new Error(`App "${name}" not found`);
@@ -1487,7 +1511,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
     await this.writeAppMetadata(name, meta);
   }
 
-  async setAppPinned(name: string, pinned: boolean): Promise<void> {
+  setAppPinned(name: string, pinned: boolean): Promise<void> {
+    return withLock(`app-meta:${name}`, () => this.setAppPinnedLocked(name, pinned));
+  }
+
+  private async setAppPinnedLocked(name: string, pinned: boolean): Promise<void> {
     validateAppName(name);
     const meta = await this.readAppMetadata(name);
     if (!meta) throw new Error(`App "${name}" not found`);
@@ -1496,7 +1524,24 @@ export class FileWorkspaceStore implements WorkspaceStore {
     await this.writeAppMetadata(name, meta);
   }
 
-  async deleteApp(name: string): Promise<boolean> {
+  setAppVersionSummary(name: string, version: string, summary: string): Promise<void> {
+    return withLock(`app-meta:${name}`, () => this.setAppVersionSummaryLocked(name, version, summary));
+  }
+
+  private async setAppVersionSummaryLocked(name: string, version: string, summary: string): Promise<void> {
+    validateAppName(name);
+    const meta = await this.readAppMetadata(name);
+    const v = meta?.versions[version];
+    if (!meta || !v) throw new Error(`Version "${version}" not found for app "${name}"`);
+    v.summary = summary;
+    await this.writeAppMetadata(name, meta);
+  }
+
+  deleteApp(name: string): Promise<boolean> {
+    return withLock(`app-meta:${name}`, () => this.deleteAppLocked(name));
+  }
+
+  private async deleteAppLocked(name: string): Promise<boolean> {
     validateAppName(name);
     if (!(await this.readAppMetadata(name))) return false;
     // The pointer only: the version directories (and a database) stay.

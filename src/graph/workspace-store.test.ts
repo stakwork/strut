@@ -96,6 +96,14 @@ for (const tb of testBackends()) {
         assert.deepEqual([schema["own"], schema["pub"]], ["datetime", null], "the Schema node keeps created_at as the attribute's name");
       });
 
+      it("an app version's one-line summary is written after the publish and read back", async () => {
+        const m = manifestSchema.parse({ title: "T", grants: { workflows: [] } });
+        await ws.publishApp("sum", "s1", m);
+        await ws.setAppVersionSummary("sum", "v1", "A task list");
+        assert.equal((await ws.getApp("sum"))?.versions["v1"]?.summary, "A task list");
+        await assert.rejects(ws.setAppVersionSummary("sum", "v9", "x"), /not found/);
+      });
+
       it("swaps the ACTIVE_VERSION edge on activation and never duplicates it", async () => {
         await ws.publishWorkflow("wf", "v1", { steps: [{ id: "a", type: "log", config: { message: "1" } }] });
         await ws.publishWorkflow("wf", "v2", { steps: [{ id: "a", type: "log", config: { message: "2" } }] });

@@ -195,6 +195,7 @@ function PanelVersions(props: { name: string; shown: string; onView: (version: s
         >
           <span class="app-panel-version-name">{r.version}</span>
           {r.state && <span class={`app-version-state is-${r.state}`}>{STATE_LABEL[r.state]}</span>}
+          {r.summary && <span class="app-panel-version-summary" title={r.summary}>{r.summary}</span>}
           <span class="app-panel-version-when">{when(r.createdAt)}</span>
         </button>
       ))}

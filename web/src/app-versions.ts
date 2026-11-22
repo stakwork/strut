@@ -14,7 +14,7 @@
 export interface AppVersionsData {
   /** The live version. */
   active: string;
-  versions: Record<string, { createdAt: string; source?: string }>;
+  versions: Record<string, { createdAt: string; source?: string; summary?: string }>;
   /** The live release's id, or `latest` while following. */
   live: string;
   /** Oldest first. */
@@ -27,6 +27,8 @@ export interface AppVersionRow {
   version: string;
   createdAt: string;
   state: AppVersionState;
+  /** The version's one-line change summary, once written. */
+  summary?: string;
   /** The newest release of this version, which Restore makes live again. */
   release?: string;
 }
@@ -66,7 +68,7 @@ export function appVersionRows(data: AppVersionsData): AppVersionRow[] {
         : release
           ? "was-live"
           : isDraft(version, data.active, data.live) ? "draft" : "";
-      return { version, createdAt: info.createdAt, state, ...(release ? { release } : {}) };
+      return { version, createdAt: info.createdAt, state, ...(info.summary ? { summary: info.summary } : {}), ...(release ? { release } : {}) };
     });
 }
 

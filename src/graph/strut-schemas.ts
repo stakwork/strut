@@ -412,6 +412,8 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       actor: "?string",
       /** `Upstream`, JSON-encoded (marketplace.md §3). */
       upstream: "?string",
+      /** The one-line change summary (`AppVersionInfo.summary`). */
+      summary: "?string",
     },
   },
   {

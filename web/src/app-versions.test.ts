@@ -99,3 +99,16 @@ test("the side panel's chip: the version shown and its state, drafts on the live
   assert.equal(panelKey("acme/crm", "v3", "v3"), "acme/crm", "the live one follows what is live");
   assert.equal(panelKey("acme/crm", "v5", "v3"), "acme/crm@v5");
 });
+
+test("appVersionRows: a version's one-line summary rides on its row, none when absent", () => {
+  const data: AppVersionsData = {
+    ...held,
+    active: "v2",
+    live: "latest",
+    versions: { v1: { createdAt: at(1), summary: "A task list" }, v2: { createdAt: at(2) } },
+    releases: [],
+  };
+  const rows = appVersionRows(data);
+  assert.equal(rows.find((r) => r.version === "v1")?.summary, "A task list");
+  assert.ok(!("summary" in rows.find((r) => r.version === "v2")!));
+});

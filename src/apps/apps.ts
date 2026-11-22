@@ -50,7 +50,7 @@ import { isSealedStep } from "../sealed.js";
 import { servicesPastVisitor } from "../step-lint.js";
 import { treeHash } from "../version.js";
 import { packagePrefixOf } from "../package-lookup.js";
-import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
+import { newestVersion, versionLabelOrder, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./build.js";
 import { copyAppDir, isEmptyDir, isPreviewLabel, listAppFiles, reservedAppName, validateAppName } from "./files.js";
@@ -60,7 +60,8 @@ import { checkAppGraph, registerAppGraph, type RegisteredGraph } from "./graph-t
 import type { AppDatabases } from "./data.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
-import { evictVersionDir, keptVersions, readTree, recordTree, restoreSources } from "./objects.js";
+import { evictVersionDir, keptVersions, readTree, readTreeText, recordTree, restoreSources, type AppTree } from "./objects.js";
+import { appDiff, SUMMARY_TIMEOUT_MS, type AppSummarizer } from "./summary.js";
 import type { AppCallLog, AppMonitor, AppUsageBrief } from "./monitor.js";
 import { lockDrift, lockProblems, takeLock, type LockDrift } from "./releases.js";
 
@@ -390,6 +391,11 @@ export interface AppsDeps {
    *  `watchAppWrites` when something writes app records past this
    *  capability (createStrut: the seeds, a package install). Default: its own. */
   manifests?: AppManifests;
+  /** Writes each new version's one-line summary after the publish
+   *  (./summary.ts). Absent: none is written. Tests stub it. */
+  summarize?: AppSummarizer;
+  /** How long the summary may take before it is given up on. Default 20 s. */
+  summaryTimeoutMs?: number;
 }
 
 
@@ -415,6 +421,44 @@ export function createApps(deps: AppsDeps): AppsCapability {
   // Every write this capability makes of an app's record forgets the app.
   const workspace = watchAppWrites(deps.workspace, manifests.forget);
   const grants = deps.grants ?? memoryAppGrants();
+
+  /** The new version's one-line summary, in the background: the diff of its
+   *  files against the version before it goes to the summarizer, and what
+   *  comes back is written onto the version. Failure or a timeout leaves it
+   *  empty — never the publish's problem. */
+  const summarize = async (name: string, version: string, manifest: AppManifest, dir: string): Promise<void> => {
+    if (!deps.summarize) return;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const rec = await workspace.getApp(name);
+      const before = Object.keys(rec?.versions ?? {}).sort(versionLabelOrder).filter((v) => versionLabelOrder(v, version) < 0).at(-1);
+      const next = await readTree(dir);
+      let diff: string | undefined;
+      if (before && next) {
+        const prevDir = (await workspace.materializeAppVersion(name, before)).path;
+        const prev = await readTree(prevDir);
+        if (prev) {
+          const texts = async (d: string, t: AppTree, other: AppTree) => {
+            const out: Record<string, string | null> = {};
+            for (const [rel, sha] of Object.entries(t.files)) if (other.files[rel] !== sha) out[rel] = await readTreeText(d, sha);
+            return out;
+          };
+          // Only the files that differ are read; the rest are equal by hash.
+          const [a, b] = [await texts(prevDir, prev, next), await texts(dir, next, prev)];
+          diff = appDiff(a, b);
+        }
+      }
+      const line = await Promise.race([
+        deps.summarize({ name, version, manifest, ...(diff !== undefined ? { diff } : {}) }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), deps.summaryTimeoutMs ?? SUMMARY_TIMEOUT_MS); }),
+      ]);
+      if (line) await deps.workspace.setAppVersionSummary(name, version, line);
+    } catch (err) {
+      console.warn(`[apps] summary for ${name}@${version} not generated: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   const templatesDir = deps.templatesDir ?? TEMPLATES_DIR;
 
   /**
@@ -757,6 +801,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
         await recordTree(path, built.hash);
       });
       await evict(name);
+      if (r.changed && opts.source !== "seed") void summarize(name, r.version, built.manifest, path);
       // A person's publish of a manifest naming a sealed workflow IS their
       // grant of it (./grants.ts): recorded, so the pages may launch it.
       if (opts.surface === "person") {
