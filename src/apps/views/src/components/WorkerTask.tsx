@@ -356,6 +356,8 @@ interface Sent {
   /** The lease it was answered by: what the workflow's reply comes back on. */
   lease?: string;
   msat: number;
+  /** It earns `msat` only once it is marked OK. */
+  onOk?: boolean;
   answer: Record<string, unknown>;
   schema: unknown;
   photos: File[];
@@ -462,7 +464,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
       setPaused(false);
       throw err;
     }
-    setSent({ ...(held ? { lease: held.lease } : {}), msat: held?.payMsat ?? 0, answer: (answer ?? {}) as Record<string, unknown>, schema: held?.answer, photos: [...(files ?? [])] });
+    setSent({ ...(held ? { lease: held.lease } : {}), msat: held?.payMsat ?? 0, ...(held?.payOn === "ok" ? { onOk: true } : {}), answer: (answer ?? {}) as Record<string, unknown>, schema: held?.answer, photos: [...(files ?? [])] });
   };
   const next = () => {
     setSent(null);
@@ -675,6 +677,7 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
             msat={info.balance.heldMsat}
             {...(info.balance.nextReleaseAt ? { note: w.nextClears(fmt.until(info.balance.nextReleaseAt)) } : {})}
           />
+          {!!info.pendingMsat && <Stat label={w.waitingForOk} msat={info.pendingMsat} note={w.paidOnceOk} />}
         </div>
       </section>
 
@@ -812,6 +815,7 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
   else if (item.status === "skipped") badge = <Badge>{w.skipped}</Badge>;
   else if (item.status === "expired") badge = <Badge>{w.notFinished}</Badge>;
   else if (item.review?.verdict === "rejected") badge = <Badge tone="error">{w.sentBack}</Badge>;
+  else if (item.pending) badge = <Badge>{w.waitingForOk}</Badge>;
   else if (!e) badge = <Badge tone="done">{w.sent}</Badge>;
   else if (e.takenBack) badge = <Badge tone="error">{w.notPaid}</Badge>;
   else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.until(e.releases))}</Badge>;
@@ -827,6 +831,7 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
       </div>
       <div className="flex flex-col items-end gap-1">
         {e && <span className={cn("text-sm font-semibold tabular-nums", e.takenBack && "text-muted-foreground line-through")}>+{fmt.sats(e.msat)}</span>}
+        {item.pending && <span className="text-sm font-semibold text-muted-foreground tabular-nums">+{fmt.sats(item.pending.msat)}</span>}
         {badge}
       </div>
       {item.review?.verdict === "rejected" && item.review.why && <div className="w-full text-sm text-destructive">{w.toFix(item.review.why)}</div>}
@@ -1015,7 +1020,7 @@ function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean;
       tone="done"
       icon={<Check className="size-10" strokeWidth={2.5} />}
       heading={w.thanks}
-      text={sent.msat > 0 ? w.earnedHeld : w.answerIn}
+      text={sent.msat > 0 ? (sent.onOk ? w.earnedOnOk : w.earnedHeld) : w.answerIn}
       bar={
         <div className="flex flex-col gap-2">
           <Button className={cn("h-12 w-full rounded-xl text-base font-semibold", ACCENT_BUTTON)} onClick={next ? onNext : onHome}>
@@ -1039,7 +1044,7 @@ function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean;
         <div className="relative flex flex-wrap justify-center gap-2">
           <PayPill msat={sent.msat} earned />
           <span className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[13px] font-medium text-muted-foreground">
-            <Clock className="size-3.5" /> {w.held}
+            <Clock className="size-3.5" /> {sent.onOk ? w.waitingForOk : w.held}
           </span>
         </div>
       )}

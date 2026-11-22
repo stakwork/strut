@@ -140,12 +140,36 @@ index. A change in this area updates this file, not AGENTS.md.
   stays. Inside the hold a rejection TAKES BACK the answer's earning (its
   `why` begins `review: `) and `ok` RESTORES that take-back — the ledger's
   `restore`, the take-back it cleared kept in `pay_restores` — never a
-  staff or grading take-back; past the hold no money moves.
+  staff or grading take-back; past the hold no money moves. The run that
+  asked gives a verdict too, `task/reply { verdict, why }`, by
+  `workflow:<name>` (`RUN_REVIEWER_PREFIX`), on the answer the task settled
+  with: the same `review`, so it moves money and standing as staff's does,
+  and staff can change it until it is final ("Pay on OK" next).
   `GET /tasks?review=none` is the review queue, and `GET /tasks/stats`
   counts it: each type's `toReview` is its real tasks' answers with no
   verdict, of any age (`QueueCounts.unreviewed`, one count a type in both
   stores) — what the staff app's Answers tab and its Overview say is left
   to review.
+- **Pay on OK** (`payOn: "ok"` on the type, `PAY_ON`, `earnsNow` in
+  task-store.ts, `src/tasks/pay-on-ok.test.ts`; asked 2026-11-22: a
+  book-scanner worker was paid for a refused photo AND its retake). By
+  default an answer earns as it is answered. A type saved `payOn: "ok"`
+  pays only accepted work: `book` books a paid answer once it EARNS
+  (`earnsNow`: a verdict `ok` — staff's, a group's, or the asking run's
+  `task/reply { verdict }` — or a test graded `pass` or `error`), never a
+  rejected one or a test graded `fail`. So `submit` books nothing, `review`
+  books on `ok` (the earning's `at` is the ok, its hold from then) and books
+  nothing on a rejection before any ok, grading books a pass, and both
+  stores' `unbooked` (the sweep's) apply the same rule and never return a
+  rejected answer (which also keeps a type turned back to paying as
+  answered from paying what was rejected). No ledger change: an answer not
+  yet OK'd simply has no `pay` row. Its verdict has no `until` and is never
+  final (`holdEnd` undefined: nothing was paid), so a run's rejection can
+  become staff's `ok` at any time. The worker sees it waiting: `task/me`'s
+  `pendingMsat` (the store's `pendingPay`), `task/history`'s `pending`,
+  `task/next`'s `payOn`, and WorkerPage's "Waiting for OK" figure, badge
+  and sent screen. Staff set it in the type editor ("Paid when"), and
+  `task/set-type` takes it (its card says "for each one marked OK").
 - **Groups of tasks** (`task/reply`'s `group`; `group` on the task,
   `tasks.group_key` in the store with its partial index `tasks_group`,
   `groups` and `reviewGroup` on the service, `src/tasks/task-groups.test.ts`).
@@ -308,7 +332,9 @@ index. A change in this area updates this file, not AGENTS.md.
   (docs/apps.md, `src/apps/staff/`). A standing type
   works the same: its run launches under the task's run id. Opt-in: a
   workflow that never calls it shows the worker nothing new. The worker page
-  draws it (docs/apps.md, "The worker app"). KNOWN LIMIT, for the owner to
+  draws it (docs/apps.md, "The worker app"). Its `verdict` and `why` are
+  the run's review of the answer ("The review verdict", "Pay on OK"); a
+  reply may be a verdict alone. KNOWN LIMIT, for the owner to
   rule on: a test instance has no run, so it never gets a reply; on a type
   whose workflow always replies, a worker can tell afterwards which of their
   answers were tests (the ones with no reply), which §7.2's "a page cannot

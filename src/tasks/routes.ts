@@ -7,7 +7,7 @@
  * segment (`acme%2Fpet-match`), as a workflow's do.
  *
  * - `GET /tasks/types` → `{ types }`
- * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, tests?, copies?, attachments?, standing?, round?, check? }`
+ * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, payOn?, tests?, copies?, attachments?, standing?, round?, check? }`
  *   → `{ type }`: the whole type (a PUT: what is left out is the default;
  *   open, `tests`, `copies`, `attachments`, `standing`, `round` and `check` off). Whether a
  *   paid open type qualifies newcomers is the admin's (ruling 12)
@@ -116,7 +116,7 @@
 import type { Context, Hono } from "hono";
 import { TASK_STATUSES, VERDICTS, type TaskStatus, type Verdict } from "./task-store.js";
 import { WORKER_STATUSES, type WorkerStatus } from "./worker-store.js";
-import { TaskError, type TaskErrorCode, type TasksCapability, type TasksService } from "./tasks.js";
+import { TaskError, type PayOn, type TaskErrorCode, type TasksCapability, type TasksService } from "./tasks.js";
 import { TEST_FILE_MAX_BYTES } from "./test-files.js";
 import { PAYOUT_STATES, type PayoutState } from "../payments/ledger.js";
 import { PayoutError, type PayoutErrorCode, type Payouts } from "../payments/payouts.js";
@@ -350,6 +350,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["open"] !== undefined ? { open: b["open"] as boolean } : {}),
         ...(b["paySats"] !== undefined ? { paySats: b["paySats"] as number } : {}),
         ...(b["holdHours"] !== undefined ? { holdHours: b["holdHours"] as number } : {}),
+        ...(b["payOn"] !== undefined ? { payOn: b["payOn"] as PayOn | null } : {}),
         ...(b["limits"] !== undefined ? { limits: b["limits"] as { budgetSats?: number; perWorkerDay?: number } | null } : {}),
         ...(b["tests"] !== undefined ? { tests: b["tests"] as Record<string, unknown> | null } : {}),
         ...(b["copies"] !== undefined ? { copies: b["copies"] as Record<string, unknown> | null } : {}),

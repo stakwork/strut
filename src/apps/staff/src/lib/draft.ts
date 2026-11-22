@@ -40,6 +40,8 @@ export interface Draft {
   json: string;
   paySats: string;
   holdHours: string;
+  /** Paid only once marked OK (`payOn: "ok"`), or as handed in. */
+  payOnOk: boolean;
   /** The type's limits: the most it pays in all, the most tasks one worker
    *  takes a day; empty: none. */
   budgetSats: string;
@@ -88,6 +90,7 @@ export function draftOf(t?: TaskType): Draft {
     json: JSON.stringify(answer, null, 2),
     paySats: s(t?.paySats),
     holdHours: s(t?.holdHours ?? DEFAULTS.holdHours),
+    payOnOk: t?.payOn === "ok",
     budgetSats: s(t?.limits?.budgetSats),
     perWorkerDay: s(t?.limits?.perWorkerDay),
     testsOn: !!t?.tests,
@@ -165,6 +168,7 @@ export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: 
     const hold = num(d.holdHours, "the hold");
     if (typeof hold !== "number") return hold;
     input["holdHours"] = hold;
+    if (d.payOnOk) input["payOn"] = "ok";
     const limits: Record<string, number> = {};
     if (d.budgetSats.trim() !== "") {
       const budget = num(d.budgetSats, "the budget");
@@ -182,6 +186,7 @@ export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: 
     // A part the page does not show is sent back as it was.
     if (was?.paySats !== undefined) input["paySats"] = was.paySats;
     if (was?.holdHours !== undefined) input["holdHours"] = was.holdHours;
+    if (was?.payOn !== undefined) input["payOn"] = was.payOn;
     if (was?.limits !== undefined) input["limits"] = was.limits;
   }
   if (shown.tests) {

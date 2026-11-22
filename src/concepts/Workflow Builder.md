@@ -67,10 +67,14 @@ looks at each answer and its files the moment the worker sends it, against
 the task's `show`, and one that fails is refused with the model's reason, in
 the task's language. The worker keeps the task and sends it again; nothing
 is saved, started or paid. A check a workflow runs after its `human` step
-comes too late for the pay: an accepted answer earns at once, and a
-standing type's run starts only after it. Keep those for what needs the run
-(comparing with other answers, a ledger), and tell the worker with
-`task/reply`.
+comes after the answer is accepted, and a standing type's run starts only
+after it. Keep those for what needs the run (comparing with other answers,
+a ledger), and tell the worker with `task/reply`. When such a check decides
+whether the answer is paid (a duplicate, a retake of a page already in),
+ask for the type with `payOn: "ok"` and give the verdict on the reply:
+`verdict: "{{ <check>.ok ? 'ok' : 'rejected' }}"`, `why:` the reason the
+worker reads. Then an answer earns only on `ok`, and one the run rejects
+earns nothing; without `payOn: "ok"` an accepted answer earns at once.
 
 To tell the worker what came of their answer (a picture made from their
 photo, what was read off it), a later step replies: `type: task/reply`,

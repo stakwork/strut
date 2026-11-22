@@ -79,7 +79,7 @@ for (const impl of ["SQLite", "memory"] as const) {
       for (const bad of ["", "   ", "a\nb", "x".repeat(201)]) {
         await assert.rejects(tasks().reply({ task: p.task, group: bad }, { control: here }), refused("bad_request", /group is a name/), JSON.stringify(bad));
       }
-      await assert.rejects(tasks().reply({ task: p.task }, { control: here }), refused("bad_request", /show, files or a group/));
+      await assert.rejects(tasks().reply({ task: p.task }, { control: here }), refused("bad_request", /show, files, a group or a verdict/));
       // Only the run that asked, as for any reply.
       await assert.rejects(tasks().reply({ task: p.task, group: "other" }, { control: new RunController("r2", "scan").forUnit() }), refused("unknown_task"));
       assert.equal((await tasks().task(p.task))!.group, "Taliesin · John");

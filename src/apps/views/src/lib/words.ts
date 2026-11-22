@@ -37,6 +37,8 @@ const en = {
   readyToWithdraw: "Ready to withdraw",
   held: "Held",
   nextClears: (when: string) => `next clears ${when}`,
+  waitingForOk: "Waiting for OK",
+  paidOnceOk: "paid once it's checked",
   yourWork: "Your work",
   nothingYet: "Nothing yet. Tasks you do show up here.",
   inYourHand: "In your hand",
@@ -89,6 +91,7 @@ const en = {
   // After an answer.
   thanks: "Sent. Thank you!",
   earnedHeld: "Earned and held for a while, then it's yours to withdraw. Your balance is in the corner.",
+  earnedOnOk: "It's paid once it's checked and OK'd. If it's sent back, you'll see why, and that one isn't paid.",
   answerIn: "Your answer is in.",
   nextTask: "Next task",
   done: "Done",
@@ -155,6 +158,8 @@ const es: WorkerWords = {
   readyToWithdraw: "Listo para retirar",
   held: "Retenido",
   nextClears: (when) => `el próximo se libera ${when}`,
+  waitingForOk: "Esperando aprobación",
+  paidOnceOk: "se paga cuando se revise",
   yourWork: "Tu trabajo",
   nothingYet: "Nada todavía. Las tareas que hagas aparecerán aquí.",
   inYourHand: "En tus manos",
@@ -204,6 +209,7 @@ const es: WorkerWords = {
 
   thanks: "Enviado. ¡Gracias!",
   earnedHeld: "Ganado y retenido un tiempo; luego podrás retirarlo. Tu saldo está en la esquina.",
+  earnedOnOk: "Se paga cuando se revise y se apruebe. Si se devuelve, verás por qué, y esa no se paga.",
   answerIn: "Recibimos tu respuesta.",
   nextTask: "Siguiente tarea",
   done: "Listo",

@@ -7,7 +7,7 @@ import { AlignLeft, Check, FileText, Image as ImageIcon, X } from "lucide-react"
 import { useStrutClient } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { fmtWhen, isPicture, shortActor, whoOf } from "../lib/view";
+import { fmtWhen, isPicture, reviewerName, shortActor, whoOf } from "../lib/view";
 import type { Lease, TaskFile, Verdict, Worker } from "../lib/types";
 import { ErrorLine, Loading, Note, Picture } from "./bits";
 
@@ -142,7 +142,7 @@ export function VerdictBadge(props: { verdict: Verdict }) {
 /** Whether an answer's verdict can still be given or changed: a first one
  *  always; a given one until the answer's hold ends. */
 export function reviewOpen(l: Pick<Lease, "review">, now = Date.now()): boolean {
-  return !l.review || (!l.review.final && l.review.until > now);
+  return !l.review || (!l.review.final && (l.review.until === undefined || l.review.until > now));
 }
 
 /**
@@ -237,9 +237,9 @@ export function ReviewControl(props: {
       {r.why && <div className="text-xs break-words text-muted-foreground">{r.why}</div>}
       {props.big && (
         <div className="text-xs text-muted-foreground">
-          {r.by ? `By ${r.by}, ` : ""}
+          {r.by ? `By ${reviewerName(r.by)}, ` : ""}
           {fmtWhen(r.at)}
-          {reviewOpen(props.lease) ? ` · can change until ${fmtWhen(r.until)}` : ""}
+          {reviewOpen(props.lease) && r.until !== undefined ? ` · can change until ${fmtWhen(r.until)}` : ""}
         </div>
       )}
     </div>

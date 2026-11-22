@@ -151,8 +151,14 @@ What the person decided maps onto them:
   from what the person said: `{ step: "grade/judge", config: { rubric } }`.
   It runs when the worker sends the answer, before it is accepted or paid,
   and a fail is refused with its reason. Checks in the workflow run after
-  the answer is accepted, when the pay is already the worker's: they can
-  tell the worker (`task/reply`) and flag the answer, never stop the pay.
+  the answer is accepted. When the workflow judges each answer (a blurry
+  page, a duplicate, a retake), the type pays on ok (`payOn: "ok"`) and the
+  workflow's `task/reply` gives its `verdict`: `ok` pays the answer, and
+  `rejected` with `why` (which the worker reads) pays nothing, so a refused
+  answer and its retake are paid once between them. An answer the workflow
+  leaves without a verdict waits for the person's OK in Workers (one by
+  one, or a whole group at once). Without `payOn: "ok"` every accepted
+  answer is paid as it is sent, whatever the workflow says after.
 - The workers' language is the person's to say, never to ask. `strut/worker`
   speaks it already: its screens are in English or Spanish, whichever the
   worker's phone is set to. What the type says is yours: write its ask, its

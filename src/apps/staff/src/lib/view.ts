@@ -410,12 +410,20 @@ export function answerFiles(t: Pick<Task, "by" | "leases">): SentFile[] {
   return t.leases.find((l) => l.worker === t.by && l.status === "submitted")?.attachments ?? [];
 }
 
+/** Who gave a verdict, in words: a person as named, a run's own
+ *  (`workflow:<name>`, task/reply's `verdict`) as its workflow. */
+export function reviewerName(by: string): string {
+  return by.startsWith("workflow:") ? `the workflow ${by.slice("workflow:".length)}` : by;
+}
+
 /** A verdict in words (§9.6): `rejected: blurry box · by ada, 14:02 ·
- *  changeable until Nov 16, 14:00`, or `· final`. */
+ *  changeable until Nov 16, 14:00`, `· changeable` (nothing paid yet on a
+ *  type that pays once marked OK), or `· final`. */
 export function reviewText(r: NonNullable<Lease["review"]>, now = Date.now()): string {
   const head = r.verdict === "rejected" ? `rejected${r.why ? `: ${r.why}` : ""}` : `ok${r.why ? `: ${r.why}` : ""}`;
-  const who = ` · ${r.by ? `by ${r.by}, ` : ""}${fmtWhen(r.at, now)}`;
-  return `${head}${who} · ${r.final || r.until <= now ? "final" : `changeable until ${fmtWhen(r.until, now)}`}`;
+  const who = ` · ${r.by ? `by ${reviewerName(r.by)}, ` : ""}${fmtWhen(r.at, now)}`;
+  const when = r.final || (r.until !== undefined && r.until <= now) ? "final" : r.until === undefined ? "changeable" : `changeable until ${fmtWhen(r.until, now)}`;
+  return `${head}${who} · ${when}`;
 }
 
 /** A group's tasks read at once: the routes' page at its largest. */

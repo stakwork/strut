@@ -56,6 +56,25 @@ steps:
       product: "{{ photo.answer.product }}"
 `;
 
+/** A page photo the run judges: "blurry" is refused with why, anything else OK'd; it pays on ok. */
+const PAGES = `name: page-photos
+steps:
+  - id: photo
+    type: human
+    config:
+      task: page-photo
+      show:
+        ask: "Photograph the next page."
+  - id: tell
+    type: task/reply
+    config:
+      task: "{{ photo.task }}"
+      show:
+        ask: "{{ photo.answer.page === 'blurry' ? 'RETAKE' : 'OK' }}"
+      verdict: "{{ photo.answer.page === 'blurry' ? 'rejected' : 'ok' }}"
+      why: "{{ photo.answer.page === 'blurry' ? 'Too blurry: take it again' : '' }}"
+`;
+
 describe("strut/worker: the worker app every server has", () => {
   let root: string;
   let restoreEnv: () => void;
@@ -174,5 +193,52 @@ describe("strut/worker: the worker app every server has", () => {
     assert.deepEqual([after.balance.heldMsat, after.balance.withdrawableMsat], [0, 50_000]);
     const again = (await call("task/next", { wait: 1 })).result as { lease: string };
     assert.ok(again.lease && again.lease !== task.lease);
+  });
+
+  it("a type that pays on ok: the run's verdict on task/reply pays the page it OKs, and never the one it refuses", async () => {
+    await staff("POST", "/workflows", { name: "page-photos", yaml: PAGES }, 201);
+    await staff("PUT", "/tasks/types/page-photo", {
+      app: WORKER_APP,
+      answer: { type: "object", properties: { page: { type: "string" } } },
+      attachments: { max: 1, min: 1, types: ["image/*"] },
+      paySats: 4,
+      payOn: "ok",
+      standing: { workflow: "page-photos" },
+    });
+    await staff("POST", "/tasks/online", {});
+    const page = await publicAppToken(req, WORKER_APP);
+    const worker = await sphinxSignIn(req);
+    const call = (t: string, config: Record<string, unknown> = {}) => stepCall(req, "/public/mcp", t, config, { authorization: `Bearer ${worker.token}` }, page);
+    const shot = { name: "page.jpg", mediaType: "image/jpeg", data: jpeg(1024).toString("base64") };
+    /** Takes a page, sends it, and waits for the run its answer started to end. */
+    const send = async (pageText: string) => {
+      const task = (await call("task/next", { type: "page-photo", wait: 1 })).result as { lease: string; payMsat: number; payOn?: string };
+      assert.deepEqual([task.payMsat, task.payOn], [4000, "ok"], "the page says it pays on ok");
+      const before = (await strut.store.listRuns("page-photos")).length;
+      assert.deepEqual(await call("task/submit", { lease: task.lease, answer: { page: pageText }, attachments: [shot] }), { result: { ok: true } });
+      const deadline = Date.now() + 10_000;
+      let runs: string[] = [];
+      while (runs.length <= before && Date.now() < deadline) {
+        await sleep(10);
+        runs = await strut.store.listRuns("page-photos");
+      }
+      let done: RunSummary | null = null;
+      while (done?.status !== "success" && Date.now() < deadline) {
+        await sleep(10);
+        done = await strut.store.getRunSummary("page-photos", runs[0]!);
+      }
+      assert.equal(done?.status, "success", JSON.stringify(done));
+      return task.lease;
+    };
+    const blurry = await send("blurry");
+    const retake = await send("page 7");
+    const me = (await call("task/me")).result as { balance: { withdrawableMsat: number }; pendingMsat?: number };
+    assert.deepEqual([me.balance.withdrawableMsat, me.pendingMsat], [4000, undefined], "one page paid, nothing waiting");
+    const items = ((await call("task/history", { all: true })).result as { items: Array<{ lease: string; earned?: { msat: number }; pending?: unknown; review?: { verdict: string; why?: string } }> }).items;
+    const row = (lease: string) => items.find((i) => i.lease === lease)!;
+    assert.deepEqual([row(blurry).earned, row(blurry).pending, row(blurry).review?.verdict, row(blurry).review?.why], [undefined, undefined, "rejected", "Too blurry: take it again"]);
+    assert.deepEqual([row(retake).earned?.msat, row(retake).review?.verdict], [4000, "ok"]);
+    const [refused] = await strut.tasks.capability.list({ type: "page-photo", review: "rejected" });
+    assert.equal(refused!.leases[0]!.review?.by, "workflow:page-photos", "staff see whose verdict it was");
   });
 });
