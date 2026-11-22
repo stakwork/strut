@@ -11,8 +11,9 @@ import type { HostedApp } from "./components/AppHost";
  *  `@preview-<hex>` an unpublished build `app/look { path }` hosts, which no
  *  listing holds, so it is not read. `entry` is undefined until the listing
  *  answers, null when the app (or the version) is not in it; `app` is what
- *  to host. Null `key`: nothing read. */
-export function useListedApp(key: string | null): { app: HostedApp | null; entry: api.AppListEntry | null | undefined } {
+ *  to host. Null `key`: nothing read. A new `again` reads it again (what is
+ *  live changed). */
+export function useListedApp(key: string | null, again = 0): { app: HostedApp | null; entry: api.AppListEntry | null | undefined } {
   const [state, setState] = useState<{ key: string; entry: api.AppListEntry | null } | null>(null);
   const ref = key ? parseAppKey(key) : null;
   const preview = !!ref && !ref.peer && isPreviewVersion(ref.version);
@@ -33,7 +34,7 @@ export function useListedApp(key: string | null): { app: HostedApp | null; entry
       on = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, again]);
   const entry = key && state?.key === key ? state.entry : undefined;
   const app: HostedApp | null = preview
     ? { name: ref!.name, version: ref!.version! }

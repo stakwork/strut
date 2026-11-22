@@ -10,8 +10,7 @@ import {
   isHeld,
   isSeeded,
   liveRelease,
-  makeLiveNote,
-  restoreNote,
+  rowChange,
   when,
   type AppVersionsData,
 } from "../app-versions";
@@ -169,29 +168,21 @@ export function AppVersionsFlyout(props: {
                     {row.version !== shown && (
                       <button class="btn btn-sm" disabled={busy} onClick={() => props.onView(row.state === "live" ? null : row.version)}>View</button>
                     )}
-                    {!seeded && row.state !== "live" && (row.state === "was-live" && row.release ? (
-                      <ConfirmButton
-                        popover
-                        class="btn btn-sm"
-                        label="Restore"
-                        note={restoreNote(row.version)}
-                        confirmLabel={`Restore ${row.version}`}
-                        tone="primary"
-                        disabled={busy}
-                        onConfirm={() => void act({ release: row.release! }, row.version)}
-                      />
-                    ) : (
-                      <ConfirmButton
-                        popover
-                        class="btn btn-sm"
-                        label="Make live"
-                        note={makeLiveNote(row.version, data.live)}
-                        confirmLabel={`Make ${row.version} live`}
-                        tone="primary"
-                        disabled={busy}
-                        onConfirm={() => void act({ version: row.version })}
-                      />
-                    ))}
+                    {!seeded && (() => {
+                      const change = rowChange(row, data.live);
+                      return change && (
+                        <ConfirmButton
+                          popover
+                          class="btn btn-sm"
+                          label={change.label}
+                          note={change.note}
+                          confirmLabel={change.confirmLabel}
+                          tone="primary"
+                          disabled={busy}
+                          onConfirm={() => void act(change.target, change.restores)}
+                        />
+                      );
+                    })()}
                   </span>
                 </div>
               ))}

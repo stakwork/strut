@@ -1,7 +1,7 @@
 // ── An app's versions, as a person reads them (plans/app-releases.md) ───────
 //
-// The Versions flyout (components/AppVersionsFlyout.tsx) and the topbar's
-// chip draw from these. One row per page version, newest first, with the one
+// The Versions flyout (components/AppVersionsFlyout.tsx), the topbar's chip
+// and the side panel's versions (components/AppWithPanel.tsx) draw from these. One row per page version, newest first, with the one
 // state a person needs: live, was live (a release named it once — a version
 // rolled back from too), or a draft (published while the app is held, after
 // the live version, and never made live). Release ids
@@ -105,6 +105,34 @@ export function followNote(data: AppVersionsData): string {
 /** What switching to "hold a version" does. */
 export const holdNote = (active: string): string =>
   `The app stays at ${active}. Later publishes wait as drafts until you make one live.`;
+
+/** A change to what people open (`PUT /apps/:name/active`), in the words
+ *  its button and its confirmation use. */
+export interface LiveChange {
+  label: string;
+  note: string;
+  confirmLabel: string;
+  target: { version: string } | { release: string };
+  /** A Restore's version: a refused Restore offers to make it live as it is now. */
+  restores?: string;
+}
+
+/** What a version's row offers: Restore for one that was live (its newest
+ *  release, as recorded), Make live for any other; nothing on the live one.
+ *  A seeded app offers none (the caller asks `isSeeded`). */
+export function rowChange(row: AppVersionRow, live: string | undefined): LiveChange | null {
+  if (row.state === "live") return null;
+  return row.state === "was-live" && row.release
+    ? { label: "Restore", note: restoreNote(row.version), confirmLabel: `Restore ${row.version}`, target: { release: row.release }, restores: row.version }
+    : { label: "Make live", note: makeLiveNote(row.version, live), confirmLabel: `Make ${row.version} live`, target: { version: row.version } };
+}
+
+/** The other mode: hold at the live version while following, follow latest while held. */
+export function modeChange(data: AppVersionsData): LiveChange {
+  return isHeld(data.live)
+    ? { label: "Follow latest", note: followNote(data), confirmLabel: "Go live with every publish", target: { version: "latest" } }
+    : { label: `Hold at ${data.active}`, note: holdNote(data.active), confirmLabel: `Hold at ${data.active}`, target: { version: data.active } };
+}
 
 /** When something happened: relative within a day, then the date. */
 export function when(iso: string, now = Date.now()): string {

@@ -4926,7 +4926,9 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   text-overflow: ellipsis;
 }
 /* The versions of the app in the panel, under its bar: a click views one
-   there. Viewing only (components/AppWithPanel.tsx `PanelVersions`). */
+   there; for anyone but a member, the mode and each row's Make live or
+   Restore, confirmed under the row (components/AppWithPanel.tsx
+   `PanelVersions`). */
 .app-panel-versions {
   display: flex;
   flex-direction: column;
@@ -4936,7 +4938,15 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
 }
+.app-panel-version-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+}
 .app-panel-version {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -4955,6 +4965,23 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .app-panel-version-name { font-size: 13px; font-weight: 600; min-width: 32px; }
 .app-panel-version-when { margin-left: auto; font-size: 11px; color: var(--text-dim); white-space: nowrap; }
 .app-panel-versions-note { padding: var(--sp-1) var(--sp-1) var(--sp-2); font-size: 11px; color: var(--text-dim); }
+.app-panel-change { padding: 2px 8px; font-size: 11px; }
+.app-panel-change.is-active { border-color: var(--accent); color: var(--accent); }
+.app-panel-ask {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-1) var(--sp-2);
+}
+.app-panel-mode {
+  min-height: 34px;
+  padding: var(--sp-1) var(--sp-1);
+  margin-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--border);
+}
+.app-panel-mode-now { flex: 1; min-width: 0; font-size: 12px; color: var(--text-muted); }
 .app-panel-body {
   flex: 1;
   min-height: 0;
