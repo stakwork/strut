@@ -23,7 +23,7 @@ import { INVITE_PRICE_SATS, startFakeSphinxDaemon, type FakeSphinxDaemon } from 
 import inviteStep from "../steps/lib/staff/invite.js";
 import invitesStep from "../steps/lib/staff/invites.js";
 import cancelInviteStep from "../steps/lib/staff/cancel-invite.js";
-import { JOIN_HEADERS, JOIN_PAGE, JOIN_SCRIPT, joinLang, joinPage, PEEL_ANDROID_RELEASES } from "../public-join.js";
+import { JOIN_HEADERS, JOIN_PAGE, JOIN_SCRIPT, joinLang, joinPage, PEEL_ANDROID_RELEASES, PEEL_IOS_TESTFLIGHT } from "../public-join.js";
 import { LightningError } from "./lightning.js";
 import { NO_INVITES, SphinxDaemonPayer, type Payer, type WalletInvite } from "./payer.js";
 import { createInvites, fileInviteNotes, GRANT_LINK_PREFIX, INVITE_TOKEN_DAYS, InviteError, joinLink, memoryInviteNotes } from "./invites.js";
@@ -471,9 +471,9 @@ const JOIN_WORD_VALUES = (lang: "en" | "es"): string[] => {
 };
 
 /** The join page's script in a stand-in browser: what it shows and links. */
-async function runJoin(o: { hash: string; userAgent: string; release?: unknown; noClipboard?: boolean; search?: string }) {
+async function runJoin(o: { hash: string; userAgent: string; release?: unknown; noClipboard?: boolean; platform?: string; touch?: number; search?: string }) {
   const el = (id: string) => ({ id, hidden: true, href: "#", innerHTML: "" });
-  const els = Object.fromEntries(["android", "elsewhere", "bad", "open", "qr", "card"].map((id) => [id, el(id)]));
+  const els = Object.fromEntries(["android", "ios", "elsewhere", "bad", "open", "testflight", "open-ios", "qr", "card"].map((id) => [id, el(id)]));
   const appended: Array<Record<string, unknown>> = [];
   const fetched: string[] = [];
   const drawn: string[] = [];
@@ -486,7 +486,7 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown; 
     // What /public/join/qrcode.js defines, once the page has loaded it.
     qrcode: () => ({ addData: (t: string) => drawn.push(t), make: () => {}, createSvgTag: () => "<svg>qr</svg>" }),
     location: { hash: o.hash, href, pathname: "/public/join", search: o.search ?? "", replace: (u: string) => replaced.push(u) },
-    navigator: o.noClipboard ? { userAgent: o.userAgent } : { userAgent: o.userAgent, clipboard: { writeText: async (t: string) => void copied.push(t) } },
+    navigator: o.noClipboard ? { userAgent: o.userAgent, platform: o.platform, maxTouchPoints: o.touch } : { userAgent: o.userAgent, platform: o.platform, maxTouchPoints: o.touch, clipboard: { writeText: async (t: string) => void copied.push(t) } },
     document: { get cookie() { return doc.cookie; }, set cookie(v: string) { doc.cookie = v; }, querySelectorAll: () => switchers, getElementById: (id: string) => els[id], createElement: () => ({}), head: { appendChild: (s: Record<string, unknown>) => appended.push(s) } },
     fetch: async (url: string) => {
       fetched.push(url);
@@ -552,10 +552,37 @@ describe("the join page's script (§5.8)", () => {
     assert.deepEqual(b.replaced, ["/public/join?lang=en"]);
   });
 
-  it("anywhere else: open it on an Android phone, a QR code of the page's own URL; no invite: says so and fires nothing", async () => {
-    const r = await runJoin({ hash, userAgent: IPHONE });
+  it("on an iPhone: the iOS block, TestFlight and peel://join links, both taps copy the invite; an iPad as a Mac with touch too", async () => {
+    const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15";
+    const q = `action=i&d=${D}&c=BBBB&a=${app}`;
+    for (const o of [{ userAgent: IPHONE }, { userAgent: MAC, platform: "MacIntel", touch: 5 }]) {
+      const r = await runJoin({ hash, ...o });
+      assert.equal(r.els["ios"]!.hidden, false);
+      assert.equal(r.els["android"]!.hidden, true);
+      assert.equal(r.els["elsewhere"]!.hidden, true);
+      assert.deepEqual(r.fetched, []);
+      assert.equal(r.els["testflight"]!.href, PEEL_IOS_TESTFLIGHT);
+      assert.equal(r.els["open-ios"]!.href, `peel://join?${q}`);
+      assert.deepEqual(r.copied, []);
+      for (const id of ["testflight", "open-ios"]) (r.els[id] as unknown as { onclick: () => void }).onclick();
+      assert.deepEqual(r.copied, [`sphinx.chat://?${q}`, `sphinx.chat://?${q}`]);
+      const none = await runJoin({ hash, ...o, noClipboard: true });
+      assert.doesNotThrow(() => (none.els["open-ios"] as unknown as { onclick: () => void }).onclick());
+    }
+    // A desktop Mac (no touch) gets the QR code.
+    const desk = await runJoin({ hash, userAgent: MAC, platform: "MacIntel", touch: 0 });
+    assert.equal(desk.els["elsewhere"]!.hidden, false);
+    assert.equal(desk.els["ios"]!.hidden, true);
+    const badIos = await runJoin({ hash: "#x", userAgent: IPHONE });
+    assert.equal(badIos.els["bad"]!.hidden, false);
+    assert.equal(badIos.els["ios"]!.hidden, true);
+  });
+
+  it("anywhere else: open it on a phone, a QR code of the page's own URL; no invite: says so and fires nothing", async () => {
+    const r = await runJoin({ hash, userAgent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/131.0" });
     assert.equal(r.els["elsewhere"]!.hidden, false);
     assert.equal(r.els["android"]!.hidden, true);
+    assert.equal(r.els["ios"]!.hidden, true);
     assert.deepEqual(r.fetched, []);
     assert.equal(r.appended.length, 1);
     assert.equal(r.appended[0]!["src"], "join/qrcode.js");

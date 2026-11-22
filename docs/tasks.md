@@ -394,6 +394,11 @@ index. A change in this area updates this file, not AGENTS.md.
   copies `sphinx.chat://?…` to the clipboard: a Peel opened with no account
   and no invite reads it there (peel-android's onboarding), and a worker new
   to Peel goes from the download to Tasks without coming back to the link.
+  On an iPhone or iPad the page shows "Get Peel" (TestFlight,
+  `PEEL_IOS_TESTFLIGHT`; Apple's TestFlight app first) and "Open in Peel"
+  (`peel://join?<same query>`; not `sphinx.chat://`, which the Sphinx iOS
+  app also registers); both taps copy the same `sphinx.chat://?…` text, for
+  Peel iOS to read on first launch (stakwork/peel#588).
   ONE STEP for invite-only work: `a=` carries `input=invite=<token>&type=…`
   (payments/invites.ts `invitedAppUrl`, auth.ts `inviteToken` / `inviteOf`:
   the daemon's code, the app it opens, the types it gives — `t`, `[]` for

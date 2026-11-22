@@ -694,7 +694,7 @@ export function inviteWhyText(why: NonNullable<InvitesAnswer["why"]>): string {
 
 /** The words a worker is sent with the link. */
 export function inviteMessage(link: string): string {
-  return `You're invited to work with us. Open this on your Android phone to sign up with Peel: ${link}`;
+  return `You're invited to work with us. Open this on your phone to sign up with Peel: ${link}`;
 }
 
 /** The message as a WhatsApp share link (an https link a host opens). */
