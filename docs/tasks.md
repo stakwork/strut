@@ -364,7 +364,7 @@ index. A change in this area updates this file, not AGENTS.md.
   sign-in as you as it opens (Peel Android), and Tasks signs in silently
   as it loads (`signIn({ silent: true })`), so the first sign-in is a toast,
   no tap (specs/WALLET.md "Signing a visitor in", steps 4-5); a Peel
-  without the grant leaves Sign in to start, one tap. Nothing carries an intent across an install, so the tap also
+  without the grant leaves Sign in to start, one tap. On an iPhone or iPad it shows "Get Peel" (TestFlight, `PEEL_IOS_TESTFLIGHT`; Apple's TestFlight app first) and "Open in Peel" (`peel://join?<same query>`; not `sphinx.chat://`, which the Sphinx iOS app also registers); both taps copy the same `sphinx.chat://?…` text. Nothing carries an intent across an install, so the tap also
   copies `sphinx.chat://?…` to the clipboard: a Peel opened with no account
   and no invite reads it there (peel-android's onboarding), and a worker new
   to Peel goes from the download to Tasks without coming back to the link.

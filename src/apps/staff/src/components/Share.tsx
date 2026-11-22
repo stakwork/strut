@@ -220,7 +220,7 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
   return (
     <div className="flex flex-col gap-3" data-testid="invite-maker">
       <Note>
-        An invite is a link for one person, used once. On an Android phone it sets up Peel, the app workers use, with a few sats to start, then opens their work. Someone who has Peel already goes straight to it. This server's wallet pays those sats and a small fee.
+        An invite is a link for one person, used once. On a phone (Android or iPhone) it sets up Peel, the app workers use, with a few sats to start, then opens their work. Someone who has Peel already goes straight to it. This server's wallet pays those sats and a small fee.
       </Note>
       {q.data?.why ? (
         <Note>{inviteWhyText(q.data.why)}</Note>
