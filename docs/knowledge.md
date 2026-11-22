@@ -425,7 +425,10 @@ index. A change in this area updates this file, not AGENTS.md.
   `knowledge/write-pages` proposal into its checkout (dev mode, a repo
   opened here), or is refused where there is none (below). Nothing decides
   by a score. Taking lines out and getting worse, and changing lines and
-  getting better, are the same record read from either side.
+  getting better, are the same record read from either side; each test
+  also says which side is the wording it `tried` (`change` until it is
+  used), and the app draws a piece as added whichever side the page is
+  (lib/checks.ts `drawnOf`, docs/apps.md).
   THE DOORS are seven steps, thin over the capability, none sealed (a page
   calls them): `knowledge/checks` (the read, for whoever may read the
   tree) and `knowledge/add-check`, `knowledge/cases`, `knowledge/trial`,

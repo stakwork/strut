@@ -2800,9 +2800,10 @@ concept }`, shown only when the page it answers is that node;
 plans/claim-trials.md): each claim, the cases that test it (`{ workflow,
 input }`) and a dot per verdict on the page's wording now, and the TESTS of
 the page, each two wordings (`page`, `change`) with every claim's verdicts
-on each. The answer is `{ concept, ref_id, version, docs, fromGit?, checks:
+on each, and which of the two it `tried` (`change` until it is used, then
+`page`). The answer is `{ concept, ref_id, version, docs, fromGit?, checks:
 [{ id, text, status, speaker?, latest?, cases, samples }], tests: [{ id,
-at, page: { version, docs, samples }, change: { … }, live }], running: [{
+at, page: { version, docs, samples }, change: { … }, live, tried }], running: [{
 id, test?, claim?, total, done, errors }], problem? }`, a sample `{ run,
 workflow?, supports, content?, at?, case?, trial? }`. An ADMIN's page also
 calls `knowledge/trial { claim, n }` (each case `n` times, as trials: the

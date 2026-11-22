@@ -180,15 +180,25 @@ dropped when the last sample is judged. The test is kept: both wordings,
 so the diff and its verdicts stay whatever the page becomes. Nothing on
 the page changes, and nothing is discarded.
 
-The card draws the diff, then two rows of dots, "The page" and "With the
-change", and which did better. That one card is both things a person does:
+The card draws the diff, then two rows of dots, and which did better. A
+test is about a piece of text, so its diff is drawn as the piece going
+in, whichever side the page is (2026-11-21: a test drawn from the page to
+the change showed every seeded test, the ones that built the page, as red
+lines taken out):
 
-- **A negative example.** Take lines out; the rule breaks. The page is
-  better, and the test is the proof that those lines matter.
-- **An improvement.** Change lines; the rule holds more often. The change
-  is better, and the card offers **Use it**: the page takes the wording.
-  From then on the same test reads from the page's new wording, as a
-  negative example of it.
+- **A piece.** Two wordings that differ only by lines one has and the
+  other lacks are drawn from the one without them to the one with them:
+  the lines are green, the rows "Without it" and "With it", and the
+  verdict "It helps", "It hurts" or "No difference". A piece of the page
+  taken out to test it and a piece tried on the page are the same card.
+- **A rewording.** Any other two are drawn in the order the test tried
+  them, the rows "Before" and "After".
+
+The rows follow the diff and the page is a badge on its own row. When the
+other wording did better the card offers it in its own words, **Put it
+in**, **Take it out** or **Use it**, and the page takes the wording. From
+then on the same test reads from the page's new wording: the diff and the
+rows stay, and only the badge moves.
 
 Verdicts are counted by TEXT: a page version names one wording, and a
 verdict on it counts from a run on main or from a run on one of that

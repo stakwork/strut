@@ -245,6 +245,7 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     const t = view.tests[0]!;
     assert.equal(t.id, made.test);
     assert.equal(t.live, true);
+    assert.equal(t.tried, "change", "the change is the wording it tried");
     assert.equal(t.page.version, view.version);
     assert.equal(t.page.docs, before.docs);
     assert.equal(t.change.docs, worse.trim());
@@ -330,6 +331,7 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.equal(now.version, t.change.version, "the page is the wording that was tested");
     const flipped = now.tests[0]!;
     assert.equal(flipped.live, true);
+    assert.equal(flipped.tried, "page", "used: the page is the wording it tried");
     assert.deepEqual([flipped.page.docs, flipped.change.docs], ["Be terse.", "Be polite."], "the same test, read from the page's new wording");
     assert.deepEqual(flipped.page.samples[added.id]!.map((s) => s.supports), [false, false], "the verdicts on a wording stay with it");
     assert.deepEqual(now.checks[0]!.samples.map((s) => s.supports), [false, false]);
@@ -343,6 +345,7 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.equal(last.docs, "Be polite and brief.");
     const old = last.tests.find((x) => x.id === t.id)!;
     assert.equal(old.live, false);
+    assert.equal(old.tried, "change", "on an earlier wording: the page's side is what it was tried against");
     assert.match((await trials.test({ test: old.id, n: 1 }) as { error: string }).error, /neither wording/);
     assert.match((await trials.use({ test: old.id }) as { error: string }).error, /neither wording/);
   });

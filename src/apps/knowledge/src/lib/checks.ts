@@ -3,6 +3,7 @@
 // with the cases that test it; a test is two wordings of the page, each
 // with every check's verdicts on it (`knowledge/checks`, src/trials.ts).
 
+import { lineDiff } from "@strut/kit/folds";
 import type { PageClaim } from "./learning";
 
 /** One input a check is tested with: a workflow and its input. */
@@ -37,6 +38,9 @@ export interface TestSide {
   samples: Record<string, Sample[]>;
 }
 
+/** A test's two wordings, by whose each is: the page's, or the other. */
+export type Side = "page" | "change";
+
 export interface PageTest {
   id: string;
   at: string;
@@ -45,6 +49,8 @@ export interface PageTest {
   change: TestSide;
   /** One of its two wordings is the page now. */
   live: boolean;
+  /** The wording the test tried (the other is what it was tried against): `page` once it was used. */
+  tried?: Side;
 }
 
 export interface Batch {
@@ -105,11 +111,45 @@ export function outcomeOf(page: readonly Pick<Sample, "supports">[], change: rea
   return diff > 0 ? "page" : diff < 0 ? "change" : "same";
 }
 
-export const OUTCOME: Record<Exclude<Outcome, "none">, string> = {
-  page: "The concept is better",
-  same: "No difference",
-  change: "The change is better",
-};
+/**
+ * How a test is drawn: one card for a change being tried and for one that
+ * made the page. Two wordings that differ only by lines one has and the
+ * other lacks are a PIECE, drawn from the wording without it to the one with
+ * it, so the piece always reads as added, whichever side the page is: a piece
+ * of the page taken out to test it (every seeded page's tests) and a piece
+ * tried on it look alike. Any other two are a REWORDING, drawn in the order
+ * the test tried them. The rows follow the diff, so they never move: the
+ * page is a badge on its own row, and using the other wording moves only it.
+ */
+export interface Drawn {
+  piece: boolean;
+  /** The side drawn first (the diff's before), then second. */
+  order: [Side, Side];
+  labels: [string, string];
+}
+
+export function drawnOf(test: Pick<PageTest, "page" | "change" | "tried">): Drawn {
+  const ops = new Set(lineDiff(test.page.docs, test.change.docs).map((l) => l.op));
+  const piece = !(ops.has("add") && ops.has("del"));
+  // A piece the change takes out is the page's: the change, without it, first.
+  const first: Side = piece ? (ops.has("del") ? "change" : "page") : test.tried === "page" ? "change" : "page";
+  return { piece, order: [first, first === "page" ? "change" : "page"], labels: piece ? ["Without it", "With it"] : ["Before", "After"] };
+}
+
+/** What a test found, in the words of its rows; `good` when the second row (with it, after) did better. Null while a side has no verdict. */
+export function verdictOf(drawn: Drawn, outcome: Outcome): { words: string; good?: boolean } | null {
+  if (outcome === "none") return null;
+  if (outcome === "same") return { words: "No difference" };
+  const good = outcome === drawn.order[1];
+  return { words: drawn.piece ? (good ? "It helps" : "It hurts") : good ? "After is better" : "Before is better", good };
+}
+
+/** The button that puts the other wording on the page, in the card's words; null unless the other wording did better. */
+export function useLabel(drawn: Drawn, outcome: Outcome): string | null {
+  if (outcome !== "change") return null;
+  if (!drawn.piece) return "Use it";
+  return drawn.order[1] === "change" ? "Put it in" : "Take it out";
+}
 
 /** A case in a line: the one thing it says (`{ prompt }` reads as the prompt), else its input as it is. */
 export function caseLabel(c: Pick<Case, "input">): string {
