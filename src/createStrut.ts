@@ -1823,6 +1823,34 @@ export async function createStrut<TServices = unknown>(
         const inv = (await payer.invites()).find((i) => i.code === code);
         return !!inv && (inv.status === "sending" || inv.status === "ready" || inv.status === "used");
       },
+      // Invites are for NEW accounts. An account Peel already had ignores the
+      // invite and opens Tasks, so its sats stay at the LSP and the daemon
+      // never says "used": cancel any invite still "ready" at its first
+      // grant. A new account's sign-up redeems it as it registers, but the
+      // daemon says "used" only once that account adds the server's, which
+      // can come after Tasks' first ask: that cancel finds nothing at the LSP
+      // and ends `cancel_unconfirmed`, harmless. The daemon (stakwork/sphinx
+      // wasm/daemon/src/wallet.ts, cancelInvite → cancelReady) cancels only a
+      // `ready` invite (sending/failed/used: 409 not_cancellable). It asks the
+      // LSP for the invite's sats back and marks it `cancelled` only once the
+      // account balance rises by at most the invite's sats; if no rise comes
+      // in time it stays `ready` with a reason starting `cancel_unconfirmed`
+      // (it may have been used, or the sats may still arrive). Cancelling
+      // revokes no grant: `live` is only asked before a grant, and the
+      // one-worker check runs first.
+      spent: async (code) => {
+        if (code.startsWith(GRANT_LINK_PREFIX)) return;
+        const payer = await payments.payer();
+        if (!payer?.invites || !payer.cancelInvite) return;
+        const inv = (await payer.invites()).find((i) => i.code === code);
+        if (inv?.status !== "ready") return;
+        try {
+          await payer.cancelInvite({ code });
+        } catch (err) {
+          // A 409 not_cancellable (used meanwhile) or cancel_unconfirmed is fine: the grant stands.
+          console.warn(`invite ${code}: cancel not done:`, err instanceof Error ? err.message : err);
+        }
+      },
     },
     // Standing types (plans/human-steps.md §5.7): a pick-up is read off the
     // type's workflow — on, with someone to bill, its first step the type's
@@ -7256,6 +7284,7 @@ export async function createStrut<TServices = unknown>(
       inviteSats: async () => (await payouts.settings()).inviteSats,
       publicApps: async () => (await publicSurface.get()).apps.map((a) => a.name),
       typeApp: async (name) => (await (hostTasks ?? tasks.capability).types()).find((t) => t.name === name)?.app,
+      takenBy: async (code) => (await tasks.grantedBy(`invite:${code}`))[0],
       ...(store instanceof MemoryRunStore ? {} : { notes: fileInviteNotes(join(dataDir, "tasks", "invites.json")) }),
     }),
     // Tasks online (§5.8): the one app a staff page puts in the public view

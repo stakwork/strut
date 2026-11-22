@@ -847,6 +847,10 @@ export interface TasksCapability {
 }
 
 export interface TasksService {
+  /** The actors holding a grant made by `by` (`invite:<code>`), first
+   *  first; none when the store was never opened. The invites list's "who
+   *  took it", read without the staff worker view's cost. Never on a bag. */
+  grantedBy(by: string): Promise<string[]>;
   /** Frozen: the whole store — the staff routes' (`src/tasks/routes.ts`),
    *  which hold it. Never on a services bag (plans/human-steps.md §9.2). */
   capability: TasksCapability;
@@ -1018,8 +1022,11 @@ export interface TasksDeps {
    *  worker app it opens and the task types it gives (left out: every
    *  invite-only type of that app); `live` asks the daemon whether that
    *  invite may still let someone in (not cancelled, not failed). Left out:
-   *  an invite gives no task type. */
-  invite?: { read(token: string): { code: string; app: string; types?: string[] } | undefined; live(code: string): Promise<boolean> };
+   *  an invite gives no task type. `spent` is told once the invite has made
+   *  its grant, so the host can mark it used and, when an existing account
+   *  (not a new signup) redeemed it, send its sats back. It runs after the
+   *  grant, not waited for, and never undoes it: a failure is only logged. */
+  invite?: { read(token: string): { code: string; app: string; types?: string[] } | undefined; live(code: string): Promise<boolean>; spent?(code: string): Promise<void> };
   /** §7.2's draws, and the tie between least-served tests: [0, 1). */
   random?(): number;
   gradeTimeoutMs?: number;
@@ -1342,6 +1349,10 @@ export function createTasks(deps: TasksDeps): TasksService {
         const ready = want > 0 ? await s.tasks.readyTests(k.name) : 0;
         after = note(await s.workers.grant(w.actor, k.name, by, now(), ready >= want ? want : 0));
       }
+      // Not waited for: the host's cancel can take the daemon's 20 s, and this is the worker's
+      // first look at Tasks. The grant is written, so a second ask finds it (`grantedBy`), and
+      // a failed cancel never undoes it.
+      void deps.invite!.spent?.(inv.code).catch((err) => console.warn(`invite ${inv.code}: spent failed:`, err));
       return after;
     });
     redeeming.set(inv.code, turn.catch(() => undefined));
@@ -2822,6 +2833,10 @@ export function createTasks(deps: TasksDeps): TasksService {
     return deps.payouts.pay(actor, o);
   };
   return {
+    grantedBy: async (by) => {
+      const s = await storesIfAny();
+      return s ? s.workers.grantedBy(by) : [];
+    },
     capability: frozen,
     human: Object.freeze({ ensure: frozen.ensure, reply: frozen.reply }),
     worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me, history: frozen.history, withdraw }),
