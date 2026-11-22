@@ -246,7 +246,7 @@ for (const impl of IMPLS) {
       assert.equal((await leaseOf(t.id, "ann")).review?.why, "very blurry", "the verdict keeps the new one");
     });
 
-    it("money: ok never undoes a staff take-back; past the hold nothing moves; an unpaid answer has none to move", async () => {
+    it("money: ok never undoes a staff take-back; past the hold a rejection still takes the earning back; an unpaid answer has none to move", async () => {
       await typeWith({ paySats: 5, holdHours: 24 }, ["ann"]);
       const t = await ask();
       await answer("ann");
@@ -260,14 +260,81 @@ for (const impl of IMPLS) {
       await answer("ann");
       rig.clock = (await leaseOf(late.id, "ann")).earning!.releases;
       const out = await review({ task: late.id, verdict: "rejected", why: "seen late" });
-      assert.deepEqual([out.review.final, out.earning?.takenBack], [true, undefined], "after the hold: no money moves");
-      assert.equal((await tasks().me("ann")).balance.totalMsat, 5_000);
+      assert.deepEqual([out.review.final, out.earning?.takenBack], [true, rig.clock], "after the hold: a rejection still takes the earning back (a retake is a new task)");
+      assert.equal((await tasks().me("ann")).balance.totalMsat, 0);
 
       await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 48, holdHours: 72 }, "staff");
       const free = await ask();
       await answer("ann");
       const unpaid = await review({ task: free.id, verdict: "rejected", why: "wrong" });
       assert.equal(unpaid.earning, undefined);
+    });
+
+    /** ann answers `n` tasks, 2 are reviewed ok and the rest rejected, then 2 retakes pass. */
+    const retakeScenario = async (afterHold: number) => {
+      const first: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        first.push((await ask()).id);
+        await answer("ann");
+      }
+      rig.clock += afterHold;
+      await review({ task: first[0]!, verdict: "ok" });
+      await review({ task: first[1]!, verdict: "ok" });
+      await review({ task: first[2]!, verdict: "rejected", why: "blurry" });
+      await review({ task: first[3]!, verdict: "rejected", why: "blurry" });
+      for (let i = 0; i < 2; i++) {
+        const t = await ask();
+        await answer("ann");
+        await review({ task: t.id, verdict: "ok" });
+      }
+    };
+    const spend = async () => {
+      const n = (await tasks().numbers({ type: TYPE }))[0]!;
+      return [n.spentSats, n.workers.find((w) => w.worker === "ann")?.earnedSats];
+    };
+
+    it("money: a rejected answer is never paid, its passing retake is: 16 sats, not 24 (default hold 0)", async () => {
+      await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 48, open: false, paySats: 4 }, "staff");
+      await tasks().grant("ann", TYPE, "staff");
+      await retakeScenario(0);
+      const b = (await tasks().me("ann")).balance;
+      assert.deepEqual([b.withdrawableMsat, b.totalMsat], [16_000, 16_000]);
+      assert.deepEqual(await spend(), [16, 16], "the Tasks app's spend leaves the rejected answers out");
+    });
+
+    it("money: the same with a hold, the rejection coming after the hold ended: still 16", async () => {
+      await typeWith({ paySats: 4, holdHours: 1 }, ["ann"]);
+      await retakeScenario(2 * HOUR);
+      rig.clock += 2 * HOUR; // the retakes' own hold ends
+      const b = (await tasks().me("ann")).balance;
+      assert.deepEqual([b.withdrawableMsat, b.totalMsat], [16_000, 16_000]);
+      assert.deepEqual(await spend(), [16, 16]);
+    });
+
+    it("money: a rejection after the worker withdrew still records; the retakes net it off and 16 sats are paid out in all", async () => {
+      await tasks().setType(TYPE, { app: "workers", answer: MATCH, leaseSeconds: 600, withinHours: 48, open: false, paySats: 4 }, "staff");
+      await tasks().grant("ann", TYPE, "staff");
+      await rig.ledger.setPayoutSettings({ on: true, minSats: 1, workerDaySats: 1_000_000, serverDaySats: 10_000_000 });
+      const first: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        first.push((await ask()).id);
+        await answer("ann");
+      }
+      const key = "a".repeat(64);
+      const addr = `02${"a".repeat(64)}_03${"b".repeat(64)}_1099511627776`;
+      assert.ok((await rig.ledger.reservePayout({ key, worker: "ann", address: addr, msat: 16_000, maxFeeMsat: 0, at: rig.clock })).ok);
+      await rig.ledger.payoutSettled({ key, feeMsat: 0, at: rig.clock });
+      assert.equal((await tasks().me("ann")).balance.withdrawableMsat, 0);
+      await review({ task: first[0]!, verdict: "ok" });
+      await review({ task: first[1]!, verdict: "ok" });
+      await review({ task: first[2]!, verdict: "rejected", why: "blurry" });
+      await review({ task: first[3]!, verdict: "rejected", why: "blurry" });
+      assert.equal((await tasks().me("ann")).balance.withdrawableMsat, 0, "clamped at 0: the paid-out money is not clawed back");
+      for (let i = 0; i < 2; i++) await answer("ann", (await ask(), YES));
+      const b = (await tasks().me("ann")).balance;
+      assert.equal(b.withdrawableMsat, 0, "the retakes net off what was overpaid");
+      const p = await rig.ledger.payeeBalance("ann", { now: rig.clock });
+      assert.equal(p.withdrawableMsat, 0);
     });
 
     it("money: a copies task's rejected answer loses its own earning alone", async () => {

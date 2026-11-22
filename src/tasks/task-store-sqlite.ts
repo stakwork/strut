@@ -359,7 +359,9 @@ export class SqliteTaskStore implements TaskStore {
       totals: p(
         `select type, worker, sum(status = 'submitted') answered, sum(status = 'open' and expires > ?3) open,
                 coalesce(sum(case when status = 'submitted' then max(0, coalesce(closed, taken) - taken) end), 0) work_ms,
-                coalesce(sum(case when status = 'submitted' then pay_msat end), 0) pay_msat,
+                coalesce(sum(case when status = 'submitted'
+                  and not exists (select 1 from reviews r where r.task = leases.task and r.worker = leases.worker and r.verdict = 'rejected')
+                  then pay_msat end), 0) pay_msat,
                 coalesce(sum(case when status = 'open' and expires > ?3 then pay_msat end), 0) open_pay_msat
            from leases where type in (select value from json_each(?1)) and taken >= ?2 and (?4 is null or worker = ?4)
           group by type, worker`,

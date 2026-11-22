@@ -684,6 +684,23 @@ for (const impl of impls) {
       await assert.rejects(store.takeBack({ lease: "l2", why: "", at }), RangeError, "a take-back says why");
     });
 
+    it("takeBack with pastHold takes back past the hold or with none, counters in step; restore needs it too (§9.6)", async () => {
+      await earn("p0", { msat: 7_000, hold: 0 });
+      await earn("p1", { msat: 5_000, at: T0 + 1 });
+      const late = T0 + 1 + 72 * HOUR;
+      assert.equal((await store.takeBack({ lease: "p0", why: "staff", at: T0 })).result, "released", "without the option the hold rule stands");
+      const t0 = await store.takeBack({ lease: "p0", why: "review: bad", at: T0, pastHold: true });
+      assert.equal(t0.result, "taken");
+      assert.equal(t0.earning!.takenBackWhy, "review: bad");
+      assert.equal((await store.takeBack({ lease: "p1", why: "review: bad", at: late, pastHold: true })).result, "taken");
+      assert.deepEqual(await store.payeeBalance("ann", { now: late }), { totalMsat: 0, heldMsat: 0, withdrawableMsat: 0 });
+      assert.deepEqual((await store.payDaily()).map((r) => [r.answers, r.msat, r.takenBackAnswers, r.takenBackMsat]), [[2, 12_000, 2, 12_000]]);
+      assert.equal((await store.restore({ lease: "p1", at: late })).result, "released", "restore past the hold needs the option");
+      assert.equal((await store.restore({ lease: "p1", at: late, pastHold: true })).result, "restored");
+      assert.deepEqual(await store.payeeBalance("ann", { now: late }), { totalMsat: 5_000, heldMsat: 0, withdrawableMsat: 5_000 });
+      assert.deepEqual((await store.payDaily()).map((r) => [r.takenBackAnswers, r.takenBackMsat]), [[1, 7_000]]);
+    });
+
     it("pay_daily sums by day and task type; a take-back counts on its answer's day", async () => {
       const day = 24 * HOUR;
       await earn("a", { type: "pet-match", msat: 1_000 });

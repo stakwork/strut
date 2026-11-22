@@ -458,7 +458,7 @@ export class MemoryLedgerStore implements LedgerStore {
     int("at", at);
     const e = this.pays.get(input.lease);
     if (!e) return { lease: input.lease, result: "none" };
-    if (e.takenBack === undefined && e.releases > at) {
+    if (e.takenBack === undefined && (e.releases > at || input.pastHold === true)) {
       Object.assign(e, { takenBack: at, takenBackWhy: input.why, ...(input.by !== undefined ? { takenBackBy: input.by } : {}) });
       this.payeeRows.get(e.worker)!.takenBack += e.msat;
       const day = this.payDay(e);
@@ -476,7 +476,7 @@ export class MemoryLedgerStore implements LedgerStore {
     const e = this.pays.get(input.lease);
     if (!e) return { lease: input.lease, result: "none" };
     if (e.takenBack === undefined) return { lease: input.lease, result: "none", earning: { ...e } };
-    if (e.releases <= at) return { lease: input.lease, result: "released", earning: { ...e } };
+    if (e.releases <= at && input.pastHold !== true) return { lease: input.lease, result: "released", earning: { ...e } };
     this.restores.push({
       lease: e.lease,
       takenBack: e.takenBack,
