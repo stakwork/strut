@@ -137,8 +137,12 @@ export interface Proposal extends Omit<ProposalBrief, "url" | "decidedAt"> {
   input: unknown;
   decision?: { action: "accept" | "reject"; by?: string; at: string; reason?: string };
   result?: { output?: unknown; error?: string; at: string };
-  /** Whether the page's viewer is an admin here (`proposal/get`, a page's call). */
-  viewer?: { admin: boolean };
+  /** Whose ask made it (`by.actor`): who decides it, unless only an admin accepts it. */
+  by?: { actor?: string };
+  /** Whether the page's viewer is an admin here, and whether they decide this
+   *  one (`proposal/get`, a page's call): theirs, or an admin on a card only
+   *  an admin accepts. `decides` is absent from a server before it. */
+  viewer?: { admin: boolean; decides?: boolean };
 }
 
 /** A deliverable, resolved (`ArtifactRef`). */

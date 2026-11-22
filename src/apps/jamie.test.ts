@@ -31,7 +31,7 @@ import { appKey, openable, placeArtifact, servedFile, turnDeliverables } from ".
 import { answeredSince, askedSecret, captchaPrompt, claimPill, jobLook, jobRunWorkflow, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
 import { canMerge, checksLine, fixPrompt, prKey, prLive, prOf, prPill } from "./jamie/src/lib/pr.js";
-import { acceptLook } from "./jamie/src/lib/proposals.js";
+import { acceptLook, waitingFor } from "./jamie/src/lib/proposals.js";
 import { attachmentShow } from "./jamie/src/lib/attachments.js";
 
 /**
@@ -329,6 +329,9 @@ describe("strut/jamie — the pure parts", () => {
     assert.equal(acceptLook("admin", { admin: true }), "accept");
     assert.equal(acceptLook("admin", { admin: false }), "admin");
     assert.equal(acceptLook("admin", undefined), "unknown");
+    // Someone else's card in a shared conversation: whose ask it was, by name.
+    assert.equal(waitingFor("evanfeenstra-cd06a17ecfb5779b4a71"), "Waiting for evanfeenstra to decide: it was their ask.");
+    assert.equal(waitingFor(undefined), "Waiting for the person who asked to decide.");
   });
 
   it("an attached file: an image a thumbnail, text to read, the rest a chip; nothing without a path", () => {

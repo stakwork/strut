@@ -16,3 +16,12 @@ export function acceptLook(approver: "admin" | undefined, viewer: { admin: boole
 
 /** The line a viewer who is not an admin reads in place of Accept. */
 export const ADMIN_MUST_APPROVE = "An admin must approve this.";
+
+/** The line a viewer reads on someone else's card in a shared conversation
+ *  (`viewer.decides` false), in place of buttons the decision would refuse:
+ *  accepting runs it as the person who asked, so it is theirs. An actor key
+ *  (`evanfeenstra-cd06…`) reads as its name part. */
+export function waitingFor(actor: string | undefined): string {
+  const name = actor?.replace(/-[0-9a-f]{12,}$/, "");
+  return name ? `Waiting for ${name} to decide: it was their ask.` : "Waiting for the person who asked to decide.";
+}

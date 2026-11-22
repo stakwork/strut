@@ -661,6 +661,19 @@ export interface Decision {
 
 /** Why the decider may not ACCEPT `p` — only an admin accepts it, and they
  *  are not one — or undefined. Rejecting is never refused for it. */
+/** Whether a person decides proposal `p` as its card shows it to them: the
+ *  person whose ask made it — accepting runs it as them, with their
+ *  connectors and their bill, so nobody else does — and, for one only an
+ *  admin accepts (`approver: "admin"`, the step's word else the record's:
+ *  a task type, a package, a grant), any ADMIN here, accept or reject: that
+ *  is what it waits for, wherever it was made (an admin's session already
+ *  decides it at /proposals). `decideProposal` holds a person token to it;
+ *  `proposal/get` tells the page (`viewer.decides`). */
+export function decides(p: Pick<Proposal, "by" | "approver">, viewer: { actor?: string; admin?: boolean }, def?: Pick<AnyStepDef, "approver">): boolean {
+  if (viewer.actor && p.by.actor === viewer.actor) return true;
+  return viewer.admin === true && (def?.approver ?? p.approver) === "admin";
+}
+
 export function acceptRefusal(p: Pick<Proposal, "step" | "title" | "approver">, def: Pick<AnyStepDef, "approver"> | undefined, admin: boolean): string | undefined {
   if (admin || (def?.approver ?? p.approver) !== "admin") return undefined;
   return `admin_required: only an admin of this strut server accepts "${p.title}" (${p.step}) — ask an admin of this workspace to accept it. You may still reject it.`;
@@ -695,7 +708,9 @@ export async function decideProposal(root: string, id: string, decision: Decisio
   const rec = await readProposal(root, id);
   if (!rec) return { status: 404, body: { error: `No proposal "${id}"` } };
   if (decision.scope === "peer") return { status: 403, body: { error: "forbidden: a peer without a person cannot decide a proposal" } };
-  if ((decision.scope === "peer:person" || decision.scope === "host") && (!rec.by.actor || rec.by.actor !== decision.by)) {
+  // `stepFor` first: a name it answers for is never a registry step's.
+  const def = (await deps.stepFor?.(rec.step)) ?? deps.registry[rec.step];
+  if ((decision.scope === "peer:person" || decision.scope === "host") && !decides(rec, { ...(decision.by ? { actor: decision.by } : {}), ...(decision.scope === "peer:person" && decision.admin ? { admin: true } : {}) }, def)) {
     return { status: 403, body: { error: `forbidden: proposal "${id}" is not yours to decide` } };
   }
   const tell = (p: Proposal) => {
@@ -714,8 +729,6 @@ export async function decideProposal(root: string, id: string, decision: Decisio
   }
 
   if (rec.status !== "pending" && rec.status !== "failed") return { status: 409, body: { error: `Proposal "${id}" is ${rec.status}`, proposal: rec } };
-  // `stepFor` first: a name it answers for is never a registry step's.
-  const def = (await deps.stepFor?.(rec.step)) ?? deps.registry[rec.step];
   // Only an admin accepts it (`StepDef.approver`): the step's word now, else
   // the record's, so neither a step that lost it nor a record from before
   // it opens the door. Before anything is written: it stays as it was.

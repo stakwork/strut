@@ -4,8 +4,10 @@
 // (`proposal/decide`): accept runs it, reject records why. Read live
 // (`proposal/get`), since a decision made elsewhere moves it too. One only
 // an admin accepts (installing a package) says so to anyone else, in place
-// of an Accept the decision would refuse (lib/proposals.ts). In a thread
-// its viewer only reads (an admin reading someone else's), it decides nothing.
+// of an Accept the decision would refuse (lib/proposals.ts). Someone else's
+// card in a shared conversation says whose it is (`viewer.decides` false). In
+// a thread its viewer only reads (an admin reading someone else's), it
+// decides nothing.
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Lightbulb, Loader2, RotateCcw, ShieldCheck, X } from "lucide-react";
@@ -15,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { Tone } from "../lib/jobs";
 import type { CardField, Proposal, ProposalBrief, ProposalStatus } from "../lib/types";
-import { ADMIN_MUST_APPROVE, acceptLook } from "../lib/proposals";
+import { ADMIN_MUST_APPROVE, acceptLook, waitingFor } from "../lib/proposals";
 import { useReadOnly } from "../viewer";
 import { Notice, Pill, errorText } from "./bits";
 
@@ -70,9 +72,12 @@ export function ProposalCard({ brief }: { brief: ProposalBrief }) {
   // A setting most people need not read is folded under Details; a danger never is.
   const shown = card?.fields.filter((f) => !f.detail || f.danger) ?? [];
   const folded = card?.fields.filter((f) => f.detail && !f.danger) ?? [];
-  const canDecide = !readOnly && (status === "pending" || status === "failed");
+  // Someone else's card (a shared conversation): not this viewer's to decide.
+  const others = p?.viewer?.decides === false;
+  const canDecide = !readOnly && !others && (status === "pending" || status === "failed");
   const accept = acceptLook(p?.approver ?? brief.approver, p?.viewer);
-  const look = status === "pending" && readOnly ? WAITING : status === "pending" && accept === "admin" ? WAITING_ON_ADMIN : (STATUS[status] ?? STATUS.pending);
+  const look =
+    status === "pending" && (readOnly || (others && accept !== "admin")) ? WAITING : status === "pending" && accept === "admin" ? WAITING_ON_ADMIN : (STATUS[status] ?? STATUS.pending);
 
   const decide = async (action: "accept" | "reject") => {
     setDeciding(action);
@@ -119,6 +124,12 @@ export function ProposalCard({ brief }: { brief: ProposalBrief }) {
           {p?.decision?.reason && status === "rejected" && <p className="text-xs text-muted-foreground">Reason: {p.decision.reason}</p>}
           {p?.result?.error && <p className="text-xs text-rose-700 dark:text-rose-300">{p.result.error}</p>}
           {note && <Notice tone="error">{note}</Notice>}
+          {others && !readOnly && status === "pending" && (
+            <p className="flex items-center gap-1 pt-1 text-xs text-muted-foreground" data-testid="proposal-not-yours">
+              <ShieldCheck className="size-3.5" />
+              {accept === "admin" ? ADMIN_MUST_APPROVE : waitingFor(p?.by?.actor)}
+            </p>
+          )}
           {canDecide && (
             <div className="flex items-center justify-end gap-1 pt-1">
               {accept === "admin" && (

@@ -9,7 +9,8 @@ import { RUN_STEP_FLOW } from "../../../run-step.js";
  * page's viewer — accept applies the step in code with the recorded input
  * (the person's edits merged), reject records the reason. Only the viewer's
  * own proposals — and, for an ADMIN here, one made in no conversation (the
- * dream's: `pageSees`). What only an admin accepts (`StepDef.approver`:
+ * dream's: `pageSees`) and one only an admin accepts, whoever's ask made it
+ * (`decides`). What only an admin accepts (`StepDef.approver`:
  * installing a package) the viewer accepts only when they are an admin here
  * (`AppRef.admin`): a member is refused it (`admin_required:`) and may reject.
  *
@@ -23,7 +24,7 @@ export default defineStep({
   effect: "write",
   description:
     "A person's decision on a proposal, from strut's own app only: accept runs the proposed step with its input (and `input`, the person's edits, merged), reject records `reason`. " +
-    "Only the viewer's own proposals (and, for an admin, one no conversation made); one only an admin accepts (`approver: admin`) is accepted only by an admin of this strut server. Returns the record after the decision (status applied, rejected or failed). An agent never decides a proposal.",
+    "Only the viewer's own proposals (and, for an admin, one no conversation made and any one only an admin accepts); one only an admin accepts (`approver: admin`) is accepted only by an admin of this strut server. Returns the record after the decision (status applied, rejected or failed). An agent never decides a proposal.",
   input: z.object({
     id: z.string().min(1).describe("The proposal id."),
     action: z.enum(["accept", "reject"]),

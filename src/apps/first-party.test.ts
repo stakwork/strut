@@ -313,11 +313,11 @@ describe("first-party apps through a whole strut", () => {
     const { proposals } = await ada.ok("proposal/list", { status: "pending" });
     assert.deepEqual(proposals.map((p: any) => [p.step, p.approver]), [["installer", "admin"]]);
     const id = proposals[0].id;
-    assert.deepEqual((await ada.ok("proposal/get", { id })).viewer, { admin: true });
+    assert.deepEqual((await ada.ok("proposal/get", { id })).viewer, { admin: true, decides: true });
 
     // The same person through a member's session: told, and refused.
     const adaMember = page("strut/jamie", "ada");
-    assert.deepEqual((await adaMember.ok("proposal/get", { id })).viewer, { admin: false });
+    assert.deepEqual((await adaMember.ok("proposal/get", { id })).viewer, { admin: false, decides: true }, "her own card, but not as an admin");
     assert.match((await adaMember.call("proposal/decide", { id, action: "accept" })).error!, /^admin_required: only an admin of this strut server accepts/);
     assert.equal((await ada.ok("proposal/get", { id })).status, "pending");
     assert.deepEqual(installed, []);
@@ -325,6 +325,41 @@ describe("first-party apps through a whole strut", () => {
     const decided = await ada.ok("proposal/decide", { id, action: "accept" });
     assert.equal(decided.status, "applied");
     assert.deepEqual(installed, ["pkg"]);
+  });
+
+  it("a card made in someone else's shared conversation shows to everyone in it; whose ask it was decides it, and any admin one only an admin accepts", async () => {
+    // Alice's conversation, shared; Bob asks in it (2026-11-22: Evan's card in Tom's thread showed to neither).
+    const alice = page("strut/jamie", "alice");
+    await alice.turn("alice/shared", "hi");
+    await alice.ok("conversation/update", { session: "alice/shared", shared: true });
+    const bob = page("strut/jamie", "bob");
+    await bob.turn("alice/shared", "note it");
+    const cards = async (who: ReturnType<typeof page>) =>
+      (await who.ok("conversation/get", { session: "alice/shared" })).turns.flatMap((t: any) => t.proposals.map((p: any) => p.id)) as string[];
+    const [card] = await cards(bob);
+    assert.ok(card, "bob sees his card in the thread");
+    assert.deepEqual(await cards(alice), [card], "and so does alice, whose conversation it is");
+    assert.deepEqual((await alice.ok("proposal/list", { status: "pending" })).proposals, [], "the lists stay her own: not hers");
+
+    // Whose ask it was decides it: the page says so, and the decision holds to it.
+    assert.deepEqual((await alice.ok("proposal/get", { id: card })).viewer, { admin: false, decides: false });
+    assert.deepEqual((await bob.ok("proposal/get", { id: card })).viewer, { admin: false, decides: true });
+    assert.match((await alice.call("proposal/decide", { id: card, action: "accept" })).error!, /not yours to decide/);
+    const before = noted.length;
+    assert.equal((await bob.ok("proposal/decide", { id: card, action: "accept" })).status, "applied");
+    assert.equal(noted.length, before + 1);
+
+    // One only an admin accepts: any admin decides it, wherever it was made; a member reads that an admin must.
+    const ada = page("strut/jamie", "ada", true);
+    await ada.turn("alice/shared", "install it");
+    const adminCard = (await cards(alice)).find((id) => id !== card)!;
+    assert.ok(adminCard, "ada's card shows in alice's thread");
+    const ed = page("strut/jamie", "ed", true);
+    assert.deepEqual((await alice.ok("proposal/get", { id: adminCard })).viewer, { admin: false, decides: false });
+    assert.deepEqual((await ed.ok("proposal/get", { id: adminCard })).viewer, { admin: true, decides: true });
+    assert.match((await alice.call("proposal/decide", { id: adminCard, action: "reject" })).error!, /not yours to decide/);
+    const done = await ed.ok("proposal/decide", { id: adminCard, action: "accept" });
+    assert.deepEqual([done.status, done.decision.by], ["applied", "ed"]);
   });
 
   it("the viewer's runs of the sealed orchestrator, whoever launched them; never another's", async () => {

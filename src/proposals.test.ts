@@ -15,6 +15,7 @@ import {
   PROPOSAL_RESULT_PREFIX,
   briefOf,
   decideProposal,
+  decides,
   listProposals,
   pageSees,
   proposalResultLines,
@@ -578,6 +579,19 @@ describe("proposals", () => {
     const deps = () => ({ registry: both, services: {} });
     const by = { workflow: "wf", runId: "r1", path: "wf/turn/001-dev_install", actor: "ann", session: "ann/c1" };
     beforeEach(() => void (installed = []));
+
+    it("any admin decides one only an admin accepts, whoever's ask made it; anyone else's card stays its proposer's", async () => {
+      const p = await cap().propose({ step: "dev/install", input: { name: "pkg" }, title: "Install pkg.", approver: "admin", by: { ...by, session: "tom/c9" } });
+      const q = await cap().propose({ step: "dev/write", input: { name: "x", n: 1 }, title: "Write a thing.", by: { ...by, path: "wf/turn/002-dev_write", session: "tom/c9" } });
+      assert.equal(decides(p, { actor: "ed", admin: true }), true, "an admin, on what waits for an admin");
+      assert.equal(decides(p, { actor: "tom" }), false, "a member reading the thread");
+      assert.equal(decides(q, { actor: "ed", admin: true }), false, "an admin, on someone else's card any member accepts: it runs as ann");
+      assert.equal(decides(q, { actor: "ann" }), true, "its proposer");
+      const refused = await decideProposal(root(), q.id, { action: "accept", by: "ed", scope: "peer:person", admin: true }, deps());
+      assert.match((refused.body as { error: string }).error, /not yours to decide/);
+      const out = await decideProposal(root(), p.id, { action: "accept", by: "ed", scope: "peer:person", admin: true }, deps());
+      assert.deepEqual([(out.body as Proposal).status, (out.body as Proposal).decision?.by, installed], ["applied", "ed", ["pkg"]]);
+    });
 
     it("a member's or a person token's accept is refused, the proposal left as it was; their reject goes through", async () => {
       const p = await cap().propose({ step: "dev/install", input: { name: "pkg" }, title: "Install pkg.", approver: "admin", by });
