@@ -8,6 +8,9 @@
  *   dollars per bitcoin) through strut's own http capability.
  *   `STRUT_RATE_URL` points at any endpoint of that shape (a self-hosted
  *   mempool); `createStrut({ payments: { rate } })` takes a host's function.
+ * - Every currency the source answers is kept in `perBtc` (`{ USD, EUR,
+ *   GBP, … }`), what a worker's page shows beside sats (`task/me`'s
+ *   `rate`). Sats stay the truth; the dollar is what credit is sold in.
  * - `createRate(source)` reads it on demand and keeps a reading for a
  *   minute, so a burst of challenges is one request; concurrent reads
  *   share one request.
@@ -23,6 +26,9 @@ import type { HttpCapability } from "../capabilities.js";
 /** One reading. `at` is ISO 8601: the source's own time for the figure. */
 export interface ExchangeRate {
   usdPerBtc: number;
+  /** Units of each currency per bitcoin, by ISO 4217 code, USD among them:
+   *  every one the source answered. */
+  perBtc?: Record<string, number>;
   at: string;
   /** Where it came from: a host name (`mempool.space`) or a host's label. */
   source: string;
@@ -59,7 +65,18 @@ export function checkReading(r: unknown, from: string): ExchangeRate {
   const at = typeof o["at"] === "string" && !Number.isNaN(Date.parse(o["at"])) ? new Date(o["at"]).toISOString() : null;
   if (!at) throw new Error(`${from} answered no time for its rate`);
   const source = typeof o["source"] === "string" && o["source"].trim() ? o["source"].trim() : from;
-  return { usdPerBtc, at, source };
+  return { usdPerBtc, perBtc: { ...currenciesOf(o["perBtc"]), USD: usdPerBtc }, at, source };
+}
+
+/** The currencies in `o`: each three-letter upper-case key with a finite
+ *  figure above zero (mempool's `{ time, USD, EUR, … }` drops its `time`). */
+export function currenciesOf(o: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!o || typeof o !== "object") return out;
+  for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+    if (/^[A-Z]{3}$/.test(k) && typeof v === "number" && Number.isFinite(v) && v > 0) out[k] = v;
+  }
+  return out;
 }
 
 /** The source at `url`, read through `http`: an endpoint of mempool's shape,
@@ -80,7 +97,7 @@ export function urlRateSource(url: string, http: HttpCapability, opts: { timeout
     const b = (res.body && typeof res.body === "object" ? res.body : {}) as Record<string, unknown>;
     const time = b["time"];
     if (typeof time !== "number" || !Number.isFinite(time) || time <= 0) throw new Error(`${host} answered no time`);
-    return checkReading({ usdPerBtc: b["USD"], at: new Date(time * 1000).toISOString(), source: host }, host);
+    return checkReading({ usdPerBtc: b["USD"], perBtc: currenciesOf(b), at: new Date(time * 1000).toISOString(), source: host }, host);
   };
 }
 
@@ -131,7 +148,7 @@ export function createRate(source: RateSource, opts: { now?: () => number; fresh
       });
       return inFlight;
     },
-    last: () => (last ? { rate: { ...last.rate }, readAt: last.readAt } : null),
+    last: () => (last ? { rate: { ...last.rate, ...(last.rate.perBtc ? { perBtc: { ...last.rate.perBtc } } : {}) }, readAt: last.readAt } : null),
   };
 }
 

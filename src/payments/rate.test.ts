@@ -31,7 +31,7 @@ describe("the exchange rate", () => {
   it("reads mempool's { time, USD } as dollars per bitcoin, named by its host", async () => {
     const m = mempool(() => ok({ time: 1_793_000_000, USD: 73_176, EUR: 63_000 }));
     const source = rateSourceFor({ http: m.http });
-    assert.deepEqual(await source(), { usdPerBtc: 73_176, at: new Date(1_793_000_000_000).toISOString(), source: "mempool.space" });
+    assert.deepEqual(await source(), { usdPerBtc: 73_176, perBtc: { USD: 73_176, EUR: 63_000 }, at: new Date(1_793_000_000_000).toISOString(), source: "mempool.space" });
     assert.deepEqual(m.calls, [DEFAULT_RATE_URL]);
 
     const own = mempool(() => ok({ time: 1_793_000_000, USD: 70_000 }));
@@ -41,6 +41,15 @@ describe("the exchange rate", () => {
     assert.equal(await rateSourceFor({ source: async () => hostRate, url: "https://x.example", http: own.http })(), hostRate);
     assert.throws(() => urlRateSource("ftp://x", own.http), /http/);
     assert.throws(() => urlRateSource("not a url", own.http), /not a URL/);
+  });
+
+  it("keeps every currency the source answers, and drops what is not one", async () => {
+    const m = mempool(() => ok({ time: 1_793_000_000, USD: 60_858, EUR: 55_580, GBP: 46_657, JPY: 9_649_244, XXX: 0, eur: 1, BTC2: 3, CAD: "86466" }));
+    const r = await urlRateSource(DEFAULT_RATE_URL, m.http)();
+    assert.deepEqual(r.perBtc, { USD: 60_858, EUR: 55_580, GBP: 46_657, JPY: 9_649_244 });
+    // A host's source that answers dollars alone still has them by code.
+    const host = createRate(async () => ({ usdPerBtc: 50_000, at: new Date(0).toISOString(), source: "host" }));
+    assert.deepEqual((await host.read()).perBtc, { USD: 50_000 });
   });
 
   it("refuses an answer that cannot price anything", async () => {

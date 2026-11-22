@@ -55,6 +55,12 @@ import { words } from "../words";
 // own page is light; strut's UI is dark, the default. The page around it
 // matches while the app loads; what strut draws in the side panel's bar and
 // its file viewer stays strut's own.
+//
+// The page around the app is drawn in the APP's look, not strut's: the
+// kit's neutral surface, and this server's brand (its font; src/brand.ts)
+// read as the app will be — in public on a visitor's page — so a worker sees
+// one look from the loading screen on (`.app-solo`). Another server's app
+// (`from`) is not this server's to brand.
 
 export function SoloApp(props: { app: string; input?: string | null; visitor?: boolean; from?: string; theme?: "light" | "dark" }) {
   const from = props.from;
@@ -131,12 +137,24 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
   useEffect(() => {
     if (missing) reportReady();
   }, [missing]);
+  /** The brand's variables for the theme, on the frame around the app. */
+  const [brand, setBrand] = useState<Record<string, string> | null>(null);
+  useEffect(() => {
+    if (from) return;
+    let on = true;
+    void api.getBrandStyles(visitor).then((styles) => {
+      if (on) setBrand(styles?.[props.theme ?? "dark"]?.variables ?? null);
+    });
+    return () => {
+      on = false;
+    };
+  }, [visitor, from, props.theme]);
   const goBack = () => {
     if (history.length > 1) history.back();
     else if (back) location.replace(publicAppHop({ app: back }, shown?.name ?? props.app, location.href, { back: false }) ?? location.href);
   };
   return (
-    <div class={`app-solo${back && shown ? " has-back" : ""}`}>
+    <div class={`app-solo${back && shown ? " has-back" : ""}`} style={brand ?? undefined}>
       {back && shown && (
         <button type="button" class="app-solo-back" onClick={goBack}>
           <span aria-hidden="true">←</span> {words.back}

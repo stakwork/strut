@@ -22,6 +22,15 @@ export const WORKER_ADDRESS = "workerAddress";
  *  (`WorkerApps`): what `task/me { all }` and `task/history { all }` list. */
 export const WORKER_APPS = "workerApps";
 
+/** The key a door hands a worker step the server's exchange rate under
+ *  (`WorkerRate`): what `task/me` answers as `rate`, so a page can show fiat
+ *  beside sats. */
+export const WORKER_RATE = "workerRate";
+
+/** The rate this server trusts now: units of each currency per bitcoin, by
+ *  ISO 4217 code, when and where it was read. Throws with none to be had. */
+export type WorkerRate = () => Promise<{ perBtc?: Record<string, number>; usdPerBtc: number; at: string; source: string }>;
+
 /** The apps whose task types a worker reached through this door can open:
  *  the public view's for a visitor; undefined for every app (a member). */
 export type WorkerApps = () => Promise<string[] | undefined>;
@@ -37,6 +46,8 @@ export interface WorkerCall {
   address?: string;
   /** The apps the caller can open, for a list across apps; absent: every app. */
   apps?: WorkerApps;
+  /** The server's exchange rate; absent on a server that reads none. */
+  rate?: WorkerRate;
 }
 
 export function workerCall(type: string, ctx: StepContext | undefined): WorkerCall {
@@ -49,12 +60,14 @@ export function workerCall(type: string, ctx: StepContext | undefined): WorkerCa
   const bag = ctx.services as Record<string, unknown> | undefined;
   const address = bag?.[WORKER_ADDRESS];
   const apps = bag?.[WORKER_APPS];
+  const rate = bag?.[WORKER_RATE];
   return {
     tasks,
     actor: ctx.actor,
     app: ctx.app.name,
     ...(typeof address === "string" && address ? { address } : {}),
     ...(typeof apps === "function" ? { apps: apps as WorkerApps } : {}),
+    ...(typeof rate === "function" ? { rate: rate as WorkerRate } : {}),
   };
 }
 

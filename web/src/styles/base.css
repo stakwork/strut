@@ -69,10 +69,14 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* `?app=…&solo=1&theme=light`: index.html sets the class before anything
-   paints, so a light host's frame never shows strut's dark page. */
-html.solo-light body,
-html.solo-light .app-solo {
+/* `?app=…&solo=1`: index.html sets the class before anything paints, so a
+   page alone shows the kit's neutral surface (an app's own look), never
+   strut's navy; `&theme=light`, a light host's frame, never a dark page. */
+html.solo body {
+  background: #0a0a0a;
+  color: #a1a1a1;
+}
+html.solo-light body {
   background: #ffffff;
   color: #3f3f46;
 }
