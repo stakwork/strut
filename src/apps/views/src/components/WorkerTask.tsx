@@ -6,7 +6,7 @@ import {
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ACCENT_BUTTON, TaskForm } from "./TaskForm";
+import { ACCENT_BUTTON, ACCENT_EDGE, ACCENT_FILL, ACCENT_LINE, ACCENT_TINT, TaskForm } from "./TaskForm";
 import { errorText } from "../lib/format";
 import { refusalText, useWorkerWords, type WorkerWords } from "../lib/words";
 import { workerHeading } from "../lib/heading";
@@ -89,7 +89,9 @@ export function PayPill({ msat, earned = false, className }: { msat: number; ear
   return (
     <span
       className={cn(
-        "inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/40 bg-amber-400/15 px-2.5 py-1 text-[13px] font-semibold text-amber-700 dark:text-amber-300",
+        "inline-flex w-fit items-center gap-1 rounded-full border px-2.5 py-1 text-[13px] font-semibold text-foreground",
+        ACCENT_EDGE,
+        ACCENT_TINT,
         className,
       )}
     >
@@ -178,10 +180,10 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
           </>
         ) : (
           <>
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_38%,rgb(245_197_66/0.18),transparent_62%)]" />
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_38%,color-mix(in_oklab,var(--color-background-inverse,oklch(82.8%_0.189_84.429))_18%,transparent),transparent_62%)]" />
             <Corners />
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-8 text-center">
-              <div className="grid size-20 place-items-center rounded-3xl border border-amber-400/40 bg-amber-400/15 text-amber-300">
+              <div className={cn("grid size-20 place-items-center rounded-3xl border", ACCENT_EDGE, ACCENT_TINT)}>
                 {images ? <Camera className="size-9" /> : <ImagePlus className="size-9" />}
               </div>
               <p className="text-[15px] leading-snug text-zinc-300">{images ? w.fillFrame : w.addFile}</p>
@@ -205,7 +207,7 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
               key={i}
               type="button"
               aria-label={w.show(images, i + 1)}
-              className={cn("relative size-16 overflow-hidden rounded-xl border-2 bg-muted", i === shown ? "border-amber-400" : "border-transparent")}
+              className={cn("relative size-16 overflow-hidden rounded-xl border-2 bg-muted", i === shown ? ACCENT_LINE : "border-transparent")}
               onClick={() => setShown(i)}
             >
               {p.type.startsWith("image/") && urls[i] ? <img src={urls[i]} alt="" className="size-full object-cover" /> : <span className="p-1 text-[10px]">{p.name}</span>}
@@ -234,7 +236,7 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
 
 /** A viewfinder's four corners, in the accent. */
 function Corners() {
-  const corner = "absolute size-9 border-amber-400";
+  const corner = cn("absolute size-9", ACCENT_LINE);
   return (
     <div aria-hidden className="pointer-events-none absolute inset-[7%]">
       <span className={cn(corner, "top-0 left-0 rounded-tl-xl border-t-[3px] border-l-[3px]")} />
@@ -561,7 +563,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
             <ArrowLeft />
           </button>
         ) : (
-          <div className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-amber-400 text-amber-950 [&_svg]:size-4">{mark}</div>
+          <div className={cn("grid size-8 shrink-0 place-items-center rounded-[10px] [&_svg]:size-4", ACCENT_FILL)}>{mark}</div>
         )}
         <div className="min-w-0">
           <div className="truncate text-[15px] leading-tight font-semibold">{back && working ? typeLabel(working, me.data?.types.find((t) => t.name === working)?.title) : title}</div>
@@ -727,10 +729,10 @@ function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<W
     onGone();
   };
   return (
-    <div className="rounded-2xl border border-amber-500/40 bg-amber-400/15 p-4" data-testid="in-hand">
+    <div className={cn("rounded-2xl border p-4", ACCENT_EDGE, ACCENT_TINT)} data-testid="in-hand">
       <div className="flex items-center gap-2">
         <button type="button" onClick={onContinue} className="min-w-0 flex-1 text-left">
-          <div className="text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">{w.inYourHand}</div>
+          <div className="text-xs font-semibold tracking-wide text-foreground uppercase">{w.inYourHand}</div>
           <div className="truncate text-base font-semibold">{typeLabel(holding.type, title)}</div>
         </button>
         {holding.lease && !asking && (
@@ -739,7 +741,7 @@ function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<W
             aria-label={w.letGo}
             title={w.letGo}
             onClick={() => setAsking(true)}
-            className="mr-4 grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-amber-400/25 hover:text-foreground"
+            className="mr-4 grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-[color:color-mix(in_oklab,var(--color-background-inverse,oklch(82.8%_0.189_84.429))_25%,transparent)] hover:text-foreground"
           >
             <X className="size-4" />
           </button>
@@ -749,7 +751,7 @@ function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<W
         </button>
       </div>
       {asking && (
-        <div className="mt-3 flex flex-col gap-2 border-t border-amber-500/30 pt-3">
+        <div className={cn("mt-3 flex flex-col gap-2 border-t pt-3", ACCENT_EDGE)}>
           <p className="text-sm">{w.letGoAsk}</p>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="grid grid-cols-2 gap-2">
@@ -851,7 +853,7 @@ function ReplyLine({ item, reply }: { item: Pick<WorkerHistoryItem, "lease">; re
   const summary = said ?? (pictures ? w.pictures(pictures) : w.files(files.length));
   return (
     <div className="basis-full">
-      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-1.5 text-left text-[13px] text-amber-700 dark:text-amber-300">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-1.5 text-left text-[13px] font-medium text-foreground">
         <MessageSquare className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">
           <span className="font-semibold">{w.reply}</span>
@@ -940,8 +942,8 @@ function SentReply({ lease }: { lease: string }) {
   }, []);
   if (!item || !reply) return null;
   return (
-    <div className="relative mt-4 w-full rounded-2xl border border-amber-500/40 bg-card p-4 text-left shadow-sm">
-      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">
+    <div className={cn("relative mt-4 w-full rounded-2xl border bg-card p-4 text-left shadow-sm", ACCENT_EDGE)}>
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold tracking-wide text-foreground uppercase">
         <MessageSquare className="size-3.5" /> {w.reply}
       </div>
       <TaskReplyView item={item} reply={reply} />
@@ -955,7 +957,7 @@ function Badge({ children, tone }: { children: ReactNode; tone?: "accent" | "don
       className={cn(
         "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap",
         !tone && "text-muted-foreground",
-        tone === "accent" && "border-amber-500/40 bg-amber-400/15 text-amber-700 dark:text-amber-300",
+        tone === "accent" && cn("text-foreground", ACCENT_EDGE, ACCENT_TINT),
         tone === "done" && "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
         tone === "error" && "border-destructive/35 bg-destructive/10 text-destructive",
       )}
@@ -985,7 +987,7 @@ function Screen({ icon, heading, text, bar, tone = "accent", children }: { icon:
           aria-hidden
           className={cn(
             "pointer-events-none absolute inset-0 -z-0",
-            tone === "accent" && "bg-[radial-gradient(260px_circle_at_50%_42%,rgb(245_197_66/0.16),transparent)]",
+            tone === "accent" && "bg-[radial-gradient(260px_circle_at_50%_42%,color-mix(in_oklab,var(--color-background-inverse,oklch(82.8%_0.189_84.429))_16%,transparent),transparent)]",
             tone === "done" && "bg-[radial-gradient(260px_circle_at_50%_30%,rgb(16_185_129/0.16),transparent)]",
             tone === "error" && "bg-[radial-gradient(260px_circle_at_50%_42%,rgb(239_68_68/0.14),transparent)]",
           )}
@@ -993,7 +995,7 @@ function Screen({ icon, heading, text, bar, tone = "accent", children }: { icon:
         <div
           className={cn(
             "relative grid size-22 place-items-center rounded-[26px] border [&_svg]:size-10",
-            tone === "accent" && "border-amber-500/35 bg-amber-400/15 text-amber-600 dark:text-amber-300",
+            tone === "accent" && cn("text-foreground", ACCENT_EDGE, ACCENT_TINT),
             tone === "done" && "border-emerald-500/35 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
             tone === "error" && "border-destructive/35 bg-destructive/10 text-destructive",
           )}

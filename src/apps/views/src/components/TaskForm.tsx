@@ -50,9 +50,27 @@ const scaleOf = (schema: FormSchema, name: string): number[] | undefined => {
 /** The most choices drawn as buttons to tap; more is a select. */
 const MAX_TAPPED = 6;
 
-/** The worker's accent: what pays, and what is picked. */
-export const ACCENT_BUTTON = "bg-amber-400 text-amber-950 shadow-sm hover:bg-amber-300 disabled:opacity-50 dark:bg-amber-400 dark:hover:bg-amber-300";
-const PICKED = "border-amber-500 bg-amber-400/15 text-foreground ring-1 ring-amber-500 dark:border-amber-400 dark:ring-amber-400";
+/* The worker's ACCENT: what pays, and what is picked — the server's brand
+ * color (`--color-background-inverse`, src/brand.ts; its text picked for
+ * contrast, `--color-text-inverse`), else amber. A brand color can be any
+ * color, so it is used only where any color reads: a FILL with its own
+ * contrast text, a faint TINT behind the page's own text, an EDGE (a tinted
+ * border, or a line on a photo). Text is never drawn in it: words stay the
+ * page's foreground, readable whatever the brand. Literal classes, so
+ * Tailwind finds them. */
+/** A solid fill in the accent, its text in the accent's contrast color. */
+export const ACCENT_FILL = "bg-[color:var(--color-background-inverse,oklch(82.8%_0.189_84.429))] text-[color:var(--color-text-inverse,oklch(27.9%_0.077_45.635))]";
+/** A primary action: the accent's fill. */
+export const ACCENT_BUTTON = "bg-[color:var(--color-background-inverse,oklch(82.8%_0.189_84.429))] text-[color:var(--color-text-inverse,oklch(27.9%_0.077_45.635))] shadow-sm hover:brightness-110 disabled:opacity-50";
+/** A faint wash of the accent, behind the page's own text. */
+export const ACCENT_TINT = "bg-[color:color-mix(in_oklab,var(--color-background-inverse,oklch(82.8%_0.189_84.429))_15%,transparent)]";
+/** A border in the accent, faded so it frames rather than shouts. */
+export const ACCENT_EDGE = "border-[color:color-mix(in_oklab,var(--color-background-inverse,oklch(82.8%_0.189_84.429))_40%,transparent)]";
+/** A solid border in the accent: what is picked, a line on a photo. */
+export const ACCENT_LINE = "border-[color:var(--color-background-inverse,oklch(82.8%_0.189_84.429))]";
+/** The accent's contrast color as a fill (a radio's dot on ACCENT_FILL). */
+export const ACCENT_FG_FILL = "bg-[color:var(--color-text-inverse,oklch(27.9%_0.077_45.635))]";
+const PICKED = "border-[color:var(--color-background-inverse,oklch(82.8%_0.189_84.429))] bg-[color:color-mix(in_oklab,var(--color-background-inverse,oklch(82.8%_0.189_84.429))_15%,transparent)] text-foreground ring-1 ring-[color:var(--color-background-inverse,oklch(82.8%_0.189_84.429))]";
 const CHOICE = "flex min-h-12 items-center gap-3 rounded-xl border bg-background px-4 text-left text-base transition-colors hover:bg-muted/60 disabled:opacity-60";
 
 /**
@@ -277,10 +295,10 @@ function Dot({ on, round = false }: { on: boolean; round?: boolean }) {
       className={cn(
         "grid size-5 shrink-0 place-items-center border-2 transition-colors",
         round ? "rounded-full" : "rounded-md",
-        on ? "border-amber-500 bg-amber-400 text-amber-950 dark:border-amber-400" : "border-muted-foreground/40",
+        on ? cn(ACCENT_LINE, ACCENT_FILL) : "border-muted-foreground/40",
       )}
     >
-      {on && (round ? <span className="size-2 rounded-full bg-amber-950" /> : <Check className="size-3.5" strokeWidth={3} />)}
+      {on && (round ? <span className={cn("size-2 rounded-full", ACCENT_FG_FILL)} /> : <Check className="size-3.5" strokeWidth={3} />)}
     </span>
   );
 }
