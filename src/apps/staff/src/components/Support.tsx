@@ -818,7 +818,7 @@ function WorkerPanel(props: { actor: string; known: boolean; go: (p: Place) => v
 function Fact(props: { label: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">{props.label}</span>
+      <span className="text-xs font-semibold text-muted-foreground">{props.label}</span>
       <span>{props.children}</span>
     </div>
   );

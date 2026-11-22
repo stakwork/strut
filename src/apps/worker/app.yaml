@@ -11,10 +11,11 @@ description: >-
   ships it and seeds it on every server; nobody outside sees it until an
   admin puts it in the public view.
 icon: hammer
+theme: peel
 permissions: [camera]
 # Strut's account widget: who is signed in, what they earned, and Withdraw.
 account:
   corner: top-right
 grants:
   workflows: []
-  steps: [task/next, task/submit, task/skip, task/file, task/me, task/history, task/withdraw]
+  steps: [btc/price, task/next, task/submit, task/skip, task/file, task/me, task/history, task/withdraw]

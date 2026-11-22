@@ -4402,6 +4402,7 @@ export async function createStrut<TServices = unknown>(
       // (plans/app-payments.md §11 R8).
       ...(view.build?.wallet ? { wallet: view.build.wallet } : {}),
       ...(view.build?.account ? { account: view.build.account } : {}),
+      ...(view.build?.theme ? { theme: view.build.theme } : {}),
     };
   };
   /** What the `runnable` checks ask of the server (src/public-runnable.ts). */

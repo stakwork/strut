@@ -91,6 +91,8 @@ export interface BuildInfo {
   /** Where the visitor's account widget sits by default (`app.yaml`'s
    *  `account:`), read by a visitor's host like `wallet`. */
   account?: AppManifest["account"];
+  /** The opt-in look (`app.yaml`'s `theme:`), read by a host that draws its own loading screen. */
+  theme?: AppManifest["theme"];
   /** The browser features the version's frame is granted beyond every
    *  app's (`app.yaml`'s `permissions:`, manifest.ts `DECLARED_PERMISSIONS`:
    *  motion, camera, geolocation): a host reads them, with the version's
@@ -260,13 +262,13 @@ export function withoutTokenMeta(html: string, name?: string): string {
   return html.replace(TOKEN_PLACEHOLDER, nameMeta(name));
 }
 
-function document(title: string, csp: string, css: string, js: string): string {
+function document(title: string, csp: string, css: string, js: string, theme?: string): string {
   // A `</script` or `</style` inside the bundle would end its element early;
   // `<\/` reads the same inside a JS string, a regex or a CSS string.
   const script = js.replace(/<\/script/gi, "<\\/script").replace(/<!--/g, "<\\!--");
   const style = css.replace(/<\/style/gi, "<\\/style");
   return (
-    `<!doctype html>\n<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
+    `<!doctype html>\n<html${theme === "peel" ? " data-peel" : ""}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
     `<meta http-equiv="Content-Security-Policy" content="${csp}">${TOKEN_PLACEHOLDER}<title>${escapeHtml(title)}</title>` +
     `<style>${style}</style></head><body><div id="root"></div><script type="module">${script}</script></body></html>\n`
   );
@@ -663,7 +665,7 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     return { ok: false, errors: [`styles: ${e instanceof Error ? e.message : String(e)}`], warnings };
   }
 
-  const html = document(manifest.title, cspFor(manifest.csp?.resourceDomains ?? []), css, js);
+  const html = document(manifest.title, cspFor(manifest.csp?.resourceDomains ?? []), css, js, manifest.theme);
   const bytes = Buffer.byteLength(html, "utf8");
   if (bytes > LARGE_DOCUMENT_BYTES) warnings.push(`the document is ${(bytes / 1e6).toFixed(1)} MB (over ${LARGE_DOCUMENT_BYTES / 1024 / 1024} MB): three and mathjs tree-shake poorly; a large dataset belongs in a run's output`);
 
@@ -682,6 +684,7 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     title: manifest.title,
     ...(manifest.wallet ? { wallet: manifest.wallet } : {}),
     ...(manifest.account ? { account: manifest.account } : {}),
+    ...(manifest.theme ? { theme: manifest.theme } : {}),
     ...(manifest.permissions?.length ? { permissions: manifest.permissions } : {}),
   };
   await mkdir(join(root, "dist"), { recursive: true });

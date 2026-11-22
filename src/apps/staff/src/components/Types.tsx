@@ -110,7 +110,7 @@ function TypeCard(props: { type: TaskType; row?: TypeStats | undefined; shown: S
             </button>
             {t.enabled ? (
               <Badge variant="outline">
-                <span aria-hidden className="size-1.5 rounded-full bg-emerald-500" /> On
+                <span aria-hidden className="size-1.5 rounded-full bg-[color:var(--peel-confirmed)]" /> On
               </Badge>
             ) : (
               <Badge variant="secondary">Off</Badge>
@@ -507,7 +507,7 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
             </Button>
           ))}
         {"problem" in out && <span className="text-sm text-muted-foreground">{out.problem}</span>}
-        {saved && <span className="text-sm text-emerald-700 dark:text-emerald-400">{saved}</span>}
+        {saved && <span className="text-sm text-[color:var(--peel-confirmed)]">{saved}</span>}
       </div>
       <ErrorLine error={error} />
 

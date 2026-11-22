@@ -264,6 +264,10 @@ export const manifestSchema = z
     wallet: walletRequestSchema.optional(),
     /** Where the visitor's account widget sits by default. */
     account: accountSchema.optional(),
+    /** An opt-in look: `peel` draws the app in Peel's palette, type and
+     *  controls (kit/src/styles/base.css "The Peel theme"; the build writes
+     *  `data-peel` on `<html>`). Left out, the kit's own look. */
+    theme: z.enum(["peel"]).optional(),
     /** Browser features the frame grants beyond every app's (`DECLARED_PERMISSIONS`). */
     permissions: permissionsSchema.optional(),
     csp: z

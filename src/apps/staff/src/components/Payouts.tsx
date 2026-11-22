@@ -103,7 +103,7 @@ function Switcher(props: { settings: PayoutSettings }) {
       </div>
       <Note>{on ? ON_WORDS : OFF_WORDS}</Note>
       {asking && (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-sm" role="alertdialog">
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-[color-mix(in_srgb,var(--peel-attention)_28%,transparent)] bg-[color-mix(in_srgb,var(--peel-attention)_7%,transparent)] p-2 text-sm" role="alertdialog">
           <span>{ON_WORDS}</span>
           <Button size="sm" disabled={busy !== null} onClick={() => void save(true)}>
             Turn on
@@ -246,7 +246,7 @@ function Stale(props: { p: Payout }) {
   const feeMsat = fee.trim() === "" ? 0 : Math.round(Number(fee) * 1000);
   const feeBad = !Number.isFinite(feeMsat) || feeMsat < 0;
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+    <div className="flex flex-col gap-2 rounded-md border border-[color-mix(in_srgb,var(--peel-attention)_28%,transparent)] bg-[color-mix(in_srgb,var(--peel-attention)_7%,transparent)] p-3 text-sm">
       <Note>On its way for over a day. The wallet is asked to cancel it: if it had not arrived it fails by itself and the sats are the worker's again, and if it had it is recorded paid. Decide by hand only when the wallet cannot cancel or does not say. Only the worker's wallet knows whether the sats arrived: look there first. Recording it paid when it did not loses the sats; dropping it when it did pays the worker twice.</Note>
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void act("read", () => client.run<{ state?: string }>("staff/payout-read", { key })).then((r) => setSaid(r ? `Read again: ${r.state ?? "no answer"}.` : null))}>

@@ -149,3 +149,252 @@
     margin: 0;
   }
 }
+
+/* ── The Peel theme (plans/worker-peel-style.md) ──────────────────────────────
+ * OPT-IN: nothing below matches unless `<html>` carries `data-peel`, which a
+ * build writes for an app whose app.yaml says `theme: peel` (src/apps/build.ts;
+ * strut/worker and strut/staff). Peel's own palette (stakwork/peel
+ * Apps/Shared/Theme.swift, docs/design/README.md) as `--peel-*` variables, light
+ * by default and dark under `data-theme="dark"` (the host's theme, as above) or,
+ * before the host spoke, the browser's prefers-color-scheme. The shadcn tokens
+ * are then pointed at them, so every kit component and Tailwind class an app
+ * already uses draws as Peel does; the few rules after that say what shadcn
+ * cannot (button sizes, flat panels, hairlines). Unlayered on purpose: it beats
+ * the utilities for an opted-in app and touches no other. */
+html[data-peel] {
+  --peel-bg: #ffffff;
+  --peel-sidebar: #f2f3f5;
+  --peel-panel: #f7f8f9;
+  --peel-card: #ffffff;
+  --peel-quote: #f2f3f5;
+  --peel-input: #f2f3f5;
+  --peel-text: #292c33;
+  --peel-text-2: #646c73;
+  --peel-text-3: #6b737c;
+  --peel-divider: #dce0e3;
+  --peel-hover: #e8eaed;
+  --peel-selection: #dde6ff;
+  --peel-selection-text: #1e3d99;
+  --peel-accent: #618aff;
+  --peel-button: #3f68e0;
+  --peel-button-text: #ffffff;
+  --peel-link: #3f68e0;
+  --peel-destructive: #ed7474;
+  --peel-confirmed: #49c998;
+  --peel-attention: #a86400;
+  --peel-field-fill: rgba(20, 30, 45, 0.05);
+  --peel-input-border: rgba(20, 30, 45, 0.16);
+  --peel-input-border-hover: rgba(20, 30, 45, 0.28);
+  --peel-form-edge: rgba(20, 30, 45, 0.08);
+  --peel-focus-ring: rgba(63, 104, 224, 0.22);
+  --peel-popover-shadow: 0 4px 10px rgba(20, 30, 45, 0.18);
+  --peel-card-shadow: 0 1px 2px rgba(20, 30, 45, 0.04);
+  --peel-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --peel-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --peel-r-control: 7px;
+  --peel-r-card: 9px;
+  --peel-r-panel: 12px;
+}
+html[data-peel][data-theme="dark"] {
+  --peel-bg: #151e27;
+  --peel-sidebar: #1a242e;
+  --peel-panel: #1a232d;
+  --peel-card: #202b36;
+  --peel-quote: #1e2934;
+  --peel-input: #13181d;
+  --peel-text: #e3e7ec;
+  --peel-text-2: #97a3b4;
+  --peel-text-3: #808d9e;
+  --peel-divider: #2c353d;
+  --peel-hover: #222e3a;
+  --peel-selection: #2d4170;
+  --peel-selection-text: #ffffff;
+  --peel-button: #618aff;
+  --peel-button-text: #0e1620;
+  --peel-link: #8fb0ff;
+  --peel-attention: #ffbc58;
+  --peel-field-fill: rgba(255, 255, 255, 0.055);
+  --peel-input-border: rgba(255, 255, 255, 0.15);
+  --peel-input-border-hover: rgba(255, 255, 255, 0.26);
+  --peel-form-edge: rgba(255, 255, 255, 0.07);
+  --peel-focus-ring: rgba(97, 138, 255, 0.28);
+  --peel-popover-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+  --peel-card-shadow: none;
+}
+@media (prefers-color-scheme: dark) {
+  html[data-peel]:not([data-theme]) {
+    --peel-bg: #151e27;
+    --peel-sidebar: #1a242e;
+    --peel-panel: #1a232d;
+    --peel-card: #202b36;
+    --peel-quote: #1e2934;
+    --peel-input: #13181d;
+    --peel-text: #e3e7ec;
+    --peel-text-2: #97a3b4;
+    --peel-text-3: #808d9e;
+    --peel-divider: #2c353d;
+    --peel-hover: #222e3a;
+    --peel-button: #618aff;
+    --peel-button-text: #0e1620;
+    --peel-link: #8fb0ff;
+    --peel-attention: #ffbc58;
+    --peel-field-fill: rgba(255, 255, 255, 0.055);
+    --peel-input-border: rgba(255, 255, 255, 0.15);
+    --peel-form-edge: rgba(255, 255, 255, 0.07);
+    --peel-focus-ring: rgba(97, 138, 255, 0.28);
+    --peel-card-shadow: none;
+    color-scheme: dark;
+  }
+}
+html[data-peel] {
+  --radius: var(--peel-r-card);
+  --font-sans: var(--peel-font);
+  --font-mono: var(--peel-mono);
+  --background: var(--peel-bg);
+  --foreground: var(--peel-text);
+  --card: var(--peel-card);
+  --card-foreground: var(--peel-text);
+  --popover: var(--peel-card);
+  --popover-foreground: var(--peel-text);
+  --primary: var(--peel-button);
+  --primary-foreground: var(--peel-button-text);
+  --secondary: var(--peel-hover);
+  --secondary-foreground: var(--peel-text);
+  --muted: var(--peel-panel);
+  --muted-foreground: var(--peel-text-2);
+  --accent: var(--peel-hover);
+  --accent-foreground: var(--peel-text);
+  --destructive: var(--peel-destructive);
+  --border: var(--peel-divider);
+  --input: var(--peel-input-border);
+  --ring: var(--peel-accent);
+  --sidebar: var(--peel-sidebar);
+  --sidebar-foreground: var(--peel-text);
+  --sidebar-primary: var(--peel-button);
+  --sidebar-primary-foreground: var(--peel-button-text);
+  --sidebar-accent: var(--peel-hover);
+  --sidebar-accent-foreground: var(--peel-text);
+  --sidebar-border: var(--peel-divider);
+  --sidebar-ring: var(--peel-accent);
+  font-family: var(--peel-font);
+}
+html[data-peel] body {
+  background: var(--peel-bg);
+  color: var(--peel-text);
+  font-family: var(--peel-font);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+html[data-peel] ::selection {
+  background: var(--peel-selection);
+  color: var(--peel-selection-text);
+}
+html[data-peel] a { color: var(--peel-link); }
+html[data-peel] .tabular-nums, html[data-peel] [data-sats] { font-variant-numeric: tabular-nums; }
+/* Money is attention-coloured, as Peel's bolt: a utility the apps use. */
+html[data-peel] .peel-money { color: var(--peel-attention); }
+html[data-peel] .peel-received { color: var(--peel-confirmed); }
+/* Buttons: PeelButton's variants and sizes (28 / 32 / 40). */
+html[data-peel] [data-slot="button"] {
+  border-radius: var(--peel-r-control);
+  font-size: 13px;
+  font-weight: 500;
+  height: 32px;
+  padding: 0 12px;
+  gap: 6px;
+  box-shadow: none;
+  transition: none;
+}
+html[data-peel] [data-slot="button"][data-size="xs"] { height: 24px; padding: 0 8px; font-size: 12px; }
+html[data-peel] [data-slot="button"][data-size="sm"] { height: 28px; padding: 0 10px; font-size: 12px; }
+html[data-peel] [data-slot="button"][data-size="lg"] { height: 40px; padding: 0 16px; font-size: 14px; }
+html[data-peel] [data-slot="button"][data-size="icon-xs"] { height: 24px; width: 24px; padding: 0; }
+html[data-peel] [data-slot="button"][data-size="icon-sm"] { height: 28px; width: 28px; padding: 0; }
+html[data-peel] [data-slot="button"][data-size="icon"] { height: 32px; width: 32px; padding: 0; }
+html[data-peel] [data-slot="button"][data-size="icon-lg"] { height: 40px; width: 40px; padding: 0; }
+html[data-peel] [data-slot="button"][data-variant="default"] { background: var(--peel-button); color: var(--peel-button-text); border: 0; }
+html[data-peel] [data-slot="button"][data-variant="default"]:hover:not(:disabled) { filter: brightness(1.08); }
+html[data-peel] [data-slot="button"][data-variant="default"]:active:not(:disabled) { filter: brightness(0.92); }
+html[data-peel] [data-slot="button"][data-variant="outline"] { background: var(--peel-field-fill); border: 1px solid var(--peel-input-border); color: var(--peel-text); }
+html[data-peel] [data-slot="button"][data-variant="outline"]:hover:not(:disabled) { background: var(--peel-hover); border-color: var(--peel-input-border-hover); }
+html[data-peel] [data-slot="button"][data-variant="secondary"] { background: var(--peel-hover); color: var(--peel-text); border: 0; }
+html[data-peel] [data-slot="button"][data-variant="secondary"]:hover:not(:disabled) { filter: brightness(0.97); }
+html[data-peel] [data-slot="button"][data-variant="ghost"] { background: transparent; color: var(--peel-text); border: 0; }
+html[data-peel] [data-slot="button"][data-variant="ghost"]:hover:not(:disabled) { background: var(--peel-hover); }
+html[data-peel] [data-slot="button"][data-variant="destructive"] { background: var(--peel-destructive); color: #fff; border: 0; }
+html[data-peel] [data-slot="button"][data-variant="link"] { background: transparent; color: var(--peel-link); font-weight: 400; height: auto; padding: 0; }
+html[data-peel] [data-slot="button"][data-variant="link"]:hover:not(:disabled) { text-decoration: underline; }
+html[data-peel] [data-slot="button"]:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--peel-focus-ring); }
+html[data-peel] [data-slot="button"]:disabled { opacity: 0.5; }
+/* Cards: raised, a hairline form-edge, a shadow in light only. */
+html[data-peel] [data-slot="card"] {
+  background: var(--peel-card);
+  border: 1px solid var(--peel-form-edge);
+  border-radius: var(--peel-r-card);
+  box-shadow: var(--peel-card-shadow);
+  color: var(--peel-text);
+}
+/* Fields. */
+html[data-peel] [data-slot="input"], html[data-peel] [data-slot="textarea"], html[data-peel] [data-slot="native-select"] {
+  background: var(--peel-input);
+  border: 1px solid var(--peel-input-border);
+  border-radius: var(--peel-r-control);
+  color: var(--peel-text);
+  box-shadow: none;
+  font-size: 14px;
+}
+html[data-peel] [data-slot="input"]:hover, html[data-peel] [data-slot="textarea"]:hover { border-color: var(--peel-input-border-hover); }
+html[data-peel] [data-slot="input"]:focus-visible, html[data-peel] [data-slot="textarea"]:focus-visible {
+  outline: none;
+  border-color: var(--peel-accent);
+  box-shadow: 0 0 0 3px var(--peel-focus-ring);
+}
+/* Badges are capsules; the default one is a quiet chip, not a filled button. */
+html[data-peel] [data-slot="badge"] { font-size: 11px; font-weight: 600; border-radius: 999px; }
+html[data-peel] [data-slot="badge"][data-variant="default"] { background: color-mix(in srgb, var(--peel-accent) 16%, transparent); color: var(--peel-link); }
+html[data-peel] [data-slot="badge"][data-variant="secondary"] { background: var(--peel-hover); color: var(--peel-text-2); }
+html[data-peel] [data-slot="badge"][data-variant="outline"] { border-color: var(--peel-divider); color: var(--peel-text-2); }
+/* A spinner ring: thin, text-2, nothing heavy. */
+html[data-peel] .peel-spinner {
+  width: 20px; height: 20px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--peel-text-2) 28%, transparent);
+  border-top-color: var(--peel-text-2);
+  animation: peel-spin 0.8s linear infinite;
+}
+@keyframes peel-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  html[data-peel] *:not(.animate-spin):not(.peel-spinner) { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* ── Worker-page pieces (src/apps/views WorkerTask): the money and received
+ * colours, the pay chip, a thin spinner. Their own look outside Peel (amber,
+ * emerald), Peel's under `data-peel`: attention for sats, confirmed for
+ * received, a capsule at ~12% fill. */
+.wk-money { color: #b45309; }
+.dark .wk-money, [data-theme="dark"] .wk-money { color: #fcd34d; }
+.wk-received { color: #047857; }
+.dark .wk-received, [data-theme="dark"] .wk-received { color: #34d399; }
+.wk-chip { background: rgb(251 191 36 / 0.16); color: #b45309; }
+.dark .wk-chip, [data-theme="dark"] .wk-chip { color: #fcd34d; }
+.wk-chip-received { background: rgb(16 185 129 / 0.12); color: #047857; }
+.dark .wk-chip-received, [data-theme="dark"] .wk-chip-received { color: #34d399; }
+.wk-callout { background: rgb(251 191 36 / 0.1); border: 1px solid rgb(245 158 11 / 0.3); }
+.wk-primary { background: #fbbf24; color: #451a03; }
+.wk-primary:hover:not(:disabled) { background: #fcd34d; }
+.wk-spinner {
+  display: inline-block; width: 20px; height: 20px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  animation: peel-spin 0.8s linear infinite;
+}
+html[data-peel] .wk-money { color: var(--peel-attention); }
+html[data-peel] .wk-received { color: var(--peel-confirmed); }
+html[data-peel] .wk-chip { background: color-mix(in srgb, var(--peel-attention) 12%, transparent); color: var(--peel-attention); }
+html[data-peel] .wk-chip-received { background: color-mix(in srgb, var(--peel-confirmed) 14%, transparent); color: var(--peel-confirmed); }
+html[data-peel] .wk-callout { background: color-mix(in srgb, var(--peel-attention) 7%, transparent); border: 1px solid color-mix(in srgb, var(--peel-attention) 28%, transparent); }
+html[data-peel] .wk-primary, html[data-peel] .wk-primary:hover:not(:disabled) { background: var(--peel-button); color: var(--peel-button-text); }
+html[data-peel] .wk-spinner { color: var(--peel-text-2); }
+html[data-peel] .wk-panel { background: var(--peel-panel); border: 0; }
+html[data-peel] .wk-row { background: var(--peel-quote); }
+html[data-peel] .wk-row:hover { background: var(--peel-hover); }
+@media (prefers-reduced-motion: reduce) { .wk-spinner { animation-duration: 2.4s; } }

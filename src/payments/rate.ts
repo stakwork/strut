@@ -65,7 +65,8 @@ export function checkReading(r: unknown, from: string): ExchangeRate {
 /** The source at `url`, read through `http`: an endpoint of mempool's shape,
  *  `{ time: <unix seconds>, USD: <dollars per BTC>, … }`. `source` is the
  *  URL's host. */
-export function urlRateSource(url: string, http: HttpCapability, opts: { timeoutMs?: number } = {}): RateSource {
+export function urlRateSource(url: string, http: HttpCapability, opts: { timeoutMs?: number; currency?: string } = {}): RateSource {
+  const cur = (opts.currency ?? "USD").toUpperCase();
   let u: URL;
   try {
     u = new URL(url);
@@ -80,7 +81,31 @@ export function urlRateSource(url: string, http: HttpCapability, opts: { timeout
     const b = (res.body && typeof res.body === "object" ? res.body : {}) as Record<string, unknown>;
     const time = b["time"];
     if (typeof time !== "number" || !Number.isFinite(time) || time <= 0) throw new Error(`${host} answered no time`);
-    return checkReading({ usdPerBtc: b["USD"], at: new Date(time * 1000).toISOString(), source: host }, host);
+    if (b[cur] === undefined) throw new CurrencyMissingError(host, cur);
+    return checkReading({ usdPerBtc: b[cur], at: new Date(time * 1000).toISOString(), source: host }, host);
+  };
+}
+
+/** A source that does not quote the currency asked (not an outage). */
+export class CurrencyMissingError extends Error {
+  constructor(host: string, readonly currency: string) {
+    super(`${host} has no ${currency} price`);
+    this.name = "CurrencyMissingError";
+  }
+}
+
+/** Coinbase's `exchange-rates?currency=BTC` (`{ data: { rates: { USD: "…" } } }`):
+ *  the fallback for the BTC price step. It carries no time, so `at` is now. */
+export function coinbaseRateSource(http: HttpCapability, currency: string, opts: { timeoutMs?: number; now?: () => number } = {}): RateSource {
+  const cur = currency.toUpperCase();
+  const host = "api.coinbase.com";
+  return async () => {
+    const res = await http(`https://${host}/v2/exchange-rates?currency=BTC`, { headers: { accept: "application/json" }, timeout: opts.timeoutMs ?? RATE_TIMEOUT_MS });
+    if (!res.ok) throw new Error(`${host} answered HTTP ${res.status}`);
+    const b = res.body as { data?: { rates?: Record<string, unknown> } } | null;
+    const raw = b?.data?.rates?.[cur];
+    if (raw === undefined) throw new CurrencyMissingError(host, cur);
+    return checkReading({ usdPerBtc: Number(raw), at: new Date((opts.now ?? Date.now)()).toISOString(), source: host }, host);
   };
 }
 

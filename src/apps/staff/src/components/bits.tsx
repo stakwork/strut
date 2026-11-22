@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { errorText, initialsOf, type Place } from "../lib/view";
@@ -9,7 +9,7 @@ export function Section(props: { title: ReactNode; aside?: ReactNode; children: 
   return (
     <section className={cn("flex flex-col gap-3", props.className)}>
       <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-sm font-semibold">{props.title}</h2>
+        <h2 className="text-[15px] font-bold">{props.title}</h2>
         {props.aside && <div className="ml-auto flex flex-wrap items-center gap-2">{props.aside}</div>}
       </div>
       {props.children}
@@ -19,7 +19,7 @@ export function Section(props: { title: ReactNode; aside?: ReactNode; children: 
 
 export function Label(props: { children: ReactNode; title?: string }) {
   return (
-    <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase" title={props.title}>
+    <div className="text-xs font-semibold text-muted-foreground" title={props.title}>
       {props.children}
     </div>
   );
@@ -29,7 +29,7 @@ export function Label(props: { children: ReactNode; title?: string }) {
 export function ErrorLine(props: { error: unknown; className?: string }) {
   if (!props.error) return null;
   return (
-    <div className={cn("flex items-start gap-2 rounded-md border border-destructive/40 p-3 text-sm text-destructive", props.className)} role="alert">
+    <div className={cn("flex items-start gap-2 rounded-[var(--peel-r-card)] border border-[color-mix(in_srgb,var(--peel-destructive)_28%,transparent)] bg-[color-mix(in_srgb,var(--peel-destructive)_7%,transparent)] px-3 py-2.5 text-sm text-destructive", props.className)} role="alert">
       <AlertCircle className="mt-0.5 size-4 shrink-0" />
       <span className="min-w-0 break-words">{errorText(props.error)}</span>
     </div>
@@ -38,14 +38,14 @@ export function ErrorLine(props: { error: unknown; className?: string }) {
 
 export function Loading(props: { children?: ReactNode }) {
   return (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-      <Loader2 className="size-4 animate-spin" /> {props.children ?? "Reading…"}
+    <div className="flex flex-col items-center justify-center gap-2 py-8 text-xs text-muted-foreground" role="status">
+      <span className="peel-spinner" aria-hidden /> {props.children ?? "Reading…"}
     </div>
   );
 }
 
 export function Empty(props: { children: ReactNode }) {
-  return <p className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">{props.children}</p>;
+  return <p className="rounded-[var(--peel-r-card)] bg-[var(--peel-panel)] px-3 py-5 text-center text-sm text-muted-foreground">{props.children}</p>;
 }
 
 /** A line of muted text. */
@@ -71,7 +71,7 @@ export function JsonTree(props: { value: unknown; name?: string; depth?: number 
     return (
       <div className="font-mono text-xs break-all">
         {key}
-        <span className={typeof value === "string" ? "text-emerald-700 dark:text-emerald-400" : ""}>{JSON.stringify(value)}</span>
+        <span className={typeof value === "string" ? "text-[color:var(--peel-confirmed)]" : ""}>{JSON.stringify(value)}</span>
       </div>
     );
   }
@@ -144,7 +144,7 @@ export function Figure(props: { label: string; value: ReactNode; title?: string;
   return (
     <div className={cn("flex flex-col gap-0.5", props.className)} title={props.title}>
       <Label>{props.label}</Label>
-      <div className="text-lg font-semibold tabular-nums">{props.value}</div>
+      <div className="text-[17px] font-semibold tabular-nums">{props.value}</div>
     </div>
   );
 }
@@ -179,7 +179,7 @@ export function ReasonButton(props: { label: string; placeholder: string; requir
     <span className="flex flex-wrap items-center gap-1">
       <input
         autoFocus
-        className="h-7 w-56 rounded-md border bg-background px-2 text-xs"
+        className="h-7 w-56 rounded-[var(--peel-r-control)] border bg-background px-2 text-xs"
         placeholder={props.placeholder}
         value={why}
         onChange={(e) => setWhy(e.target.value)}
@@ -213,7 +213,7 @@ export function Chip(props: { on: boolean; onClick: () => void; children: ReactN
       type="button"
       aria-pressed={props.on}
       onClick={props.onClick}
-      className={cn("inline-flex h-8 items-center gap-2 rounded-full border px-3 text-sm font-medium transition-colors", props.on ? "border-foreground bg-foreground text-background" : "hover:bg-muted")}
+      className={cn("inline-flex h-8 items-center gap-2 rounded-full border px-3 text-[13px] font-medium", props.on ? "border-transparent bg-primary text-primary-foreground" : "hover:bg-[var(--peel-hover)]")}
     >
       {props.children}
       {props.count !== undefined && <span className={cn("font-normal tabular-nums", !props.on && "text-muted-foreground")}>{props.count.toLocaleString("en-US")}</span>}
@@ -224,14 +224,14 @@ export function Chip(props: { on: boolean; onClick: () => void; children: ReactN
 /** Two or three views of one thing, one shown at a time. */
 export function Segmented<T extends string>(props: { label: string; value: T; onChange: (v: T) => void; options: ReadonlyArray<{ value: T; label: string }> }) {
   return (
-    <div role="group" aria-label={props.label} className="inline-flex rounded-lg border bg-muted/40 p-0.5">
+    <div role="group" aria-label={props.label} className="inline-flex rounded-[var(--peel-r-control)] bg-[var(--peel-panel)] p-0.5">
       {props.options.map((o) => (
         <button
           key={o.value}
           type="button"
           aria-pressed={o.value === props.value}
           onClick={() => props.onChange(o.value)}
-          className={cn("h-7 rounded-md px-3 text-sm font-medium transition-colors", o.value === props.value ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground")}
+          className={cn("h-7 rounded-[5px] px-3 text-[13px] font-medium", o.value === props.value ? "bg-[var(--peel-card)] text-foreground" : "text-muted-foreground hover:text-foreground")}
         >
           {o.label}
         </button>
@@ -244,8 +244,8 @@ export function Segmented<T extends string>(props: { label: string; value: T; on
 export function Stat(props: { value: ReactNode; label: string; note?: ReactNode; title?: string }) {
   return (
     <div className="flex min-w-0 flex-col gap-0.5" title={props.title}>
-      <div className="text-2xl leading-tight font-semibold tabular-nums">{props.value}</div>
-      <div className="text-sm font-medium">{props.label}</div>
+      <div className="text-[24px] leading-tight font-semibold tabular-nums">{props.value}</div>
+      <div className="text-[13px] font-semibold">{props.label}</div>
       {props.note && <div className="text-xs text-muted-foreground">{props.note}</div>}
     </div>
   );
@@ -254,7 +254,7 @@ export function Stat(props: { value: ReactNode; label: string; note?: ReactNode;
 /** A person as two letters in a circle (no pictures of workers here). */
 export function Avatar(props: { name: string; className?: string }) {
   return (
-    <span aria-hidden className={cn("grid size-8 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold", props.className)}>
+    <span aria-hidden className={cn("grid size-8 shrink-0 place-items-center rounded-full bg-[var(--peel-panel)] text-xs font-semibold", props.className)}>
       {initialsOf(props.name)}
     </span>
   );
@@ -265,7 +265,7 @@ export function Count(props: { n: number; warn?: boolean; label?: string }) {
   return (
     <span
       aria-label={props.label}
-      className={cn("inline-grid h-5 min-w-5 place-items-center rounded-full px-1.5 text-[11px] font-semibold tabular-nums", props.warn ? "bg-amber-500/20 text-amber-700 dark:text-amber-400" : "bg-muted text-foreground")}
+      className={cn("inline-grid h-5 min-w-5 place-items-center rounded-full px-1.5 text-[11px] font-semibold tabular-nums", props.warn ? "bg-[color-mix(in_srgb,var(--peel-attention)_20%,transparent)] text-[color:var(--peel-attention)]" : "bg-muted text-foreground")}
     >
       {props.n.toLocaleString("en-US")}
     </span>

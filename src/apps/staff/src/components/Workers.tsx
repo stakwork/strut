@@ -58,11 +58,11 @@ function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
     <section className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <h2 className="text-base font-semibold">Workers</h2>
-        <span className="text-sm text-muted-foreground">
+        <span className="text-xs text-muted-foreground">
           {able.toLocaleString("en-US")} can take tasks{props.workers.length > able ? ` · ${props.workers.length - able} suspended or banned` : ""}
         </span>
         {props.workers.length > 5 && (
-          <label className="ml-auto flex h-9 items-center gap-2 rounded-md border px-3 text-muted-foreground focus-within:border-ring">
+          <label className="ml-auto flex h-9 items-center gap-2 rounded-[var(--peel-r-control)] border px-3 text-muted-foreground focus-within:border-ring">
             <Search className="size-4 shrink-0" />
             <input type="search" aria-label="Find a worker" placeholder="Find a worker" className="w-44 bg-transparent text-sm text-foreground outline-none" value={find} onChange={(e) => setFind(e.target.value)} />
           </label>
@@ -77,7 +77,33 @@ function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
       ) : list.length === 0 ? (
         <Empty>No worker by that name.</Empty>
       ) : (
-        <div className="overflow-x-auto rounded-lg border">
+        <>
+        <ul className="flex flex-col md:hidden">
+          {list.map((w) => {
+            const types = w.grants.filter((g) => g.revokedAt === undefined);
+            return (
+              <li key={w.actor}>
+                <button type="button" className="flex w-full items-center gap-3 rounded-[var(--peel-r-control)] px-2 py-2 text-left hover:bg-[var(--peel-hover)]" onClick={() => props.go({ tab: "workers", worker: w.actor })}>
+                  <Avatar name={whoOf(w)} />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="flex flex-wrap items-center gap-2 text-sm">
+                      <span className="text-[13px] font-semibold">{whoOf(w)}</span>
+                      {w.status !== "active" && <StatusBadge status={w.status} />}
+                      {w.holding && <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><span aria-hidden className="size-1.5 rounded-full bg-[color:var(--peel-confirmed)]" /> working now</span>}
+                    </span>
+                    <span className="text-xs break-words text-muted-foreground">
+                      {types.length ? types.map((g) => g.type).join(", ") : "nothing yet"} · joined {fmtWhen(w.firstSeen)}
+                      {w.week !== undefined ? ` · ${w.week} this week` : ""}
+                    </span>
+                  </span>
+                  {props.shown.earnings && w.balance && <span className="peel-money text-xs tabular-nums">{fmtSats(w.balance.totalMsat)}</span>}
+                  <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="hidden overflow-x-auto rounded-[var(--peel-r-card)] border md:block">
           <Table>
             <TableHeader>
               <TableRow>
@@ -104,7 +130,7 @@ function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
                             {w.status !== "active" && <StatusBadge status={w.status} />}
                             {w.holding && (
                               <span className="inline-flex items-center gap-1.5 text-xs font-normal text-muted-foreground" title={`Working on a task of ${w.holding} now`}>
-                                <span aria-hidden className="size-1.5 rounded-full bg-emerald-500" /> working now
+                                <span aria-hidden className="size-1.5 rounded-full bg-[color:var(--peel-confirmed)]" /> working now
                               </span>
                             )}
                           </div>
@@ -137,7 +163,7 @@ function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
                       </TableCell>
                     )}
                     {props.shown.earnings && (
-                      <TableCell className="text-right tabular-nums" title={w.balance ? `${fmtSats(w.balance.withdrawableMsat)} can be withdrawn now` : undefined}>
+                      <TableCell className="peel-money text-right tabular-nums" title={w.balance ? `${fmtSats(w.balance.withdrawableMsat)} can be withdrawn now` : undefined}>
                         {w.balance ? fmtSats(w.balance.totalMsat) : "—"}
                         {w.balance && w.balance.heldMsat > 0 && <div className="text-xs text-muted-foreground">{fmtSats(w.balance.heldMsat)} held</div>}
                       </TableCell>
@@ -151,6 +177,7 @@ function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
             </TableBody>
           </Table>
         </div>
+        </>
       )}
     </section>
   );
@@ -261,7 +288,7 @@ function WorkerDetail(props: Props & { actor: string }) {
       </Section>
 
       {props.shown.earnings && w.balance && (
-        <section className="grid grid-cols-3 gap-4 rounded-lg border p-4">
+        <section className="grid grid-cols-3 gap-4 rounded-[var(--peel-r-card)] bg-[var(--peel-panel)] p-4">
           <Figure label="Earned" value={earned} title="Earned, less taken back and withdrawn" />
           <Figure label="Held" value={held} title={w.balance.nextReleaseAt ? `The next releases ${fmtWhen(w.balance.nextReleaseAt)}` : undefined} />
           <Figure label="Withdrawable" value={free} />

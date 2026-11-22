@@ -129,7 +129,7 @@ export function TaskFileView(props: { task: string; path: string; mediaType?: st
 /** A verdict as a mark: a word and a sign, never the colour alone. */
 export function VerdictBadge(props: { verdict: Verdict }) {
   return props.verdict === "ok" ? (
-    <span className="inline-flex w-fit items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+    <span className="inline-flex w-fit items-center gap-1 rounded-full bg-[color-mix(in_srgb,var(--peel-confirmed)_15%,transparent)] px-2 py-0.5 text-xs font-semibold text-[color:var(--peel-confirmed)]">
       <Check className="size-3" strokeWidth={3} /> OK
     </span>
   ) : (
@@ -208,7 +208,7 @@ export function ReviewControl(props: {
       <div className={cn("flex min-w-0 gap-1.5", props.big && "flex-col")} onClick={stop}>
         {r?.verdict !== "ok" && (
           <Button size={size} variant={props.big ? "default" : "outline"} className={props.big ? "w-full" : "flex-1"} disabled={props.busy} onClick={() => props.onReview("ok")}>
-            <Check className={props.big ? undefined : "text-emerald-600 dark:text-emerald-400"} strokeWidth={2.5} /> {props.big ? "Mark OK" : "OK"}
+            <Check className={props.big ? undefined : "text-[color:var(--peel-confirmed)]"} strokeWidth={2.5} /> {props.big ? "Mark OK" : "OK"}
           </Button>
         )}
         <Button size={size} variant="outline" className={props.big ? "w-full" : "flex-1"} disabled={props.busy} onClick={() => setRejecting(true)}>

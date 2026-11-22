@@ -44,13 +44,13 @@ export function Overview(props: { go: (p: Place) => void; shown: Shown; hasGroup
       <Section title="Needs you">
         {needs.length === 0 ? (
           <p className="flex items-center gap-2 rounded-lg border p-3 text-sm text-muted-foreground">
-            <Check className="size-4 text-emerald-600 dark:text-emerald-400" /> Nothing needs you right now.
+            <Check className="size-4 text-[color:var(--peel-confirmed)]" /> Nothing needs you right now.
           </p>
         ) : (
           <ul className="flex flex-col gap-2" aria-label="Needs you">
             {needs.map((n) => (
-              <li key={n.text} className={cn("flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border p-3", n.tone === "warn" ? "border-amber-500/40 bg-amber-500/5" : "bg-muted/30")}>
-                <span aria-hidden className={cn("grid size-9 shrink-0 place-items-center rounded-full", n.tone === "warn" ? "bg-amber-500/15 text-amber-700 dark:text-amber-400" : "bg-muted")}>
+              <li key={n.text} className={cn("flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border p-3", n.tone === "warn" ? "border-[color-mix(in_srgb,var(--peel-attention)_28%,transparent)] bg-[color-mix(in_srgb,var(--peel-attention)_7%,transparent)]" : "bg-muted/30")}>
+                <span aria-hidden className={cn("grid size-9 shrink-0 place-items-center rounded-full", n.tone === "warn" ? "bg-[color-mix(in_srgb,var(--peel-attention)_15%,transparent)] text-[color:var(--peel-attention)]" : "bg-muted")}>
                   {n.tone === "warn" ? <AlertTriangle className="size-4" /> : <ListChecks className="size-4" />}
                 </span>
                 <span className="min-w-0 flex-1 basis-64 text-sm font-medium">{n.text}</span>
@@ -102,7 +102,7 @@ export function Overview(props: { go: (p: Place) => void; shown: Shown; hasGroup
                 <>
                   <div className="text-xl font-semibold tabular-nums">{fmtSats(money.walletMsat)}</div>
                   {money.coverMsat! >= 0 ? (
-                    <p className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400">
+                    <p className="flex items-center gap-1.5 text-xs text-[color:var(--peel-confirmed)]">
                       <Check className="size-3.5 shrink-0" strokeWidth={2.5} /> Covers what is owed, with {fmtSats(money.coverMsat!)} to spare
                     </p>
                   ) : (
@@ -157,7 +157,7 @@ export function Overview(props: { go: (p: Place) => void; shown: Shown; hasGroup
                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
                           {t.enabled ? (
                             <Badge variant="outline">
-                              <span aria-hidden className="size-1.5 rounded-full bg-emerald-500" /> On
+                              <span aria-hidden className="size-1.5 rounded-full bg-[color:var(--peel-confirmed)]" /> On
                             </Badge>
                           ) : (
                             <Badge variant="secondary">Off</Badge>

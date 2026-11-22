@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../api";
+import { isPeelApp, peelTheme } from "../app-theme";
 import { useFileScope } from "../use-artifact-url";
 import { connectAppHost, sellerOf, type AppHostConnection } from "../app-host";
 import { nativeWalletOf } from "@strut/kit/wallet";
@@ -159,7 +160,10 @@ export function AppHost(props: {
   /** The input the open connection has (or sends at initialize). */
   const sentInput = useRef("");
   const messages = !!props.onMessage;
-  const theme = props.theme ?? "dark";
+  // The Peel look (../app-theme): the host's own pieces around the frame follow it.
+  const [builtTheme, setBuiltTheme] = useState<string | undefined>(undefined);
+  const peel = isPeelApp(app.name, builtTheme);
+  const theme = peelTheme(props.theme, peel) ?? "dark";
 
   useEffect(() => {
     if (!ready) return;
@@ -200,6 +204,7 @@ export function AppHost(props: {
           : visitor ? await api.fetchPublicAppDocument(app.name) : await api.fetchAppDocument(app.name, app.version, scope!.token, app.peer);
         const info = await infoRead;
         if (cancelled) return;
+        setBuiltTheme(info?.theme);
         // A stranger's version declares nothing this host grants: its
         // wallet request is the person's to grant, on the native host's
         // sheet, never this host's.
@@ -378,7 +383,7 @@ export function AppHost(props: {
   }, [inputKey]);
 
   return (
-    <div class={`app-host${theme === "light" ? " light" : ""}`}>
+    <div class={`app-host${theme === "light" ? " light" : ""}${peel ? " peel-host" : ""}`}>
       {/* Every app's attributes; the effect sets the version's before the srcdoc. */}
       <iframe ref={frameRef} class="app-frame" sandbox={BASE_FRAME.sandbox} allow={BASE_FRAME.allow} title={app.name} />
       {account && visitor && (
@@ -421,6 +426,7 @@ export function AppHost(props: {
       )}
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>
+          {peel && state.status === "loading" && <span class="peel-spinner" role="status" aria-label={words.loadingApp} />}
           {state.status === "loading" ? words.loadingApp : words.couldNotLoad(state.error ?? "")}
         </div>
       )}

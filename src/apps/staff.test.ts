@@ -446,7 +446,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.equal(inviteExpiry({ createdAt: "2026-01-01T00:00:00Z", expiresAt: "2026-02-01T00:00:00Z" }), Date.parse("2026-02-01T00:00:00Z"));
     assert.equal(inviteExpiry({}), null);
     assert.equal(inviteBadge("ready").label, "Ready · unused");
-    assert.match(inviteBadge("used").className, /green/);
+    assert.match(inviteBadge("used").className, /confirmed/);
     assert.match(inviteBadge("failed").className, /destructive/);
   });
 

@@ -1,3 +1,4 @@
+import { isPeelApp, peelTheme } from "../app-theme";
 import { useEffect, useState } from "preact/hooks";
 import { nativeWalletOf } from "@strut/kit/wallet";
 import * as api from "../api";
@@ -107,6 +108,8 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
     setInput(next);
   };
   const toolInput = appToolInput(input);
+  const peel = isPeelApp(props.app, visitorApp?.theme);
+  const theme = peelTheme(props.theme, peel);
   useEffect(() => {
     if (!visitor) return;
     let on = true;
@@ -136,7 +139,7 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
     else if (back) location.replace(publicAppHop({ app: back }, shown?.name ?? props.app, location.href, { back: false }) ?? location.href);
   };
   return (
-    <div class={`app-solo${back && shown ? " has-back" : ""}`}>
+    <div class={`app-solo${back && shown ? " has-back" : ""}${peel ? ` peel-host${theme === "light" ? " light" : ""}` : ""}`}>
       {back && shown && (
         <button type="button" class="app-solo-back" onClick={goBack}>
           <span aria-hidden="true">←</span> {words.back}
@@ -148,11 +151,12 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
             onNavigate={onNavigate}
             {...(toolInput ? { toolInput } : {})}
             {...(visitor ? { visitor: true } : {})}
-            {...(props.theme ? { theme: props.theme } : {})}
+            {...(theme ? { theme } : {})}
             {...(page ? { page } : {})}
             onReady={reportReady}
           />
         : <div class="empty">
+            {peel && !missing && <span class="peel-spinner" role="status" aria-label={words.loadingApp} />}
             {visitor
               ? visitorApp === null ? readError ?? words.notPublic(props.app, server) : words.loadingApp
               : listed.entry === null ? words.noApp(props.app) : words.loadingApps}

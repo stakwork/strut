@@ -6242,3 +6242,85 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 @keyframes camera-flash { from { opacity: 0.75; } to { opacity: 0; } }
 .camera-btn { min-width: 128px; height: 46px; padding: 0 var(--sp-4); border: 0; border-radius: 14px; background: rgba(255, 255, 255, 0.18); color: #fff; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
 .camera-btn.is-primary { background: #fff; color: #000; }
+
+/* ── The Peel look around a Peel app (src/app-theme.ts) ──────────────────────
+   Scoped to `.peel-host`, which SoloApp and AppHost put on an app that says
+   `theme: peel`: the loading screen, the account widget and the host's sheets
+   take Peel's palette by redefining the web UI's own variables for that
+   subtree, so nothing else in strut's UI changes. Dark is the default, as the
+   host's theme is; `.light` is the light set. Tokens: plans/worker-peel-style.md. */
+.peel-host {
+  --peel-bg: #151e27; --peel-sidebar: #1a242e; --peel-panel: #1a232d; --peel-card: #202b36;
+  --peel-text: #e3e7ec; --peel-text-2: #97a3b4; --peel-divider: #2c353d; --peel-hover: #222e3a;
+  --peel-accent: #618aff; --peel-button: #618aff; --peel-button-text: #0e1620;
+  --peel-confirmed: #49c998; --peel-attention: #ffbc58;
+  --peel-field-fill: rgba(255, 255, 255, 0.055); --peel-input-border: rgba(255, 255, 255, 0.15);
+  --peel-form-edge: rgba(255, 255, 255, 0.07);
+  --peel-popover-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+  --peel-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --surface: var(--peel-bg); --surface-2: var(--peel-sidebar);
+  --text: var(--peel-text); --text-muted: var(--peel-text-2); --text-dim: var(--peel-text-2);
+  --border: var(--peel-divider); --border-strong: var(--peel-form-edge);
+  --accent: var(--peel-button); --ok: var(--peel-confirmed);
+  font-family: var(--peel-font);
+}
+.peel-host.light {
+  --peel-bg: #ffffff; --peel-sidebar: #f2f3f5; --peel-panel: #f7f8f9; --peel-card: #ffffff;
+  --peel-text: #292c33; --peel-text-2: #646c73; --peel-divider: #dce0e3; --peel-hover: #e8eaed;
+  --peel-button: #3f68e0; --peel-button-text: #ffffff;
+  --peel-attention: #a86400;
+  --peel-field-fill: rgba(20, 30, 45, 0.05); --peel-input-border: rgba(20, 30, 45, 0.16);
+  --peel-form-edge: rgba(20, 30, 45, 0.08);
+  --peel-popover-shadow: 0 4px 10px rgba(20, 30, 45, 0.18);
+}
+.peel-host .peel-spinner {
+  width: 20px; height: 20px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--peel-text-2) 28%, transparent);
+  border-top-color: var(--peel-text-2);
+  animation: peel-host-spin 0.8s linear infinite;
+}
+@keyframes peel-host-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .peel-host .peel-spinner { animation-duration: 2.4s; } }
+/* Loading: a thin ring and one quiet line on the page's own background. */
+.app-solo.peel-host > .empty,
+.peel-host .app-host-overlay,
+.peel-host.app-host .app-host-overlay {
+  flex-direction: column;
+  gap: 12px;
+  background: var(--peel-bg);
+  color: var(--peel-text-2);
+  font-size: 13px;
+}
+.app-host.peel-host,
+.app-host.peel-host.light { background: var(--peel-bg); }
+.app-host.peel-host.light .app-host-overlay:not(.is-error) { color: var(--peel-text-2); }
+.peel-host .app-host-overlay.is-error { color: var(--peel-attention); }
+/* The account widget: a Peel pill and popover. */
+.peel-host .account-pill {
+  border: 1px solid var(--peel-form-edge);
+  background: var(--peel-card);
+  box-shadow: var(--peel-popover-shadow);
+  color: var(--peel-text);
+}
+.peel-host .account-pill:hover { background: var(--peel-hover); }
+.peel-host .account-pill-dot.is-badge { box-shadow: 0 0 0 2px var(--peel-card); }
+.peel-host .account-dot { border-color: var(--peel-form-edge); background: var(--peel-accent); box-shadow: var(--peel-popover-shadow); }
+.peel-host .account-panel {
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--peel-form-edge);
+  border-radius: 12px;
+  background: var(--peel-card);
+  box-shadow: var(--peel-popover-shadow);
+  font-size: 13px;
+}
+.peel-host .account-num { color: var(--peel-text-2); }
+.peel-host .account-widget .btn {
+  height: 28px; padding: 0 10px; font-size: 12px; font-weight: 500;
+  border: 1px solid var(--peel-input-border); border-radius: 7px;
+  background: var(--peel-field-fill); color: var(--peel-text);
+}
+.peel-host .account-widget .btn:hover:not(:disabled) { background: var(--peel-hover); }
+.peel-host .account-widget .btn-primary { background: var(--peel-button); border-color: transparent; color: var(--peel-button-text); }
+.peel-host .account-widget .btn-primary:hover:not(:disabled) { background: var(--peel-button); filter: brightness(1.08); }
+.peel-host .account-widget .btn:disabled { opacity: 0.5; }

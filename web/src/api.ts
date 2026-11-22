@@ -2345,6 +2345,8 @@ export interface AppBuildInfo {
   title?: string;
   wallet?: ConnectionRequest;
   account?: { corner?: string; style?: string };
+  /** The opt-in look (`app.yaml`'s `theme:`). */
+  theme?: "peel";
   permissions?: string[];
 }
 export async function fetchAppBuildInfo(
@@ -3169,6 +3171,8 @@ export interface PublicAppInfo {
   wallet?: ConnectionRequest;
   /** Where its account widget sits by default (`app.yaml`'s `account:`). */
   account?: { corner?: string; style?: string };
+  /** The opt-in look (`app.yaml`'s `theme:`). */
+  theme?: "peel";
 }
 /** A visitor's read: a plain `fetch`, no credential (`credentials: "omit"`). */
 async function publicFetch(path: string): Promise<Response> {

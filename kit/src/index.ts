@@ -45,3 +45,5 @@ export { appLink, shareLink, PAGE_CONTEXT, type AppLinkInput } from "./links.js"
 export { applyHostContext } from "./apply-host-context.js";
 export * from "./folds/index.js";
 export * from "./folds/run-graph/layout.js";
+export * from "./lib/fiat.js";
+export { useBtcPrice, BTC_PRICE_STEP, BTC_PRICE_REFETCH_MS } from "./btc-hooks.js";

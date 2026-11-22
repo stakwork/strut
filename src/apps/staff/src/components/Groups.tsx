@@ -44,7 +44,7 @@ function Progress(props: Verdicts & { className?: string }) {
   if (!all) return null;
   return (
     <div aria-hidden className={cn("flex h-1.5 overflow-hidden rounded-full bg-muted", props.className)}>
-      <div className="bg-emerald-500" style={{ width: `${(props.ok / all) * 100}%` }} />
+      <div className="bg-[color:var(--peel-confirmed)]" style={{ width: `${(props.ok / all) * 100}%` }} />
       <div className="bg-destructive" style={{ width: `${(props.rejected / all) * 100}%` }} />
     </div>
   );

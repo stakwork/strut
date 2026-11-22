@@ -5,6 +5,7 @@ import {
   type FormSchema, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerType,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
+import { FIAT_CHOICES, FiatProvider, useFiatChoice, useFiatOf } from "../lib/fiat";
 import { cn } from "@/lib/utils";
 import { ACCENT_BUTTON, TaskForm } from "./TaskForm";
 import { errorText } from "../lib/format";
@@ -86,14 +87,29 @@ async function shrink(file: File): Promise<File> {
 export function PayPill({ msat, earned = false, className }: { msat: number; earned?: boolean; className?: string }) {
   const w = useWorkerWords();
   const sats = useFormats().sats(msat);
+  const fiat = useFiatOf()(msat);
   return (
     <span
       className={cn(
-        "inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/40 bg-amber-400/15 px-2.5 py-1 text-[13px] font-semibold text-amber-700 dark:text-amber-300",
+        "inline-flex w-fit items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums",
+        earned ? "wk-chip-received" : "wk-chip",
         className,
       )}
     >
-      <Zap className="size-3.5 fill-current" /> {earned ? `+${sats}` : w.earn(sats)}
+      {!earned && <Zap className="size-3 fill-current" />} {earned ? `+${sats}` : w.earn(sats)}
+      {fiat && <span className="font-normal opacity-75">· {fiat}</span>}
+    </span>
+  );
+}
+
+/** An amount of sats, with the worker's fiat beside it in secondary text. */
+function Sats({ msat, plus = false, className }: { msat: number; plus?: boolean; className?: string }) {
+  const sats = useFormats().sats(msat);
+  const fiat = useFiatOf()(msat);
+  return (
+    <span className={cn("tabular-nums", className)} data-sats>
+      {plus ? "+" : ""}{sats}
+      {fiat && <span className="font-normal text-muted-foreground"> · {fiat}</span>}
     </span>
   );
 }
@@ -154,7 +170,7 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
 
   return (
     <div className={cn("flex flex-col gap-3", className)} data-testid="task-photos">
-      <div className="relative aspect-[4/5] w-full overflow-hidden rounded-3xl bg-zinc-950 text-zinc-50 ring-1 ring-black/5 dark:bg-zinc-900 dark:ring-white/10">
+      <div className="relative aspect-[4/5] w-full overflow-hidden rounded-[12px] bg-zinc-950 text-zinc-50 ring-1 ring-black/5 dark:bg-zinc-900 dark:ring-white/10">
         {current ? (
           <>
             {current.type.startsWith("image/") && urls[shown] ? (
@@ -163,11 +179,11 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
               <div className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-zinc-300">{current.name}</div>
             )}
             <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/75 to-transparent px-3 pt-10 pb-3">
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/90 px-2.5 py-1 text-xs font-semibold text-white">
+              <span className="inline-flex items-center gap-1 rounded-full bg-[#49c998] px-2.5 py-1 text-xs font-semibold text-[#0e1620]">
                 <Check className="size-3.5" /> {w.added(images, shown + 1, photos.length)}
               </span>
               <div className="flex gap-2">
-                <button type="button" className="inline-flex h-9 items-center gap-1.5 rounded-full bg-white/15 px-3.5 text-sm font-medium backdrop-blur hover:bg-white/25" onClick={() => (camera.available ? void take(shown) : (drop(shown), choose()))}>
+                <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-full bg-white/15 px-3 text-[13px] font-medium backdrop-blur hover:bg-white/25" onClick={() => (camera.available ? void take(shown) : (drop(shown), choose()))}>
                   <RotateCcw className="size-4" /> {w.retake}
                 </button>
                 <button type="button" aria-label={w.remove(images, shown + 1)} className="grid size-9 place-items-center rounded-full bg-white/15 backdrop-blur hover:bg-white/25" onClick={() => drop(shown)}>
@@ -181,11 +197,11 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_38%,rgb(245_197_66/0.18),transparent_62%)]" />
             <Corners />
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-8 text-center">
-              <div className="grid size-20 place-items-center rounded-3xl border border-amber-400/40 bg-amber-400/15 text-amber-300">
+              <div className="grid size-16 place-items-center rounded-[12px] bg-white/10 text-zinc-200">
                 {images ? <Camera className="size-9" /> : <ImagePlus className="size-9" />}
               </div>
-              <p className="text-[15px] leading-snug text-zinc-300">{images ? w.fillFrame : w.addFile}</p>
-              <Button type="button" className={cn("h-12 rounded-xl px-6 text-base font-semibold", ACCENT_BUTTON)} onClick={() => (camera.available && images ? void take() : choose())}>
+              <p className="text-sm leading-snug text-zinc-300">{images ? w.fillFrame : w.addFile}</p>
+              <Button type="button" size="lg" className={ACCENT_BUTTON} onClick={() => (camera.available && images ? void take() : choose())}>
                 {camera.available && images ? <Camera /> : <ImagePlus />}
                 {camera.available && images ? w.takePhoto : w.choose(images)}
               </Button>
@@ -205,7 +221,7 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
               key={i}
               type="button"
               aria-label={w.show(images, i + 1)}
-              className={cn("relative size-16 overflow-hidden rounded-xl border-2 bg-muted", i === shown ? "border-amber-400" : "border-transparent")}
+              className={cn("relative size-16 overflow-hidden rounded-[9px] border-2 bg-muted", i === shown ? "border-ring" : "border-transparent")}
               onClick={() => setShown(i)}
             >
               {p.type.startsWith("image/") && urls[i] ? <img src={urls[i]} alt="" className="size-full object-cover" /> : <span className="p-1 text-[10px]">{p.name}</span>}
@@ -215,7 +231,7 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
             <button
               type="button"
               aria-label={w.add(images)}
-              className="grid size-16 place-items-center rounded-xl border-2 border-dashed border-muted-foreground/30 text-muted-foreground hover:bg-muted"
+              className="grid size-16 place-items-center rounded-[9px] border-2 border-dashed border-muted-foreground/30 text-muted-foreground hover:bg-muted"
               onClick={() => (camera.available && images ? void take() : choose())}
             >
               <Plus className="size-5" />
@@ -226,7 +242,7 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
       <p className="text-[13px] text-muted-foreground">
         {w.rule(rule, images, photos.length)}
       </p>
-      {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+      {error && <p className="rounded-[9px] border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-xs text-destructive">{error}</p>}
       <input ref={picker} type="file" accept={rule.types.join(",")} multiple={room > 1} hidden onChange={(e) => void chosen(e.target.files)} />
     </div>
   );
@@ -234,7 +250,7 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
 
 /** A viewfinder's four corners, in the accent. */
 function Corners() {
-  const corner = "absolute size-9 border-amber-400";
+  const corner = "absolute size-9 border-zinc-200/80";
   return (
     <div aria-hidden className="pointer-events-none absolute inset-[7%]">
       <span className={cn(corner, "top-0 left-0 rounded-tl-xl border-t-[3px] border-l-[3px]")} />
@@ -261,7 +277,7 @@ function TaskFileImage({ task, path }: { task: Pick<Task, "lease">; path: string
   const file = useTaskFileUrl(task, path);
   if (file.error) return null;
   return (
-    <div className="overflow-hidden rounded-2xl border bg-muted/50">
+    <div className="overflow-hidden rounded-[9px] border bg-muted/50">
       {file.url ? <img src={file.url} alt={path} className="max-h-[55vh] w-full object-contain" /> : <div className="aspect-[4/3] w-full animate-pulse bg-muted" />}
     </div>
   );
@@ -305,11 +321,11 @@ export function WorkerTask({ task, submit, skip, label, className }: WorkerTaskP
   };
   return (
     <div className={cn("flex flex-1 flex-col gap-5", className)} data-testid="worker-task">
-      <div className="flex flex-col gap-2.5">
+      <div className="flex flex-col gap-2">
         {task.payMsat > 0 && <PayPill msat={task.payMsat} />}
-        <h2 className="text-[22px] leading-tight font-semibold tracking-tight text-balance">{ask ?? w.aTask}</h2>
+        <h2 className="text-xl leading-tight font-semibold text-balance">{ask ?? w.aTask}</h2>
         {fields.length > 0 && (
-          <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-2xl border bg-muted/40 px-4 py-3 text-sm">
+          <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-[9px] bg-muted px-3 py-2.5 text-[13px]">
             {fields.map(([k, v]) => (
               <div key={k} className="contents">
                 <dt className="text-muted-foreground">{labelOf(k)}</dt>
@@ -479,11 +495,11 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   const more = (me.data?.types ?? []).some(
     (t) => (working == null || t.name === working) && (type === undefined || t.name === type) && (!here || t.app === here) && (t.standing || (t.waiting ?? 0) > 0),
   );
-  const mark = icon ?? <Briefcase className="size-4" />;
+  const mark = icon ?? <Briefcase className="size-5" />;
 
   let body: ReactNode;
   if (!signedIn && ((known && me.isLoading) || signingIn)) {
-    body = <Screen icon={<Loader2 className="size-10 animate-spin" />} heading={w.oneMoment} />;
+    body = <Screen loading heading={w.oneMoment} />;
   } else if (!signedIn) {
     body = (
       <Screen
@@ -492,7 +508,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
         text={intro ?? w.signInText}
         bar={
           visitor.available ? (
-            <Button className={cn("h-12 w-full rounded-xl text-base font-semibold", ACCENT_BUTTON)} onClick={() => void visitor.signIn()}>
+            <Button size="lg" className={cn("w-full", ACCENT_BUTTON)} onClick={() => void visitor.signIn()}>
               <LogIn /> {w.signIn}
             </Button>
           ) : (
@@ -502,7 +518,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
       />
     );
   } else if (handingOff && working === undefined && !me.isError) {
-    body = <Screen icon={<Loader2 className="size-10 animate-spin" />} heading={w.oneMoment} />;
+    body = <Screen loading heading={w.oneMoment} />;
   } else if (working === undefined) {
     body = <WorkHome only={type} all={everyApp} onStart={start} {...(opened ? { first: opened } : {})} />;
   } else if (sent) {
@@ -518,7 +534,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
           <>
             {w.noWorkYet}
             {work.error ? ` ${refusalText(work.error, w)}` : ""}
-            <span className="mt-3 block text-[13px]">{w.checksAgain}</span>
+            <span className="mt-3 block text-xs">{w.checksAgain}</span>
           </>
         }
         bar={<BackBar onBack={home} />}
@@ -533,7 +549,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
         text={
           <>
             {work.error ? refusalText(work.error, w) || errorText(work.error) : w.somethingWrong}
-            <span className="mt-3 flex items-center justify-center gap-1.5 text-[13px]">
+            <span className="mt-3 flex items-center justify-center gap-1.5 text-xs">
               <Loader2 className="size-3.5 animate-spin" /> {w.tryingAgain}
             </span>
           </>
@@ -544,7 +560,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
   } else {
     body = (
       <Screen
-        icon={<Loader2 className="size-10 animate-spin [animation-duration:2.4s]" />}
+        loading
         heading={w.looking}
         text={w.noTasksNow}
         bar={<BackBar onBack={home} />}
@@ -554,22 +570,24 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
 
   const back = signedIn && working !== undefined && !sent;
   return (
+    <FiatProvider>
     <div className={cn("mx-auto flex min-h-dvh w-full max-w-xl flex-col bg-background text-foreground", className)} data-testid="worker-page">
-      <header className={cn("sticky top-0 z-20 flex items-center gap-2.5 bg-background/90 px-4 pt-3.5 pb-3 backdrop-blur", account.available && "pr-44")}>
+      <header className={cn("sticky top-0 z-20 flex items-center gap-2 bg-background/90 px-4 pt-3 pb-3 backdrop-blur", account.available && "pr-16")}>
         {back ? (
-          <button type="button" aria-label={w.backToWork} onClick={home} className="grid size-8 shrink-0 place-items-center rounded-[10px] border bg-card text-foreground [&_svg]:size-4">
+          <button type="button" aria-label={w.backToWork} onClick={home} className="grid size-7 shrink-0 place-items-center rounded-[7px] text-muted-foreground hover:bg-accent hover:text-foreground [&_svg]:size-4">
             <ArrowLeft />
           </button>
         ) : (
-          <div className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-amber-400 text-amber-950 [&_svg]:size-4">{mark}</div>
+          <div className="grid size-7 shrink-0 place-items-center text-muted-foreground [&_svg]:size-5">{mark}</div>
         )}
         <div className="min-w-0">
-          <div className="truncate text-[15px] leading-tight font-semibold">{back && working ? typeLabel(working, me.data?.types.find((t) => t.name === working)?.title) : title}</div>
+          <div className="truncate text-base leading-tight font-semibold">{back && working ? typeLabel(working, me.data?.types.find((t) => t.name === working)?.title) : title}</div>
           {subtitle && <div className="truncate text-xs text-muted-foreground">{back && working ? title : subtitle}</div>}
         </div>
       </header>
       <main className="flex flex-1 flex-col px-4 pt-1">{body}</main>
     </div>
+    </FiatProvider>
   );
 }
 
@@ -615,7 +633,7 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
     return me.error ? (
       <Screen tone="error" icon={<AlertTriangle className="size-10" />} heading={w.cantReach} text={refusalText(me.error, w) || errorText(me.error)} />
     ) : (
-      <Screen icon={<Loader2 className="size-10 animate-spin" />} heading={w.oneMoment} />
+      <Screen loading heading={w.oneMoment} />
     );
   }
   const info: WorkerInfo = me.data;
@@ -633,7 +651,7 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
   const any = mine.some((t) => t.standing || (t.waiting ?? 0) > 0);
 
   return (
-    <div className="flex flex-1 flex-col gap-6 pb-[max(1rem,env(safe-area-inset-bottom))]" data-testid="work-home">
+    <div className="flex flex-1 flex-col gap-5 pb-[max(1rem,env(safe-area-inset-bottom))]" data-testid="work-home">
       {holding && (
         <InHand
           holding={holding}
@@ -646,10 +664,10 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
         />
       )}
 
-      <section className="flex flex-col gap-2.5">
-        <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{w.workYouCanDo}</h2>
+      <section className="flex flex-col gap-2">
+        <h2 className="text-xs font-semibold text-muted-foreground">{w.workYouCanDo}</h2>
         {types.length === 0 ? (
-          <p className="rounded-2xl border bg-muted/40 px-4 py-5 text-center text-sm text-muted-foreground">
+          <p className="rounded-[9px] bg-muted px-3 py-4 text-center text-[13px] text-muted-foreground">
             {w.noWorkText}
           </p>
         ) : (
@@ -662,14 +680,14 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
           </ul>
         )}
         {mine.length > 1 && !holding && any && (
-          <Button className={cn("mt-1 h-12 w-full rounded-xl text-base font-semibold", ACCENT_BUTTON)} onClick={() => onStart(only ?? null)}>
+          <Button size="lg" className={cn("mt-1 w-full", ACCENT_BUTTON)} onClick={() => onStart(only ?? null)}>
             {w.startWorking} <span aria-hidden>→</span>
           </Button>
         )}
       </section>
 
       <section className="flex flex-col gap-2.5">
-        <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{w.earnedHere}</h2>
+        <h2 className="text-xs font-semibold text-muted-foreground">{w.earnedHere}</h2>
         <div className="grid grid-cols-2 gap-2">
           <Stat label={w.readyToWithdraw} msat={info.balance.withdrawableMsat} />
           <Stat
@@ -681,13 +699,15 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
         </div>
       </section>
 
+      <FiatPicker />
+
       {!history.error && (
         <section className="flex flex-col gap-2.5">
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{w.yourWork}</h2>
+          <h2 className="text-xs font-semibold text-muted-foreground">{w.yourWork}</h2>
           {items.length === 0 ? (
             <p className="text-sm text-muted-foreground">{w.nothingYet}</p>
           ) : (
-            <ul className="flex flex-col divide-y rounded-2xl border bg-card" data-testid="work-history">
+            <ul className="flex flex-col divide-y rounded-[9px] border bg-card" data-testid="work-history">
               {items.map((i) => (
                 <HistoryRow key={i.lease} item={i} title={titleOf(i.type)} />
               ))}
@@ -727,11 +747,11 @@ function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<W
     onGone();
   };
   return (
-    <div className="rounded-2xl border border-amber-500/40 bg-amber-400/15 p-4" data-testid="in-hand">
+    <div className="wk-callout rounded-[9px] px-3 py-2.5" data-testid="in-hand">
       <div className="flex items-center gap-2">
         <button type="button" onClick={onContinue} className="min-w-0 flex-1 text-left">
-          <div className="text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">{w.inYourHand}</div>
-          <div className="truncate text-base font-semibold">{typeLabel(holding.type, title)}</div>
+          <div className="wk-money text-xs font-semibold">{w.inYourHand}</div>
+          <div className="truncate text-sm font-semibold">{typeLabel(holding.type, title)}</div>
         </button>
         {holding.lease && !asking && (
           <button
@@ -739,24 +759,24 @@ function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<W
             aria-label={w.letGo}
             title={w.letGo}
             onClick={() => setAsking(true)}
-            className="mr-4 grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-amber-400/25 hover:text-foreground"
+            className="mr-3 grid size-7 shrink-0 place-items-center rounded-[7px] text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             <X className="size-4" />
           </button>
         )}
-        <button type="button" onClick={onContinue} className="inline-flex shrink-0 items-center gap-1 text-sm font-semibold">
+        <button type="button" onClick={onContinue} className="inline-flex shrink-0 items-center gap-1 text-[13px] font-semibold">
           {w.continue} <ChevronRight className="size-4" />
         </button>
       </div>
       {asking && (
-        <div className="mt-3 flex flex-col gap-2 border-t border-amber-500/30 pt-3">
-          <p className="text-sm">{w.letGoAsk}</p>
+        <div className="mt-3 flex flex-col gap-2 border-t border-border pt-3">
+          <p className="text-[13px]">{w.letGoAsk}</p>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="grid grid-cols-2 gap-2">
-            <Button variant="outline" className="h-10 rounded-xl" disabled={skip.pending} onClick={() => setAsking(false)}>
+            <Button variant="outline" disabled={skip.pending} onClick={() => setAsking(false)}>
               {w.keepIt}
             </Button>
-            <Button className={cn("h-10 rounded-xl font-semibold", ACCENT_BUTTON)} disabled={skip.pending} onClick={() => void letGo()}>
+            <Button variant="destructive" disabled={skip.pending} onClick={() => void letGo()}>
               {skip.pending ? <Loader2 className="animate-spin" /> : <X />} {w.letGo}
             </Button>
           </div>
@@ -781,11 +801,11 @@ function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; on
       type="button"
       onClick={onStart}
       disabled={blocked}
-      className="flex w-full items-center gap-3 rounded-2xl border bg-card p-4 text-left shadow-sm active:bg-muted/60 disabled:opacity-55"
+      className="wk-row flex w-full items-center gap-3 rounded-[9px] border bg-card px-3 py-3 text-left shadow-xs hover:bg-accent disabled:opacity-55"
     >
       <div className="min-w-0 flex-1">
-        <div className="truncate text-base font-semibold">{typeLabel(type.name, type.title)}</div>
-        <div className={cn("mt-0.5 text-[13px]", ready ? "font-medium text-emerald-700 dark:text-emerald-400" : "text-muted-foreground")}>{now}</div>
+        <div className="truncate text-sm font-semibold">{typeLabel(type.name, type.title)}</div>
+        <div className={cn("mt-0.5 text-xs", ready ? "wk-received font-medium" : "text-muted-foreground")}>{now}</div>
       </div>
       {type.payMsat > 0 && <PayPill msat={type.payMsat} className="shrink-0" />}
       {app ? <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
@@ -794,11 +814,10 @@ function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; on
 }
 
 function Stat({ label, msat, note }: { label: string; msat: number; note?: string }) {
-  const fmt = useFormats();
   return (
-    <div className="rounded-2xl border bg-card p-3.5">
-      <div className="text-[13px] text-muted-foreground">{label}</div>
-      <div className="mt-0.5 text-lg font-semibold tabular-nums">{fmt.sats(msat)}</div>
+    <div className="wk-panel rounded-[9px] bg-muted px-3 py-2.5">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-0.5 text-[17px] font-semibold tabular-nums"><Sats msat={msat} /></div>
       {note && <div className="mt-0.5 text-xs text-muted-foreground">{note}</div>}
     </div>
   );
@@ -821,20 +840,20 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
   else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.until(e.releases))}</Badge>;
   else badge = <Badge tone="done">{w.cleared}</Badge>;
   return (
-    <li className={cn("flex items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
+    <li className={cn("flex items-center gap-3 px-3 py-2.5", (item.reply || item.review?.why) && "flex-wrap")}>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[15px] font-medium">{item.ask ?? typeLabel(item.type, title)}</div>
+        <div className="truncate text-sm">{item.ask ?? typeLabel(item.type, title)}</div>
         <div className="truncate text-xs text-muted-foreground">
           {item.ask ? `${typeLabel(item.type, title)} · ` : ""}
           {fmt.ago(item.closed ?? item.taken)}
         </div>
       </div>
       <div className="flex flex-col items-end gap-1">
-        {e && <span className={cn("text-sm font-semibold tabular-nums", e.takenBack && "text-muted-foreground line-through")}>+{fmt.sats(e.msat)}</span>}
-        {item.pending && <span className="text-sm font-semibold text-muted-foreground tabular-nums">+{fmt.sats(item.pending.msat)}</span>}
+        {e && <span className={cn("text-[13px] font-semibold", e.takenBack ? "text-muted-foreground line-through" : "wk-received")}><Sats msat={e.msat} plus /></span>}
+        {item.pending && <span className="text-[13px] font-semibold text-muted-foreground"><Sats msat={item.pending.msat} plus /></span>}
         {badge}
       </div>
-      {item.review?.verdict === "rejected" && item.review.why && <div className="w-full text-sm text-destructive">{w.toFix(item.review.why)}</div>}
+      {item.review?.verdict === "rejected" && item.review.why && <div className="w-full text-xs text-destructive">{w.toFix(item.review.why)}</div>}
       {item.reply && <ReplyLine item={item} reply={item.reply} />}
     </li>
   );
@@ -851,7 +870,7 @@ function ReplyLine({ item, reply }: { item: Pick<WorkerHistoryItem, "lease">; re
   const summary = said ?? (pictures ? w.pictures(pictures) : w.files(files.length));
   return (
     <div className="basis-full">
-      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-1.5 text-left text-[13px] text-amber-700 dark:text-amber-300">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="wk-money flex w-full items-center gap-1.5 text-left text-xs">
         <MessageSquare className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">
           <span className="font-semibold">{w.reply}</span>
@@ -878,9 +897,9 @@ export function TaskReplyView({ item, reply, file, className }: { item?: Pick<Wo
   const fields = shownFields(reply.show);
   return (
     <div className={cn("flex flex-col gap-2.5", className)} data-testid="task-reply">
-      {heading && <p className="m-0 text-[15px] leading-snug font-medium">{heading}</p>}
+      {heading && <p className="m-0 text-sm leading-snug font-medium">{heading}</p>}
       {fields.length > 0 && (
-        <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+        <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[13px]">
           {fields.map(([k, v]) => (
             <div key={k} className="contents">
               <dt className="text-muted-foreground">{labelOf(k)}</dt>
@@ -901,13 +920,13 @@ function ReplyFile({ item, file }: { item?: Pick<WorkerHistoryItem, "lease">; fi
   const read = useTaskFileUrl(item, file.path, { enabled: picture });
   if (picture && !read.error) {
     return (
-      <div className="overflow-hidden rounded-2xl border bg-muted/50">
+      <div className="overflow-hidden rounded-[9px] border bg-muted/50">
         {read.url ? <img src={read.url} alt={file.name} className="max-h-[55vh] w-full object-contain" /> : <div className="aspect-square w-full animate-pulse bg-muted" />}
       </div>
     );
   }
   return (
-    <div className="flex items-center gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-sm">
+    <div className="flex items-center gap-2 rounded-[9px] bg-muted px-3 py-2 text-[13px]">
       <FileText className="size-4 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate">{file.name}</span>
     </div>
@@ -940,8 +959,8 @@ function SentReply({ lease }: { lease: string }) {
   }, []);
   if (!item || !reply) return null;
   return (
-    <div className="relative mt-4 w-full rounded-2xl border border-amber-500/40 bg-card p-4 text-left shadow-sm">
-      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">
+    <div className="relative mt-4 w-full rounded-[9px] border bg-card p-3 text-left">
+      <div className="wk-money mb-2 flex items-center gap-1.5 text-xs font-semibold">
         <MessageSquare className="size-3.5" /> {w.reply}
       </div>
       <TaskReplyView item={item} reply={reply} />
@@ -953,11 +972,11 @@ function Badge({ children, tone }: { children: ReactNode; tone?: "accent" | "don
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap",
-        !tone && "text-muted-foreground",
-        tone === "accent" && "border-amber-500/40 bg-amber-400/15 text-amber-700 dark:text-amber-300",
-        tone === "done" && "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-        tone === "error" && "border-destructive/35 bg-destructive/10 text-destructive",
+        "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap",
+        !tone && "bg-muted text-muted-foreground",
+        tone === "accent" && "wk-chip",
+        tone === "done" && "wk-chip-received",
+        tone === "error" && "bg-destructive/12 text-destructive",
       )}
     >
       {children}
@@ -969,43 +988,73 @@ function Badge({ children, tone }: { children: ReactNode; tone?: "accent" | "don
 function BackBar({ onBack }: { onBack: () => void }) {
   const w = useWorkerWords();
   return (
-    <Button variant="outline" className="h-12 w-full rounded-xl text-base" onClick={onBack}>
+    <Button variant="outline" size="lg" className="w-full" onClick={onBack}>
       <ArrowLeft /> {w.backToWork}
     </Button>
   );
 }
 
-/** A whole screen between tasks: a mark, a heading, a line, and what to do
- *  in the bar at the bottom. */
-function Screen({ icon, heading, text, bar, tone = "accent", children }: { icon: ReactNode; heading: string; text?: ReactNode; bar?: ReactNode; tone?: "accent" | "done" | "error"; children?: ReactNode }) {
+/** A whole screen between tasks, as Peel draws one: a quiet mark, a heading, a
+ *  line, and what to do in the bar at the bottom. `loading` is the minimal
+ *  form: a thin spinner and one line on the page's own background. */
+function Screen({ icon, heading, text, bar, tone = "accent", loading = false, children }: { icon?: ReactNode; heading: string; text?: ReactNode; bar?: ReactNode; tone?: "accent" | "done" | "error"; loading?: boolean; children?: ReactNode }) {
+  if (loading) {
+    return (
+      <div className="flex flex-1 flex-col" role="status">
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 py-10 text-center text-[13px] text-muted-foreground">
+          <span className="wk-spinner" aria-hidden />
+          <span>{heading}</span>
+          {text && <div className="max-w-sm text-xs">{text}</div>}
+        </div>
+        {bar && <div className="sticky bottom-0 bg-background pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]">{bar}</div>}
+      </div>
+    );
+  }
   return (
     <div className="flex flex-1 flex-col" role={tone === "error" ? "alert" : "status"}>
-      <div className="relative flex flex-1 flex-col items-center justify-center gap-3 px-1 py-10 text-center">
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 px-1 py-10 text-center">
         <div
           aria-hidden
-          className={cn(
-            "pointer-events-none absolute inset-0 -z-0",
-            tone === "accent" && "bg-[radial-gradient(260px_circle_at_50%_42%,rgb(245_197_66/0.16),transparent)]",
-            tone === "done" && "bg-[radial-gradient(260px_circle_at_50%_30%,rgb(16_185_129/0.16),transparent)]",
-            tone === "error" && "bg-[radial-gradient(260px_circle_at_50%_42%,rgb(239_68_68/0.14),transparent)]",
-          )}
-        />
-        <div
-          className={cn(
-            "relative grid size-22 place-items-center rounded-[26px] border [&_svg]:size-10",
-            tone === "accent" && "border-amber-500/35 bg-amber-400/15 text-amber-600 dark:text-amber-300",
-            tone === "done" && "border-emerald-500/35 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-            tone === "error" && "border-destructive/35 bg-destructive/10 text-destructive",
-          )}
+          className={cn("grid size-12 place-items-center [&_svg]:size-8", tone === "done" ? "wk-received" : tone === "error" ? "wk-money" : "text-muted-foreground")}
         >
           {icon}
         </div>
-        <h1 className="relative mt-2 text-2xl font-semibold tracking-tight text-balance">{heading}</h1>
-        {text && <div className="relative max-w-sm text-[15px] leading-relaxed text-muted-foreground">{text}</div>}
+        <h1 className="mt-1 text-base font-semibold text-balance">{heading}</h1>
+        {text && <div className="max-w-sm text-[13px] leading-relaxed text-muted-foreground">{text}</div>}
         {children}
       </div>
       {bar && <div className="sticky bottom-0 bg-background pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]">{bar}</div>}
     </div>
+  );
+}
+
+/** The worker's fiat choice: Sats only, or a currency to show beside every
+ *  amount (`btc/price`, lib/fiat.tsx). Kept per worker by strut. */
+function FiatPicker() {
+  const w = useWorkerWords();
+  const [choice, set] = useFiatChoice();
+  return (
+    <section className="flex flex-col gap-2" data-testid="fiat-picker">
+      <h2 className="text-xs font-semibold text-muted-foreground">{w.showValueIn}</h2>
+      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label={w.showValueIn}>
+        {FIAT_CHOICES.map((c) => (
+          <button
+            key={c}
+            type="button"
+            role="radio"
+            aria-checked={choice === c}
+            onClick={() => set(c)}
+            className={cn(
+              "h-7 rounded-full border px-3 text-xs font-medium",
+              choice === c ? "border-transparent bg-primary text-primary-foreground" : "bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+          >
+            {c === "off" ? w.fiatOff : c}
+          </button>
+        ))}
+      </div>
+      {choice !== "off" && <p className="text-xs text-muted-foreground">{w.fiatNote}</p>}
+    </section>
   );
 }
 
@@ -1023,7 +1072,7 @@ function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean;
       text={sent.msat > 0 ? (sent.onOk ? w.earnedOnOk : w.earnedHeld) : w.answerIn}
       bar={
         <div className="flex flex-col gap-2">
-          <Button className={cn("h-12 w-full rounded-xl text-base font-semibold", ACCENT_BUTTON)} onClick={next ? onNext : onHome}>
+          <Button size="lg" className={cn("w-full", ACCENT_BUTTON)} onClick={next ? onNext : onHome}>
             {next ? (
               <>
                 {w.nextTask} <span aria-hidden>→</span>
@@ -1033,7 +1082,7 @@ function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean;
             )}
           </Button>
           {next && (
-            <Button variant="ghost" className="h-10 w-full rounded-xl text-sm text-muted-foreground" onClick={onHome}>
+            <Button variant="ghost" className="w-full text-muted-foreground" onClick={onHome}>
               {w.backToWork}
             </Button>
           )}
@@ -1043,26 +1092,26 @@ function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean;
       {sent.msat > 0 && (
         <div className="relative flex flex-wrap justify-center gap-2">
           <PayPill msat={sent.msat} earned />
-          <span className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[13px] font-medium text-muted-foreground">
+          <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-xs font-semibold text-muted-foreground">
             <Clock className="size-3.5" /> {sent.onOk ? w.waitingForOk : w.held}
           </span>
         </div>
       )}
       {(rows.length > 0 || urls.length > 0) && (
-        <div className="relative mt-4 w-full rounded-2xl border bg-card p-4 text-left shadow-sm">
-          <div className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{w.yourAnswer}</div>
+        <div className="relative mt-4 w-full rounded-[9px] bg-muted p-3 text-left">
+          <div className="mb-2 text-xs font-semibold text-muted-foreground">{w.yourAnswer}</div>
           {urls.length > 0 && (
             <div className="mb-3 flex gap-2">
               {urls.map((u, i) => (
-                <img key={u} src={u} alt={w.photo(i + 1)} className="size-16 rounded-xl border object-cover" />
+                <img key={u} src={u} alt={w.photo(i + 1)} className="size-16 rounded-[9px] border object-cover" />
               ))}
             </div>
           )}
           {rows.length > 0 && (
-            <dl className="flex flex-col gap-2.5 text-sm">
+            <dl className="flex flex-col gap-2 text-[13px]">
               {rows.map(([k, v]) => (
                 <div key={k}>
-                  <dt className="text-[13px] text-muted-foreground">{k}</dt>
+                  <dt className="text-xs text-muted-foreground">{k}</dt>
                   <dd className="m-0 font-medium break-words">{v}</dd>
                 </div>
               ))}

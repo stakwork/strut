@@ -51,9 +51,9 @@ const scaleOf = (schema: FormSchema, name: string): number[] | undefined => {
 const MAX_TAPPED = 6;
 
 /** The worker's accent: what pays, and what is picked. */
-export const ACCENT_BUTTON = "bg-amber-400 text-amber-950 shadow-sm hover:bg-amber-300 disabled:opacity-50 dark:bg-amber-400 dark:hover:bg-amber-300";
-const PICKED = "border-amber-500 bg-amber-400/15 text-foreground ring-1 ring-amber-500 dark:border-amber-400 dark:ring-amber-400";
-const CHOICE = "flex min-h-12 items-center gap-3 rounded-xl border bg-background px-4 text-left text-base transition-colors hover:bg-muted/60 disabled:opacity-60";
+export const ACCENT_BUTTON = "wk-primary disabled:opacity-50";
+const PICKED = "border-ring bg-ring/10 text-foreground ring-1 ring-ring";
+const CHOICE = "flex min-h-11 items-center gap-3 rounded-[9px] border bg-background px-3 text-left text-sm hover:bg-accent disabled:opacity-60";
 
 /**
  * A task's answer as a form (plans/human-steps.md §5.3), for a task type
@@ -127,13 +127,13 @@ export function TaskForm({ task, onSubmit, onSkip, readOnly = false, value, labe
       )}
     >
       {onSkip && (
-        <Button type="button" disabled={busy !== null} variant={bar ? "secondary" : "outline"} className={cn(bar && "h-12 rounded-xl px-5 text-base")} onClick={() => void skip()}>
+        <Button type="button" disabled={busy !== null} variant={bar ? "secondary" : "outline"} size={bar ? "lg" : "default"} onClick={() => void skip()}>
           {busy === "skip" ? <Loader2 className="animate-spin" /> : <SkipForward />}
           {w.skip}
         </Button>
       )}
       {onSubmit && (
-        <Button type="submit" disabled={!!waitingFor || busy !== null} className={cn(bar && cn("h-12 flex-1 rounded-xl text-base font-semibold", ACCENT_BUTTON))}>
+        <Button type="submit" disabled={!!waitingFor || busy !== null} size={bar ? "lg" : "default"} className={cn(bar && cn("flex-1", ACCENT_BUTTON))}>
           {busy === "submit" ? <Loader2 className="animate-spin" /> : <Check />}
           {label ?? w.submit}
         </Button>
@@ -148,7 +148,7 @@ export function TaskForm({ task, onSubmit, onSkip, readOnly = false, value, labe
           <Field key={f.name} field={f} long={long(schema, f.name)} scale={scaleOf(schema, f.name)} value={content[f.name]} set={(v) => set(f.name, v)} />
         ))}
         {(error || (waitingFor && !readOnly)) && (
-          <p className={cn("rounded-xl px-3 py-2", error ? "border border-destructive/30 bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground")} role={error ? "alert" : undefined}>
+          <p className={cn("rounded-[9px] px-3 py-2.5 text-xs", error ? "border border-destructive/30 bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground")} role={error ? "alert" : undefined}>
             {error ?? waitingFor}
           </p>
         )}
@@ -163,7 +163,7 @@ function Field({ field: f, long, scale, value, set }: { field: FormField; long: 
   const id = `task-${f.name}`;
   const head = (
     <div className="grid gap-1">
-      <Label htmlFor={id} id={`${id}-label`} className="text-sm font-semibold">
+      <Label htmlFor={id} id={`${id}-label`} className="text-[13px] font-semibold">
         {f.label ?? f.name}
         {f.required && <span className="text-destructive">*</span>}
       </Label>
@@ -204,7 +204,7 @@ function Field({ field: f, long, scale, value, set }: { field: FormField; long: 
   }
   if (f.kind === "enum") {
     return wrap(
-      <NativeSelect id={id} className="h-12 w-full rounded-xl text-base" value={value === undefined ? "" : String(value)} onChange={(e) => set(e.target.value || undefined)}>
+      <NativeSelect id={id} className="h-10 w-full rounded-[7px] text-sm" value={value === undefined ? "" : String(value)} onChange={(e) => set(e.target.value || undefined)}>
         <NativeSelectOption value="">{w.chooseOne}</NativeSelectOption>
         {(f.enumValues ?? []).map((v) => (
           <NativeSelectOption key={v} value={v}>
@@ -254,11 +254,11 @@ function Field({ field: f, long, scale, value, set }: { field: FormField; long: 
   const shown = value === undefined || value === null ? "" : String(value);
   return wrap(
     f.kind === "string" && long ? (
-      <Textarea id={id} rows={4} className="min-h-28 rounded-xl px-3.5 py-3 text-base" placeholder={w.writeHere} value={shown} onChange={(e) => set(e.target.value)} />
+      <Textarea id={id} rows={4} className="min-h-28 rounded-[7px] px-3 py-2.5 text-sm" placeholder={w.writeHere} value={shown} onChange={(e) => set(e.target.value)} />
     ) : (
       <Input
         id={id}
-        className="h-12 rounded-xl px-3.5 text-base"
+        className="h-10 rounded-[7px] px-3 text-sm"
         type={f.kind === "number" ? "number" : "text"}
         inputMode={f.kind === "number" ? "decimal" : undefined}
         step={f.kind === "number" ? "any" : undefined}
@@ -277,10 +277,10 @@ function Dot({ on, round = false }: { on: boolean; round?: boolean }) {
       className={cn(
         "grid size-5 shrink-0 place-items-center border-2 transition-colors",
         round ? "rounded-full" : "rounded-md",
-        on ? "border-amber-500 bg-amber-400 text-amber-950 dark:border-amber-400" : "border-muted-foreground/40",
+        on ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40",
       )}
     >
-      {on && (round ? <span className="size-2 rounded-full bg-amber-950" /> : <Check className="size-3.5" strokeWidth={3} />)}
+      {on && (round ? <span className="size-2 rounded-full bg-primary-foreground" /> : <Check className="size-3.5" strokeWidth={3} />)}
     </span>
   );
 }

@@ -275,6 +275,8 @@ export interface PublicAppInfo {
   wallet?: BuildInfo["wallet"];
   /** Where the visitor's account widget sits by default (`app.yaml`'s `account:`). */
   account?: BuildInfo["account"];
+  /** The opt-in look (`app.yaml`'s `theme:`), for the host's loading screen. */
+  theme?: BuildInfo["theme"];
 }
 
 /** Every path this module serves: what the gate opens to anyone — its

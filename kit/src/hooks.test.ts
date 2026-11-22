@@ -17,6 +17,7 @@ import {
   useRunFile, useRunFileUrl, runFileBlob, type RunFile,
   useTask, useWorker, useTaskHistory, useWithdraw, useTaskFile, taskErrorCode, TASK_STEPS, TASK_WAIT_S,
 } from "./hooks.js";
+import { useBtcPrice, BTC_PRICE_STEP } from "./btc-hooks.js";
 import { PAGE_CONTEXT, appLink, shareLink } from "./links.js";
 
 useActEnvironment();
@@ -240,6 +241,26 @@ describe("the run hooks name their step and pass what they were given", () => {
     await until(() => h.result().workers.data?.["w-1"] === "Wendy W", "the first list to take the newer name");
     assert.equal(h.result().workers.data?.["a-1"], "Ada", "a person only the first list holds keeps their name");
     await h.unmount();
+  });
+
+  it("useBtcPrice → btc/price for the currency; null asks nothing; a failure leaves perBtc null", async () => {
+    const { client, calls } = fakeClient({ [BTC_PRICE_STEP]: (c) => ({ currency: c.config!.currency, perBtc: 100_000, at: "2026-01-01T00:00:00.000Z" }) });
+    const h = await renderHook(() => useBtcPrice("EUR"), { client });
+    await until(() => h.result().perBtc !== null, "price");
+    assert.deepEqual(calls, [{ type: BTC_PRICE_STEP, config: { currency: "EUR" } }]);
+    assert.equal(h.result().at, "2026-01-01T00:00:00.000Z");
+    await h.unmount();
+    const none = fakeClient();
+    const h2 = await renderHook(() => useBtcPrice(null), { client: none.client });
+    await sleep(20);
+    assert.equal(none.calls.length, 0);
+    assert.deepEqual(h2.result(), { perBtc: null, isLoading: false });
+    await h2.unmount();
+    const bad = fakeClient({ [BTC_PRICE_STEP]: () => { throw new Error("down"); } });
+    const h3 = await renderHook(() => useBtcPrice("USD"), { client: bad.client });
+    await until(() => h3.result().error !== undefined, "error");
+    assert.equal(h3.result().perBtc, null);
+    await h3.unmount();
   });
 
   it("useSql → sqlite/query as a query; useSqlMutation's exec and batch write, then every useSql read refetches", async () => {

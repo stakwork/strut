@@ -664,9 +664,9 @@ export function inviteExpiry(i: Pick<Invite, "createdAt" | "expiresAt">): number
 export function inviteBadge(status: InviteStatus): { label: string; className: string } {
   switch (status) {
     case "ready":
-      return { label: "Ready · unused", className: "border-transparent bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200" };
+      return { label: "Ready · unused", className: "border-transparent bg-[color-mix(in_srgb,var(--peel-attention)_15%,transparent)] text-[color:var(--peel-attention)]" };
     case "used":
-      return { label: "Used", className: "border-transparent bg-green-100 text-green-900 dark:bg-green-900/40 dark:text-green-200" };
+      return { label: "Used", className: "border-transparent bg-[color-mix(in_srgb,var(--peel-confirmed)_15%,transparent)] text-[color:var(--peel-confirmed)]" };
     case "cancelled":
       return { label: "Cancelled", className: "border-transparent bg-muted text-muted-foreground line-through" };
     case "failed":

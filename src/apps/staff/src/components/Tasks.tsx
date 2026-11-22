@@ -436,7 +436,7 @@ export function TaskDetail(props: AnswersProps & { id: string }) {
               <VerdictBadge verdict={one.review.verdict} />
             ) : (
               <Badge variant="secondary">
-                <span aria-hidden className="size-1.5 rounded-full bg-amber-500" /> To review
+                <span aria-hidden className="size-1.5 rounded-full bg-[color:var(--peel-attention)]" /> To review
               </Badge>
             )
           ) : (

@@ -115,7 +115,7 @@ export default function App() {
     <div className="mx-auto flex min-h-screen max-w-6xl flex-col gap-5 bg-background p-4 text-foreground sm:p-6">
       <header className="flex flex-wrap items-center gap-3">
         <Users className="size-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Workers</h1>
+        <h1 className="text-base font-semibold">Workers</h1>
         <div className="ml-auto flex items-center gap-2">
           {!refused && types.data && (
             <Button variant="outline" size="sm" aria-expanded={!!invite?.open} onClick={() => setInvite((i) => ({ open: !i?.open }))} data-testid="invite-a-worker">
@@ -128,7 +128,7 @@ export default function App() {
         </div>
       </header>
 
-      <nav className="flex flex-wrap gap-1 border-b" aria-label="Tabs">
+      <nav className="-mx-4 flex gap-1 overflow-x-auto border-b px-4 [scrollbar-width:none] sm:mx-0 sm:px-0" aria-label="Tabs">
         {shownNav.map((t) => (
           <button
             key={t}
@@ -137,7 +137,7 @@ export default function App() {
             aria-selected={t === nav}
             onClick={() => open(t)}
             className={cn(
-              "-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors",
+              "-mb-px inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium whitespace-nowrap",
               t === nav ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
             )}
           >

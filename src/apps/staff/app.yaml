@@ -12,11 +12,13 @@ description: >-
   (db/001-support.sql), the page reads and writes them with SQL, and the
   Sphinx daemon hands each DM to support/receive.
 icon: users
+theme: peel
 admin: true
 grants:
   workflows: []
   sqlite: true
   steps:
+    - btc/price
     - staff/stats
     - staff/numbers
     - staff/types
