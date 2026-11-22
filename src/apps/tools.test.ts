@@ -287,6 +287,15 @@ describe("step_run — the app door", () => {
     assert.match(grantRefusal("app/get", {}, m.manifest, registry)!, /not granted/);
     assert.equal(grantRefusal("app/report-error", {}, m.manifest, registry), null, "always granted");
     assert.equal(grantRefusal("app/state", {}, m.manifest, registry), null, "always granted");
+    // task/me implies task/withdraw (the account widget's Withdraw); neither: refused; task/withdraw alone: granted.
+    const worker = parseManifest("title: T\ngrants: { steps: [task/next, task/me] }\n");
+    const neither = parseManifest("title: T\ngrants: { steps: [task/next] }\n");
+    const alone = parseManifest("title: T\ngrants: { steps: [task/withdraw] }\n");
+    assert.ok(worker.ok && neither.ok && alone.ok);
+    assert.equal(grantRefusal("task/withdraw", {}, worker.manifest, registry), null, "task/me grants it");
+    assert.match(grantRefusal("task/withdraw", {}, neither.manifest, registry)!, /step "task\/withdraw" is not granted to this app — its grants.steps: task\/next/);
+    assert.equal(grantRefusal("task/withdraw", {}, alone.manifest, registry), null, "granted by name");
+    assert.match(grantRefusal("task/withdraw", {}, worker.manifest, registry, ["task/me"])!, /not granted/, "a host's list is not widened");
     assert.ok(!keptFromApp("app/state"), "never kept");
     assert.ok(keptFromApp("graph/edit-node") && keptFromApp("app/report-error") && !keptFromApp("run/list") && !keptFromApp("graph/graph-get"));
     // A worker's step is never kept (plans/human-steps.md §5.2), whatever it is.
