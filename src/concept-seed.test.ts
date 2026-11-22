@@ -226,6 +226,9 @@ describe("concept files (pure)", () => {
     // questions as your `ask`" sent them in the text alone 5 times of 10 (2026-11-22; main's page 0 of 9).
     assert.match(plan.docs!, /a short overview as\s+your `text`, and the questions as your `ask`/);
     assert.match(plan.docs!, /The detail is in `plan\.md`\s+for whoever wants it/);
+    // The review reads the item's work (its job, what it published), not the reply that hands it back: told
+    // "finished and verified", the plan's job only edited its file (2026-11-22, a whole conversation).
+    assert.match(plan.docs!, /Check what it made against\s+the plan, from its job's work rather than the report/);
     assert.equal(plan.claims?.length, 2);
     assert.deepEqual(
       plan.claims!.map((claim) => claim.cases.map((c) => [c.workflow, (c.input as { kind?: string }).kind])),
