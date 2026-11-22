@@ -779,7 +779,13 @@ pull requests are Hive's, not later items.
   ruling: strut has no roles, and a ticket session is full scope, so
   making a version live stays with the full UI's Versions flyout and a
   host's admin page (Stadeum's Apps page, over `PUT /apps/:name/active`,
-  where Stadeum checks the role).
+  where Stadeum checks the role). **Reversed 2026-11-22:** strut now has
+  roles (plans/member-rights.md: a host's ticket names `admin` or
+  `member`, and a member's session is refused `PUT /apps/:name/active`),
+  so the list also holds the mode (Hold at vN / Follow latest) and each
+  version's Make live or Restore, for anyone but a member, each confirmed
+  under its row; a member's stays viewing only. Pin stays with the
+  hosts' admin pages.
 - **Not to port** (ruled 2026-11-05): the rest of Hive's chat — the daily
   recap card, its per-step proposal bodies, Hive-only kinds (stored HTML
   pages, research docs, task pills, the brainstorm tree) and the canvas
