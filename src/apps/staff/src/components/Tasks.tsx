@@ -539,6 +539,9 @@ export function TaskDetail(props: AnswersProps & { id: string }) {
                 {type?.tests ? " A rejection counts against their standing in this type as a failed test does, and Mark OK takes it out." : ""}
                 {props.shown.earnings && held.length ? ` While the pay is held (until ${fmtWhen(Math.min(...held.map((l) => l.earning!.releases)))}), a rejection takes it back and Mark OK gives it back.` : ""}
                 {props.shown.earnings && paid.length && !held.length ? " The pay is past its hold, so a verdict is a mark only." : ""}
+                {props.shown.earnings && type?.payOn === "ok" && answers.some((l) => l.payMsat && !l.earning)
+                  ? " This type pays only once an answer is marked OK: Mark OK pays it now, and a rejected one is never paid."
+                  : ""}
               </Note>
               {one && reviewOpen(one) && (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t pt-3 text-xs text-muted-foreground">

@@ -29,7 +29,7 @@ import { answerSchemaProblem } from "./answer-schema.js";
 import { copiesRuleOf } from "./task-copies.js";
 import { attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
 import { openPayProblem, openPayWarning, RuleProblem, sameJson, testRulesOf } from "./task-tests.js";
-import { DEFAULT_HOLD_HOURS, type CheckRule, type CopiesRule, type GradeRule, type LimitRule, type RoundRule, type StandingRule, type TaskType, type TestRules } from "./task-store.js";
+import { DEFAULT_HOLD_HOURS, PAY_ON, type CheckRule, type CopiesRule, type GradeRule, type LimitRule, type RoundRule, type StandingRule, type TaskType, type TestRules } from "./task-store.js";
 import {
   DEFAULT_LEASE_SECONDS,
   DEFAULT_WITHIN_HOURS,
@@ -128,6 +128,13 @@ export const typeChangeInput = z.object({
     .refine((v) => v === undefined || Math.abs(v * 1000 - Math.round(v * 1000)) <= 1e-6, "paySats is sats to the msat (at most three decimals)")
     .describe("What one accepted answer earns its worker, in sats (0: unpaid, a new type's default). A rise is shown to the admin as a danger."),
   holdHours: z.number().min(HOLD_HOURS_MIN).max(HOLD_HOURS_MAX).optional().describe(`How long an earning waits before it can be withdrawn, in hours (${HOLD_HOURS_MIN} to ${HOLD_HOURS_MAX}; 0, no hold, for a new type).`),
+  payOn: z
+    .enum(PAY_ON)
+    .nullable()
+    .optional()
+    .describe(
+      "When a paid answer earns: \"answer\" (a new type's default), as it is handed in; \"ok\", only once it is marked OK — by staff's review, or by the workflow itself (task/reply's `verdict`) — so an answer marked rejected (a blurry photo, a duplicate, a retake) is never paid. Use \"ok\" whenever the workflow judges each answer. null: back to \"answer\".",
+    ),
   limits: z
     .preprocess(
       fromJsonText,
@@ -256,7 +263,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
  *  type with no `answer` takes `EMPTY_ANSWER`. */
 export function mergeType(
   name: string,
-  existing: (Pick<TaskType, "title" | "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "limits" | "tests" | "copies" | "attachments" | "standing" | "round" | "check"> & { open?: boolean }) | undefined,
+  existing: (Pick<TaskType, "title" | "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "payOn" | "limits" | "tests" | "copies" | "attachments" | "standing" | "round" | "check"> & { open?: boolean }) | undefined,
   change: TypeFields,
 ): TaskTypeInput {
   // A new type with no shape given takes the empty object: a files-only
@@ -285,6 +292,9 @@ export function mergeType(
   if (open !== undefined) out.open = open;
   if (paySats !== undefined) out.paySats = paySats;
   if (holdHours !== undefined) out.holdHours = holdHours;
+  // When it pays is whole: given, it replaces; null is as answered.
+  const payOn = change.payOn === undefined ? existing?.payOn : change.payOn;
+  if (payOn !== undefined) out.payOn = payOn;
   if (limits !== undefined) out.limits = limits;
   if (tests !== undefined) out.tests = tests;
   if (copies !== undefined) out.copies = copies;
@@ -381,6 +391,7 @@ interface Planned {
   open: boolean;
   paySats: number;
   holdHours: number;
+  payOn?: "ok";
   limits?: LimitRule;
   tests?: TestRules;
   copies?: CopiesRule;
@@ -400,6 +411,7 @@ const plannedOf = (t: TaskTypeRow): Planned => ({
   open: t.open ?? true,
   paySats: t.paySats ?? 0,
   holdHours: t.holdHours,
+  ...(t.payOn === "ok" ? { payOn: "ok" as const } : {}),
   ...(t.limits ? { limits: t.limits } : {}),
   ...(t.tests ? { tests: t.tests } : {}),
   ...(t.copies ? { copies: t.copies } : {}),
@@ -448,6 +460,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
       open: merged.open ?? true,
       paySats: pay,
       holdHours: merged.holdHours ?? DEFAULT_HOLD_HOURS,
+      ...(merged.payOn === "ok" ? { payOn: "ok" as const } : {}),
       ...(merged.limits && (merged.limits.budgetSats !== undefined || merged.limits.perWorkerDay !== undefined) ? { limits: merged.limits } : {}),
       ...(tests ? { tests } : {}),
       ...(copies ? { copies } : {}),
@@ -577,6 +590,7 @@ function limitsText(l: LimitRule | undefined, money: (sats: number) => string): 
 }
 
 /** A hold in days when it is a whole number of them; "none" for 0. */
+const payOnWords = (payOn: "ok" | "answer" | undefined | null) => (payOn === "ok" ? "once marked OK" : "as handed in");
 const holdText = (hours: number) => (hours === 0 ? "none" : hours % 24 === 0 ? plural(hours / 24, "day") : plural(hours, "hour"));
 
 /** "4 photos", "1 to 3 photos", "up to 2 files": what an answer carries, in
@@ -677,6 +691,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     if (before.open !== after.open) line("who takes it", whoWords(before.open), whoWords(after.open));
     if (before.paySats !== after.paySats) line("pay", money(before.paySats), money(after.paySats));
     if (before.holdHours !== after.holdHours) line("hold", holdText(before.holdHours), holdText(after.holdHours));
+    if ((before.payOn ?? "answer") !== (after.payOn ?? "answer")) line("paid", payOnWords(before.payOn), payOnWords(after.payOn));
     if (!sameJson(before.limits ?? null, after.limits ?? null)) line("limits", limitsText(before.limits, money), limitsText(after.limits, money));
     if (!problems.tests) {
       const d = rulesDiff("tests", before.tests, after.tests);
@@ -717,7 +732,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     label: "Checked when handed in",
     value: after.check
       ? `Yes: ${checkWords(after.check)}. One that fails is refused with the reason: the worker keeps the task and sends it again, and nothing is paid for it.${after.check.step === "grade/judge" ? " Each answer costs one model call." : ""}`
-      : `No: every answer that fits is accepted${after.paySats ? ", and paid," : ""} the moment it is handed in.`,
+      : `No: every answer that fits is accepted${after.paySats && after.payOn !== "ok" ? ", and paid," : ""} the moment it is handed in.`,
   };
   if (after.check || after.paySats) fields.push(checked);
   // A paid type anyone may take (ruling 12), in the person's words: no
@@ -734,7 +749,9 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     : "Only people you invite: give it to each of them in Workers.";
   fields.push({ label: "Who can do it", value: who, ...(warn ? { danger: true } : {}) });
   let pay = after.paySats
-    ? `${money(after.paySats)} for each one, from this server's wallet. Workers can withdraw it ${after.holdHours ? `${holdText(after.holdHours)} later` : "at once"}.`
+    ? after.payOn === "ok"
+      ? `${money(after.paySats)} for each one marked OK — by you, or by the workflow itself — from this server's wallet; one marked rejected is never paid. Workers can withdraw it ${after.holdHours ? `${holdText(after.holdHours)} after the OK` : "once it is OK'd"}.`
+      : `${money(after.paySats)} for each one, from this server's wallet. Workers can withdraw it ${after.holdHours ? `${holdText(after.holdHours)} later` : "at once"}.`
     : "Unpaid.";
   if (before && payBefore !== after.paySats) pay += ` It is ${money(payBefore)} now.`;
   const week = existing?.answeredWeek;

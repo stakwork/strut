@@ -3068,7 +3068,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
 | `staff/numbers { type?, days? }` | `GET /tasks/numbers` | `{ types: TypeNumbers[] }` |
 | `staff/types` | `GET /tasks/types` | `{ types, tasks? }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); `tasks` the same for Tasks (`strut/worker`), the page every invite opens; neither when the public view door has no share read (a host's own) |
-| `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` | `PUT /tasks/types/:name` | `{ type }` |
+| `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, payOn?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/round-items { type }` | `GET /tasks/types/:name/round` | `{ type, workflow, input?, items, last? }` |
 | `staff/send-round { type, input? }` | `POST /tasks/types/:name/round` | `{ runId, workflow }` |
@@ -6149,12 +6149,12 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 
 | Step | Config | Answers |
 | --- | --- | --- |
-| `task/next` | `{ type?, wait?, invite? }` | `{ lease, type, show, files, expires, answer, payMsat, attachments? }` or `{ none: true }` |
+| `task/next` | `{ type?, wait?, invite? }` | `{ lease, type, show, files, expires, answer, payMsat, payOn?, attachments? }` or `{ none: true }`: `payOn: "ok"` when the answer earns `payMsat` only once a verdict says ok |
 | `task/submit` | `{ lease, answer, attachments? }` | `{ ok: true }` |
 | `task/skip` | `{ lease, reason?, all? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
-| `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, title?, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
-| `task/history` | `{ all?, group?, groups? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, reply?: { show?, files?, at }, group?, review?: { verdict, why?, at } }], groups?: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last }] }`: with `group`, every answer of theirs in it (at most 1000) instead of the newest 50; `groups: true` adds their own groups, their answers alone counted ("A run's reply", §22) |
+| `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, title?, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, pendingMsat?, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }`: `pendingMsat`, what their answers on types that pay on ok will earn once OK'd (not in `balance`; absent when nothing waits) |
+| `task/history` | `{ all?, group?, groups? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, pending?: { msat }, reply?: { show?, files?, at }, group?, review?: { verdict, why?, at } }], groups?: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last }] }`: with `group`, every answer of theirs in it (at most 1000) instead of the newest 50; `groups: true` adds their own groups, their answers alone counted ("A run's reply", §22) |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
@@ -6280,7 +6280,7 @@ server whose task store is its host's (which answers none of them).
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ title?, app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` → `{ type: TaskType }`: the whole type — what is left out is the default (no title, 600 s, 72 h, enabled, open, unpaid, no hold, no tests, no copies, no files, not standing, no round, no check). `check` is `{ step, config? }` or `null`: a sealed step run on each answer before it is accepted ("A check before an answer is accepted" below) — `400 bad_request` for `"equal"` or another shape, `400 bad_grader` naming why when the step is not here or not sealed. `title` is what workers call it, in their language and any words (plans/i18n.md), at most 80 characters, trimmed; empty or `null` is none, and workers read the name (`400 bad_request` past 80 or not a string). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `round` is `{ workflow }` or `null`: a ROUND type, whose tasks that workflow's runs make, one for each item — `400 bad_request` when the workflow is not here or has no `human` step of this type (at any depth: a `foreach`'s body counts; a task named by a template is read with the input defaults and params), and when the type is standing too. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types"). A NEW invite-only type is granted to the admin saving it (the request's actor, no qualifying), so they can try it at once |
+| `PUT /tasks/types/:name` | `{ title?, app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, payOn?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` → `{ type: TaskType }`: the whole type — what is left out is the default (no title, 600 s, 72 h, enabled, open, unpaid, no hold, paid as answered, no tests, no copies, no files, not standing, no round, no check). `payOn` is `"answer"` (the default, never stored), `"ok"` or `null`: `"ok"` pays an answer only once a verdict says ok ("Pay" below; `400 bad_request` otherwise). `check` is `{ step, config? }` or `null`: a sealed step run on each answer before it is accepted ("A check before an answer is accepted" below) — `400 bad_request` for `"equal"` or another shape, `400 bad_grader` naming why when the step is not here or not sealed. `title` is what workers call it, in their language and any words (plans/i18n.md), at most 80 characters, trimmed; empty or `null` is none, and workers read the name (`400 bad_request` past 80 or not a string). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `round` is `{ workflow }` or `null`: a ROUND type, whose tasks that workflow's runs make, one for each item — `400 bad_request` when the workflow is not here or has no `human` step of this type (at any depth: a `foreach`'s body counts; a task named by a template is read with the input defaults and params), and when the type is standing too. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types"). A NEW invite-only type is granted to the admin saving it (the request's actor, no qualifying), so they can try it at once |
 | `GET /tasks/workflows?type=` | The type editor's "When there is work" picker: `{ type, workflows: [{ name, standing }] }`, the workflows (not sealed) with a `human` step of that type at any depth — each can be its round workflow — and `standing` true for those whose FIRST step is that step (its standing workflow), by name. `400` without `type` |
 | `GET /tasks/types/:name/round` | A round type's round (src/tasks/round.ts): `{ type, workflow, input?, items: [{ label, value }], last?: { runId, at, tasks } }` — the items are the workflow's first `json` input whose default is a list (`input`, its name), each labelled by its text and number fields joined ("Bean There – 412 Main St"); none when it has no such list. `last`: the newest round — the run of the type's newest task, when it was made, and how many tasks that run made. `400` for a type with no `round` |
 | `POST /tasks/types/:name/round { input? }` | Send a round: the type's round workflow launched as the caller (as `POST /workflows/:name/run` launches), with `input` — the items to send under the input's name — or with none, its defaults sending every item → `{ runId, workflow }`. `400` for an input that is not an object or does not fit the workflow, while draining, or with the workflow off |
@@ -6310,6 +6310,7 @@ server whose task store is its host's (which answers none of them).
   "open": true,                     // any signed-in worker takes it, no grant; false: invite-only. True for a type saved before it existed
   "paySats": 21,                    // what an answer earns, sats to the msat; absent: unpaid
   "holdHours": 0,                   // how long an earning waits before it can be withdrawn; 0 (the default): at once
+  // "payOn": "ok"                  — an answer earns only once a verdict says ok (staff's, or the run's task/reply); absent: as answered
   "limits": { "budgetSats": 60000, "perWorkerDay": 540 }, // checked whenever a task is handed out: the most it pays in all, the most tasks one worker takes a UTC day; absent: none (limit_reached when one is hit)
   "tests": {                        // absent: no tests (see "Tests, grading and standing")
     "rate": 0.05, "newRate": 0.25, "newTasks": 50, "qualify": 10,
@@ -6366,8 +6367,8 @@ server whose task store is its host's (which answers none of them).
                "earning": { "msat": 21000, "at": 1762949000000, "releases": 1763208200000
                             /*, "takenBack", "takenBackWhy", "takenBackBy" */ },
                "review": { "verdict": "rejected", "why": "the wrong dog",   // an answer's verdict, when given
-                           "by": "admin-1", "at": 1762952600000,
-                           "until": 1763208200000,     // when it can no longer change: the hold's end
+                           "by": "admin-1", "at": 1762952600000,   // or "workflow:<name>": the run's own (task/reply)
+                           "until": 1763208200000,     // when it can no longer change: the hold's end; absent while a type that pays on ok booked nothing
                            "final": false } }]
 }
 
@@ -6487,6 +6488,16 @@ with `standing: { workflow }` has work whenever a worker asks.
 - **Locked when the task is taken.** `task/next` stamps the type's pay on
   the lease (`payMsat`) and the answer earns exactly that. A lease taken
   before the type was paid earns nothing.
+- **As answered, or once OK'd.** By default an accepted answer earns as it
+  is answered. A type saved `payOn: "ok"` pays only for work a verdict
+  accepted: its answer is booked when a verdict says ok — staff's (`PUT
+  /tasks/:id/review`, a group's review) or the run that asked
+  (`task/reply`'s `verdict`) — its hold running from the ok; a test's
+  answer when graded `pass` or `error` (so a page cannot tell them apart);
+  a rejected answer, or a test graded `fail`, is never booked, and the sweep
+  leaves both. Until then the worker sees it as pending (`task/me`'s
+  `pendingMsat`, `task/history`'s `pending`). Turning `payOn` off books what
+  waits, except what was rejected.
 - **Owed in sats.** An accepted answer under a paid lease is booked in the
   ledger (`payments/ledger.db`, made by the first paid answer): its
   `releases` is when it was accepted plus the type's hold AS BOOKED. It is
@@ -6879,11 +6890,23 @@ an `image` step drew from their photo):
     task: "{{ shot.task }}"          # the human step's task
     show: { note: "Here it is" }      # a JSON object they see
     files: ["{{ remix.path }}"]       # files of this run they can open
+    verdict: "{{ check.ok ? 'ok' : 'rejected' }}"   # the run's verdict on the answer
+    why: "{{ check.reason }}"         # read by the worker; a rejection must say
 ```
 
 | Step | Config | Answers |
 | --- | --- | --- |
-| `task/reply` | `{ task, show?, files?, group? }` | `{ task, at }` |
+| `task/reply` | `{ task, show?, files?, group?, verdict?, why? }` | `{ task, at }` |
+
+- **A verdict.** `verdict` (`ok`, or `rejected` with `why`) is the run's
+  judgement of the answer the task settled with (a copies task's agreed
+  one), given as staff give one ("Review" below) by `workflow:<name>`: it
+  moves money as theirs does, counts against standing as theirs does, and
+  staff can change it until it is final. On a type that pays on ok
+  (`payOn: "ok"`) it is what the answer earns by: `ok` books it, a
+  rejection leaves nothing owed, so a photo the run refused and its retake
+  are paid once between them. `why` without a verdict is `400`; an `ok`'s
+  empty `why` is none. A reply may be a verdict alone.
 
 - **A group.** `group` (at most 200 characters, one line, trimmed) names the
   deliverable the task is part of — a book its pages, a batch its photos —
@@ -6907,7 +6930,8 @@ an `image` step drew from their photo):
   of the run's artifacts, each a path or `{ path, name?, mediaType? }` (what
   a `human` step's `attachments` lists), at most 10, each at most 3,800,000
   bytes — what `task/file` can hand a page inside `step_run`'s 5 MB answer
-  (a 3 MB picture, 4 MB as base64, passes). One of the two at least. The
+  (a 3 MB picture, 4 MB as base64, passes). A reply has one of them, a
+  group or a verdict. The
   task keeps `reply: { show?, files?: [{ name, mediaType, size, path }],
   at }`; the files stay in the run.
 - **Replaced whole** by a later reply.
@@ -6939,7 +6963,12 @@ second `human` step of a review type, or copies).
 - **Changeable until the hold ends, then final.** `until` is the answer's
   earning's `releases`, or for an unpaid answer the type's `holdHours`
   from when it was answered. A first verdict may come later, final at once;
-  any change after `until` is `409 final`.
+  any change after `until` is `409 final`. On a type that pays on ok, a
+  paid answer with nothing booked has no `until` and is never final: no
+  money moved, so a rejection (the run's too) can become `ok` any time,
+  which pays it.
+- **By a person or the run.** Staff give it here; the run that asked gives
+  one with `task/reply`'s `verdict`, `by` `workflow:<name>`.
 - **Standing.** A rejection counts against the worker's standing in the
   type as a failed test does: a `fail` in the window, at the time the
   answer was given, for answers given since the grant (`standing.rejected`
@@ -6954,7 +6983,9 @@ second `human` step of a review type, or copies).
   restores only a take-back a rejection made, never one by hand (`POST
   /tasks/:id/take-back`) or a graded test's. Past the hold nothing moves:
   a first rejection then is a mark and a standing fail alone, and paid
-  money never moves back. The answer carries its `earning` after the
+  money never moves back. On a type that pays on ok, `ok` BOOKS the
+  answer's earning (held its type's hold from then) and a rejection before
+  any ok books nothing. The answer carries its `earning` after the
   verdict.
 
 ### Asking for a task type — `task/set-type` (`plans/human-steps.md` §9.8)
@@ -6966,7 +6997,7 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
 | Step | Config | Answers |
 | --- | --- | --- |
 | `task/types` | `{}` | `{ types: [TaskType less changedBy, plus openTasks?, workers?, answeredWeek?, readyTests?] }`: each type (`open`: open or invite-only), its open tasks (`openTasks`), how many workers hold it (`workers`, a count: who is the staff's to read), its answers in the last 7 days (`answeredWeek`) and its ready tests (`readyTests`). The four counts are absent on a server whose task store is its host's and answers no queue |
-| `task/set-type` | `{ name, title?, app, answer?, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, limits?, tests?, copies? }` | `{ type: TaskType }`, as a PROPOSAL an admin accepted (§12) |
+| `task/set-type` | `{ name, title?, app, answer?, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, payOn?, limits?, tests?, copies? }` | `{ type: TaskType }`, as a PROPOSAL an admin accepted (§12) |
 | `task/report` | `{ type?, days? }` | `{ types: TypeNumbers[] }` (`GET /tasks/numbers`'s): how the work is going, read inside the assistant's turn |
 | `task/grant` | `{ type, worker? }` | `{ worker, type, status, notice? }`, as a PROPOSAL an admin accepted: `worker` left out is the person who asked |
 

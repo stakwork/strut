@@ -1139,7 +1139,7 @@ for (const impl of impls) {
       await assert.rejects(tell({ show: { note: "x" } }, run("r1", "other")), refused("unknown_task"));
       await assert.rejects(tasks().reply({ task: "nope", show: { note: "x" } }, { control: here }), refused("unknown_task"));
       // What a reply may hold.
-      await assert.rejects(tell({}), refused("bad_request", /show, files or a group/));
+      await assert.rejects(tell({}), refused("bad_request", /show, files, a group or a verdict/));
       await assert.rejects(tell({ show: ["x"] }), refused("bad_request", /JSON object/));
       await assert.rejects(tell({ show: { big: "x".repeat(256 * 1024) } }), refused("bad_request", /at most 262144/));
       await assert.rejects(tell({ files: [{ ...REMIX, path: "../up.png" }] }), refused("bad_request", /not a path under the run's files/));
