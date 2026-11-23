@@ -3944,7 +3944,7 @@ provides:
   git:
     - host: gitlab.com
       secret: GITLAB_TOKEN
-      repositories: repositories   # steps/repositories.ts: { host } → { repositories: [{ url, name, private?, pushed?, description? }] }
+      repositories: repositories   # steps/repositories.ts: { host } → { repositories: [{ url, name, private?, pushed?, description?, picked? }] }
       pull_request: open-mr        # steps/open-mr.ts: { url, head, base, title, body? } → { url, number?, created? }
 ```
 
@@ -3954,7 +3954,10 @@ package (`400 bad_package: strut.yaml: provides.git: <host>'s <field> names
 the step …`) and one a host's other holder names differently (`409
 package_conflict: … a host has one`) — strut's own `github.com` entry names
 `pull_request: github/create-pr`. Strut's `git/repositories { host? }` asks
-each host's `repositories` step as the run's person (`{ repositories, hosts:
+each host's `repositories` step as the run's person — with the run's own
+bag behind the provider's own fence, whoever calls (a package's step that
+calls it with its fenced ctx included); a repository's other fields pass
+through — (`{ repositories, hosts:
 [{ host, problem? }] }`: a host with no token for the person, or no such
 step, says so in `problem`), and `git/pull-request { url, head, base, title,
 body? }` calls the url's host's `pull_request` step, so a caller names no
@@ -4098,7 +4101,8 @@ its reporter (a second after its last write, and at its end), one op per
 node: created then updated is `created`, created then deleted nothing. Each
 match is launched detached, as the person of the run that wrote (its actor,
 else its principal — so on their tokens and their bill), with input `{
-ref_id, type, op, by }` (`by` the writing run's id, or `proposal:<id>`);
+ref_id, type, op, by, job? }` (`by` the writing run's id, or
+`proposal:<id>`; `job` the writing run's job, when it has one);
 with no person, nothing runs. Its `run.start` carries `onWrite: { package,
 op, type, ref_id, by, depth }`. A run `on:` started — and a job it starts,
 and a run nested in it — never fires its own package's entries, and a chain

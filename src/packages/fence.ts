@@ -124,9 +124,28 @@ export function fenceStep(def: AnyStepDef, fence: Fence): AnyStepDef {
   };
 }
 
+/** Each fenced bag → the run's own it was made from (`unfencedServicesOf`). */
+const UNFENCED = new WeakMap<object, object>();
+
+/** The run's own bag behind a package step's fenced one: for strut's own
+ *  seams that call ANOTHER package's step on the caller's behalf
+ *  (`git/repositories`, `git/pull-request`), which run it behind its own
+ *  fence, never the caller's. A bag that is no fence's is answered as it is.
+ *  Never handed to a step. */
+export function unfencedServicesOf<T>(services: T): T {
+  if (services == null || typeof services !== "object") return services;
+  return (UNFENCED.get(services as object) as T | undefined) ?? services;
+}
+
 function fencedContext(ctx: StepContext<any> | undefined, type: string, fence: Fence): StepContext<any> {
   const services = ctx?.services as (Record<string, unknown> & { secrets?: SecretsCapability }) | undefined;
   if (!ctx || !services || typeof services !== "object") return ctx as StepContext<any>;
+  const fenced = fencedServices(services, ctx, type, fence);
+  UNFENCED.set(fenced, unfencedServicesOf(services));
+  return { ...ctx, services: fenced };
+}
+
+function fencedServices(services: Record<string, unknown> & { secrets?: SecretsCapability }, ctx: StepContext<any>, type: string, fence: Fence): Record<string, unknown> {
   // Not a package step's: a blank of the deployment's to fill, the
   // scheduler's API (a package's schedules are its `schedules:`), trials
   // (an admin's page starts them), and the `on:` dispatch, which names a
@@ -134,21 +153,18 @@ function fencedContext(ctx: StepContext<any> | undefined, type: string, fence: F
   // through the run's graph view, which holds it already).
   const { secretBlanks: _blanks, automations: _automations, trials: _trials, onWrites: _onWrites, ...rest } = services;
   return {
-    ...ctx,
-    services: {
-      ...rest,
-      ...(services.secrets
-        ? {
-            secrets: fencedSecrets(services.secrets, type, fence, {
-              ...(services["shell"] ? { shell: services["shell"] as ShellCapability } : {}),
-              ...(services["http"] ? { http: services["http"] as HttpCapability } : {}),
-            }),
-          }
-        : {}),
-      ...heldToItsRun(services, ctx, type, fence),
-      // Its node files are its package's folder (src/node-files.ts).
-      ...(services["nodeFiles"] ? { nodeFiles: nodeFilesAs(services["nodeFiles"] as NodeFilesCapability, fence.package) } : {}),
-    },
+    ...rest,
+    ...(services.secrets
+      ? {
+          secrets: fencedSecrets(services.secrets, type, fence, {
+            ...(services["shell"] ? { shell: services["shell"] as ShellCapability } : {}),
+            ...(services["http"] ? { http: services["http"] as HttpCapability } : {}),
+          }),
+        }
+      : {}),
+    ...heldToItsRun(services, ctx, type, fence),
+    // Its node files are its package's folder (src/node-files.ts).
+    ...(services["nodeFiles"] ? { nodeFiles: nodeFilesAs(services["nodeFiles"] as NodeFilesCapability, fence.package) } : {}),
   };
 }
 

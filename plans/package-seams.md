@@ -205,6 +205,9 @@ on:
   there before and is there after.
 - **A proposal's apply** fires as the person who accepted it, the apply's
   actor, with `by: proposal:<id>`.
+- **`job`.** The input also carries the writing run's job, `{ ref_id,
+  type, op, by, job? }`, so a workflow tells a job's write from a
+  person's without reading the run (stakwork/pods#30 asked).
 - **The install card** says each entry on its workflow ("when a Workspace
   is created, as the person whose run did it"): an install lets a package
   run as anyone whose run writes that type.
@@ -282,6 +285,12 @@ them. The `Code Change` page says `git_pull_request`, not
   which now also takes the repository as `url`.
 - **The box's map** is on the bag as `gitHosts.hosts()`, made again after
   every package write with the secrets' map.
+- **The provider runs with the run's own bag**, behind its own fence and in
+  its own package, whoever calls the seam. A package's step that calls
+  `git/repositories` with its fenced ctx would otherwise fence the
+  provider's secrets by the caller's.
+- **A repository** may say `picked: true` (the person granted it one by
+  one), and other fields pass through.
 - Both steps are strut's lib steps with an `effect`, so a package's `job:`
   may grant them to the job agent.
 

@@ -160,11 +160,13 @@ export interface NodeWrite {
   op: GraphChange["op"];
 }
 
-/** Who wrote: the run (or `proposal:<id>`), its person, and the run's own
- *  `on:` mark when a package's `on:` started it. */
+/** Who wrote: the run (or `proposal:<id>`), its person, its job, and the
+ *  run's own `on:` mark when a package's `on:` started it. */
 export interface WriteBy {
   runId: string;
   actor?: string;
+  /** The writing run's job, when it has one. */
+  job?: string;
   mark?: OnWriteMark;
 }
 
@@ -333,7 +335,7 @@ export function graphReporter(o: {
       const by = o.runId ?? o.id;
       if (nodes.length && by) {
         try {
-          o.onWrites.fire(nodes, { runId: by, ...(o.actor ? { actor: o.actor } : {}), ...(o.onWrite ? { mark: o.onWrite } : {}) });
+          o.onWrites.fire(nodes, { runId: by, ...(o.actor ? { actor: o.actor } : {}), ...(o.job ? { job: o.job } : {}), ...(o.onWrite ? { mark: o.onWrite } : {}) });
         } catch (err) {
           console.warn(`[graph-writes] on: for ${by} not fired: ${err instanceof Error ? err.message : String(err)}`);
         }

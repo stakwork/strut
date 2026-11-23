@@ -142,7 +142,7 @@ describe("the reporter tells onWrites", () => {
   it("each send's node writes, folded, with who wrote and the run's own mark; strut's own types and edges never", async () => {
     const { fired, onWrites } = listener();
     const mark: OnWriteMark = { package: "acme/crm", op: "created", type: "Customer", ref_id: "c1", by: "r0", depth: 1 };
-    const r = graphReporter({ runId: "r1", actor: "alice", onWrites, onWrite: mark, reader, debounceMs: 5 });
+    const r = graphReporter({ runId: "r1", actor: "alice", job: "j1", onWrites, onWrite: mark, reader, debounceMs: 5 });
     r.note({ kind: "node", op: "created", ref_id: "n1", node_type: "Workspace" });
     r.note({ kind: "node", op: "updated", ref_id: "n1" });
     r.note({ kind: "node", op: "updated", ref_id: "n2" });
@@ -155,7 +155,7 @@ describe("the reporter tells onWrites", () => {
           { ref_id: "n1", type: "Workspace", op: "created" },
           { ref_id: "n2", type: "Workspace", op: "updated" },
         ],
-        by: { runId: "r1", actor: "alice", mark },
+        by: { runId: "r1", actor: "alice", job: "j1", mark },
       },
     ]);
     r.note({ kind: "node", op: "deleted", ref_id: "n1", node_type: "Workspace" });
@@ -295,12 +295,13 @@ describe("on: on a strut with a graph (ladybug)", { skip: lb.skip }, () => {
     await strut.run(flow("edit-anon", { input: z.object({}).passthrough(), steps: [step("e", "graph/edit-node", { ref_id: ref, node_data: { description: "anon" } })] }), {});
     assert.equal((await settled(SETUP)).length, 1);
 
-    // A person's update does.
-    await strut.run(flow("edit-it", { input: z.object({}).passthrough(), steps: [step("e", "graph/edit-node", { ref_id: ref, node_data: { description: "again" } })] }), {}, { actor: "carol" });
+    // A person's update does — and a write a job made says which job.
+    const edit = await strut.run(flow("edit-it", { input: z.object({}).passthrough(), steps: [step("e", "graph/edit-node", { ref_id: ref, node_data: { description: "again" } })] }), {}, { actor: "carol", job: "carol-job" });
     const after = await settled(SETUP);
     assert.equal(after.length, 2);
     const second = await startOf(SETUP, after.find((id) => id !== run)!);
-    assert.deepEqual([(second.input as { op: string }).op, second.actor], ["updated", "carol"]);
+    assert.deepEqual(second.input, { ref_id: ref, type: "Workspace", op: "updated", by: edit.runId, job: "carol-job" });
+    assert.equal(second.actor, "carol");
 
     await strut.packages.uninstall(PKG);
     await strut.run(make, { name: "two" }, { actor: "bob" });

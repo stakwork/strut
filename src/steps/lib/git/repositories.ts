@@ -21,9 +21,9 @@ export default defineStep({
   effect: "read",
   description:
     `List the repositories the run's person's tokens reach, on every git host this server serves (or only \`host\`), so a caller names no forge. ` +
-    `Each host's \`repositories\` step — named on its package's provides.git entry — is asked as the run's person, with the input { host }, and answers { repositories: [{ url, name, private?, pushed?, description? }] } (pushed: ISO 8601). ` +
+    `Each host's \`repositories\` step — named on its package's provides.git entry — is asked as the run's person, with the input { host }, and answers { repositories: [{ url, name, private?, pushed?, description?, picked? }] } (pushed: ISO 8601; picked: the person granted it one by one; other fields pass through). ` +
     `A host the person has no token for, that names no such step, or whose step fails, is listed with a \`problem\` instead of failing the call. ` +
-    `Output: { repositories: [{ url, name, private?, pushed?, description? }], hosts: [{ host, problem? }] }.\n\n${EXAMPLE}`,
+    `Output: { repositories: [{ url, name, private?, pushed?, description?, picked? }], hosts: [{ host, problem? }] }.\n\n${EXAMPLE}`,
   input: z.object({
     host: z.string().min(1).optional().describe("one host (github.com, git.acme.com:3000); default every host this server serves"),
   }),

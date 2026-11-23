@@ -61,7 +61,7 @@ export default defineStep({
   async run(cfg, ctx) {
     const token = await ctx.services.secrets.get("FORGE_TOKEN");
     if (token === "fail") throw new Error("the forge said 500");
-    return { repositories: [{ url: "https://" + cfg.host + "/team/app", name: "team/app", private: true, description: "read with a token of " + (token ?? "").length }] };
+    return { repositories: [{ url: "https://" + cfg.host + "/team/app", name: "team/app", private: true, description: "read with a token of " + (token ?? "").length, picked: true, stars: 3 }] };
   },
 });
 `;
@@ -76,6 +76,21 @@ export default defineStep({
   },
 });
 `;
+/** A package that calls git/repositories from its own step, declaring no secret. */
+const CALLER = {
+  "strut.yaml": "package: acme/code\nversion: 0.1.0\n",
+  "steps/pick.ts": `import { z, defineStep } from "strut";
+export default defineStep({
+  type: "acme/code/pick",
+  input: z.object({}).passthrough(),
+  output: z.any(),
+  async run(_cfg, ctx) {
+    const r = await ctx.registry["git/repositories"].run({ host: "git.acme.test" }, ctx);
+    return { names: r.repositories.map((x) => x.name), hosts: r.hosts };
+  },
+});
+`,
+};
 const forgeManifest = (git: string) => `package: acme/forge\nversion: 0.1.0\nrequires:\n  optional: [FORGE_TOKEN]\nprovides:\n  git:\n${git}`;
 const FORGE = (git = "    - { host: git.acme.test, secret: FORGE_TOKEN, repositories: repositories, pull_request: pr }\n") => ({
   "strut.yaml": forgeManifest(git),
@@ -240,11 +255,19 @@ describe("a forge package on a strut", () => {
     const alice = await strut.run(one("git/repositories", { host: "git.acme.test" }), {}, { actor: "alice" });
     assert.equal(alice.status, "success", JSON.stringify(alice.error));
     assert.deepEqual(alice.output, {
-      repositories: [{ url: "https://git.acme.test/team/app", name: "team/app", private: true, description: "read with a token of 11" }],
+      repositories: [{ url: "https://git.acme.test/team/app", name: "team/app", private: true, description: "read with a token of 11", picked: true, stars: 3 }],
       hosts: [{ host: "git.acme.test" }],
     });
     const bob = await strut.run(one("git/repositories", { host: "git.acme.test" }), {}, { actor: "bob" });
     assert.deepEqual(bob.output, { repositories: [], hosts: [{ host: "git.acme.test", problem: "no token for git.acme.test: set FORGE_TOKEN, your own or the server's" }] });
+
+    // A package's step that calls the seam with its own fenced ctx — a
+    // package that declares no secret — still gets what the provider reads
+    // behind ITS fence.
+    assert.equal((await install(CALLER)).status, 201);
+    const viaCaller = await strut.run(one("acme/code/pick", {}), {}, { actor: "alice" });
+    assert.equal(viaCaller.status, "success", JSON.stringify(viaCaller.error));
+    assert.deepEqual(viaCaller.output, { names: ["team/app"], hosts: [{ host: "git.acme.test" }] });
 
     const pr = await strut.run(one("git/pull-request", { url: "https://git.acme.test/team/app", head: "feature/x", base: "main", title: "T" }), {}, { actor: "alice" });
     assert.equal(pr.status, "success", JSON.stringify(pr.error));

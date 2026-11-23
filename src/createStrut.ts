@@ -9400,7 +9400,7 @@ export async function createStrut<TServices = unknown>(
   // every package write (`oneAtATime`), so an uninstall drops them. Every
   // run's graph view hands this each send's node writes (bindGraph,
   // src/graph-writes.ts); a match launches its workflow detached, as the
-  // person of the run that wrote, with `{ ref_id, type, op, by }`.
+  // person of the run that wrote, with `{ ref_id, type, op, by, job? }`.
   let packageTriggers: InstalledTrigger[] = [];
   const syncOn = async (): Promise<void> => {
     try {
@@ -9411,12 +9411,14 @@ export async function createStrut<TServices = unknown>(
     }
   };
   await syncOn();
-  const launchOn = async (t: InstalledTrigger, mark: OnWriteMark, actor: string): Promise<void> => {
+  const launchOn = async (t: InstalledTrigger, mark: OnWriteMark, actor: string, job: string | undefined): Promise<void> => {
     const what = `${mark.op} ${mark.type} ${mark.ref_id}`;
     try {
       await assertWorkflowEnabled(workspace, t.workflow);
       const flow = await workspace.getWorkflow(t.workflow);
-      const runId = launchDetached(flow, { input: { ref_id: mark.ref_id, type: mark.type, op: mark.op, by: mark.by } }, { actor, onWrite: mark });
+      // `job`: the writing run's, so a workflow can tell a job's write from a person's.
+      const input = { ref_id: mark.ref_id, type: mark.type, op: mark.op, by: mark.by, ...(job ? { job } : {}) };
+      const runId = launchDetached(flow, { input }, { actor, onWrite: mark });
       console.log(`[on] ${what} (by ${mark.by}) started ${t.workflow} run ${runId}`);
     } catch (err) {
       console.warn(`[on] ${what} (by ${mark.by}) did not start ${t.workflow}:`, err instanceof Error ? err.message : err);
@@ -9431,7 +9433,7 @@ export async function createStrut<TServices = unknown>(
       for (const { trigger, write } of stopped) {
         console.warn(`[on] run ${by.runId}: ${write.op} ${write.type} ${write.ref_id} would start ${trigger.workflow}, but its chain of on: runs holds ${ON_CHAIN_MAX} already — nothing started`);
       }
-      for (const { trigger, mark } of launches) void launchOn(trigger, mark, by.actor!);
+      for (const { trigger, mark } of launches) void launchOn(trigger, mark, by.actor!, by.job);
     },
   };
   // The `automation/*` steps' door (src/steps/lib/automation/), unless the
