@@ -1993,6 +1993,10 @@ describe("the API key gate", () => {
     // A session cookie claiming a role strut does not know is no session.
     const forged = sessionToken({ actor: "x", exp: Date.now() + 60_000, role: "owner" as never })!;
     assert.equal((await strut.app.request("/apps", { headers: { cookie: `strut_session=${forged}` } })).status, 401);
+    // The app list is cached per caller (it varies with scope).
+    const listedApps = await strut.app.request("/apps", { headers: { cookie: admin.cookie, "x-strut-ui": "1" } });
+    assert.equal(listedApps.status, 200);
+    assert.equal(listedApps.headers.get("cache-control"), "private, max-age=30");
   });
 
   it("the key opens them, as a Bearer header or as ?key=; unset, everything is open", async () => {
