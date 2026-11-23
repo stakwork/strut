@@ -7,7 +7,7 @@ import { graphLexicon } from "../dictation/_graph.js";
 export default defineStep({
   type: "memory/lexicon",
   description:
-    "Dictation's vocabulary in one read, from the workspace graph: every entity with its type, name, `written` forms (its name, " +
+    "Dictation's vocabulary in one read, from this server's graph: every entity with its type, name, `written` forms (its name, " +
     "then its alt_names), `heard` (how dictation mishears it: { ref_id, value, form, created_at }, form null meaning the name), " +
     "`dictation_off` (set with dictation/enable), and for ranking `facts` (its current facts and mishearings), `updated_at` and " +
     "`known_by_user` (a current fact links it to the user). `undone` lists the mishearings dictation/undo took back, so they are " +

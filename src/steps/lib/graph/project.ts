@@ -23,7 +23,7 @@ export default defineStep({
     workflows: z
       .array(z.string())
       .optional()
-      .describe("Workflows whose runs to project (default: every workflow the workspace lists)."),
+      .describe("Workflows whose runs to project (default: every workflow on this server)."),
     limitPerWorkflow: z.number().int().positive().optional().describe("Newest N runs per workflow (default: all)."),
     skipSettled: z.boolean().optional().describe("Skip runs already in the graph with a terminal status (default true)."),
     chats: z.boolean().optional().describe("Also project chats + turns (default true)."),

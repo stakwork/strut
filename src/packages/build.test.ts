@@ -353,7 +353,7 @@ describe("building a package on a filesystem workspace", () => {
     assert.match(await refusal(build(src, { steps: ["log"] })), /log is a step strut ships, not one a package carries/);
     assert.match(await refusal(build(src, {})), /name at least one workflow, step, Concept, app or graph type/);
     assert.match(await refusal(build(src, { package: "Acme", workflows: ["acme/linear/sync"] })), /publisher\/name/);
-    assert.match(await refusal(build(src, { concepts: ["Linear"] })), /there are no Concepts to package: this workspace has no graph/);
+    assert.match(await refusal(build(src, { concepts: ["Linear"] })), /there are no Concepts to package: this server has no graph/);
   });
 
   it("builds a closure it cannot read whole only when the request lists what it reaches", async () => {
@@ -798,7 +798,7 @@ for (const tb of testBackends()) {
       const fsBuyer = await boot(new WorkspaceManager(join(scratch, "fs-buyer")));
       struts.push(fsBuyer);
       const onFs = await roundTrip(fsBuyer, built.dir);
-      assert.match(onFs.warnings.join("\n"), /the Concepts \(Issues, Linear\) were not installed: this workspace has no graph/);
+      assert.match(onFs.warnings.join("\n"), /the Concepts \(Issues, Linear\) were not installed: this server has no graph/);
       assert.match(onFs.warnings.join("\n"), /the claims of acme\/linear\/create-issue were not recorded/);
 
       // On a cleared graph, a fresh strut: the pages hang where they did, the claim is the package's.

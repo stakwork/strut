@@ -20,7 +20,7 @@ import type { KnowledgeCapability } from "../../../knowledge.js";
  */
 export function requireKnowledge(ctx: StepContext | undefined, step: string): KnowledgeCapability {
   const services = ctx?.services as { knowledge?: KnowledgeCapability } | undefined;
-  if (!services?.knowledge) throw new Error(`${step} needs the claims layer (ctx.services.knowledge): a graph-backed workspace with claims on`);
+  if (!services?.knowledge) throw new Error(`${step} needs the claims layer (ctx.services.knowledge): a strut server on a graph, with claims on`);
   requireTree(ctx, step);
   return services.knowledge;
 }
@@ -41,7 +41,7 @@ export function requireTree(ctx: StepContext | undefined, step: string): void {
 /** The trials and tests of the pages (src/trials.ts), for a caller that may read the tree. */
 export function requireTrials(ctx: StepContext | undefined, step: string): TrialsCapability {
   const services = ctx?.services as { trials?: TrialsCapability } | undefined;
-  if (!services?.trials) throw new Error(`${step} needs the claims layer (ctx.services.trials): a graph-backed workspace with claims on`);
+  if (!services?.trials) throw new Error(`${step} needs the claims layer (ctx.services.trials): a strut server on a graph, with claims on`);
   requireTree(ctx, step);
   return services.trials;
 }

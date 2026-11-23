@@ -41,7 +41,7 @@ export default defineStep({
     requireTree(ctx, STEP);
     if (ctx.branch) throw new Error(`${STEP}: a merge is main's, and this run is on Concept branch "${ctx.branch}"`);
     const branches = ctx.services?.branches;
-    if (!branches) throw new Error(`${STEP} needs the Concept branches (ctx.services.branches): a graph workspace on the standard strut server`);
+    if (!branches) throw new Error(`${STEP} needs the Concept branches (ctx.services.branches): a graph, on the standard strut server`);
     const by = proposerOf(ctx);
     if (cfg.review && !ctx.proposal) {
       const plan = await branches.merge(cfg.branch, { dryRun: true, ...(ctx.actor ? { actor: ctx.actor } : {}) });

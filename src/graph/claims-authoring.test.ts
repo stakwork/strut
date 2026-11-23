@@ -58,7 +58,7 @@ describe("filesystem workspace: no claims layer (pure)", () => {
     assert.ok(!(await buildSystem(deps)).includes(CLAIMS_SECTION));
 
     const authoring = buildAuthoringCapability({ workspace, store: new MemoryRunStore(), getRegistry: async () => ({}) as StepRegistry });
-    assert.match(String(((await authoring.listClaims({ kind: "step", name: "x" })) as { error: string }).error), /graph-backed workspace/);
+    assert.match(String(((await authoring.listClaims({ kind: "step", name: "x" })) as { error: string }).error), /Claims need a graph/);
     // A contract that cannot be recorded must not be silently dropped.
     const refused = await authoring.createStep("my/step", "export default 1;", undefined, [{ text: "t", checks: [{ description: "look" }] }]);
     assert.match(String(refused.error), /Nothing was published/);

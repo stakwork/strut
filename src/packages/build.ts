@@ -867,7 +867,7 @@ async function conceptFiles(
   const out = new Map<string, { name: string; text: string }>();
   const schema = graph ? await graph.schemas.schema("Concept") : undefined;
   if (!graph || !schema) {
-    problems.push(`there are no Concepts to package: ${graph ? "the graph has no Concept schema" : "this workspace has no graph"}`);
+    problems.push(`there are no Concepts to package: ${graph ? "the graph has no Concept schema" : "this server has no graph"}`);
     return out;
   }
   const known = [STRUT_CONCEPTS.prefix, ...(STRUT_CONCEPTS.legacyPrefixes ?? []), ...pins.map(conceptPrefix)];

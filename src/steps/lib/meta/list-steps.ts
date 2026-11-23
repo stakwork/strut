@@ -11,7 +11,7 @@ export default defineStep({
       .string()
       .default("steps")
       .describe(
-        "Path to list. Defaults to 'steps' (the root). Use 'steps/lib' to see lib namespaces, 'steps/custom' for workspace custom steps.",
+        "Path to list. Defaults to 'steps' (the root). Use 'steps/lib' to see lib namespaces, 'steps/custom' for this server's custom steps.",
       ),
   }),
   output: z.any(),

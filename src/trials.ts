@@ -559,7 +559,7 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
     async test(input) {
       const each = nOf(input.n);
       if (!each) return { error: `n is a whole number from 1 to ${TRIAL_N_MAX}: the samples of each case` };
-      if (!deps.branches) return { error: "a test needs the Concept branches (a graph workspace): the other wording is read on one" };
+      if (!deps.branches) return { error: "a test needs the Concept branches (a graph): the other wording is read on one" };
       let rec: TestRecord;
       let both = false;
       if (input.test) {

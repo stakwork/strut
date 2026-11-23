@@ -140,7 +140,7 @@ export async function exportTypes(
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (!graph) {
-    problems.push("there are no graph types to package: this workspace has no graph");
+    problems.push("there are no graph types to package: this server has no graph");
     return out;
   }
   const { schemas, edges: ruled } = await graph.reader.listSchemas();
@@ -391,7 +391,7 @@ export async function checkPackageTypes(
   }
   if (!all.size) return out;
   if (!graph) {
-    problems.push(`the graph types (${[...all.keys()].join(", ")}) need a graph, and this strut server's workspace is on the filesystem`);
+    problems.push(`the graph types (${[...all.keys()].join(", ")}) need a graph, and this strut server keeps its workflows on the filesystem`);
     return out;
   }
 

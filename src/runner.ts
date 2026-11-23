@@ -633,7 +633,7 @@ async function executeRun<TServices = unknown>(
     }
     if (branch) {
       const branches = (opts?.services as { branches?: BranchesCapability } | undefined)?.branches;
-      if (!branches) throw new Error(`no_branch: this strut server keeps no Concept branches (a graph workspace does) — the run cannot be on "${branch}"`);
+      if (!branches) throw new Error(`no_branch: this strut server keeps no Concept branches (they need a graph) — the run cannot be on "${branch}"`);
       if (!(await branches.get(branch))) throw new Error(`no_branch: there is no Concept branch "${branch}" here (it was dropped, or never made) — GET /branches lists them`);
     }
     parsedInput = workflow.input.parse(input);

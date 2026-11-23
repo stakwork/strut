@@ -1842,7 +1842,7 @@ function Shell() {
                   <span class="list-item-name">{a.title}</span>
                   {!!a.warnings && <span class="usage-dot" title={`${a.warnings} warning${a.warnings === 1 ? "" : "s"} on ${a.activeVersion}: its pages cost the server too much — open its Usage`} />}
                   {a.peer && <span class="badge" title={`Lives on the peer ${a.peer}: it runs there, as you`}>@{a.peer}</span>}
-                  {a.pinned && <span class="badge app-tab-badge" title="Shown as a tab where this workspace's apps are listed">tab</span>}
+                  {a.pinned && <span class="badge app-tab-badge" title="Shown as a tab where this server's apps are listed">tab</span>}
                   <span class="badge badge-accent">{a.activeVersion}</span>
                 </div>
               ))}
@@ -1891,10 +1891,10 @@ function Shell() {
               class={`app-tab-toggle${appEntry.pinned ? " is-on" : ""}`}
               aria-pressed={!!appEntry.pinned}
               title={appEntry.pinned
-                ? "Shown as a tab in the hosts that list this workspace's apps — click to stop"
+                ? "Shown as a tab in the hosts that list this server's apps — click to stop"
                 : appEntry.live
-                  ? "Show this app as a tab in the hosts that list this workspace's apps"
-                  : `Show this app as a tab in the hosts that list this workspace's apps — and hold it at ${appEntry.activeVersion}: later publishes are drafts until made live`}
+                  ? "Show this app as a tab in the hosts that list this server's apps"
+                  : `Show this app as a tab in the hosts that list this server's apps — and hold it at ${appEntry.activeVersion}: later publishes are drafts until made live`}
               onClick={async () => {
                 try {
                   await api.setAppPinned(appEntry.name, !appEntry.pinned);
@@ -1921,7 +1921,7 @@ function Shell() {
               aria-pressed={!!localPeer}
               title={localPeer === "person"
                 ? "Open to peers only via a person's credential (peer: person) — click to close"
-                : "Other workspaces (peers) can run this workflow through strut/run-workflow"}
+                : "Other strut servers (peers) can run this workflow through strut/run-workflow"}
               onClick={() => setLocalPeer(togglePeer(localPeer, wfPeer))}
             >{localPeer === "person" ? "Open to peers (person)" : "Open to peers"}</button>
           )}

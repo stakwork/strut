@@ -95,7 +95,7 @@ describe("an app's graph types, as a declaration", () => {
     assert.match((await checkAppGraph(m, undefined)).errors.join("\n"), /this strut server has no graph .* does not build here/);
     const reserved = await checkAppGraph(manifest("title: T\ndata:\n  graph:\n    types:\n      Concept: { name: string }\n      StrutRun: { x: string }\n"), undefined);
     assert.equal(reserved.errors.length, 2);
-    assert.match(reserved.errors[0]!, /^app\.yaml: data\.graph\.types\.Concept: Concept is the workspace's notes/);
+    assert.match(reserved.errors[0]!, /^app\.yaml: data\.graph\.types\.Concept: Concept is this server's notes/);
     assert.match(reserved.errors[1]!, /StrutRun is one of strut's own types/);
     assert.match((await checkAppGraph(manifest("title: T\ndata:\n  graph:\n    types:\n      A: { ref_id: string }\n"), undefined)).errors[0]!, /^app\.yaml: data\.graph\.types\.A\.ref_id: attribute name is a reserved/);
   });
@@ -208,7 +208,7 @@ for (const tb of testBackends()) describe(`an app's graph types on ${tb.name}`, 
     await refused("typed", "Invoice: { number: string, amount: string, due: date, status: string, key: [number] }", /data\.graph\.types\.Invoice\.amount: Invoice already holds amount as float, and this app declares string/);
     await refused("keyed", "Invoice: { number: string, amount: number, due: date, status: string }", /data\.graph\.types\.Invoice\.key: Invoice is keyed by \[number\] in the graph, and this app declares \[name\]/);
     await refused("partial", "Invoice: { number: string, amount: number, key: [number] }", /Invoice requires due \(string\) on every node, and this app does not declare it/);
-    await refused("notes", "Concept: { name: string }", /Concept is the workspace's notes/);
+    await refused("notes", "Concept: { name: string }", /Concept is this server's notes/);
   });
 
   it("on a LadybugDB file, an attribute another type holds as another column type fails the BUILD, and nothing registers", { skip: tb.kind !== "ladybug" && "ladybug only" }, async () => {

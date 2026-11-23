@@ -691,7 +691,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
         // A job on file with nothing claimed yet has no node, and an empty contract.
         if (ref.kind === "job") {
           if (!(await jobOnFile(ref.id))) throw new ClaimsError("NOT_FOUND", `job "${ref.id}" is not on file`);
-        } else if (!(await reader.subjectRefId(ref))) throw new ClaimsError("NOT_FOUND", `${subject.kind} "${subject.name}" is not in the ${ref.kind === "concept" ? "graph" : "workspace"}`);
+        } else if (!(await reader.subjectRefId(ref))) throw new ClaimsError("NOT_FOUND", `${subject.kind} "${subject.name}" is not ${ref.kind === "concept" ? "in the graph" : "on this server"}`);
         const rows = await reader.statusFor(ref, branch ? { branch } : {});
         return {
           ok: true,

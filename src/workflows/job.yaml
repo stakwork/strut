@@ -14,7 +14,7 @@ name: job
 # directory or the folder the host passes as `cwd`.
 input:
   prompt: { type: string, description: "What to do this turn" }
-  workspace: { type: string, required: false, description: "The workspace this job runs in, by its slug. Another workspace is a peer, @<slug>" }
+  workspace: { type: string, required: false, description: "This server's slug, the one this job runs on. Another server is a peer, @<slug>" }
   kind: { type: string, required: false, description: "The kind of work, by the name of its page under the Job Concept (\"Code Change\"): the turn opens with that page. job/continue carries the last turn's" }
   session: { type: string, required: false, description: "The agent's thread (a session id). Defaults to the job id — one thread across every turn of the job. Pass one to work on the job's files with a different thread (a fresh one, or a second beside the first)" }
   repos: { type: json, required: false, description: "Repository URLs to check out into the job's directory, one subdirectory each, kept there turn to turn (a private one needs the launching person's GITHUB_TOKEN here)" }
@@ -38,7 +38,7 @@ steps:
         config:
           repo: "{{ $current }}"
           workdir: "{{ $job }}"
-  # The workspace's page on the kinds of work done here (the `Job` Concept
+  # This server's page on the kinds of work done here (the `Job` Concept
   # and the pages under it), rendered for the agent's system prompt as the
   # builder's prompt renders `Workflow Builder`. Read every turn; the thread
   # keeps its first turn's system prompt, so a job keeps the list it began
@@ -73,14 +73,14 @@ steps:
       cacheTtl: 1h
       model: "{{ params.model }}"
       maxSteps: "{{ params.maxSteps }}"
-      # strut's prompt (with the host's section), then the workspace's page.
+      # strut's prompt (with the host's section), then this server's page.
       system: |-
         {{ params.system }}
         {{ concepts.text }}
-      # The workspace line, then the job's id (what a claim's subject and the
+      # The server line, then the job's id (what a claim's subject and the
       # builder's thread are named by), then the checkouts, then the kind's
       # page, then the message.
-      prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this job runs in. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ kindPage.text ? params.kindLead + kindPage.text + params.kindEnd : '' }}{{ input.prompt }}"
+      prompt: "{{ input.workspace ? 'This job runs on this server, @' + input.workspace + '. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ kindPage.text ? params.kindLead + kindPage.text + params.kindEnd : '' }}{{ input.prompt }}"
       # The message alone, what the graph keeps as this turn's text.
       message: "{{ input.prompt }}"
       agentTools: "{{ params.tools }}"
@@ -112,7 +112,7 @@ steps:
                 content: { type: string, description: "Small inline content instead of a file (a diff, short JSON)" }
                 render: { type: string, description: "A file a page can draw in its place, relative to the working directory: a .docx's HTML, a sheet's CSV" }
                 from: { type: array, items: { type: string }, description: "The ref_ids of the graph nodes it was made from — the Concepts it follows, the excerpts it quotes — as the graph tools gave them" }
-                app: { type: string, description: "An app in this workspace, by name, as the builder's reply gave it (with kind: app); its active version unless `version` names one" }
+                app: { type: string, description: "An app on this server, by name, as the builder's reply gave it (with kind: app); its active version unless `version` names one" }
                 version: { type: string, description: "With `app`: a version to pin (v3)" }
           ask:
             type: object
@@ -170,7 +170,7 @@ params:
   # for an endpoint, exec for a command — or a person's look when nothing
   # here runs it, never a check over the agent's own diff; and verify the
   # job before saying done. No app/* (2026-10-22): an APP is the builder's
-  # — published in the workspace and handed over by name (`{ kind: "app",
+  # — published on this server and handed over by name (`{ kind: "app",
   # app }`) — and a page over this job's own results is an HTML file in
   # its directory; the job-app runtime (plans/apps.md §6) is still served
   # for a directory with an app.yaml, but nothing here scaffolds or builds
@@ -179,7 +179,7 @@ params:
   # `job:` names — its own steps, and strut's named one by one (`git/push`
   # for a change that ends as a pull request; src/job-seed.ts). Never the
   # authoring writes (meta/publish-workflow, meta/create-step, edit-step):
-  # a workflow, or an app that lives in a workspace, is the `builder`
+  # a workflow, or an app published on this server, is the `builder`
   # workflow's, which this agent runs through meta/run-workflow when such a
   # request reaches it (the `Job` page's own docs).
   tools:
@@ -242,7 +242,7 @@ params:
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: package/install
-  # (someone's code into this strut), package/commit (this workspace pushed
+  # (someone's code into this strut), package/commit (this server's edits pushed
   # to a repo with a person's credential) and remote/buy-credit (this server's
   # sats to another strut). A host appends its gated writes
   # (`createStrut({ job: { approve } })`).
@@ -275,7 +275,7 @@ params:
     any other tool: its steps in order (making something and checking it
     is two). Call it again each time a step moves on.
 
-    The kinds of work this workspace has a way to do are listed at the end
+    The kinds of work this server has a way to do are listed at the end
     of this prompt, from its knowledge graph: each a page saying which
     workflow does it, or how to work. A message that opens with a kind's
     page is that kind: follow the page. Otherwise, before you act on a
@@ -291,10 +291,10 @@ params:
     same directory) and returns its output; meta/get-run explains a
     failure. Prefer running a workflow that does the work over doing it by
     hand, and say in `text` which one you ran. strut/run-workflow runs one
-    on a PEER — another workspace, named by its slug (`@<slug>` in a message) —
+    on a PEER — another strut server, named by its slug (`@<slug>` in a message) —
     and returns its output; its files stay there. strut/list-peers says
     which peers there are and what each holds, and also names THIS
-    workspace (`self`) and its repositories — code there is here. When no workflow fits,
+    server (`self`) and its repositories — code there is here. When no workflow fits,
     the work is yours — a plan, a page, notes — as files in your directory.
 
     Seeing what a page shows is a workflow too. You have no browser to look

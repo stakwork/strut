@@ -569,7 +569,7 @@ export function explainExhausted(err: unknown, d: Pick<Delegation, "delegationId
  */
 export function explainRefused(err: unknown): string | undefined {
   const m = /\b(?:Model|Provider) '([^']+)' is not allowed/.exec(errorText(err));
-  return m ? `${m[1]} is not enabled for this workspace: ask an admin` : undefined;
+  return m ? `${m[1]} is not enabled on this server: ask an admin` : undefined;
 }
 
 /**

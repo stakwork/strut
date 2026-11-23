@@ -490,7 +490,7 @@ describe("the orchestrator, end to end", () => {
     const runStart = (strut.store.getEvents(workflow, end.runId) as any[]).find((e) => e.type === "run.start");
     return { end, runStart };
   };
-  it("`start` carries `peer` to a build on another workspace, as job/start would", async () => {
+  it("`start` carries `peer` to a build on another server, as job/start would", async () => {
     const { strut, ends, turn } = await boot(() =>
       toolUse("toolu_1", "final_answer", {
         text: "On it.",
@@ -600,11 +600,11 @@ describe("the orchestrator, end to end", () => {
     const ended = await turn({ prompt: "ask stakwork how the app works", session: "peel/agent-1/dm-p", context: { line: "Fri 23 Oct 18:52, GMT+1. " } });
     assert.equal(ended.status, "success", JSON.stringify(ended));
     assert.ok(
-      lastUser(seen.orch[0]).includes("Fri 23 Oct 18:52, GMT+1. Workspaces you can ask: @hive (Stakwork), @senza-backend. ask stakwork how the app works"),
+      lastUser(seen.orch[0]).includes("Fri 23 Oct 18:52, GMT+1. Servers you can ask: @hive (Stakwork), @senza-backend. ask stakwork how the app works"),
       lastUser(seen.orch[0]),
     );
   });
-  it("with a self record, this workspace is named first and the list is the others, so a host's own `@<slug>` before the message reads as this one", async () => {
+  it("with a self record, this server is named first and the list is the others, so a host's own `@<slug>` before the message reads as this one", async () => {
     const { seen, turn } = await boot(
       () => toolUse("toolu_s", "final_answer", { text: "Looked.", artifacts: [] }),
       [{ id: "hive", baseUrl: "http://127.0.0.1:9", token: "t", label: "Stakwork" }],
@@ -614,7 +614,7 @@ describe("the orchestrator, end to end", () => {
     assert.equal(ended.status, "success", JSON.stringify(ended));
     assert.ok(
       lastUser(seen.orch[0]).includes(
-        "Fri 23 Oct 18:52, Europe/London. This workspace is @acme-web (Acme Web). Other workspaces you can ask: @hive (Stakwork). @acme-web\\nhow does login work",
+        "Fri 23 Oct 18:52, Europe/London. This server is @acme-web (Acme Web). Other servers you can ask: @hive (Stakwork). @acme-web\\nhow does login work",
       ),
       lastUser(seen.orch[0]),
     );

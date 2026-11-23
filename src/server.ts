@@ -96,7 +96,7 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   if (readers !== undefined) out.graphReaders = parseGraphReaders(readers, `STRUT_HOST_CONFIG: ${file}: "graphReaders"`);
   // The memory is always the graph: an older config's `memory` is ignored.
   const memory = (raw as Record<string, unknown> | null)?.["memory"];
-  if (memory !== undefined && memory !== "graph") console.warn(`STRUT_HOST_CONFIG: ${file}: "memory" is ignored; the memory is the workspace graph`);
+  if (memory !== undefined && memory !== "graph") console.warn(`STRUT_HOST_CONFIG: ${file}: "memory" is ignored; the memory is this server's graph`);
   const concepts = (raw as Record<string, unknown> | null)?.["concepts"];
   if (
     concepts !== undefined && concepts !== false &&

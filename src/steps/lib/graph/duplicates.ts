@@ -13,9 +13,9 @@ export default defineStep({
     "List nodes that may be one thing saved twice, strongest first, each pair with why it matched: the same name or other name " +
     "(alt_names) on two nodes of one type, a person with the user's full name, or one name the short form of the other ('Kate' and " +
     "'Katie Moss'). Candidates only, never a decision: read both with graph/graph-get before graph/merge; two people can share a name. " +
-    "Nodes of entity types in one namespace (default: the workspace's). A LadybugDB graph only.",
+    "Nodes of entity types in one namespace (default: this server's). A LadybugDB graph only.",
   input: z.object({
-    namespace: z.string().optional().describe("The namespace to look in (default: the workspace's)."),
+    namespace: z.string().optional().describe("The namespace to look in (default: this server's)."),
     limit: z.number().int().optional().default(20).describe("Most pairs to return (default 20)."),
   }),
   output: z.any(),

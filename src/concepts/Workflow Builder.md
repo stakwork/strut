@@ -1,7 +1,7 @@
 ---
-description: What this workspace builds with workflows, and the convention each kind follows.
+description: What this server builds with workflows, and the convention each kind follows.
 ---
-What this workspace builds with workflows, and the convention each kind follows.
+What this server builds with workflows, and the convention each kind follows.
 
 Each child Concept of this node (PARENT_OF from here) is one KIND of thing
 built here. Its docs are that kind's convention: what it is, which workflow

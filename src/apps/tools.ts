@@ -103,7 +103,7 @@ export const GRAPH_WRITES: ReadonlySet<string> = new Set([
  *  app or a job's directory — those are a builder's or a run's. */
 const NOT_A_PAGES: Record<string, string> = {
   "graph/create-schema": "an app declares its graph types in app.yaml (data.graph); a page registers none",
-  "graph/register-namespace": "an app writes in the workspace's namespace; a page registers none",
+  "graph/register-namespace": "an app writes in this server's namespace; a page registers none",
   "graph/set-namespace": "moving data between namespaces is the person's own act, on a proposal they accept",
   "graph/project": "projecting runs into the graph is the server's own pass",
   "graph/query": "raw Cypher reads past the types app.yaml declares — a page reads a type's nodes with graph/find, or launches a workflow that queries (run/launch)",

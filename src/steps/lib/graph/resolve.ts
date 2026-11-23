@@ -19,14 +19,14 @@ export default defineStep({
     "With a type and nothing found, `elsewhere` lists nodes of other types with that name: use one of them rather than making a second. " +
     "The user themself is never resolved or created again: graph/graph-get with `owner: true` returns them. " +
     "When something gets another name, add it to its `alt_names` (graph/edit-node) so this finds it by that name too. " +
-    "Reads only `namespaces` (default: the workspace's). A LadybugDB graph only.",
+    "Reads only `namespaces` (default: this server's). A LadybugDB graph only.",
   input: z.object({
     node_type: z.string().optional().describe("The node type, e.g. 'Person'. Leave out to look across every entity type."),
     key: z.string().optional().describe("The node's stored key, if you have it."),
     node_data: z.record(z.string(), z.any()).optional().describe('Fields you know, as you would write them, e.g. {"name": "Ada", "email": "ada@example.com"}.'),
     name: z.string().optional().describe("Its name. Default: the title node_data gives."),
     aliases: z.array(z.string()).optional().describe("Other names it may go by."),
-    namespaces: z.array(z.string()).optional().describe("The data partitions to look in (default: the workspace's)."),
+    namespaces: z.array(z.string()).optional().describe("The data partitions to look in (default: this server's)."),
     limit: z.number().int().optional().describe("Most candidates to return, 1–50 (default 5)."),
   }),
   output: z.any(),

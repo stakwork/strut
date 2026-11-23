@@ -18,7 +18,7 @@ name: orchestrator
 # (context/concept, the kinds alone): the kinds of work a job does here —
 # the `Job` Concept's children — and the kinds of thing the builder builds
 # here — the `Workflow Builder` Concept's — each the tree its own agent
-# reads, grown by a deployment and its workspace, so a turn routes a
+# reads, grown by each deployment, so a turn routes a
 # request by kind: a job's as `kind` on job/start (the job opens every turn
 # with that page), a build's named in the brief. One conversation is one session, for good: the agent step
 # compacts it in place when it nears the window. Its system prompt is the
@@ -69,7 +69,7 @@ steps:
   # + description — the page's own docs left out, they are the job agent's
   # instructions — rendered for the end of the system prompt, so a turn
   # routes a request by kind and passes it as the job's `kind`. The same tree
-  # the job agent reads; a deployment and its workspace grow it. Read every
+  # the job agent reads; each deployment grows it. Read every
   # turn; the session keeps its first turn's prompt. Empty without a graph,
   # the page, or any kind under it. `tool`: the list ends with how to open a
   # kind's page (graph/graph-get, granted below), for when this agent needs
@@ -107,8 +107,8 @@ steps:
   # read every turn and put before the person's message, so "ask acme…"
   # finds @acme-web by its label, and a peer added mid-conversation is
   # known at once (the system prompt is the session's first turn's). With a
-  # `self` record, this workspace is named first and the list is the OTHER
-  # workspaces: a host's own `@<slug>` before the message (hive's) then
+  # `self` record, this server is named first and the list is the OTHER
+  # servers: a host's own `@<slug>` before the message (hive's) then
   # repeats the one named as this one, never reads as one more to ask. None
   # (or no peers capability): nothing is added.
   - id: peers
@@ -162,7 +162,7 @@ steps:
       # turn's prompt — never the system prompt, which the session froze at
       # its first turn. `context.where` is not read here: a wake puts it in
       # its own line (src/wake.ts), and a host keeps it in a person's line.
-      prompt: "{{ input.context?.line || '' }}{{ standing.admin === true ? 'The person is an admin of this server: what needs an admin to approve, they approve themself. ' : '' }}{{ peers.peers.length ? (peers.self?.id ? 'This workspace is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other workspaces' : 'Workspaces') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
+      prompt: "{{ input.context?.line || '' }}{{ standing.admin === true ? 'The person is an admin of this server: what needs an admin to approve, they approve themself. ' : '' }}{{ peers.peers.length ? (peers.self?.id ? 'This server is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other servers' : 'Servers') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
       # The person's words alone, what the graph keeps as this turn's text.
       message: "{{ input.prompt }}"
       toolFilter: [none]
@@ -288,11 +288,11 @@ params:
   # turn ends while the job works); the job/* reads, to find a job to
   # continue or point the person to what one delivered; strut/list-peers +
   # strut/run-workflow, a workflow on a PEER strut (plans/federation.md
-  # §2.2) — a lookup on another workspace inside the turn. A host appends
+  # §2.2) — a lookup on another server inside the turn. A host appends
   # its own (`createStrut({ orchestrator: { tools } })`): its lookups (a
   # graph explorer, a logs reader), Peel's sphinx/*, calendar/* and its
   # automation steps, and its memory (memory/*). No memory here: one
-  # memory for a whole workspace is nobody's.
+  # memory for a whole server is nobody's.
   tools:
     - job/start
     - job/continue
@@ -301,7 +301,7 @@ params:
     - job/read
     - strut/list-peers
     - strut/run-workflow
-    # A Concept page of this workspace, opened by name: a kind's under the
+    # A Concept page of this server, opened by name: a kind's under the
     # two lists that close the prompt (their `tool`), when what it says is
     # needed to talk the person through a request of that kind. A read.
     - graph/graph-get
@@ -343,7 +343,7 @@ params:
   # app's pages talking to this assistant, src/apps/grants.ts),
   # app/make-public (an app in the public view, an admin's yes),
   # package/install (someone's code into this strut), package/commit (this
-  # workspace pushed to a repo) and remote/buy-credit
+  # server's edits pushed to a repo) and remote/buy-credit
   # (this server's sats to another strut), which run only on a yes. A host
   # appends its gated writes (`createStrut({ orchestrator: { approve } })`).
   approve:

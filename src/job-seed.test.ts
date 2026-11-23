@@ -48,7 +48,7 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     const text = await jobWorkflowYaml();
     const { tools, system } = paramsOf(text);
     for (const t of tools) assert.ok(!t.startsWith("app/"), `the job agent never holds ${t}`);
-    assert.ok(JSON.stringify(yaml.load(text)).includes("An app in this workspace, by name"), "the reply's `app` field");
+    assert.ok(JSON.stringify(yaml.load(text)).includes("An app on this server, by name"), "the reply's `app` field");
     assert.ok(!text.includes("an app directory you built"), "no app directory as a deliverable");
     assert.doesNotMatch(system, /app\/init|Job App/);
   });
@@ -168,7 +168,7 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
 
       const coded = await strut.run(JOB_WORKFLOW, { prompt: "Add the line.", workspace: "acme", kind: "Code Change" }, { job });
       assert.equal(coded.status, "success", JSON.stringify(coded.error));
-      assert.equal(prompts[0], `Workspace: @acme, the one this job runs in. Your job id: ${job}. ${kindLead}PAGE: how a code change is done here.${kindEnd}Add the line.`);
+      assert.equal(prompts[0], `This job runs on this server, @acme. Your job id: ${job}. ${kindLead}PAGE: how a code change is done here.${kindEnd}Add the line.`);
       assert.ok(kindLead.includes("\n\n") && kindEnd.includes("\n\n"), "the page stands apart from the lines around it");
 
       const unknown = await strut.run(JOB_WORKFLOW, { prompt: "Again.", kind: "Nope" }, { job });
@@ -206,7 +206,7 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       assert.equal(out.ask, undefined);
       assert.equal(turns[0]!.cwd, join(dir, "jobs", job), "the job's directory");
       assert.equal(turns[0]!.session, job, "the job's thread");
-      assert.equal(turns[0]!.prompt, `Workspace: @acme, the one this job runs in. Your job id: ${job}. Plan dark mode.`, "the workspace line, then the job's id");
+      assert.equal(turns[0]!.prompt, `This job runs on this server, @acme. Your job id: ${job}. Plan dark mode.`, "the server line, then the job's id");
       assert.deepEqual(turns[0]!.tools, paramsOf(await jobWorkflowYaml()).tools, "params.tools reaches agentTools");
       assert.equal(turns[0]!.system.trimEnd(), paramsOf(await jobWorkflowYaml()).system.trimEnd(), "no graph: strut's prompt alone, no Concept section");
       assert.ok(existsSync(join(dir, "jobs", job, "plan.md")));

@@ -687,7 +687,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
         auth: { kind: "chat", chatId: "c1", principal: "alice" },
       });
       const { generateText, streamText } = await import("ai");
-      const plain = /^claude-opus-5-5 is not enabled for this workspace: ask an admin$/;
+      const plain = /^claude-opus-5-5 is not enabled on this server: ask an admin$/;
       // The SDK's own message is only "Forbidden": the words are in the body.
       await assert.rejects(
         () => generateText({ model: r.model, prompt: "hi", maxRetries: 0 }),

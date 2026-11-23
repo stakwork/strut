@@ -6,7 +6,7 @@ import { requireApps, resolveAppPath } from "./_shared.js";
 export default defineStep({
   type: "app/checkout",
   description:
-    "Copy a workspace app's version (the active one by default) into a directory to edit — the files as published, dist/ included. " +
+    "Copy a published app's version (the active one by default) into a directory to edit — the files as published, dist/ included. " +
     "The path is relative to the job's directory (or the run's) and must be new or empty. Edit, app/build, then app/publish { name, path } makes the next version.",
   input: z.object({
     name: z.string().describe("The app's name (app/list)."),

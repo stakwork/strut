@@ -82,7 +82,7 @@ export default defineStep({
     const conversations = services?.conversations;
     if (!conversations) throw new Error("dream/turns needs the conversation index (ctx.services.conversations). The standard strut server provides it.");
     const knowledge = services?.knowledge;
-    if (!knowledge) throw new Error("dream/turns needs the claims layer (ctx.services.knowledge): a graph-backed workspace with claims on");
+    if (!knowledge) throw new Error("dream/turns needs the claims layer (ctx.services.knowledge): a strut server on a graph, with claims on");
     // A dream with no tree to tend stops here: nothing read, nothing sent to a model, nothing marked.
     if (!(await knowledge.page(cfg.tree))) throw new Error(`dream/turns: there is no Concept "${cfg.tree}" to tend: the dream's \`root\` names the tree's root Concept`);
 

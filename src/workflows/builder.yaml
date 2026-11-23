@@ -5,7 +5,7 @@ name: builder
 # the launch like `job` and continued by the same job id. job/dir hands the
 # agent the job's directory (no shell: it writes there with the editor — an
 # app's files — and git/checkout puts a repository there to read from),
-# context/concept puts the `Workflow Builder` page — what THIS workspace
+# context/concept puts the `Workflow Builder` page — what THIS server
 # builds and each kind's convention — at the end of its prompt, the agent
 # authors through the meta/* twins (the chat builder's tools as registry
 # steps, src/steps/lib/meta/) and answers in the job's reply shape. Seeded
@@ -45,13 +45,13 @@ name: builder
 peer: true
 input:
   prompt: { type: string, description: "What to build, change, test or debug this turn" }
-  workspace: { type: string, required: false, description: "The workspace this build runs in, by its slug" }
+  workspace: { type: string, required: false, description: "This server's slug, the one this build runs on" }
   session: { type: string, required: false, description: "The agent's thread (a session id). Defaults to the job id — one thread across every turn of the build" }
-  peer: { type: string, required: false, description: "Build in THAT workspace instead (a peer's id, as strut/list-peers gives it): this run launches the peer's `builder` under this job id and waits. Unset in the workspace that does the building" }
+  peer: { type: string, required: false, description: "Build on THAT server instead (a peer's id, as strut/list-peers gives it): this run launches the peer's `builder` under this job id and waits. Unset on the server that does the building" }
 steps:
   - id: dir
     type: job/dir
-  # What THIS workspace builds — the `Workflow Builder` Concept and the
+  # What THIS server builds — the `Workflow Builder` Concept and the
   # kinds under it — rendered for the agent's system prompt, as the chat
   # builder's prompt reads it (src/ai/builder-system.ts) and as `job` reads
   # `Job`. Read before the gate (job.yaml's order); empty without a graph
@@ -75,11 +75,11 @@ steps:
       cacheTtl: 1h
       model: "{{ params.model }}"
       maxSteps: "{{ params.maxSteps }}"
-      # strut's prompt (with the host's section), then the workspace's page.
+      # strut's prompt (with the host's section), then this server's page.
       system: |-
         {{ params.system }}
         {{ concepts.text }}
-      prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this job runs in. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ input.prompt }}"
+      prompt: "{{ input.workspace ? 'This job runs on this server, @' + input.workspace + '. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ input.prompt }}"
       # The message alone, what the graph keeps as this turn's text.
       message: "{{ input.prompt }}"
       # The web tools (API documentation while authoring) and the EDITOR
@@ -233,7 +233,7 @@ params:
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: package/install
-  # (someone's code into this strut), package/commit (this workspace pushed
+  # (someone's code into this strut), package/commit (this server's edits pushed
   # to a repo with a person's credential), remote/buy-credit (this server's
   # sats to another strut), task/set-type (a task type: what workers are
   # shown and paid) and app/make-public (an app in the public view: what
@@ -255,7 +255,7 @@ params:
   # is appended after it (`createStrut({ builder: { system } })`).
   system: |
     You are a workflow BUILDER working on a job with a person, over many
-    turns: you author, revise, test and debug this workspace's workflows
+    turns: you author, revise, test and debug this server's workflows
     (a person may call one a "strut") and custom steps, and the APPS over
     them. Each turn you get one message;
     you remember the turns before it. You have no shell: a workflow or a
@@ -276,7 +276,7 @@ params:
     again, and app/publish once it shows what was asked — each publish is
     a version (or a draft) a person sees, so never one per attempt.
 
-    The kinds of thing this workspace builds are listed at the end of this
+    The kinds of thing this server builds are listed at the end of this
     prompt, from its knowledge graph: each a page with that kind's
     convention. Before building, match the ask against them; when it is
     one of these kinds, open the page and follow it — the workflow it

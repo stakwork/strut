@@ -24,7 +24,7 @@ export default defineStep({
   type: "graph/query",
   effect: "read",
   description:
-    "Run ONE read-only Cypher query against the workspace's graph and get the rows: for what the typed reads cannot say — " +
+    "Run ONE read-only Cypher query against this server's graph and get the rows: for what the typed reads cannot say — " +
     "counts and grouping, exact properties across many nodes, a join across types, edge fan-out. " +
     "Writes (CREATE, MERGE, SET, DELETE, apoc.*, LOAD, COPY, …) are refused and the graph's read-only mode enforces it: " +
     "write with graph/create-node, graph/create-triplet, graph/edit-node. Pass values as `params` ($name), not spliced into the text. " +
@@ -32,7 +32,7 @@ export default defineStep({
     "(1–1000, default 100) — `truncated: true` means there were more: page with ORDER BY … SKIP $skip LIMIT n, or aggregate. " +
     "Embedding vectors come back as a placeholder. A refused or failed query fails the step. " +
     "The layout depends on the backend: on Neo4j a node carries its type as a label plus {ref_id, node_key, namespace} (jarvis's names: node_key, Data_Bank, date_added_to_graph) — filter on " +
-    "the namespace ($ns, the workspace's is usually \"default\") — and edge types are UPPER_SNAKE; on a LadybugDB file every node is a " +
+    "the namespace ($ns, this server's is usually \"default\") — and edge types are UPPER_SNAKE; on a LadybugDB file every node is a " +
     "row of the one Node table, `MATCH (n:Node {node_type: 'Concept'})`, with `key`, `title`, `search_text` and `created_at`, live when n.deleted_at IS NULL, and each edge type is a rel " +
     "table of its name. A query written for one does not run on the other. " +
     "For one node use graph/graph-get, for words or meaning graph/graph-search, for the nodes of one type by their properties graph/find.\n\n" +

@@ -540,7 +540,7 @@ async function installSet(
     for (const c of m.claims) {
       if (!published.has(`${c.subject.kind}:${c.subject.name}`)) continue;
       if (!deps.claims) {
-        warnings.push(`the claims of ${c.subject.name} were not recorded: this workspace keeps no claims (a graph-backed one does)`);
+        warnings.push(`the claims of ${c.subject.name} were not recorded: this server keeps no claims (they need a graph)`);
         continue;
       }
       const r = await deps.claims.applyClaimsArg(c.subject, c.claims, { publisher: m.info.manifest.package, scoped: false });
@@ -555,7 +555,7 @@ async function installSet(
   for (const [pkg, pages] of pagesClaims) {
     if (!pages.length) continue;
     if (!deps.pageClaims) {
-      if (pages.some((p) => p.claims.length)) warnings.push(`the claims of ${pkg}'s pages were not recorded: this workspace keeps no claims (a graph-backed one does)`);
+      if (pages.some((p) => p.claims.length)) warnings.push(`the claims of ${pkg}'s pages were not recorded: this server keeps no claims (they need a graph)`);
       continue;
     }
     if (pages.some((p) => p.claims.length)) tell({ phase: "claims", package: pkg });
@@ -910,7 +910,7 @@ async function checkSet(
   if (concepts.size > 0) {
     const schema = deps.graph ? await deps.graph.schemas.schema("Concept") : undefined;
     if (!deps.graph || !schema) {
-      out.warnings.push(`the Concepts (${[...concepts.keys()].join(", ")}) were not installed: ${deps.graph ? "the graph has no Concept schema" : "this workspace has no graph"}`);
+      out.warnings.push(`the Concepts (${[...concepts.keys()].join(", ")}) were not installed: ${deps.graph ? "the graph has no Concept schema" : "this server has no graph"}`);
     } else {
       out.conceptsOn = true;
       const problems: string[] = [];
