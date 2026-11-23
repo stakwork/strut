@@ -38,12 +38,27 @@
  * any host the box serves (`secrets.git`); without it they never see one,
  * though strut's git steps they call still use it (src/packages/fence.ts).
  *
+ * An entry may also name the FORGE'S STEPS for its host
+ * (plans/package-seams.md §4): `repositories`, what the token reaches, and
+ * `pull_request`, opening one — each the package's own step by its name
+ * inside the package first, else strut's by its type (`github/create-pr`),
+ * never another package's. `readPackage` resolves them to full types
+ * (`gitHosts`); the install checks each exists; strut's `git/repositories`
+ * and `git/pull-request` pick them by host.
+ *
  * Its `schedules:` names workflows of the package strut runs on a schedule,
  * each an automation's draft (`name?`, `trigger`, `input?`) with the
  * `workflow` it runs, by its name inside the package. `readPackage`
  * resolves them over the package's OWN workflows and refuses one that is
  * not there, a trigger the automations' grammar does not have, and a
  * `once`; the packages' sync makes the automations (./schedules.ts).
+ *
+ * Its `on:` names workflows of the package strut runs when a node of a
+ * type is created, updated or deleted (plans/package-seams.md §2): each
+ * entry one op, one graph type and one of the package's OWN workflows, by
+ * its name inside the package (`{ created: Workspace, workflow: setup }`).
+ * `readPackage` resolves them and refuses a workflow the package does not
+ * carry; strut matches them at each graph write it hears (./on.ts).
  *
  * A Concept page comes in two forms (plans/concept-history.md §2.1, read by
  * `parseConceptFile`, src/concept-seed.ts): the old `concepts/<Name>.md`,
@@ -85,7 +100,7 @@ import { z } from "zod";
 import { validateAppName } from "../apps/files.js";
 import { checkInputTemplates, triggerSchema, type TriggerDraft } from "../automations.js";
 import { globToRegExp } from "../closure.js";
-import { GIT_HOST_RE } from "../git-hosts.js";
+import { FORGE_STEPS, GIT_HOST_RE, type GitHost } from "../git-hosts.js";
 import { parseConceptFile } from "../concept-seed.js";
 import { packagePrefixOf } from "../package-lookup.js";
 import { hashTree } from "../version.js";
@@ -122,6 +137,26 @@ const scheduleTrigger = z.unknown().transform((raw, ctx): TriggerDraft => {
   if (parsed.data.every === "once") ctx.addIssue({ code: "custom", path: ["every"], message: "a package's schedule recurs: interval, day, week or month" });
   return parsed.data;
 });
+
+/** The ops an `on:` entry names: what happened to the node. */
+export const ON_OPS = ["created", "updated", "deleted"] as const;
+export type OnOp = (typeof ON_OPS)[number];
+
+const graphTypeName = z.string().regex(GRAPH_TYPE_NAME, "a graph type is a letter then letters, digits or _ (Workspace)");
+
+/** One `on:` entry: exactly one op naming a type, and the workflow. */
+const onEntry = z
+  .object({
+    created: graphTypeName.optional(),
+    updated: graphTypeName.optional(),
+    deleted: graphTypeName.optional(),
+    workflow: z.string().min(1),
+  })
+  .strict()
+  .superRefine((e, ctx) => {
+    const ops = ON_OPS.filter((op) => e[op] !== undefined);
+    if (ops.length !== 1) ctx.addIssue({ code: "custom", message: `an entry names one op — created, updated or deleted — and its type${ops.length ? `, not ${ops.join(" and ")}` : ""}` });
+  });
 
 const manifestSchema = z
   .object({
@@ -176,6 +211,10 @@ const manifestSchema = z
               .object({
                 host: z.string().regex(GIT_HOST_RE, "a host is a lowercase hostname, with :port when it is not the default (github.com, git.acme.com:3000)"),
                 secret: z.string().min(1),
+                // The forge's steps for this host (plans/package-seams.md §4):
+                // the package's own by <name>, else strut's by its type.
+                repositories: z.string().min(1).optional(),
+                pull_request: z.string().min(1).optional(),
               })
               .strict(),
           )
@@ -202,6 +241,11 @@ const manifestSchema = z
           .strict(),
       )
       .optional(),
+    // The package's own workflows strut runs when a node of a type is
+    // created, updated or deleted (plans/package-seams.md §2, ./on.ts): one
+    // op, one type, one workflow an entry. Strict like the rest: an older
+    // strut refuses the package instead of installing it without them.
+    on: z.array(onEntry).optional(),
     // The packages a bundle lists, each by the `git+` branch it is followed
     // at (./subscriptions.ts). A bundle holds nothing else (`readPackage`).
     bundle: z.array(z.string().min(1)).min(1, "a bundle lists at least one package").optional(),
@@ -211,7 +255,7 @@ const manifestSchema = z
 export type PackageManifest = z.infer<typeof manifestSchema>;
 
 /** What a bundle may not carry: what belongs to a package's own items. */
-const NOT_IN_A_BUNDLE = ["requires", "job", "provides", "schedules"] as const;
+const NOT_IN_A_BUNDLE = ["requires", "job", "provides", "schedules", "on"] as const;
 
 /** Every secret a package's steps may read: `requires.secrets` and
  *  `requires.optional` — its fence. */
@@ -245,6 +289,19 @@ export interface PackageInfo {
   job?: JobGrant;
   /** The manifest's `schedules:`, each on a workflow of the package. */
   schedules?: PackageSchedule[];
+  /** The manifest's `on:`, each on a workflow of the package. */
+  on?: PackageTrigger[];
+  /** The manifest's `provides.git`, each forge step resolved to its full
+   *  type: the package's own (`<package>/<name>`) or strut's. */
+  gitHosts?: GitHost[];
+}
+
+/** A workflow of the package strut runs when a node of `type` is `op`
+ *  (plans/package-seams.md §2): on the workflow's full name. */
+export interface PackageTrigger {
+  op: OnOp;
+  type: string;
+  workflow: string;
 }
 
 /** A workflow of the package strut runs on a schedule: an automation's
@@ -398,14 +455,43 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
     if (!readable.includes(name)) problems.push(`${MANIFEST_FILE}: provides.secrets: ${name} is not in requires.secrets or requires.optional — a package's steps manage only secrets they may read`);
   }
   const hosts = new Set<string>();
-  for (const { host, secret } of manifest.provides?.git ?? []) {
+  const ownSteps = new Set(items.filter((i) => i.kind === "step" && !i.helper).map((i) => i.name));
+  const gitHosts = (manifest.provides?.git ?? []).map((entry, i): GitHost => {
+    const { host, secret } = entry;
     if (!readable.includes(secret)) problems.push(`${MANIFEST_FILE}: provides.git: ${secret} (for ${host}) is not in requires.secrets or requires.optional — a package provides only a token its steps may read`);
     if (hosts.has(host)) problems.push(`${MANIFEST_FILE}: provides.git names ${host} twice — a host is served by one secret`);
     hosts.add(host);
-  }
+    const out: GitHost = { host, secret };
+    for (const field of FORGE_STEPS) {
+      const name = entry[field];
+      if (!name) continue;
+      const own = `${pkg}/${name}`;
+      if (ownSteps.has(own)) out[field] = own;
+      else if (packagePrefixOf(name)) problems.push(`${MANIFEST_FILE}: provides.git[${i}].${field}: ${JSON.stringify(name)} is another package's step, or this one's by its full type — name the package's own step by <name> (steps/<name>.ts) or strut's by its type (github/create-pr)`);
+      else {
+        try {
+          validateStepName(name);
+          out[field] = name;
+        } catch (err) {
+          problems.push(`${MANIFEST_FILE}: provides.git[${i}].${field}: ${JSON.stringify(name)} is not a step's name — ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    return out;
+  });
   const schedules = manifest.schedules ? resolveSchedules(pkg, manifest.schedules, items, problems) : undefined;
+  const on = manifest.on ? resolveOn(pkg, manifest.on, items, problems) : undefined;
   if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);
-  return { manifest, digest: `sha256:${await hashTree(dir, files)}`, files, items, ...(job ? { job } : {}), ...(schedules ? { schedules } : {}) };
+  return {
+    manifest,
+    digest: `sha256:${await hashTree(dir, files)}`,
+    files,
+    items,
+    ...(job ? { job } : {}),
+    ...(schedules ? { schedules } : {}),
+    ...(on ? { on } : {}),
+    ...(gitHosts.length ? { gitHosts } : {}),
+  };
 }
 
 /** A bundle: its list, each entry a branch to follow and a repository
@@ -451,6 +537,26 @@ function resolveSchedules(pkg: string, entries: NonNullable<PackageManifest["sch
     named.add(name);
     for (const p of checkInputTemplates(e.input ?? {})) problems.push(`${at}.input: ${p}`);
     return { name, workflow: `${pkg}/${e.workflow}`, trigger: e.trigger, input: e.input ?? {} };
+  });
+}
+
+/** The manifest's `on:` over the package's own workflows: each names one
+ *  by its name inside the package, so a write never runs strut's workflow
+ *  or another package's. The same entry twice is a problem. */
+function resolveOn(pkg: string, entries: NonNullable<PackageManifest["on"]>, items: PackageItem[], problems: string[]): PackageTrigger[] {
+  const own = new Set(items.filter((i) => i.kind === "workflow").map((i) => i.name));
+  const seen = new Set<string>();
+  return entries.map((e, i) => {
+    const op = ON_OPS.find((o) => e[o] !== undefined)!;
+    const type = e[op]!;
+    const at = `${MANIFEST_FILE}: on[${i}]`;
+    if (!own.has(`${pkg}/${e.workflow}`)) {
+      problems.push(`${at}.workflow: ${JSON.stringify(e.workflow)} is not a workflow of the package — an entry names one of the package's own workflows (workflows/<name>.yaml) by <name>`);
+    }
+    const key = `${op} ${type} ${e.workflow}`;
+    if (seen.has(key)) problems.push(`${at}: ${op}: ${type} runs ${e.workflow} twice`);
+    seen.add(key);
+    return { op, type, workflow: `${pkg}/${e.workflow}` };
   });
 }
 

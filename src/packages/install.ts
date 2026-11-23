@@ -74,7 +74,7 @@ import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
 import { gitHostOfRef } from "./git-source.js";
-import { gitHostProblems, STRUT_GIT_HOSTS, type GitSecretOf } from "../git-hosts.js";
+import { FORGE_STEPS, gitHostProblems, STRUT_GIT_HOSTS, type GitSecretOf } from "../git-hosts.js";
 import { MANIFEST_FILE, readableSecrets, strutGrants, type PackageItem } from "./format.js";
 import { strutGrantProblem } from "../job-seed.js";
 import type { InstallProgress } from "./progress.js";
@@ -309,7 +309,8 @@ async function installSet(
     secrets: readableSecrets(m.info.manifest),
     ...(m.info.manifest.requires?.optional?.length ? { optional: m.info.manifest.requires.optional } : {}),
     ...(m.info.manifest.requires?.git ? { git: true as const } : {}),
-    ...(m.info.manifest.provides ? { provides: m.info.manifest.provides } : {}),
+    // What it provides, its forge steps by their full types (format.ts `gitHosts`).
+    ...(m.info.manifest.provides ? { provides: { ...m.info.manifest.provides, ...(m.info.gitHosts ? { git: m.info.gitHosts } : {}) } } : {}),
     at,
   });
   const publish = { source: opts.door, ...(opts.actor ? { actor: opts.actor } : {}) };
@@ -782,7 +783,7 @@ async function checkSet(
     ...gitHostProblems([
       { by: "strut", git: STRUT_GIT_HOSTS },
       ...[...installed.values()].filter((p) => !inSet.has(p.package) && holdsItsOwn(p)).map((p) => ({ by: p.package, ...(p.provides?.git ? { git: p.provides.git } : {}) })),
-      ...members.map((m) => ({ by: m.info.manifest.package, ...(m.info.manifest.provides?.git ? { git: m.info.manifest.provides.git } : {}) })),
+      ...members.map((m) => ({ by: m.info.manifest.package, ...(m.info.gitHosts ? { git: m.info.gitHosts } : {}) })),
     ]),
   );
   if (problems.length) throw conflict(problems.join("; "));
@@ -796,6 +797,14 @@ async function checkSet(
     for (const t of strutGrants(m.info.manifest.package, m.info.job?.tools ?? [])) {
       const problem = strutGrantProblem(t, registry, sources, sealed);
       if (problem) bad.push(`${MANIFEST_FILE}: job.tools: ${problem}`);
+    }
+    // A forge's steps (plans/package-seams.md §4): each one here, the
+    // package's own or strut's.
+    for (const h of m.info.gitHosts ?? []) {
+      for (const field of FORGE_STEPS) {
+        const t = h[field];
+        if (t && !knownStep(t)) bad.push(`${MANIFEST_FILE}: provides.git: ${h.host}'s ${field} names the step ${t}, which is neither on this strut server nor in the package`);
+      }
     }
   }
   const withClaims: Array<Member & { claims: MemberClaims[] }> = [];

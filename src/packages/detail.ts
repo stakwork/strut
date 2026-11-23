@@ -97,6 +97,9 @@ export interface WorkflowDetail {
    *  (`schedules:`), as a sentence — in the server's own zone unless it
    *  names one. */
   schedules?: string[];
+  /** When a graph write runs it (`on:`, ./on.ts): each entry strut.yaml
+   *  ships on it, as a sentence — as the person whose run wrote. */
+  on?: string[];
   /** The YAML could not be read as a workflow. */
   error?: string;
 }
@@ -379,6 +382,10 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
     // The zone a schedule names; with none, the installing server's, which no catalog knows.
     const said = describeTrigger(normalizeTrigger(sc.trigger, new Date(0), sc.trigger.tz ?? "UTC"));
     if (w) (w.schedules ??= []).push(sc.trigger.tz ? said : said.replace(/ \([^)]*\)$/, ""));
+  }
+  for (const t of info.on ?? []) {
+    const w = workflowByName.get(inside(t.workflow));
+    if (w) (w.on ??= []).push(`when a ${t.type} is ${t.op}, as the person whose run did it`);
   }
 
   // The apps: the manifest's face, the flags of what they may launch.

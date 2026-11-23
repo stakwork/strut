@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, RunTrial, StepContext } from "./core.js";
+import type { AnyStepDef, Flow, McpServer, OnWriteMark, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, RunTrial, StepContext } from "./core.js";
 import type { RunStore } from "./store.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, localRuns, summarizeFromEvents } from "./store.js";
 import { RunArchiveError, archiveFromEnv, checkArchive, errorText, type RunArchive } from "./run-archive.js";
@@ -123,6 +123,7 @@ import { FileWaitingIndex, MemoryWaitingIndex, createParking, type ParkSource, t
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
 import { packageJobGrants, seedJobWorkflow, strutGrantProblem, withJobGrants, type JobSeedOptions } from "./job-seed.js";
 import { installedSchedules } from "./packages/schedules.js";
+import { installedTriggers, matches, ON_CHAIN_MAX, type InstalledTrigger } from "./packages/on.js";
 import { findConcept, PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
@@ -178,7 +179,7 @@ import {
   type UninstallResult,
 } from "./packages/install.js";
 import { holdsItsOwn, listInstalledPackages, withMissingSecrets } from "./packages/installed.js";
-import { boxGitHosts, gitSecretOf, STRUT_GIT_HOSTS, type GitSecretOf } from "./git-hosts.js";
+import { boxGitHosts, gitSecretOf, STRUT_GIT_HOSTS, type GitHost, type GitHostsCapability, type GitSecretOf } from "./git-hosts.js";
 import { createInstallTracker, type InstallTracker } from "./packages/progress.js";
 import { checkBootPackages, installBootPackages, parseBootPackagesEnv, type BootPackage, type BootPackageOutcome } from "./packages/boot.js";
 import { createServe, lucideIconSvg, SERVE_FILE, SERVE_IMAGE_PATH, SERVE_POLL_MINUTES, serveRefOf, servedHtml, type ServeRef, type ServeService } from "./packages/serve.js";
@@ -194,7 +195,8 @@ import { createConceptSources, DEV_CONCEPTS_ENV, devConcepts, type ConceptSource
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
 import { isStrutType } from "./graph/strut-schemas.js";
 import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
-import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
+import { createGraphChangeFeed, GRAPH_FEED_READ_MAX, type OnWrites } from "./graph-writes.js";
+import { nodeFilesCapability, nodeFileStore } from "./node-files.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
 import { buildClaimsAuthoring, type ClaimsReconcileOutcome } from "./claims-authoring.js";
@@ -1160,6 +1162,11 @@ export async function createStrut<TServices = unknown>(
   const dataDir =
     opts.dataDir ??
     (fileBacked ? baseWorkspace.path : (bootEnv()["STRUT_WORKSPACE"] ?? "./workspace"));
+  // FILES ON A NODE (src/node-files.ts, plans/package-seams.md §1): every
+  // package's folder on every node, under `<dataDir>/nodes`. A write lands
+  // only on a node the graph holds live; a delete for good takes them
+  // (`sweepNodeFiles`, below).
+  const nodeFiles = nodeFileStore(dataDir, graph ? { live: async (ref) => !!(await graph.reader.getNode(ref)) } : {});
   // The HISTORY (src/history.ts, plans/concept-history.md): the whole
   // workspace committed to `<dataDir>/history.git` each time strut hears a
   // write. The store everything below publishes through is watched, so a
@@ -1341,6 +1348,17 @@ export async function createStrut<TServices = unknown>(
    *  run it has just launched is never refused. A dead run is judged by its
    *  log. */
   const peerLaunched = new WeakSet<RunController>();
+  /** The `on:` mark of each run a package's `on:` started, and of the job
+   *  runs those start (src/packages/on.ts): what holds their writes to the
+   *  chain. A nested run takes its parent's (`onWriteMarkOf`). */
+  const onWriteMarks = new WeakMap<RunController, OnWriteMark>();
+  const onWriteMarkOf = (c: RunController | undefined): OnWriteMark | undefined => {
+    for (let at = c; at; at = at.parent) {
+      const mark = onWriteMarks.get(at);
+      if (mark) return mark;
+    }
+    return undefined;
+  };
   /** The runs that never spend credit this strut BOUGHT (plans/paid-runs.md
    *  §10, decision 16 — no ask is for this strut's own agents): a stranger's
    *  public run, a run a peer launched with no person's credential, and a
@@ -1629,6 +1647,9 @@ export async function createStrut<TServices = unknown>(
   // read go through.
   let boxGitSecret: GitSecretOf = gitSecretOf(STRUT_GIT_HOSTS);
   const gitSecret: GitSecretOf = (url) => boxGitSecret(url);
+  // The box's map itself, with each host's forge steps (plans/package-seams.md
+  // §4): what `git/repositories` and `git/pull-request` pick by host.
+  let boxHosts: readonly GitHost[] = STRUT_GIT_HOSTS;
   // A person's own machine: with no token, git keeps its own credentials.
   const gitLocal = opts.git?.local ?? bootEnv()["STRUT_GIT_LOCAL"] === "1";
   // A job's pull request fails its checks (src/pr-checks.ts,
@@ -1719,6 +1740,12 @@ export async function createStrut<TServices = unknown>(
     // step to its caller's list (src/graph/scope.ts).
     ...(graph ? { graph: graphView({ ...graph, close: async () => undefined }, opts.graphReaders) } : {}),
     ...(graphChanges ? { graphChanges } : {}),
+    // The box's git hosts and their forge steps (src/git-hosts.ts), as the
+    // last package write left them.
+    gitHosts: { hosts: () => boxHosts } satisfies GitHostsCapability,
+    // Files on a node: strut's own folder here; a package's step gets its
+    // package's through its fence, and each run's writes name it (runner.ts).
+    nodeFiles: nodeFilesCapability(nodeFiles),
     // The Concept branches a run may be on (the runner checks its launch's).
     ...(branchesCap ? { branches: branchesCap } : {}),
     // Which Concept pages come from git, and their proposals (item e).
@@ -2383,7 +2410,8 @@ export async function createStrut<TServices = unknown>(
   const syncGitHosts = async (): Promise<void> => {
     try {
       const packages = (await listInstalledPackages({ workspace, cache: packageStore, ...(graph ? { graph } : {}) })).filter(holdsItsOwn);
-      boxGitSecret = gitSecretOf(boxGitHosts(packages));
+      boxHosts = boxGitHosts(packages);
+      boxGitSecret = gitSecretOf(boxHosts);
     } catch (err) {
       console.warn(`[git] could not read the installed packages' git hosts:`, err instanceof Error ? err.message : err);
     }
@@ -3643,6 +3671,8 @@ export async function createStrut<TServices = unknown>(
         ...(p.version ? { version: p.version } : {}),
         ...(p.changed ? { resumeChanged: p.changed } : {}),
         ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
+        // A run `on:` started stays held to its chain (src/packages/on.ts).
+        ...(p.runStart.onWrite ? { onWrite: p.runStart.onWrite } : {}),
         ...(p.runStart.origin === "peer" ? { origin: "peer" as const } : {}),
         ...(p.runStart.origin === "peer" && p.runStart.peerPerson ? { peerPerson: true } : {}),
         // A host's turn stays the host's: never an admin's, its sessions under it.
@@ -5591,7 +5621,7 @@ export async function createStrut<TServices = unknown>(
   let packageWrites: Promise<unknown> = Promise.resolve();
   // Each write seeds `job` again after it, in its turn (`seedJob`, above),
   // and makes the packages' schedules what they now ship (`syncSchedules`,
-  // below, where the automations are made).
+  // below, where the automations are made), and their `on:` (`syncOn`).
   const oneAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
     const next = packageWrites.then(async () => {
       try {
@@ -5600,6 +5630,7 @@ export async function createStrut<TServices = unknown>(
         await seedJob();
         await syncGitHosts();
         await syncSchedules();
+        await syncOn();
       }
     });
     packageWrites = next.catch(() => undefined);
@@ -8263,6 +8294,9 @@ export async function createStrut<TServices = unknown>(
        *  `peer:person`): the run may open its actor's own sessions. */
       peerPerson?: boolean;
       automation?: { id: string };
+      /** A package's `on:` started it (src/packages/on.ts): recorded on
+       *  `run.start`, its graph writes held to the chain. */
+      onWrite?: OnWriteMark;
       /** The app the run is launched for (`run/launch` under `ctx.app`):
        *  recorded with `origin: "app"`, handed to every step as `ctx.app`. */
       app?: AppRef;
@@ -8327,6 +8361,10 @@ export async function createStrut<TServices = unknown>(
     if (extra?.origin === "public" || (extra?.origin === "peer" && !extra.peerPerson) || (launcher && treeSpendsNot(launcher))) {
       noRemoteSpend.add(controller);
     }
+    // A run a package's `on:` started, and the job runs it starts, carry its
+    // mark (src/packages/on.ts): their writes are its work.
+    const onWrite = extra?.onWrite ?? (launcher ? onWriteMarkOf(launcher) : undefined);
+    if (onWrite) onWriteMarks.set(controller, onWrite);
     launchedAs.set(controller, {
       ...(extra?.app ? { app: extra.app } : {}),
       ...(extra?.actor ? { actor: extra.actor } : {}),
@@ -8417,6 +8455,7 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.origin === "host" && extra.host ? { host: extra.host } : {}),
         ...(extra?.continues ? { continues: extra.continues } : {}),
         ...(extra?.automation ? { automation: extra.automation } : {}),
+        ...(onWrite ? { onWrite } : {}),
         ...(extra?.app ? { app: extra.app } : {}),
         ...(extra?.actor ? { actor: extra.actor } : {}),
         ...(principal ? { principal } : {}),
@@ -9361,10 +9400,53 @@ export async function createStrut<TServices = unknown>(
     }
   };
   await syncSchedules();
+  // WORKFLOWS ON GRAPH WRITES (src/packages/on.ts, plans/package-seams.md
+  // §2): the `on:` entries installed packages ship, read at boot and after
+  // every package write (`oneAtATime`), so an uninstall drops them. Every
+  // run's graph view hands this each send's node writes (bindGraph,
+  // src/graph-writes.ts); a match launches its workflow detached, as the
+  // person of the run that wrote, with `{ ref_id, type, op, by, job? }`.
+  let packageTriggers: InstalledTrigger[] = [];
+  const syncOn = async (): Promise<void> => {
+    try {
+      const { triggers, unread } = await installedTriggers({ workspace, cache: packageStore, ...(graph ? { graph } : {}) });
+      packageTriggers = [...triggers, ...packageTriggers.filter((t) => unread.includes(t.package))];
+    } catch (err) {
+      console.warn("[on] could not read the packages' on: entries:", err instanceof Error ? err.message : err);
+    }
+  };
+  await syncOn();
+  const launchOn = async (t: InstalledTrigger, mark: OnWriteMark, actor: string, job: string | undefined): Promise<void> => {
+    const what = `${mark.op} ${mark.type} ${mark.ref_id}`;
+    try {
+      await assertWorkflowEnabled(workspace, t.workflow);
+      const flow = await workspace.getWorkflow(t.workflow);
+      // `job`: the writing run's, so a workflow can tell a job's write from a person's.
+      const input = { ref_id: mark.ref_id, type: mark.type, op: mark.op, by: mark.by, ...(job ? { job } : {}) };
+      const runId = launchDetached(flow, { input }, { actor, onWrite: mark });
+      console.log(`[on] ${what} (by ${mark.by}) started ${t.workflow} run ${runId}`);
+    } catch (err) {
+      console.warn(`[on] ${what} (by ${mark.by}) did not start ${t.workflow}:`, err instanceof Error ? err.message : err);
+    }
+  };
+  const onWrites: OnWrites = {
+    fire(writes, by) {
+      if (!packageTriggers.length) return;
+      // A nested run's writes are its parent's work: its mark, when it has one.
+      const mark = by.mark ?? onWriteMarkOf(controllersByRunId.get(by.runId));
+      const { launches, stopped } = matches(packageTriggers, writes, { ...by, ...(mark ? { mark } : {}) });
+      for (const { trigger, write } of stopped) {
+        console.warn(`[on] run ${by.runId}: ${write.op} ${write.type} ${write.ref_id} would start ${trigger.workflow}, but its chain of on: runs holds ${ON_CHAIN_MAX} already — nothing started`);
+      }
+      for (const { trigger, mark } of launches) void launchOn(trigger, mark, by.actor!, by.job);
+    },
+  };
   // The `automation/*` steps' door (src/steps/lib/automation/), unless the
   // consumer's bag brought its own: an automation made from a turn reports
   // where that turn does.
   const bag = services as Record<string, unknown>;
+  // What every run's graph view tells of its writes (src/graph-writes.ts).
+  bag["onWrites"] = onWrites;
   if (!bag["automations"]) {
     bag["automations"] = {
       api: automations,
@@ -11488,6 +11570,8 @@ export async function createStrut<TServices = unknown>(
   let serveBooted: Promise<unknown> = Promise.resolve();
   /** The ledger's daily sweep (plans/paid-runs.md §5, "Expiry"). */
   let ledgerSweepTimer: ReturnType<typeof setInterval> | undefined;
+  let nodeFilesSweepTimer: ReturnType<typeof setInterval> | undefined;
+  let nodeFilesSwept: Promise<void> | undefined;
 
   async function close(): Promise<void> {
     parking.close();
@@ -11497,6 +11581,9 @@ export async function createStrut<TServices = unknown>(
     bootTimer = undefined;
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
+    if (nodeFilesSweepTimer) clearInterval(nodeFilesSweepTimer);
+    nodeFilesSweepTimer = undefined;
+    await nodeFilesSwept;
     tasks.stop();
     publicTools.close();
     withdrawals.stop();
@@ -11644,6 +11731,26 @@ export async function createStrut<TServices = unknown>(
     if (ledgerOpen) void sweepLedger();
   }, 24 * 60 * 60 * 1000);
   ledgerSweepTimer.unref?.();
+  // A node gone for good takes its files (src/node-files.ts): at boot and
+  // daily, the folder of every node the graph holds no more — live or
+  // soft-deleted — goes, whoever removed the node. A read that fails keeps
+  // the folder.
+  const sweepNodeFiles = async () => {
+    if (!graph) return;
+    try {
+      const gone = await nodeFiles.sweep(async (ref) => !!(await graph.tx((tx) => graph.nodeEngine.readRaw(tx, ref)).catch(() => true)));
+      if (gone.length) console.log(`[node-files] ${gone.length} node(s) gone for good: their files removed`);
+    } catch (err) {
+      console.error(`[node-files] the sweep failed:`, err);
+    }
+  };
+  if (graph) {
+    nodeFilesSwept = sweepNodeFiles();
+    nodeFilesSweepTimer = setInterval(() => {
+      nodeFilesSwept = sweepNodeFiles();
+    }, 24 * 60 * 60 * 1000);
+    nodeFilesSweepTimer.unref?.();
+  }
   // The task store is the `task` SOURCE of parked runs (plans/human-steps.md
   // §2.3, §3): a `human` step parks on `task:<id>`; a task that leaves
   // `open` — answered, expired, cancelled — wakes its run, whose step runs

@@ -809,7 +809,7 @@ SecretStore iface + FileSecretStore (AES-256-GCM, STRUT_SECRET_KEY; optional fil
 
 ### `src/git-hosts.ts`
 
-GIT CREDENTIALS BY HOST (stadeum plans/software.md §5, item 9): `STRUT_GIT_HOSTS` (strut's own `github.com` → `GITHUB_TOKEN`), `tokenHost(url)` (the host a URL's token would serve: https, or http to this machine; else none), `gitSecretOf(hosts)` (the lookup, URL → secret NAME), `boxGitHosts(packages)` (strut's own entry, then each package's `provides.git`), `gitHostProblems` (a host two holders serve with different secrets: what an install refuses). The map reaches steps as `secrets.git(url)` (src/capabilities.ts `hideSecrets`); "Git credentials by host" above
+GIT CREDENTIALS BY HOST (stadeum plans/software.md §5, item 9): `STRUT_GIT_HOSTS` (strut's own `github.com` → `GITHUB_TOKEN`), `tokenHost(url)` (the host a URL's token would serve: https, or http to this machine; else none), `gitSecretOf(hosts)` (the lookup, URL → secret NAME), `boxGitHosts(packages)` (strut's own entry, then each package's `provides.git`), `gitHostProblems` (a host two holders serve with different secrets, or name different forge steps for: what an install refuses). The map reaches steps as `secrets.git(url)` (src/capabilities.ts `hideSecrets`); "Git credentials by host" above. An entry also names its host's FORGE STEPS (plans/package-seams.md §4): `repositories` and `pull_request`, full step types — strut's own entry `github.com` → `pull_request: github/create-pr` — read through `forgeStepsOf(hosts, host)` (the first holder's per field) by `git/repositories` and `git/pull-request` (docs/steps.md); the box's map itself is on the bag as `gitHosts.hosts()`, made again with the secrets' map after every package write
 
 ### `src/actor-secrets.ts`
 

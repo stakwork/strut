@@ -6,7 +6,7 @@
  * and implements the `from` invalidation ("re-run from this step", §5.2).
  */
 
-import type { AppRef, Flow, RunAttachment, RunEvent, RunTrial, StartedBy, Step, WakeMark } from "./core.js";
+import type { AppRef, Flow, OnWriteMark, RunAttachment, RunEvent, RunTrial, StartedBy, Step, WakeMark } from "./core.js";
 import type { SubflowResolver } from "./runner.js";
 
 /** Completed units: last `step.end` per path wins — a resumed log may carry
@@ -34,6 +34,9 @@ export function readRunStart(
   /** Set for a scheduled run — a resume keeps the stamp, so the summary it
    *  finally writes still names its automation (plans/automations.md §3). */
   automation?: { id: string };
+  /** Set for a run a package's `on:` started — a resume keeps it, so its
+   *  writes still fire no entry of its package. */
+  onWrite?: OnWriteMark;
   /** Who launched and who pays — a resume re-uses the recorded principal
    *  rather than re-deriving it (the owner may have changed since). */
   actor?: string;
@@ -91,6 +94,7 @@ export function readRunStart(
     paramOverrides: start.paramOverrides,
     parentRunId: start.parentRunId,
     automation: start.automation,
+    ...(start.onWrite ? { onWrite: start.onWrite } : {}),
     actor: start.actor,
     principal: start.principal,
     job: start.job,
