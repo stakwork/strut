@@ -423,7 +423,8 @@ describe("free public runs", () => {
     const capOf = async () => {
       const r = await launched("asks", {});
       const view = await ended("asks", r.runId, r.token);
-      return { cap: view.output.cap as number, link: verify(view.output.macaroon as string, policy, new Date()).effective_caveats.max_cost_usd };
+      // The run's block (after the person's grant and strut's delegation).
+      return { cap: view.output.cap as number, link: verify(view.output.macaroon as string, policy, new Date()).chain[2]!.max_cost_usd };
     };
     assert.deepEqual(await capOf(), { cap: 3, link: 3 }, "the item's per-run cap");
     await strut.workspace.setWorkflowRunCap("asks", 2);

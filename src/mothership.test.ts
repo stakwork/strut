@@ -1,9 +1,10 @@
 /**
  * Mothership cost control (plans/mothership-cost-control.md, "Validation"):
  * the macaroon strut builds passes gatekey's verifier with the step as the
- * billed agent; widening fails; caps resolve and refuse to exceed the
- * ceiling; the delegation file is invisible to the secrets boundary; the
- * routes check a delegation's shape. OFFLINE — no gateway, no provider.
+ * billed agent; a v2 chain cannot be shortened, a v1 link cannot widen; caps
+ * resolve (and, on v1, refuse to exceed the ceiling); the delegation file is
+ * invisible to the secrets boundary; the routes check a delegation's shape.
+ * OFFLINE — no gateway, no provider.
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -14,18 +15,8 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
-import {
-  attenuate,
-  attenuationSigBytes,
-  bytesToHex,
-  decodeMacaroon,
-  ecdsaPublicKey,
-  encodeMacaroon,
-  invocationSigBytes,
-  verify,
-  type Attenuation,
-  type Policy,
-} from "gatekey";
+import { attenuate, bytesToHex, decodeToken, ecdsaPublicKey, encodeToken, verify, type Policy, type Token } from "gatekey";
+import * as v1 from "gatekey-v1";
 
 import {
   createMothership,
@@ -46,18 +37,28 @@ import type { LlmAuthContext } from "./llm.js";
 import type { StrutCapabilities } from "./capabilities.js";
 import { defineStep, flow, step, type StepContext, type StepRegistry } from "./core.js";
 import { runWorkflow } from "./runner.js";
-import { mintDelegation, type MintOptions } from "./test-util/mint-delegation.js";
+import { mintDelegation, mintDelegationV1 } from "./test-util/mint-delegation.js";
 
-// ── Fixture: what hive mints — an org-signed UA + a user-signed standing invocation ──
+// ── Fixture: what the host mints — v2: the org's grant + the person's block
+// for strut-agent; v1: an org-signed UA + a user-signed standing invocation ──
 
 const ACTOR = "evan-cmx123";
 const orgPriv = randomBytes(32);
 orgPriv[0] = 1; // keep the scalar well inside the secp256k1 order
 const userPriv = randomBytes(32);
-const policy: Policy = { type: "single", key: { alg: "ecdsa-secp256k1-sha256", key: bytesToHex(ecdsaPublicKey(orgPriv)) } };
+const orgKey = { alg: "ecdsa-secp256k1-sha256", key: bytesToHex(ecdsaPublicKey(orgPriv)) } as const;
+const policy: Policy = { type: "single", key: orgKey };
+const policyV1: v1.Policy = { type: "single", key: orgKey };
 const hex16 = () => randomBytes(16).toString("hex");
-const mint = (o: Omit<MintOptions, "actor" | "orgPriv" | "userPriv"> = {}) =>
+type Minted = { macaroon: string; delegationId: string; exp: string };
+const mint = (o: Omit<Parameters<typeof mintDelegation>[0], "actor" | "orgPriv" | "userPriv"> = {}) =>
   mintDelegation({ actor: ACTOR, orgPriv, userPriv, ...o });
+const mintV1 = (o: Omit<Parameters<typeof mintDelegationV1>[0], "actor" | "orgPriv" | "userPriv"> = {}) =>
+  mintDelegationV1({ actor: ACTOR, orgPriv, userPriv, ...o });
+/** The token a grant's `x-macaroon` header carries. */
+const tokenOf = (g: { headers?: Record<string, string> } | undefined): Token => decodeToken(g!.headers!["x-macaroon"]!);
+/** A gatekey VerifyError with this code. */
+const code = (c: string) => (err: unknown) => (err as { code?: unknown }).code === c;
 
 /** A workspace stub: only what the hook reads (a workflow's run cap). */
 const workspaceWith = (caps: Record<string, number | undefined>): WorkspaceStore =>
@@ -103,23 +104,40 @@ describe("mothership: names and caps", () => {
     assert.throws(() => resolveRunCap(-1, {}), /positive number/);
   });
 
-  it("checkDelegationMacaroon: accepts hive's shape and copies out the id and the earlier exp", async () => {
-    const d = mint();
-    const checked = await checkDelegationMacaroon(d.macaroon);
-    assert.equal(checked.delegationId, d.delegationId);
-    assert.equal(checked.exp, d.exp);
-    assert.equal(checked.ceilingUsd, 10_000);
+  it("checkDelegationMacaroon: copies out the version, the id, the earliest exp and the ceiling, v2 and v1", async () => {
+    const d = mint({ ceiling: 50 });
+    assert.deepEqual(await checkDelegationMacaroon(d.macaroon), { v: 2, delegationId: d.delegationId, exp: d.exp, ceilingUsd: 50 });
+    const old = mintV1();
+    assert.deepEqual(await checkDelegationMacaroon(old.macaroon), { v: 1, delegationId: old.delegationId, exp: old.exp, ceilingUsd: 10_000 });
   });
 
-  it("checkDelegationMacaroon: rejects attenuated, wrong-agent, call-capped, ceiling-less and garbage macaroons", async () => {
+  it("checkDelegationMacaroon (v2): rejects an extended, wrong-agent, nameless, ceiling-less, proofless or expired delegation, and garbage", async () => {
     const base = mint();
-    const link = attenuate(invocationSigBytes(base.m.invocation), { agents: [STRUT_AGENT], run_id: "r", max_cost_usd: 1, max_steps: 0, exp: base.exp, nonce: hex16() });
-    await assert.rejects(() => checkDelegationMacaroon(encodeMacaroon({ ...base.m, attenuations: [link] })), /no attenuations/);
-    await assert.rejects(() => checkDelegationMacaroon(mint({ agents: ["browser-agent"] }).macaroon), /strut-agent/);
-    await assert.rejects(() => checkDelegationMacaroon(mint({ maxSteps: 200 }).macaroon), /max_steps must be 0/);
-    await assert.rejects(() => checkDelegationMacaroon(mint({ ceiling: 0 }).macaroon), /max_cost_usd/);
+    const edited = (edit: (t: Token) => void) => {
+      const t = structuredClone(base.token);
+      edit(t);
+      return encodeToken(t);
+    };
+    const now = new Date().toISOString();
+    const extended = attenuate(base.token, { run_id: "r", agent: "x", max_cost_usd: 1, iat: now, exp: base.exp, nonce: hex16() });
+    await assert.rejects(() => checkDelegationMacaroon(encodeToken(extended)), /two blocks/);
+    await assert.rejects(() => checkDelegationMacaroon(mint({ agent: "browser-agent" }).macaroon), /strut-agent/);
+    await assert.rejects(() => checkDelegationMacaroon(edited((t) => delete t.blocks[0]!.caveats.user_id)), /user_id/);
+    await assert.rejects(() => checkDelegationMacaroon(edited((t) => delete t.blocks[1]!.caveats.max_cost_usd)), /max_cost_usd/);
+    await assert.rejects(() => checkDelegationMacaroon(edited((t) => (t.proof = bytesToHex(randomBytes(32))))), /proof/);
+    await assert.rejects(() => checkDelegationMacaroon(edited((t) => (t.proof = "zz"))), /proof/);
+    await assert.rejects(() => checkDelegationMacaroon(mint({ ttlMs: -1000 }).macaroon), /expired/);
     await assert.rejects(() => checkDelegationMacaroon("not-a-macaroon"), /does not decode/);
-    await assert.rejects(() => checkDelegationMacaroon(Buffer.from('{"v":2}').toString("base64url")), /v=2/);
+    await assert.rejects(() => checkDelegationMacaroon(Buffer.from('{"v":3}').toString("base64url")), /v=3/);
+  });
+
+  it("checkDelegationMacaroon (v1): rejects attenuated, wrong-agent, call-capped and ceiling-less macaroons", async () => {
+    const base = mintV1();
+    const link = v1.attenuate(v1.invocationSigBytes(base.m.invocation), { agents: [STRUT_AGENT], run_id: "r", max_cost_usd: 1, max_steps: 0, exp: base.exp, nonce: hex16() });
+    await assert.rejects(() => checkDelegationMacaroon(v1.encodeMacaroon({ ...base.m, attenuations: [link] })), /no attenuations/);
+    await assert.rejects(() => checkDelegationMacaroon(mintV1({ agents: ["browser-agent"] }).macaroon), /strut-agent/);
+    await assert.rejects(() => checkDelegationMacaroon(mintV1({ maxSteps: 200 }).macaroon), /max_steps must be 0/);
+    await assert.rejects(() => checkDelegationMacaroon(mintV1({ ceiling: 0 }).macaroon), /max_cost_usd/);
   });
 
   it("explainExhausted: a 402 naming the delegation is 'exhausted'; one naming the run is left alone", () => {
@@ -147,7 +165,7 @@ describe("mothership: the llmAuth hook", () => {
     }
   });
 
-  const build = async (o: { caps?: Record<string, number | undefined>; delegation?: ReturnType<typeof mint>; runCapDefault?: number; now?: () => Date } = {}) => {
+  const build = async (o: { caps?: Record<string, number | undefined>; delegation?: Minted; runCapDefault?: number; now?: () => Date } = {}) => {
     const store = new MemorySecretStore();
     const ms = createMothership({ dataDir: "/nonexistent", store, runCapDefault: o.runCapDefault, now: o.now });
     ms.mount({ app: new Hono(), workspace: workspaceWith(o.caps ?? {}) });
@@ -157,7 +175,8 @@ describe("mothership: the llmAuth hook", () => {
   };
 
   it("a step call: the gateway URL, the virtual key, and a macaroon that verifies with the STEP as the billed agent", async () => {
-    const { ms, d } = await build({ caps: { digest: 5 } });
+    const d = mint();
+    const { ms } = await build({ caps: { digest: 5 }, delegation: d });
     const grant = (await ms.llmAuth(stepCtx()))!;
     assert.equal(grant.apiKey, "vk-evan");
     assert.equal(grant.baseUrl, "https://swarm.example:8181");
@@ -168,43 +187,41 @@ describe("mothership: the llmAuth hook", () => {
     assert.equal(claims.agent_name, "digest.loop.summarize");
     assert.equal(claims.run_id, "1700000000000");
     assert.equal(claims.user_id, ACTOR);
-    assert.equal(claims.effective_caveats.max_cost_usd, 5, "the workflow's maxRunCostUsd is the run cap");
-    assert.equal(claims.effective_caveats.max_steps, 0);
-    assert.deepEqual(claims.effective_caveats.agents, [STRUT_AGENT, "digest.loop.summarize"]);
-
-    // Three layers, two run ids: [run, delegation] is what the gateway enforces.
-    const m = decodeMacaroon(grant.headers!["x-macaroon"]!);
-    assert.equal(m.attenuations.length, 2);
-    const runIds = new Set([m.invocation.run_id, ...m.attenuations.map((a) => a.caveats.run_id)]);
-    assert.deepEqual([...runIds].sort(), [d.delegationId, "1700000000000"].sort());
-    assert.deepEqual(m.attenuations[0]!.caveats.agents, [STRUT_AGENT]);
-    assert.equal(m.attenuations[0]!.caveats.max_cost_usd, 5);
-    assert.equal(m.attenuations[1]!.caveats.max_cost_usd, 5, "the step link restates the run cap");
-    assert.equal(m.attenuations[1]!.caveats.exp, m.attenuations[0]!.caveats.exp);
+    assert.deepEqual(claims.lineage, [STRUT_AGENT, "digest.loop.summarize"]);
+    // Four blocks, each capped at the gateway: the person's grant, strut's
+    // delegation (the ceiling), the run (the workflow's maxRunCostUsd), and
+    // the step (the run's id and cap again: one counter). No call-count cap.
+    assert.deepEqual(
+      claims.chain.map((l) => [l.run_id, l.max_cost_usd, l.max_steps]),
+      [[d.token.blocks[0]!.caveats.run_id, 0, 0], [d.delegationId, 10_000, 0], ["1700000000000", 5, 0], ["1700000000000", 5, 0]],
+    );
+    const t = tokenOf(grant);
+    assert.equal(t.blocks[2]!.caveats.agent, undefined, "the run's block is strut-agent's own");
+    assert.equal(t.blocks[3]!.caveats.exp, t.blocks[2]!.caveats.exp);
   });
 
   it("the run link is shared by every step of a run and differs between runs", async () => {
     const { ms } = await build();
-    const a = decodeMacaroon((await ms.llmAuth(stepCtx({ stepPath: "digest/fetch" })))!.headers!["x-macaroon"]!);
-    const b = decodeMacaroon((await ms.llmAuth(stepCtx({ stepPath: "digest/summarize" })))!.headers!["x-macaroon"]!);
-    const c = decodeMacaroon((await ms.llmAuth(stepCtx({ runId: "1700000000001" })))!.headers!["x-macaroon"]!);
-    assert.equal(a.attenuations[0]!.hmac, b.attenuations[0]!.hmac, "same run → same run link");
-    assert.notEqual(a.attenuations[1]!.hmac, b.attenuations[1]!.hmac, "different step → different step link");
-    assert.notEqual(a.attenuations[0]!.hmac, c.attenuations[0]!.hmac, "different run → different run link");
-    assert.equal(verify(encodeMacaroon(b), policy, new Date()).agent_name, "digest.summarize");
+    const a = tokenOf(await ms.llmAuth(stepCtx({ stepPath: "digest/fetch" })));
+    const b = tokenOf(await ms.llmAuth(stepCtx({ stepPath: "digest/summarize" })));
+    const c = tokenOf(await ms.llmAuth(stepCtx({ runId: "1700000000001" })));
+    assert.deepEqual(a.blocks[2], b.blocks[2], "same run → same run block");
+    assert.notDeepEqual(a.blocks[3], b.blocks[3], "different step → different step block");
+    assert.notDeepEqual(a.blocks[2], c.blocks[2], "different run → different run block");
+    assert.equal(verify(b, policy, new Date()).agent_name, "digest.summarize");
   });
 
-  it("the cap resolves workflow → env → default, and a cap above the ceiling fails before any call, naming both", async () => {
+  it("the cap resolves workflow → env → default; above the ceiling it is no error, and the ceiling's block still binds", async () => {
     const { ms } = await build({ caps: { capped: 2, uncapped: undefined }, runCapDefault: 25, delegation: mint({ ceiling: 50 }) });
-    const cap = async (workflow: string, runId: string) =>
-      verify((await ms.llmAuth(stepCtx({ workflow, runId, stepPath: `${workflow}/s` })))!.headers!["x-macaroon"]!, policy, new Date()).effective_caveats.max_cost_usd;
-    assert.equal(await cap("capped", "1"), 2);
-    assert.equal(await cap("uncapped", "2"), 25);
+    const caps = async (workflow: string, runId: string) =>
+      verify((await ms.llmAuth(stepCtx({ workflow, runId, stepPath: `${workflow}/s` })))!.headers!["x-macaroon"]!, policy, new Date()).chain.map((l) => l.max_cost_usd);
+    assert.equal((await caps("capped", "1"))[2], 2);
+    assert.equal((await caps("uncapped", "2"))[2], 25);
     process.env["STRUT_RUN_MAX_COST_USD"] = "9";
-    assert.equal(await cap("uncapped", "3"), 9);
-    assert.equal(await cap("capped", "4"), 2, "the workflow's own cap wins over env");
+    assert.equal((await caps("uncapped", "3"))[2], 9);
+    assert.equal((await caps("capped", "4"))[2], 2, "the workflow's own cap wins over env");
     process.env["STRUT_RUN_MAX_COST_USD"] = "500";
-    await assert.rejects(() => ms.llmAuth(stepCtx({ workflow: "uncapped", runId: "5", stepPath: "uncapped/s" })), /cap \$500 exceeds the delegation ceiling \$50/);
+    assert.deepEqual(await caps("uncapped", "5"), [0, 50, 500, 500], "the run says $500; the delegation's block stops it at $50");
     process.env["STRUT_RUN_MAX_COST_USD"] = "0";
     await assert.rejects(() => ms.llmAuth(stepCtx({ workflow: "uncapped", runId: "6", stepPath: "uncapped/s" })), /positive number/);
   });
@@ -212,7 +229,7 @@ describe("mothership: the llmAuth hook", () => {
   it("a run's own cap (a public run's, plans/paid-runs.md §7): the link carries the smaller of it and the workflow's", async () => {
     const { ms } = await build({ caps: { capped: 5, uncapped: undefined }, runCapDefault: 25 });
     const cap = async (workflow: string, runId: string, maxCostUsd?: number) =>
-      verify((await ms.llmAuth(stepCtx({ workflow, runId, stepPath: `${workflow}/s`, ...(maxCostUsd !== undefined ? { maxCostUsd } : {}) })))!.headers!["x-macaroon"]!, policy, new Date()).effective_caveats.max_cost_usd;
+      verify((await ms.llmAuth(stepCtx({ workflow, runId, stepPath: `${workflow}/s`, ...(maxCostUsd !== undefined ? { maxCostUsd } : {}) })))!.headers!["x-macaroon"]!, policy, new Date()).chain[2]!.max_cost_usd;
     assert.equal(await cap("capped", "1", 3), 3, "the run's, below the workflow's");
     assert.equal(await cap("capped", "2", 8), 5, "the workflow's, below the run's");
     assert.equal(await cap("uncapped", "3", 0.5), 0.5, "the run's, below the default");
@@ -220,30 +237,30 @@ describe("mothership: the llmAuth hook", () => {
     await assert.rejects(() => ms.llmAuth(stepCtx({ workflow: "capped", runId: "5", stepPath: "capped/s", maxCostUsd: 0 })), /positive number/);
   });
 
-  it("a widened link is what the gateway rejects: more money, a dropped ancestor, a call cap, a longer life", async () => {
-    const { ms, d } = await build({ caps: { digest: 5 } });
-    const good = decodeMacaroon((await ms.llmAuth(stepCtx()))!.headers!["x-macaroon"]!);
-    const run = good.attenuations[0]!;
-    const widen = (caveats: Partial<Attenuation["caveats"]>) => {
-      const link = attenuate(attenuationSigBytes(run), { ...good.attenuations[1]!.caveats, nonce: hex16(), ...caveats });
-      return () => verify({ ...good, attenuations: [run, link] }, policy, new Date());
-    };
-    assert.throws(widen({ max_cost_usd: 6 }), /attenuation_widened|max_cost_usd/);
-    assert.throws(widen({ agents: ["digest.loop.summarize"] }), /dropped parent entry/);
-    assert.throws(widen({ max_steps: 1 }), /max_steps/);
-    assert.throws(widen({ exp: new Date(Date.now() + 61 * 86_400_000).toISOString() }), /exp/);
-    assert.throws(widen({ run_id: "other", max_cost_usd: 10_001 }), /max_cost_usd/);
-    // And the real thing, untouched, is fine — the delegation's own exp bounds it.
-    assert.equal(verify(good, policy, new Date()).effective_caveats.max_cost_usd, 5);
-    assert.ok(run.caveats.exp <= d.exp);
+  it("a chain cannot be shortened back to its parent's (invalid_proof) or edited in place; it can only be extended", async () => {
+    const { ms } = await build({ caps: { digest: 5 } });
+    const t = tokenOf(await ms.llmAuth(stepCtx()));
+    assert.doesNotThrow(() => verify(t, policy, new Date()));
+    // A step's holder drops its block to get the run's token back, or the
+    // run's too to get strut's delegation: the proof is the step's key.
+    for (const n of [3, 2, 1]) assert.throws(() => verify({ ...t, blocks: t.blocks.slice(0, n) }, policy, new Date()), code("invalid_proof"), `${n} blocks`);
+    // Raising a cap in place breaks that block's signature.
+    const raised = structuredClone(t);
+    raised.blocks[2]!.caveats.max_cost_usd = 10_000;
+    assert.throws(() => verify(raised, policy, new Date()), code("invalid_block_signature"));
+    // What it can do is append, under every cap above it.
+    const now = new Date().toISOString();
+    const sub = verify(attenuate(t, { run_id: "sub", agent: "sub-agent", max_cost_usd: 1, iat: now, exp: t.blocks[3]!.caveats.exp, nonce: hex16() }), policy, new Date());
+    assert.equal(sub.agent_name, "sub-agent");
+    assert.deepEqual(sub.chain.map((l) => l.max_cost_usd), [0, 10_000, 5, 5, 1]);
   });
 
-  it("links get shorter in the delegation's last hours (never outlive the invocation)", async () => {
+  it("links get shorter in the delegation's last hours (never outlive it)", async () => {
     const soon = mint({ ttlMs: 2 * 3600_000 });
     const { ms } = await build({ delegation: soon });
-    const m = decodeMacaroon((await ms.llmAuth(stepCtx()))!.headers!["x-macaroon"]!);
-    assert.equal(m.attenuations[0]!.caveats.exp, soon.exp, "the parent's own exp string, verbatim");
-    assert.doesNotThrow(() => verify(m, policy, new Date()));
+    const t = tokenOf(await ms.llmAuth(stepCtx()));
+    assert.equal(t.blocks[2]!.caveats.exp, soon.exp, "the delegation's own exp string, verbatim");
+    assert.doesNotThrow(() => verify(t, policy, new Date()));
   });
 
   it("a chat turn: billed as the assistant, one gateway run per turn, the chat as the session", async () => {
@@ -252,8 +269,9 @@ describe("mothership: the llmAuth hook", () => {
     const claims = verify(grant.headers!["x-macaroon"]!, policy, new Date());
     assert.equal(claims.agent_name, STRUT_ASSISTANT);
     assert.equal(claims.run_id, "chat-7.3");
-    assert.deepEqual(claims.effective_caveats.agents, [STRUT_AGENT, STRUT_ASSISTANT]);
-    assert.equal(claims.effective_caveats.max_cost_usd, 12);
+    assert.deepEqual(claims.lineage, [STRUT_AGENT, STRUT_ASSISTANT]);
+    assert.equal(claims.chain.length, 3, "one block off the delegation");
+    assert.equal(claims.chain[2]!.max_cost_usd, 12);
     assert.equal(grant.headers!["x-bf-dim-session-id"], "chat-7");
   });
 
@@ -273,13 +291,70 @@ describe("mothership: the llmAuth hook", () => {
 
   it("a re-pushed delegation replaces a cached run link (the old chain would no longer verify)", async () => {
     const { ms } = await build();
-    const before = decodeMacaroon((await ms.llmAuth(stepCtx()))!.headers!["x-macaroon"]!);
+    const before = tokenOf(await ms.llmAuth(stepCtx()));
     const fresh = mint();
     await ms.delegations.put(ACTOR, { macaroon: fresh.macaroon, delegationId: fresh.delegationId, apiKey: "vk-2", baseUrl: "https://g", exp: fresh.exp });
-    const after = decodeMacaroon((await ms.llmAuth(stepCtx()))!.headers!["x-macaroon"]!);
-    assert.equal(after.invocation.run_id, fresh.delegationId);
-    assert.notEqual(after.attenuations[0]!.hmac, before.attenuations[0]!.hmac);
+    const after = tokenOf(await ms.llmAuth(stepCtx()));
+    assert.equal(after.blocks[1]!.caveats.run_id, fresh.delegationId);
+    assert.notDeepEqual(after.blocks[2], before.blocks[2]);
     assert.doesNotThrow(() => verify(after, policy, new Date()));
+  });
+
+  // ── v1 (gatekey 0.x): a delegation Hive minted, for stakgraph's gateway on the swarms ──
+
+  it("v1: a step call is the run's and the step's HMAC links, max_steps 0 and the lineage restated, the step billed", async () => {
+    const d = mintV1();
+    const { ms } = await build({ caps: { digest: 5 }, delegation: d });
+    const header = (await ms.llmAuth(stepCtx()))!.headers!["x-macaroon"]!;
+    const claims = v1.verify(header, policyV1, new Date());
+    assert.equal(claims.agent_name, "digest.loop.summarize");
+    assert.equal(claims.run_id, "1700000000000");
+    assert.equal(claims.user_id, ACTOR);
+    assert.equal(claims.effective_caveats.max_cost_usd, 5);
+    assert.equal(claims.effective_caveats.max_steps, 0);
+    assert.deepEqual(claims.effective_caveats.agents, [STRUT_AGENT, "digest.loop.summarize"]);
+    const m = v1.decodeMacaroon(header);
+    assert.equal(m.invocation.run_id, d.delegationId);
+    assert.deepEqual(m.attenuations.map((a) => [a.caveats.agents, a.caveats.run_id, a.caveats.max_cost_usd]), [
+      [[STRUT_AGENT], "1700000000000", 5],
+      [[STRUT_AGENT, "digest.loop.summarize"], "1700000000000", 5],
+    ]);
+    // The run link is shared by the run's steps.
+    const next = v1.decodeMacaroon((await ms.llmAuth(stepCtx({ stepPath: "digest/fetch" })))!.headers!["x-macaroon"]!);
+    assert.equal(next.attenuations[0]!.hmac, m.attenuations[0]!.hmac);
+    assert.notEqual(next.attenuations[1]!.hmac, m.attenuations[1]!.hmac);
+  });
+
+  it("v1: a widened link is what the gateway rejects: more money, a dropped ancestor, a call cap, a longer life", async () => {
+    const { ms } = await build({ caps: { digest: 5 }, delegation: mintV1() });
+    const good = v1.decodeMacaroon((await ms.llmAuth(stepCtx()))!.headers!["x-macaroon"]!);
+    const run = good.attenuations[0]!;
+    const widen = (caveats: Partial<v1.Attenuation["caveats"]>) => {
+      const link = v1.attenuate(v1.attenuationSigBytes(run), { ...good.attenuations[1]!.caveats, nonce: hex16(), ...caveats });
+      return () => v1.verify({ ...good, attenuations: [run, link] }, policyV1, new Date());
+    };
+    assert.throws(widen({ max_cost_usd: 6 }), /attenuation_widened|max_cost_usd/);
+    assert.throws(widen({ agents: ["digest.loop.summarize"] }), /dropped parent entry/);
+    assert.throws(widen({ max_steps: 1 }), /max_steps/);
+    assert.throws(widen({ exp: new Date(Date.now() + 61 * 86_400_000).toISOString() }), /exp/);
+    assert.equal(v1.verify(good, policyV1, new Date()).effective_caveats.max_cost_usd, 5);
+  });
+
+  it("v1: a cap above the ceiling fails before any call, naming both (the gateway would refuse the link)", async () => {
+    const { ms } = await build({ caps: { uncapped: undefined }, delegation: mintV1({ ceiling: 50 }) });
+    process.env["STRUT_RUN_MAX_COST_USD"] = "500";
+    await assert.rejects(() => ms.llmAuth(stepCtx({ workflow: "uncapped", runId: "5", stepPath: "uncapped/s" })), /cap \$500 exceeds the delegation ceiling \$50/);
+    await assert.rejects(() => ms.llmAuth({ kind: "chat", provider: "openai", chatId: "c", actor: ACTOR, principal: ACTOR }), /exceeds the delegation ceiling/);
+  });
+
+  it("v1: a chat turn is one link off the invocation, billed as the assistant", async () => {
+    const { ms } = await build({ runCapDefault: 12, delegation: mintV1() });
+    const grant = (await ms.llmAuth({ kind: "chat", provider: "openai", chatId: "chat-7", turn: 3, actor: ACTOR, principal: ACTOR }))!;
+    const claims = v1.verify(grant.headers!["x-macaroon"]!, policyV1, new Date());
+    assert.equal(claims.agent_name, STRUT_ASSISTANT);
+    assert.equal(claims.run_id, "chat-7.3");
+    assert.deepEqual(claims.effective_caveats.agents, [STRUT_AGENT, STRUT_ASSISTANT]);
+    assert.equal(claims.effective_caveats.max_cost_usd, 12);
   });
 
   it("the grant's explainError maps only the delegation's own 402", async () => {
@@ -370,8 +445,8 @@ describe("mothership: routes and the delegation file", () => {
 
     const put = await call("PUT", `/llm/delegations/${encodeURIComponent(ACTOR)}`, { macaroon: d.macaroon, apiKey: "vk-evan", baseUrl: "https://swarm.example:8181/" });
     assert.equal(put.status, 200, JSON.stringify(put.json));
-    assert.deepEqual(put.json, { actor: ACTOR, exp: d.exp, delegationId: d.delegationId });
-    assert.deepEqual((await call("GET", "/llm/delegations")).json, [{ actor: ACTOR, exp: d.exp, delegationId: d.delegationId }]);
+    assert.deepEqual(put.json, { actor: ACTOR, exp: d.exp, delegationId: d.delegationId, v: 2 });
+    assert.deepEqual((await call("GET", "/llm/delegations")).json, [{ actor: ACTOR, exp: d.exp, delegationId: d.delegationId, v: 2 }]);
 
     // Never on the services bag, never in the Secrets list, and its own file.
     const secrets = (strut.services as { secrets: { get(n: string): Promise<string | undefined> } }).secrets;
@@ -388,12 +463,23 @@ describe("mothership: routes and the delegation file", () => {
     assert.deepEqual((await call("GET", "/llm/delegations")).json, []);
   });
 
+  it("GET reports each delegation's version, so the host can re-mint a v1 one: a record from before v2 is v1", async () => {
+    const { ms, call } = await boot();
+    const old = mintV1();
+    const put = await call("PUT", `/llm/delegations/hive-user`, { macaroon: old.macaroon, apiKey: "k", baseUrl: "https://g" });
+    assert.deepEqual(put.json, { actor: "hive-user", exp: old.exp, delegationId: old.delegationId, v: 1 });
+    await ms.delegations.put("older", { macaroon: old.macaroon, delegationId: old.delegationId, apiKey: "k", baseUrl: "https://g", exp: old.exp });
+    const list = (await call("GET", "/llm/delegations")).json as Array<{ actor: string; v: number }>;
+    assert.deepEqual(list.map((d) => [d.actor, d.v]).sort(), [["hive-user", 1], ["older", 1]]);
+  });
+
   it("PUT rejects the wrong kind of macaroon, a missing key, a bad URL — and needs the deployment key when one is set", async () => {
     const { call } = await boot();
     const d = mint();
     const put = (body: unknown, headers?: Record<string, string>) => call("PUT", `/llm/delegations/${ACTOR}`, body, headers);
-    assert.equal((await put({ macaroon: mint({ maxSteps: 40 }).macaroon, apiKey: "k", baseUrl: "https://g" })).status, 400);
-    assert.equal((await put({ macaroon: mint({ agents: ["other"] }).macaroon, apiKey: "k", baseUrl: "https://g" })).status, 400);
+    assert.equal((await put({ macaroon: mintV1({ maxSteps: 40 }).macaroon, apiKey: "k", baseUrl: "https://g" })).status, 400);
+    assert.equal((await put({ macaroon: mint({ agent: "other" }).macaroon, apiKey: "k", baseUrl: "https://g" })).status, 400);
+    assert.equal((await put({ macaroon: mint({ ttlMs: -1000 }).macaroon, apiKey: "k", baseUrl: "https://g" })).status, 400);
     assert.equal((await put({ macaroon: d.macaroon, baseUrl: "https://g" })).status, 400);
     assert.equal((await put({ macaroon: d.macaroon, apiKey: "k", baseUrl: "swarm:8181" })).status, 400);
     assert.equal((await put({ macaroon: "zzz", apiKey: "k", baseUrl: "https://g" })).status, 400);
@@ -451,7 +537,7 @@ describe("mothership: grants for a machine outside strut", () => {
     return { fetch, calls, keys };
   };
 
-  const build = async (o: { delegation?: ReturnType<typeof mint>; now?: () => Date; answer?: (c: HostCall) => Response | undefined } = {}) => {
+  const build = async (o: { delegation?: Minted; now?: () => Date; answer?: (c: HostCall) => Response | undefined } = {}) => {
     const host = fakeHost(o.answer);
     const ms = createMothership({ dataDir: "/nonexistent", store: new MemorySecretStore(), grantsUrl: `${URL}/`, fetch: host.fetch, now: o.now });
     const d = o.delegation ?? mint();
@@ -479,7 +565,7 @@ describe("mothership: grants for a machine outside strut", () => {
     assert.equal(call.headers["x-strut-actor"], ACTOR);
     assert.deepEqual(Object.keys(call.body).sort(), ["expires_at", "macaroon", "max_cost_usd", "name"]);
     assert.equal(call.body.name, "pod_hive", "the name the gateway bills, as the host takes it: [A-Za-z0-9._-]{1,64}");
-    assert.equal(call.body.max_cost_usd, 1000, "the default cap, sent so the host holds the key to it too");
+    assert.equal(call.body.max_cost_usd, 1000, "the default cap, sent so the host can hold the key to it too");
     assert.equal(call.body.expires_at, g.expiresAt);
     const exp = Date.parse(g.expiresAt);
     assert.ok(exp >= before + 2 * 3600_000 && exp <= Date.now() + 2 * 3600_000, g.expiresAt);
@@ -487,12 +573,14 @@ describe("mothership: grants for a machine outside strut", () => {
     const claims = verify(call.body.macaroon, policy, new Date());
     assert.equal(claims.user_id, ACTOR);
     assert.equal(claims.agent_name, "pod_hive", "billed as the grant's name");
-    assert.deepEqual(claims.effective_caveats.agents, [STRUT_AGENT, "pod_hive"]);
+    assert.deepEqual(claims.lineage, [STRUT_AGENT, "pod_hive"]);
     assert.match(claims.run_id, /^grant-[0-9a-f]+$/);
-    assert.equal(claims.effective_caveats.max_cost_usd, 1000);
-    assert.equal(claims.effective_caveats.max_steps, 0);
-    assert.equal(decodeMacaroon(call.body.macaroon).attenuations.length, 1, "one link, off the invocation: no run's cap above it");
-    assert.throws(() => verify(call.body.macaroon, policy, new Date(exp + 1000)), /expired/);
+    assert.deepEqual(claims.chain.map((l) => l.max_cost_usd), [0, 10_000, 1000], "one block off the delegation: no run's cap above it");
+    assert.equal(claims.chain[2]!.max_steps, 0);
+    assert.throws(() => verify(call.body.macaroon, policy, new Date(exp + 1000)), code("macaroon_expired"));
+    // The pod cannot drop the grant's block to spend under the person's delegation.
+    const t = decodeToken(call.body.macaroon);
+    assert.throws(() => verify({ ...t, blocks: t.blocks.slice(0, 2) }, policy, new Date()), code("invalid_proof"));
 
     const again = (await grants.forPrincipal!(ACTOR).grant({ name: "pod hive", hours: 2 }))!;
     assert.equal(again.id, "pk-2");
@@ -504,7 +592,7 @@ describe("mothership: grants for a machine outside strut", () => {
     const mine = grants.forPrincipal!(ACTOR);
     const capOf = (i: number) => {
       const c = host.calls[i]!;
-      assert.equal(verify(c.body.macaroon, policy, new Date()).effective_caveats.max_cost_usd, c.body.max_cost_usd, "the link and the key carry the same cap");
+      assert.equal(verify(c.body.macaroon, policy, new Date()).chain[2]!.max_cost_usd, c.body.max_cost_usd, "the link and the key carry the same cap");
       return c.body.max_cost_usd;
     };
     process.env["STRUT_GRANT_MAX_COST_USD"] = "2.5";
@@ -529,6 +617,17 @@ describe("mothership: grants for a machine outside strut", () => {
     const g = (await grants.forPrincipal!(ACTOR).grant({ name: "pod", hours: 24 }))!;
     assert.equal(g.expiresAt, soon.exp, "the parent's own exp string, verbatim");
     assert.doesNotThrow(() => verify(host.calls[0]!.body.macaroon, policy, new Date()));
+  });
+
+  it("v1: one HMAC link off the invocation, capped and billed as the grant (the host holds the key to the cap)", async () => {
+    const { grants, host } = await build({ delegation: mintV1({ ceiling: 50 }) });
+    await grants.forPrincipal!(ACTOR).grant({ name: "pod", hours: 1 });
+    const claims = v1.verify(host.calls[0]!.body.macaroon, policyV1, new Date());
+    assert.equal(claims.agent_name, "pod");
+    assert.deepEqual(claims.effective_caveats.agents, [STRUT_AGENT, "pod"]);
+    assert.equal(claims.effective_caveats.max_cost_usd, 50, "lowered to the ceiling: v1's gateway refuses a wider link");
+    assert.equal(host.calls[0]!.body.max_cost_usd, 50);
+    assert.equal(v1.decodeMacaroon(host.calls[0]!.body.macaroon).attenuations.length, 1);
   });
 
   it("no principal, or no delegation for it: null and the host never asked; required mode makes both an error; an expired one is always an error", async () => {
