@@ -28,6 +28,13 @@
  *   Sphinx iOS app registers it too). Both taps copy `sphinx.chat://?<q>`,
  *   exactly as Android's does, for a Peel with no account to read on first
  *   launch. Neither navigation is prevented.
+ * - **Once Peel has opened** on this phone it drops Get Peel: no page can
+ *   ask whether an app is installed, but a tap on Open followed by the page
+ *   going hidden (within 30s) means Peel opened. That is remembered
+ *   (`localStorage.peel_opened`), and from then on, the way back included,
+ *   the page hides what only installs Peel (`#testflight` and `#tf-hint` on
+ *   an iPhone, `#installs` on Android). Everything else stays, Copy invite
+ *   included: Peel opening does not mean the invite worked.
  * - **Anywhere else** it says to open the link on a phone and draws
  *   a QR code of its own URL, invite included, with qrcode-generator's
  *   browser build served beside it (`/public/join/qrcode.js`).
@@ -146,13 +153,30 @@ export const JOIN_SCRIPT = `(function () {
       } catch (e) { old(); }
     };
   }
+  // The app already here (see "Once ... has opened" above): a tap on Open, then the page hidden
+  // within 30s. Remembered on this phone; from then on what only installs the app is hidden.
+  var KEY = "peel_opened";
+  var tapped = 0;
+  var installed = function () {
+    var ids = ["installs", "testflight", "tf-hint"];
+    for (var i = 0; i < ids.length; i++) { var e = document.getElementById(ids[i]); if (e) e.hidden = true; }
+  };
+  try { if (localStorage.getItem(KEY) === "1") installed(); } catch (e) {}
+  var tap = function () { copy(); tapped = Date.now(); };
+  if (document.addEventListener) {
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden || !tapped || Date.now() - tapped > 30000) return;
+      try { localStorage.setItem(KEY, "1"); } catch (e) {}
+      installed();
+    });
+  }
   if (/Android/i.test(navigator.userAgent)) {
     var point = function (fallback) {
       var href = "intent://?" + q + "#Intent;scheme=sphinx.chat;package=" + PKG + ";S.browser_fallback_url=" + encodeURIComponent(fallback) + ";end";
       document.getElementById("open").href = href;
     };
     point(RELEASES);
-    document.getElementById("open").onclick = copy;
+    document.getElementById("open").onclick = tap;
     show("android");
     // The newest APK itself, so no app yet is one tap to download.
     fetch(LATEST, { headers: { accept: "application/vnd.github+json" }, credentials: "omit", referrerPolicy: "no-referrer" })
@@ -169,7 +193,7 @@ export const JOIN_SCRIPT = `(function () {
     document.getElementById("testflight").href = TESTFLIGHT;
     document.getElementById("open-ios").href = "peel://join?" + q;
     document.getElementById("testflight").onclick = copy;
-    document.getElementById("open-ios").onclick = copy;
+    document.getElementById("open-ios").onclick = tap;
     show("ios");
   } else {
     show("elsewhere");
@@ -323,11 +347,11 @@ export function joinPage(name?: string, lang: JoinLang = "en"): string {
 <p id="bad" hidden>${w.bad}</p>
 <div id="android" hidden>
 <a id="open" class="button" href="#">${w.open}</a>
-<p class="muted">${w.installs}</p>
+<p id="installs" class="muted">${w.installs}</p>
 </div>
 <div id="ios" hidden>
 <a id="testflight" class="button" href="#">${w.getPeel}</a>
-<p class="muted">${w.tfHint} <a href="${IOS_TESTFLIGHT_APP}">${w.tfApp}</a></p>
+<p id="tf-hint" class="muted">${w.tfHint} <a href="${IOS_TESTFLIGHT_APP}">${w.tfApp}</a></p>
 <a id="open-ios" class="button" href="#">${w.open}</a>
 <p class="muted">${w.haveIt}</p>
 </div>
