@@ -21,7 +21,7 @@
  *
  * Pure: no engine.
  */
-import { CHECK_TYPE, CLAIM_TYPE, EVIDENCE_TYPE } from "./claims.js";
+import { CHECK_TYPE, CLAIM_TYPE, EVIDENCE_TYPE, TESTCASE_TYPE } from "./claims.js";
 import type { NodeSchema } from "./schema-resolver.js";
 import type { AttrType } from "./strut-schemas.js";
 
@@ -51,7 +51,7 @@ export const seedType = (
   ...rules,
 });
 
-/** Claim, Check, Evidence, Concept. */
+/** Claim, Check, Evidence, TestCase, Concept. */
 export const SEED_TYPES: readonly NodeSchema[] = [
   seedType(CLAIM_TYPE, "claim-id", ["name", "claim_text", "speaker_name"], "name", "claim_text", {
     id: "string",
@@ -84,6 +84,16 @@ export const SEED_TYPES: readonly NodeSchema[] = [
     evidence_status: "?string",
     observed_at: "?datetime",
   }),
+  // One input to a workflow, shared by the claims it `TESTS` (src/trials.ts):
+  // its id is a hash of the two, its name the line the Knowledge app shows.
+  // Never embedded: a case is found from its claims, never by search.
+  { ...seedType(TESTCASE_TYPE, "testcase-id", ["name"], "name", "name", {
+    id: "string",
+    name: "?string",
+    case_workflow: "string",
+    /** The workflow's input, as JSON. */
+    case_input: "string",
+  }), embed: false },
   seedType(CONCEPT_TYPE, "concept-name", ["name", "description", "docs"], "name", "description", {
     name: "string",
     description: "?string",
@@ -109,6 +119,7 @@ export const SEED_DOMAINS: Readonly<Record<string, string>> = {
   [CLAIM_TYPE]: "Epistemic",
   [CHECK_TYPE]: "Epistemic",
   [EVIDENCE_TYPE]: "Epistemic",
+  [TESTCASE_TYPE]: "Epistemic",
   [CONCEPT_TYPE]: "General",
 };
 
@@ -138,6 +149,7 @@ export const SEED_EDGES: readonly SeedEdgeDef[] = [
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutStepVersion" },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutRun" },
   { edge: "TESTS", source: CHECK_TYPE, target: CLAIM_TYPE },
+  { edge: "TESTS", source: TESTCASE_TYPE, target: CLAIM_TYPE },
   { edge: "EVIDENCED_BY", source: CLAIM_TYPE, target: EVIDENCE_TYPE },
   { edge: "PRODUCED_BY", source: EVIDENCE_TYPE, target: CHECK_TYPE },
   // A run check's evidence has the run as its source; a publish check's has

@@ -6,10 +6,10 @@ import { STRUT_EDGES, STRUT_SCHEMAS } from "../strut-schemas.js";
 import { EDGE_COLUMNS, EDGE_TYPE_COLUMNS, GENERIC_COLUMNS, LADYBUG_EDGES, LADYBUG_EDGE_TYPES, LADYBUG_SCHEMAS, LADYBUG_STRUT_TYPES, SCHEMA_COLUMNS, ladybugEdge, ladybugSchema, nodeColumns, ontologySeed } from "./registry.js";
 
 describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, ruling 6 as amended 2026-10-28)", () => {
-  it("holds exactly the nineteen types, and the Strut ones without Thing's vestiges or per-stem vectors", () => {
+  it("holds exactly the twenty types, and the Strut ones without Thing's vestiges or per-stem vectors", () => {
     assert.deepEqual(
       LADYBUG_SCHEMAS.map((s) => s.type),
-      [...LADYBUG_STRUT_TYPES, "Claim", "Check", "Evidence", "Concept", "Person", "Lingo", "EdgeText", "Merge", "Mishearing"],
+      [...LADYBUG_STRUT_TYPES, "Claim", "Check", "Evidence", "TestCase", "Concept", "Person", "Lingo", "EdgeText", "Merge", "Mishearing"],
     );
     for (const t of ["StrutAgentSession", "StrutToolCall", "StrutChat", "StrutTurn", "Self", "Thing", "Document"]) assert.equal(ladybugSchema(t), null, t);
     assert.equal(ladybugSchema("strutrun")?.type, "StrutRun", "case-insensitive");
@@ -27,6 +27,10 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
     assert.equal(claim.key_spec, "claim-id");
     assert.deepEqual(Object.keys(claim.attributes).sort(), ["belief_valid_from", "belief_valid_to", "claim_text", "id", "name", "speaker_name"]);
     assert.equal(claim.attributes["belief_valid_from"], "?datetime");
+    const testCase = ladybugSchema("TestCase")!;
+    assert.equal(testCase.key_spec, "testcase-id");
+    assert.deepEqual(Object.keys(testCase.attributes).sort(), ["case_input", "case_workflow", "id", "name"]);
+    assert.equal(testCase.embed, false, "found from its claims, never by search");
     const check = ladybugSchema("Check")!;
     assert.equal(check.attributes["created_at"], undefined, "when a check was written is the core created_at");
     assert.equal(check.attributes["freshness_days"], "?int");
@@ -119,7 +123,7 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
 
   it("the seed's stamp is pinned: a new stamp re-seeds every file's Schema rows at its next open", () => {
     // Change this only with a change to the seed's content you mean to ship.
-    assert.equal(ontologySeed().id, "ladybug_ontology_seed:e50e6e50ed2692d9");
+    assert.equal(ontologySeed().id, "ladybug_ontology_seed:4380bbb202c881f4");
   });
 
   it("holds the types and edge rules both engines seed (seed-types.ts), in place", () => {

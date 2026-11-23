@@ -80,7 +80,9 @@ index. A change in this area updates this file, not AGENTS.md.
   from the idle sweep, which lets holds go before it removes repositories
   (a hold that fails stays for the next sweep; a bare run with no registry
   leaves jobs with holds alone). Strut knows nothing about pods: a hold is
-  an id, a kind and a way to be released.
+  an id, a kind and a way to be released. A trial's sample of a job's case
+  is a job of its own, `trial-<batch>-<hex>`, closed the same way once the
+  sample is judged (src/trials.ts, docs/knowledge.md "Trials and tests").
   **The index** (plans/job-index.md; `src/job-index.ts`): a job you can
   name, find and read back. `POST …/run { job, title }` names it — the
   title is a launch-level field like `job` and `callback`, never in `input`

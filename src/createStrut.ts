@@ -2624,6 +2624,14 @@ export async function createStrut<TServices = unknown>(
       ...(history ? { history } : {}),
       hasWorkflow: async (name) => !!(await workspace.getWorkflow(name).catch(() => null)),
       run: (workflow, input, o) => run(workflow, input, o),
+      // A job's case runs as a job of its own, closed as `DELETE /jobs/:id` closes one once it is judged.
+      jobs: {
+        workflows: JOB_WORKFLOWS,
+        close: async (id) => {
+          const shell = ((services as Record<string, unknown>)["shell"] as ShellCapability | undefined) ?? shellCapability();
+          await deleteJob(shell, jobRoot(dataDir, id), id, releaseWith(registry, services));
+        },
+      },
     });
     (services as Record<string, unknown>)["trials"] = trials;
     // The pages strut ships carry their claims and cases; a test branch a restart left goes.

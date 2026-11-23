@@ -14,7 +14,7 @@ export default defineStep({
   type: "knowledge/trial",
   effect: "write",
   description:
-    "RUN a check on a Concept: each of its cases, `n` times, as fresh runs, each judged by the check. A run here is a trial: the jobs it would start, its proposals and its runs on other servers are held, so nothing real is done. " +
+    "RUN a check on a Concept: each of its cases, `n` times, as fresh runs, each judged by the check and by every other check the same case tests. A run here is a trial: the jobs it would start, its proposals and its runs on other servers are held, so it leaves nothing behind; a case whose workflow is a job's runs as a job of its own (with what it holds, a pod), closed once it is judged. " +
     "Returns at once with { ok, batch: { id, total, done } }; the verdicts arrive as they are judged (knowledge/checks: `samples`, and `running` while any is left). Each sample spends as a run and its judge do. " +
     "Only strut's own page shown to an admin may call it.",
   input: z.object({

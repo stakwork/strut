@@ -1,14 +1,15 @@
 /**
  * The SEED of a Ladybug file's ontology (plans/ladybug-backend.md §3, ruling 6
  * as amended 2026-10-28; plans/memory-in-workspace-graph.md, PR A): the
- * nineteen node types a new file starts with and the twenty-two edge types
+ * twenty node types a new file starts with and the twenty-two edge types
  * between them. The ontology itself lives in the file, as `Schema` rows of
  * the `Node` table (`ontology.ts`), seeded from this module at open
  * (add-only) and created and edited at runtime like Neo4j's `:Schema` nodes.
  *
  *   - the ten Strut types the workspace store and the projector need, from
  *     `strut-schemas.ts` by name, with Thing's unread stamps left off;
- *   - `Claim`, `Check`, `Evidence` (plans/claims.md) and `Concept` with
+ *   - `Claim`, `Check`, `Evidence`, `TestCase` (plans/claims.md,
+ *     src/trials.ts) and `Concept` with
  *     their edge rules, the seed both engines share (`../seed-types.ts`,
  *     plans/ontology.md);
  *   - the base types `Person` (the user is the one marked `is_owner`) and
