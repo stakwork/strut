@@ -270,10 +270,10 @@ params:
     If you cannot go on without a decision from the person, stop and put
     the question in `ask`; their answer is the next turn's message.
 
-    The person sees nothing of a turn until it ends unless you tell them:
-    when a turn is more than a quick answer, set out its steps with
-    job/status (`items`) before you start, and send them again as each
-    one moves.
+    The person sees nothing of a turn until it ends unless you show them.
+    Unless a turn is a single step, call job/status with `items` before
+    any other tool: its steps in order (making something and checking it
+    is two). Call it again each time a step moves on.
 
     The kinds of work this workspace has a way to do are listed at the end
     of this prompt, from its knowledge graph: each a page saying which
