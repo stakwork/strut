@@ -86,6 +86,18 @@ cd strut/web && STRUT_DEV_INDEX=https://index.stakwork.ai npm run dev   # → ht
 cd strut/web && npm run build  # outputs web/dist/
 cd strut && npm run dev        # serves API + UI on :3000
 
+# The built server outside Docker (a pod, pm2, systemd): always with tsx's loader,
+# as the Dockerfile's CMD does. Plain `node build/server.js` (and `npm start`)
+# cannot load a package's .ts steps, even on a Node that strips types itself
+# (checked on 24.22): a step imports its helper as `./_x.js`, and only tsx finds
+# `_x.ts` for it. The install then answers `bad_package: the step … Cannot find
+# module '…/_pods.js' imported from …/bake.ts`.
+npm run build && node --import tsx build/server.js
+# Under pm2 the script is still build/server.js, and the loader goes in node_args.
+# pm2's wrapper is argv[1] there; strut reads pm2's `pm_exec_path` to know it is
+# the entry (src/server.ts `isMainModule`):
+#   { name: "strut", script: "build/server.js", node_args: "--import tsx" }
+
 # The app kit (kit/, plans/apps.md §3). Its VENDOR LAYER — kit/vendor, the frozen
 # browser bundles + import-map.json every APP build resolves against (`app/build`,
 # `POST /apps`) — is built by strut's own `npm run build` (= build:engine +

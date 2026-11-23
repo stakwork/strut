@@ -296,10 +296,15 @@ export async function startServer(port?: number, host?: string): Promise<number>
  *  (`endsWith("server.js")`) once booted the default server inside any HOST
  *  whose own entry was called `server.js` and imported the barrel, before
  *  the host's createStrut() ran (EADDRINUSE on :3000, or worse, a healthy
- *  container serving the wrong strut). */
+ *  container serving the wrong strut).
+ *
+ *  pm2 runs a script through its own wrapper, so there `argv[1]` is pm2's
+ *  file and the script it runs is `pm_exec_path` in the env: that is
+ *  compared the same way. A host run by pm2 has its own entry there, so it
+ *  still never boots a second server; and the default server takes
+ *  `pm_exec_path` out of process.env with the rest (src/env.ts, unless
+ *  STRUT_ENV_SCRUB=0), so a child it spawns does not inherit it. */
 function isMainModule(): boolean {
-  const entry = process.argv[1];
-  if (!entry) return false;
   const canonical = (p: string) => {
     const abs = path.resolve(p);
     try {
@@ -308,7 +313,8 @@ function isMainModule(): boolean {
       return abs;
     }
   };
-  return canonical(entry) === canonical(fileURLToPath(import.meta.url));
+  const self = canonical(fileURLToPath(import.meta.url));
+  return [process.argv[1], process.env["pm_exec_path"]].some((entry) => !!entry && canonical(entry) === self);
 }
 
 if (isMainModule()) {

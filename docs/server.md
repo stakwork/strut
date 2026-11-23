@@ -262,7 +262,7 @@ createStrut() factory: Hono HTTP API + detached run launch + SSE run reattach (t
 
 ### `src/server.ts`
 
-thin wrapper over createStrut() (getApp/startServer) — the default server, on the backend `STRUT_WORKSPACE_BACKEND` names (graph/wiring.ts): Neo4j by default, `ladybug` one LadybugDB file + the fs import (a failed import boots the fs workspace, loudly), `fs` the file stores. Boots itself ONLY when it is the process entry (argv[1]'s realpath == its own file: `tsx src/server.ts`, `node build/server.js`, a symlink to either) — a host whose own entry is called `server.js` and imports the barrel never starts it (server.test.ts spawns that host)
+thin wrapper over createStrut() (getApp/startServer) — the default server, on the backend `STRUT_WORKSPACE_BACKEND` names (graph/wiring.ts): Neo4j by default, `ladybug` one LadybugDB file + the fs import (a failed import boots the fs workspace, loudly), `fs` the file stores. Boots itself ONLY when it is the process entry (argv[1]'s realpath == its own file: `tsx src/server.ts`, `node build/server.js`, a symlink to either; or, under pm2, whose wrapper is argv[1], pm2's `pm_exec_path` == its own file) — a host whose own entry is called `server.js` and imports the barrel never starts it, run directly or by pm2 (server.test.ts spawns that host, and pm2's wrapper)
 
 ### `src/mcp-servers.ts`
 
