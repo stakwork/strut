@@ -7,7 +7,7 @@ import type { PeersCapability } from "../../../peers.js";
  * The peers this strut may call (plans/federation.md §3), as an agent reads
  * them before `strut/run-workflow`: each one's id, and what the host said it
  * holds — a label, a description, its repositories — so "the sphinx-apps
- * workspace" or "the mixer's code" leads to the right id instead of a guess.
+ * server" or "the mixer's code" leads to the right id instead of a guess.
  * Never a token or a base URL: neither helps the model choose.
  */
 const selfShape = z.object({
@@ -20,10 +20,10 @@ const selfShape = z.object({
 export default defineStep({
   type: "strut/list-peers",
   description:
-    "List the OTHER workspaces, each on a strut server of its own, that strut/run-workflow can run a workflow on: { self?, peers: [{ id, label?, description?, repos? }] }. " +
-    "`self` is THIS workspace (its repos are the code here); `peers` are the others. " +
-    "`id` is what strut/run-workflow's `peer` takes (hive registers a workspace by its slug, what a person types as @<slug>); " +
-    "`repos` are the repositories that workspace holds, so code that is not here can be found there.",
+    "List the OTHER strut servers that strut/run-workflow can run a workflow on: { self?, peers: [{ id, label?, description?, repos? }] }. " +
+    "`self` is THIS server (its repos are the code here); `peers` are the others. " +
+    "`id` is what strut/run-workflow's `peer` takes (hive registers each by its slug, what a person types as @<slug>); " +
+    "`repos` are the repositories that server holds, so code that is not here can be found there.",
   input: z.object({}),
   output: z.object({
     self: selfShape.optional(),

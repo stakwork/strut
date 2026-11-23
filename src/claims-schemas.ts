@@ -131,4 +131,4 @@ export function readPageClaims(raw: unknown): PageClaim[] | null {
   }));
 }
 
-export const CLAIMS_OFF = "Claims need the graph-backed workspace (this deployment keeps workflows and steps on the filesystem).";
+export const CLAIMS_OFF = "Claims need a graph (this server keeps workflows and steps on the filesystem).";

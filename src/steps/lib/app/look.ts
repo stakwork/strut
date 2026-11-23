@@ -61,7 +61,7 @@ export default defineStep({
     "It runs the page: its reads and writes are real calls, as when a person opens it. " +
     "With `path`, `saveAs` (e.g. \"public/screenshots/home.png\") also writes the shot into the app directory, returned as `saved`; list it under `screenshots:` in app.yaml (a path, or { file, caption }) and the package store shows it. A look that drew nothing, could not host the app or stopped saves nothing (`saveError` says why).",
   input: z.object({
-    name: z.string().describe("The app's workspace name."),
+    name: z.string().describe("The app's name on this server."),
     version: z.string().optional().describe("A published version to look at (v1, v2, …). The active (live) version when omitted. Not with `path`."),
     path: z.string().optional().describe("The app directory you are working on, relative to the job's (or run's) directory: built and looked at as `name` without publishing a version."),
     job: z.string().optional().describe("With `path`: another job whose directory it is relative to."),

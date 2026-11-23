@@ -2601,7 +2601,7 @@ export async function createStrut<TServices = unknown>(
         else if (o.added > 0) console.log(`[claims] ${o.name}: recorded ${o.added} claim(s) from its YAML`);
       }
     } catch (err) {
-      console.warn(`[claims] recording the workspace's claims: blocks at boot failed:`, err);
+      console.warn(`[claims] recording this server's claims: blocks at boot failed:`, err);
     }
   }
 
@@ -5567,7 +5567,7 @@ export async function createStrut<TServices = unknown>(
     // A package's pages' claims and cases, by the package (src/trials.ts), where the claims layer is on.
     pageClaims: async (pages, speaker) => {
       const trials = (services as Record<string, unknown>)["trials"] as TrialsCapability | undefined;
-      return trials ? trials.seed(pages, speaker) : pages.some((p) => p.claims.length) ? [`the claims of ${speaker}'s pages were not recorded: this workspace keeps no claims (a graph-backed one does)`] : [];
+      return trials ? trials.seed(pages, speaker) : pages.some((p) => p.claims.length) ? [`the claims of ${speaker}'s pages were not recorded: this server keeps no claims (they need a graph)`] : [];
     },
     ...(secretsCap ? { secrets: secretsCap } : {}),
     gitSecret,
@@ -6094,7 +6094,7 @@ export async function createStrut<TServices = unknown>(
   app.post("/publisher/tokens", async (c) => {
     const body = await c.req.json<{ subscriber?: unknown; days?: unknown }>().catch(() => ({}) as { subscriber?: unknown; days?: unknown });
     if (typeof body.subscriber !== "string" || !body.subscriber.trim() || body.subscriber.length > 200) {
-      return c.json({ error: "subscriber is who the token is for: the strut server's name in the fleet (a workspace slug)" }, 400);
+      return c.json({ error: "subscriber is who the token is for: the strut server's name in the fleet (its slug)" }, 400);
     }
     if (body.days !== undefined && !(typeof body.days === "number" && body.days > 0 && body.days <= 366)) return c.json({ error: "days is a number of days, at most 366" }, 400);
     try {
@@ -8768,7 +8768,7 @@ export async function createStrut<TServices = unknown>(
       if (attachments?.length && typeof input["peer"] === "string") {
         throw new Error(`attachments: a build on another strut server (peer "${input["peer"]}") cannot take files yet — describe what the job needs from them in its prompt`);
       }
-      // The workspace this strut belongs to (its `self` record): both
+      // This server's slug (its `self` record): both
       // job-shaped workflows put it on the agent's first line, so a job the
       // orchestrator starts knows it as a host's own launch would.
       if (input["workspace"] === undefined) {
@@ -8883,7 +8883,7 @@ export async function createStrut<TServices = unknown>(
     if (scope !== "full") return { status: 403, error: "forbidden: a launch on a Concept branch is the deployment's (its key, or an admin's session)" };
     const problem = branchNameProblem(body.branch);
     if (problem) return { status: 400, error: `branch: ${problem}` };
-    if (!branchesCap) return { status: 400, error: "branch: this strut server keeps no Concept branches (a graph workspace does)" };
+    if (!branchesCap) return { status: 400, error: "branch: this strut server keeps no Concept branches (they need a graph)" };
     if (!(await branchesCap.get(body.branch))) return { status: 404, error: `branch: no Concept branch "${body.branch}" — POST /branches makes one` };
     return null;
   };
@@ -9565,7 +9565,7 @@ export async function createStrut<TServices = unknown>(
   // tree, or empty), lists them, and drops one; a launch's `branch` runs on it.
   const branchRoute = async (c: Context): Promise<Response | null> => {
     if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: Concept branches are the deployment's (its key, or an admin's session)" }, 403);
-    if (!branchesCap) return c.json({ error: "this strut server keeps no Concept branches: they need a graph workspace" }, 404);
+    if (!branchesCap) return c.json({ error: "this strut server keeps no Concept branches: they need a graph" }, 404);
     return null;
   };
   const branchError = (c: Context, err: unknown) =>

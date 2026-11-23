@@ -61,7 +61,7 @@ export async function resolveStep(registry: StepRegistry, ref: string): Promise<
     return def ? { def } : null;
   }
   const pins = (registry as PinnableRegistry)[PINS];
-  if (!pins) throw new Error(`Cannot pin "${ref}": this registry has no step versions (only workspace custom steps are versioned)`);
+  if (!pins) throw new Error(`Cannot pin "${ref}": this registry has no step versions (only custom steps are versioned)`);
   let pending = pins.cache.get(ref);
   if (!pending) {
     pending = (async () => {

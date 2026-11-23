@@ -1327,7 +1327,7 @@ export default defineStep({
       .string()
       .optional()
       .describe(
-        "The words this turn answers — the person's message — when `prompt` wraps them in more (a context line, a page, the workspaces to ask), usually \"{{ input.prompt }}\". The agent never reads it: the graph keeps it as the turn's text, so search finds what was said (with a `session`). Defaults to `prompt`.",
+        "The words this turn answers — the person's message — when `prompt` wraps them in more (a context line, a page, the servers to ask), usually \"{{ input.prompt }}\". The agent never reads it: the graph keeps it as the turn's text, so search finds what was said (with a `session`). Defaults to `prompt`.",
       ),
     session: z
       .string()

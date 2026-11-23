@@ -1,11 +1,11 @@
 ---
-description: An APP — a front-end project over this workspace's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, live channels between its viewers (a multiplayer game), renaming one (its title), pinning one as a tab of the workspace, and the rules that keep it cheap and safe.
+description: An APP — a front-end project over this server's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, live channels between its viewers (a multiplayer game), renaming one (its title), pinning one as a tab in a host, and the rules that keep it cheap and safe.
 parent: Workflow Builder
 ---
 An APP is interactive software the builder writes on top of this
-workspace's own workflows (plans/apps.md): a directory of TSX, CSS and an `app.yaml`,
+server's own workflows (plans/apps.md): a directory of TSX, CSS and an `app.yaml`,
 built against a FIXED kit into one self-contained HTML document, published
-as a versioned object in the workspace and rendered in a sandboxed frame by
+as a versioned object on this server and rendered in a sandboxed frame by
 the strut server's own UI, by a portal, by Claude — any MCP Apps host. Its backend is the
 registry, reached through ONE tool under the grants its manifest declares.
 Workflows are its server functions, steps its API, runs its history.
@@ -1007,7 +1007,7 @@ values are the same node, so a second create returns the first (default
 text. A `json` attribute is JSON text: `JSON.stringify` it when you write,
 `JSON.parse` it when you read.
 
-`app/publish` registers the types and edges on the workspace's graph
+`app/publish` registers the types and edges on this server's graph
 before the version, add-only. Nothing is ever removed, so a rollback keeps
 them. A type another app declared is the same type: declare it with the
 same attribute types, the same key and every attribute it requires, and
@@ -1095,12 +1095,12 @@ version: "v4" }`, so a draft opens as the draft — so the person opens
 it where they are: under Apps in the strut server's UI, where "Edit with the builder"
 brings a request back here, and a message typed inside the app ("add a
 column") arrives in this chat naming the app; or in a host's own frame.
-An app lives in the workspace: never hand over an app directory as a
+An app lives on this server: never hand over an app directory as a
 file.
 
-When the person asks for the app as a TAB of the workspace — "pin it", "put
+When the person asks for the app as a TAB — "pin it", "put
 it in the sidebar" — `app/pin { name }`: a host that lists this
-workspace's apps (a portal's sidebar) shows it as a tab of its own, at its
+server's apps (a portal's sidebar) shows it as a tab of its own, at its
 live version, until `app/pin { name, pinned: false }`. Pinning also HOLDS
 the app at the version it shows: from then on what you publish is a draft
 until a person makes it live — say so when you pin. Never pin on your own.

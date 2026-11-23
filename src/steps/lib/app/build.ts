@@ -14,7 +14,7 @@ export default defineStep({
     "Fix and build again; nothing is published (app/publish does that).",
   input: z.object({
     path: z.string().describe("The app directory, relative to the job's (or run's) directory."),
-    name: z.string().optional().describe("The app's workspace name, when it has one — an imported kit that imports it back is then a cycle the build names."),
+    name: z.string().optional().describe("The app's name on this server, when it has one — an imported kit that imports it back is then a cycle the build names."),
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {

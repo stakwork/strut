@@ -1,6 +1,6 @@
 name: tidy-memory
 description: Finds people and places saved more than once and merges them.
-# The tidy-memory janitor on the workspace graph. No built-in
+# The tidy-memory janitor on this server's graph. No built-in
 # tools and no write but graph/merge, which it can only use on a pair
 # graph/duplicates offers. Stamped "janitor", graph/merge refuses to merge the
 # user away, into the user only on their full name, and stops at 10 merges a

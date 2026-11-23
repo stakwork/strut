@@ -401,7 +401,7 @@ export async function signedInRefusal(
   const anonymous = visitorRefusal(surface, live, app, type, config);
   if (anonymous === null) return null;
   if (!surface.apps.some((a) => a.name === app.name) || live !== app.version) return anonymous;
-  if (type.startsWith("graph/") && config["namespace"] !== undefined) return `${type}: a visitor reads and writes the workspace's own namespace — leave out \`namespace\``;
+  if (type.startsWith("graph/") && config["namespace"] !== undefined) return `${type}: a visitor reads and writes this server's own namespace — leave out \`namespace\``;
   if (type === "app/state" || type === "app/report-error" || GRAPH_WRITES.has(type)) return null;
   if (rules.worker?.(type) || type === "people/names") return null;
   if (type === "graph/find") {

@@ -37,7 +37,7 @@ export default defineStep({
     limit: z.number().int().optional().describe("Nodes per page, 1–500 (default 50)."),
     cursor: z.string().optional().describe("The `cursor` the previous page returned."),
     count: z.boolean().optional().describe("Also count every match (`total`)."),
-    namespace: z.string().optional().describe("The data partition to read (default: the workspace's)."),
+    namespace: z.string().optional().describe("The data partition to read (default: this server's)."),
     exclude_domains: z.string().optional().describe(excludeDomainsInput),
   }),
   output: z.any(),

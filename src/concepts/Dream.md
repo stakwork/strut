@@ -12,7 +12,7 @@ piece of work a person's words there are about. A source's own children
 refine it. This page is what holds for every source.
 
 This page and the source pages strut ships under it are the same on every
-strut, and are put back on every start. What a workspace learns about
+strut, and are put back on every start. What each server learns about
 learning is in the pages it adds around them: when one listed under this
 page or under your source's page bears on what you are reading, open it
 and follow it.
@@ -62,7 +62,7 @@ short page that stays as it is; the tree grows under it.
   names and descriptions is what the assistant always sees.
 - The page's text comes from git, and a change to it is skipped: it is
   put back on every start. Make the change on a page under it instead,
-  one made for this workspace, with a description that says when to open
+  one made for this server, with a description that says when to open
   it.
 - The page already says it plainly, and it went wrong again: do not
   reword it once more. Name it as stuck: the tree may not be able to fix

@@ -791,10 +791,10 @@ describe("strut/jamie — its steps, as its viewer", () => {
     assert.deepEqual(await evidenceStep.run(ev, ctx()), { ok: true, evidence: "e1", filled: true });
     assert.deepEqual(calls, [["verify", "alice-jobs", { detach: true }], ["evidence", { job: "alice-jobs", claim: "c1", runId: "r1", supports: false, content: "it 404s", slot: "ev-9" }]]);
     // A filesystem workspace keeps no claims: the step says so.
-    await assert.rejects(() => verifyStep.run(cfg, ctx({ services: { dataDir, jobs: {} } })), /Claims need the graph-backed workspace/);
+    await assert.rejects(() => verifyStep.run(cfg, ctx({ services: { dataDir, jobs: {} } })), /Claims need a graph/);
     // And through the page's door, on this (filesystem) strut.
     const alice = page(JAMIE_APP, "alice");
-    assert.match((await alice.call("job/verify", { job: "alice-jobs", detach: true })).error!, /Claims need the graph-backed workspace/);
+    assert.match((await alice.call("job/verify", { job: "alice-jobs", detach: true })).error!, /Claims need a graph/);
     assert.match((await page(JAMIE_APP, "bob").call("job/verify", { job: "alice-jobs" })).error!, /not one you started/);
   });
 });

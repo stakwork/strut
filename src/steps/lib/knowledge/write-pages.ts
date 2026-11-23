@@ -45,7 +45,7 @@ export default defineStep({
       );
     }
     const sources = ctx.services?.conceptSources;
-    if (!sources) throw new Error("knowledge/write-pages needs ctx.services.conceptSources: a graph workspace on the standard strut server");
+    if (!sources) throw new Error("knowledge/write-pages needs ctx.services.conceptSources: a graph, on the standard strut server");
     return sources.write(cfg, { proposal: ctx.proposal.id, ...(ctx.actor ? { actor: ctx.actor } : {}) });
   },
 });

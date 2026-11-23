@@ -186,7 +186,7 @@ for (const tb of testBackends()) {
 
       // What no package carries, and what the graph does not hold.
       assert.match(await refusal(build(src, source, { types: ["Nope"] })), /no graph type Nope in this graph's ontology/);
-      assert.match(await refusal(build(src, source, { types: ["Concept"] })), /the graph type Concept is the workspace's notes/);
+      assert.match(await refusal(build(src, source, { types: ["Concept"] })), /the graph type Concept is this server's notes/);
 
       // A graph that has never seen them: the install registers them, parents first, and the edge writes.
       const buyerGraph = await freshGraph();

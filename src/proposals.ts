@@ -561,7 +561,7 @@ export async function proposeCall(
   if (def.approver === "admin" && (await adminStanding(ctx, cap)) === false) {
     throw new Error(
       `admin_required: ${stepType} is an admin's decision on this strut server, and the person this turn is for is not an admin here, so nothing was proposed. ` +
-        `Tell them in their words that an admin of this workspace does it, and to ask one.`,
+        `Tell them in their words that an admin of this server does it, and to ask one.`,
     );
   }
   // The step's own words for the card (§7), read now, best effort.
@@ -676,7 +676,7 @@ export function decides(p: Pick<Proposal, "by" | "approver">, viewer: { actor?: 
 
 export function acceptRefusal(p: Pick<Proposal, "step" | "title" | "approver">, def: Pick<AnyStepDef, "approver"> | undefined, admin: boolean): string | undefined {
   if (admin || (def?.approver ?? p.approver) !== "admin") return undefined;
-  return `admin_required: only an admin of this strut server accepts "${p.title}" (${p.step}) — ask an admin of this workspace to accept it. You may still reject it.`;
+  return `admin_required: only an admin of this strut server accepts "${p.title}" (${p.step}) — ask one to accept it. You may still reject it.`;
 }
 
 export interface DecideDeps {

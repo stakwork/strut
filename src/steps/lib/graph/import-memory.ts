@@ -209,7 +209,7 @@ async function addNames(c: Ctx, ref_id: string, names: string[]): Promise<number
 export default defineStep({
   type: "graph/import-memory",
   description:
-    "Move the old memory database (the retired memory/* steps') onto the workspace graph, once: entities become nodes (the user the Person " +
+    "Move the old memory database (the retired memory/* steps') onto this server's graph, once: entities become nodes (the user the Person " +
     "marked is_owner), facts linking two entities become temporal edges with their dates, sources and speaker, names become alt_names, " +
     "all in `private`. Reads the old database and never changes it; safe to run again (what is already there is found, not doubled). " +
     "Returns counts imported and skipped, by reason: what has no place on the graph (facts about one entity alone, attributes, " +

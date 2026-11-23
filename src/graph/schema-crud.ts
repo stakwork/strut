@@ -325,7 +325,7 @@ export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, 
     for (const held of (await src.typesNamed?.([plan.type, ...plan.aliases], tx)) ?? []) {
       const same = held.type.toLowerCase() === plan.type.toLowerCase();
       if (same && held.managed_by !== managedBy) {
-        throw new GraphValidationError("DUPLICATE_KEY", plan.type, `${held.type} is owned by ${held.managed_by ?? "the workspace"}; it cannot be declared or extended here`);
+        throw new GraphValidationError("DUPLICATE_KEY", plan.type, `${held.type} is owned by ${held.managed_by ?? "this server"}; it cannot be declared or extended here`);
       }
       if (same) continue;
       const clash = [plan.type, ...plan.aliases].find((n) => n.toLowerCase() === held.type.toLowerCase() || held.aliases.some((a) => a.toLowerCase() === n.toLowerCase()))!;

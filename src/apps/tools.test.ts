@@ -594,8 +594,8 @@ describe("step_run — the app door", () => {
   it("a graph write is refused on an undeclared type, and on one strut keeps for itself whatever the manifest says — a create by type, an edit of a Concept by ref_id, a templated type, an edge by ref", { skip: backend.skip }, async () => {
     const nodes = appIdentity("nodes", "v1");
     await refused({ type: "graph/create-node", config: { node_type: "Invoice", node_data: { name: "X" } }, app: nodes }, /write on "Invoice" is refused: this app declares no graph types/);
-    await refused({ type: "graph/create-node", config: { node_type: "Concept", node_data: { name: "X" } }, app: nodes }, /write on "Concept" is refused: Concept is the workspace's notes/);
-    await refused({ type: "graph/edit-node", config: { ref_id: conceptRef, node_data: { description: "edited" } }, app: nodes }, /write on "Concept" is refused: Concept is the workspace's notes/);
+    await refused({ type: "graph/create-node", config: { node_type: "Concept", node_data: { name: "X" } }, app: nodes }, /write on "Concept" is refused: Concept is this server's notes/);
+    await refused({ type: "graph/edit-node", config: { ref_id: conceptRef, node_data: { description: "edited" } }, app: nodes }, /write on "Concept" is refused: Concept is this server's notes/);
     await refused({ type: "graph/delete-node", config: { ref_id: conceptRef }, app: nodes }, /write on "Concept" is refused/);
     await refused({ type: "graph/create-node", config: { node_type: "StrutRun", node_data: {} }, app: nodes }, /StrutRun is one of strut's own types/);
     await refused({ type: "graph/create-node", config: { node_type: "Evidence", node_data: {} }, app: nodes }, /Evidence is the claims layer's/);

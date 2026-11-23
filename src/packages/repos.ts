@@ -560,7 +560,7 @@ export function createRepos(deps: ReposDeps): Repos {
             await copyFile(join(built.dir, ...rel.split("/")), to);
           }
           await ok(["add", "-A"], scratch);
-          await commitAs(scratch, await identityOf(repo, auth?.token, input.actor), `${input.package} ${input.version}\n\nCreated from a strut workspace.`);
+          await commitAs(scratch, await identityOf(repo, auth?.token, input.actor), `${input.package} ${input.version}\n\nCreated from a strut server.`);
           const push = await run(["push", "--quiet", repo.url, `HEAD:refs/heads/${branch}`], scratch, auth);
           if (push.code !== 0) throw refusal("push_rejected", `the push to ${repo.url} failed — ${(push.stderr || push.stdout).trim().slice(-500)}`);
         } finally {

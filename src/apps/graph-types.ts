@@ -55,7 +55,7 @@ export function graphAttributeType(t: string): string {
 
 const RESERVED: ReadonlyArray<[string[], string]> = [
   [[THING_TYPE, "Schema"], "is the root of the graph's ontology"],
-  [["Concept"], "is the workspace's notes, which the builder and the job agent read as instructions — a workflow writes them, never a page"],
+  [["Concept"], "is this server's notes, which the builder and the job agent read as instructions — a workflow writes them, never a page"],
   [[CLAIM_TYPE, CHECK_TYPE, EVIDENCE_TYPE], "is the claims layer's — evidence comes from the verify pass and from people (plans/claims.md)"],
 ];
 
@@ -130,7 +130,7 @@ export async function checkAppGraph(manifest: AppManifest, graph: GraphBackend |
   if (errors.length) return { errors, warnings };
 
   if (!graph) {
-    errors.push(`${MANIFEST_FILE}: data.graph: this strut server has no graph (its workspace is on the filesystem), so an app that declares graph types does not build here — keep the data in runs, or build the app on a strut with a graph`);
+    errors.push(`${MANIFEST_FILE}: data.graph: this strut server has no graph (it keeps its workflows on the filesystem), so an app that declares graph types does not build here — keep the data in runs, or build the app on a strut with a graph`);
     return { errors, warnings };
   }
 

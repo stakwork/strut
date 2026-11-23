@@ -465,7 +465,7 @@ export function buildTools(deps: AiDeps): ToolSet {
 
     list_peers: tool({
       description:
-        "List the OTHER workspaces this one can act on, each on a strut server of its own (plans/federation.md): each { id, label?, description?, repos? (the repositories that workspace holds), baseUrl }, plus `self` (THIS workspace's id/label/description/repos, when set — code in those repos is here). \"@<id>\" in the user's message names one. Pass `peer` to list_workflows / get_workflow / run_workflow to act on that strut server instead of this one. Never a token: those stay on the server.",
+        "List the OTHER strut servers this one can act on (plans/federation.md): each { id, label?, description?, repos? (the repositories that server holds), baseUrl }, plus `self` (THIS server's id/label/description/repos, when set — code in those repos is here). \"@<id>\" in the user's message names one. Pass `peer` to list_workflows / get_workflow / run_workflow to act on that strut server instead of this one. Never a token: those stay on the server.",
       inputSchema: z.object({}),
       execute: async () => {
         if (!deps.peers) return { error: "No peers are configured on this strut server (PUT /peers/:id, or STRUT_PEERS)." };
@@ -940,7 +940,7 @@ export function buildTools(deps: AiDeps): ToolSet {
           .positive()
           .default(DEFAULT_WORKFLOW_LIST_LIMIT)
           .describe("Max workflows to return (default 100)."),
-        peer: z.string().optional().describe("List the workflows of THAT peer workspace instead (an id from list_peers)."),
+        peer: z.string().optional().describe("List the workflows of THAT peer instead (an id from list_peers)."),
       }),
       execute: async ({ query, limit, peer }) => {
         if (peer) {
@@ -960,7 +960,7 @@ export function buildTools(deps: AiDeps): ToolSet {
           .string()
           .optional()
           .describe("Optional specific version. Defaults to the active version."),
-        peer: z.string().optional().describe("Read the workflow from THAT peer workspace instead (an id from list_peers)."),
+        peer: z.string().optional().describe("Read the workflow from THAT peer instead (an id from list_peers)."),
       }),
       execute: async ({ name, version, peer }) => {
         if (peer) {
@@ -975,7 +975,7 @@ export function buildTools(deps: AiDeps): ToolSet {
       description:
         "Run a published workflow with a given input and return the result. Use this to test workflows you just created. Returns status (success/error), output (on success), error details (on failure), and the runId. " +
         `Long runs AUTO-DETACH: if the run is still executing after the wait window, this returns { status: 'running', detached: true, runId } and the run continues in the background — ${detachHint} ` +
-        "With `peer` the workflow runs on THAT workspace's strut server (list_peers) and this call waits for its result — never detached; the run, its files and artifacts stay on the peer. A peer runs only a workflow whose YAML says `peer: true`, as published: leave `params` out.",
+        "With `peer` the workflow runs on THAT strut server (list_peers) and this call waits for its result — never detached; the run, its files and artifacts stay on the peer. A peer runs only a workflow whose YAML says `peer: true`, as published: leave `params` out.",
       inputSchema: z.object({
         name: z.string().describe("Workflow name to run"),
         input: z
@@ -994,7 +994,7 @@ export function buildTools(deps: AiDeps): ToolSet {
           .string()
           .optional()
           .describe("Optional specific version. Defaults to the active version."),
-        peer: z.string().optional().describe("Run the workflow on THAT peer workspace instead (an id from list_peers); awaited to completion."),
+        peer: z.string().optional().describe("Run the workflow on THAT peer instead (an id from list_peers); awaited to completion."),
       }),
       // A generator: every yield but the last is a PRELIMINARY result (a
       // `tool-progress` chat event) — the first says the run exists, so the
@@ -1382,7 +1382,7 @@ export function buildTools(deps: AiDeps): ToolSet {
       ? {
           graph_query: tool({
             description:
-              `Run a READ-ONLY Cypher query against this workspace's graph (${deps.graph.kind === "ladybug" ? "a LadybugDB file" : "Neo4j"}) and get rows back. Use it to VERIFY what a workflow's graph/* steps actually wrote — count nodes/edges by type, read back exact properties, check edge fan-out — or to inspect graph-backed workspace state. ` +
+              `Run a READ-ONLY Cypher query against this server's graph (${deps.graph.kind === "ladybug" ? "a LadybugDB file" : "Neo4j"}) and get rows back. Use it to VERIFY what a workflow's graph/* steps actually wrote — count nodes/edges by type, read back exact properties, check edge fan-out — or to inspect what this server keeps in its graph. ` +
               "Writes (CREATE/MERGE/SET/DELETE/…, apoc.*, and COPY/LOAD/INSTALL) are rejected; write through the graph/* steps. " +
               `Conventions: ${graphConventions(deps.graph)} ` +
               "Output is capped: rows (default 100), long strings truncated, embedding vectors collapsed. Prefer aggregates (count, collect(DISTINCT …)) and LIMIT over dumping nodes. " +

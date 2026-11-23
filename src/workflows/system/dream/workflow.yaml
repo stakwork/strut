@@ -35,7 +35,7 @@ description: Reads the new turns of the conversations with the assistant and kee
 # tree — and one page under it per KIND of source holds what that source is,
 # what to look for in it, and which run a person's words there are about.
 # Those two ship with strut, the same on every strut and put back at every
-# boot: the fixed base. What a workspace learns about learning is in the
+# boot: the fixed base. What each server learns about learning is in the
 # pages it adds AROUND them (under `Dream`, under a source's page), which
 # the agent opens with graph/graph-get when they bear on what it reads. This
 # file keeps the mechanics: the steps, how each tool is called, that the

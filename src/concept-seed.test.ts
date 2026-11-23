@@ -300,7 +300,7 @@ describe("concept files (pure)", () => {
 
   it("renders the builder's section: the page, its kinds, and how to open one", () => {
     const text = renderBuilderSystem({ name: "Workflow Builder", docs: "The notes.", children: [{ name: "Janitor", description: "Cleans up." }], more: true });
-    assert.match(text, /^Workspace knowledge — the "Workflow Builder" Concept/);
+    assert.match(text, /^Knowledge on this server — the "Workflow Builder" Concept/);
     assert.ok(text.includes("The notes.") && text.includes("- Janitor — Cleans up.") && text.includes("… and more"));
     assert.ok(text.includes('graph_get({ node_type: "Concept", name: "<name>", children: "PARENT_OF" })'));
     assert.ok(!renderBuilderSystem({ name: "Workflow Builder", children: [] }).includes("Kinds recorded"));
@@ -318,7 +318,7 @@ describe("concept files (pure)", () => {
   it("renders the kinds alone (docs: false) for an agent that routes by them, with no opener when it has no tool, and nothing when there are no kinds", () => {
     const page = { name: "Job", docs: "The job agent's instructions.", children: [{ name: "Explore", description: "Finding out." }] };
     const kinds = renderConceptSection(page, "", { docs: false });
-    assert.match(kinds, /^Workspace knowledge — the "Job" Concept/);
+    assert.match(kinds, /^Knowledge on this server — the "Job" Concept/);
     assert.ok(kinds.includes("- Explore — Finding out."));
     assert.ok(!kinds.includes("The job agent's instructions.") && !kinds.includes("(no docs)"), "the page's docs are not for this reader");
     assert.ok(!kinds.includes("OPEN ITS PAGE") && !kinds.includes("node_type"), "no way to open a page is named");
@@ -518,7 +518,7 @@ for (const tb of testBackends()) {
       assert.deepEqual(await children(wb), under, "a page another call owns is not strut's to unlink");
 
       const text = await builderSystem({ graph: b, registry: await createRegistry([]), services: { graph: b } });
-      assert.ok(text?.startsWith('Workspace knowledge — the "Workflow Builder" Concept'), text);
+      assert.ok(text?.startsWith('Knowledge on this server — the "Workflow Builder" Concept'), text);
       assert.ok(text!.includes("To record a new kind, add a child Concept here"));
       assert.ok(text!.includes("- Janitor — Cleans something up."));
       assert.ok(text!.includes("- App — An APP — a front-end project"), "strut's own kind is listed");
@@ -533,7 +533,7 @@ for (const tb of testBackends()) {
         conceptStep.run(conceptStep.input.parse(config), { services } as never);
 
       const out = await run({ name: "Job" });
-      assert.ok(out.text.startsWith('Workspace knowledge — the "Job" Concept'), out.text);
+      assert.ok(out.text.startsWith('Knowledge on this server — the "Job" Concept'), out.text);
       assert.ok(out.text.includes("To record a new kind, add a child Concept here"), "the page's docs");
       assert.ok(out.text.includes("- Explore — Finding out how something works."), "its kinds");
       assert.ok(out.text.includes('graph_graph_get({ node_type: "Concept", name: "<name>"'), "opened with the agent's name for graph-get");
@@ -685,7 +685,7 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     assert.equal(res.status, "success", JSON.stringify(res.error));
     const [system] = systems;
     assert.ok(system!.startsWith("You are working on a JOB with a person"), "strut's prompt leads");
-    const at = system!.indexOf('Workspace knowledge — the "Job" Concept');
+    const at = system!.indexOf('Knowledge on this server — the "Job" Concept');
     assert.ok(at > 0 && system!.slice(0, at).endsWith("verifies again.\n\n"), "the page follows the prompt after a blank line");
     assert.ok(!system!.includes("open the `Job` Concept: graph/graph-get"), "no tool call to make for the list");
   });
@@ -708,7 +708,7 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     let res = await strut.run("orchestrator", { prompt: "send hive a test", session: "s-1" });
     assert.equal(res.status, "success", JSON.stringify(res.error));
     const system = systems.at(-1)!;
-    const at = system.indexOf('Workspace knowledge — the "Personal" Concept');
+    const at = system.indexOf('Knowledge on this server — the "Personal" Concept');
     assert.ok(at > system.indexOf('the "Job" Concept'), "after the kinds of job");
     assert.ok(system.includes("write under it, never on it"), "the root's own docs: where to write");
     assert.ok(system.includes("- Communication style — Short, plain replies; start a message sent for me with [peel agent]."), system.slice(at));
@@ -745,10 +745,10 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     };
     try {
       await turn(await make());
-      assert.ok(systemOf(bodies[0]!).includes('Workspace knowledge — the "Workflow Builder" Concept'));
+      assert.ok(systemOf(bodies[0]!).includes('Knowledge on this server — the "Workflow Builder" Concept'));
       await turn(await make({ chatSystem: () => "HOST-SECTION" }));
       assert.ok(systemOf(bodies[1]!).includes("HOST-SECTION"));
-      assert.ok(!systemOf(bodies[1]!).includes("Workspace knowledge"), "the host's hook replaces the default");
+      assert.ok(!systemOf(bodies[1]!).includes("Knowledge on this server"), "the host's hook replaces the default");
     } finally {
       server.close();
     }

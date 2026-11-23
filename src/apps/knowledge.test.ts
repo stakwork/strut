@@ -181,7 +181,7 @@ describe("strut/knowledge: claims and the changes waiting on a person", () => {
       claimsUnavailable('knowledge/page: this caller may not read "private", where the Concept tree is kept (an app\'s page reads only what an app may)'),
       "Claims aren't shown here: this app may not read where the tree is kept.",
     );
-    assert.equal(claimsUnavailable("knowledge/page needs the claims layer (ctx.services.knowledge): a graph-backed workspace with claims on"), "This server keeps no claims.");
+    assert.equal(claimsUnavailable("knowledge/page needs the claims layer (ctx.services.knowledge): a strut server on a graph, with claims on"), "This server keeps no claims.");
     assert.equal(claimsUnavailable("boom"), "Couldn't read the claims: boom");
   });
 

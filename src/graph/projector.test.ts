@@ -198,7 +198,7 @@ describe("projectRunEvents (pure)", () => {
         ev(0, "run.start", WF),
         ev(1, "step.start", `${WF}/turn`, {
           stepType: "agent",
-          input: { prompt: `Workspaces you can ask: @a, @b. ${said}`, message: said, session: "conv-1" },
+          input: { prompt: `Servers you can ask: @a, @b. ${said}`, message: said, session: "conv-1" },
         }),
         ev(2, "step.end", `${WF}/turn`, {
           stepType: "agent",
@@ -853,7 +853,7 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     const filler = "Some context first. ".repeat(40);
     const events: RunEvent[] = [
       ev(0, "run.start", WF),
-      ev(1, "step.start", `${WF}/turn`, { stepType: "agent", input: { prompt: `Workspaces you can ask: @a. ${filler}zanzibar`, message: `${filler}zanzibar`, session: "conv-1" } }),
+      ev(1, "step.start", `${WF}/turn`, { stepType: "agent", input: { prompt: `Servers you can ask: @a. ${filler}zanzibar`, message: `${filler}zanzibar`, session: "conv-1" } }),
       ev(2, "step.end", `${WF}/turn`, { stepType: "agent", output: { result: "{}", object: { text: `${filler}kilimanjaro` }, session: { id: "conv-1", turn: 0, offset: 0 } } }),
       ev(3, "run.end", WF),
     ];

@@ -41,7 +41,7 @@ export default defineStep({
   type: "package/commit",
   effect: "write",
   description:
-    "Commit a package this strut server works on as a git repository: write this workspace's edits of its workflows, steps, apps and Concept pages into the repository's " +
+    "Commit a package this strut server works on as a git repository: write this server's edits of its workflows, steps, apps and Concept pages into the repository's " +
     "working copy and push them — a new branch with a pull request by default, or straight to the followed branch when the person says so. " +
     "The call becomes a proposal the person approves on a card that says where it goes and what changed; strut commits it when they accept and tells you the result on a later turn. " +
     "Put what changed in `message` and why in `rationale`, in the person's terms. Never pushes on its own: a direct call is refused. " +
@@ -71,7 +71,7 @@ export default defineStep({
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
     if (!ctx.proposal) {
       throw new Error(
-        "package/commit runs only as a proposal a person accepted: a commit pushes this workspace to a remote with a person's credential, and a person decides that, never a tool call. " +
+        "package/commit runs only as a proposal a person accepted: a commit pushes this server's edits to a remote with a person's credential, and a person decides that, never a tool call. " +
           "Ask for it as a tool call the person approves (the agent's approve: list names it); a workflow step, meta/run-step or a subflow cannot reach it.",
       );
     }
