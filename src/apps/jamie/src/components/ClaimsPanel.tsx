@@ -1,17 +1,21 @@
 // A job's claims (plans/job-claims.md §7; Hive's claims viewer): what the
 // work must deliver and whether it does — each claim's status, its latest
 // verdict, its checks and how each did, and, when one waits on a person's
-// look, what to look at with "It does" / "It doesn't" right there. Those
+// look, what to look at with "It does" / "It doesn't" right there, and its
+// latest evidence drawn in place: a screenshot, a recording to scrub (Hive's
+// claims viewer), any other file or page a link. Those
 // waiting come first. Verify runs every check on the job's newest turn
 // (`job/verify`, detached: the verdicts arrive on `job/updates`); a person's
 // verdict is `job/evidence`.
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Loader2, ShieldCheck, X } from "lucide-react";
-import { useJobUpdates, useStrutClient } from "@strut/kit";
+import { Check, ExternalLink, Loader2, ShieldCheck, X } from "lucide-react";
+import { useHost, useJobUpdates, useRunFileUrl, useStrutClient } from "@strut/kit";
+import { WalkthroughPlayer } from "strut/views";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { checkWords, claimPill, openSlot, sortClaims, type ClaimPill } from "../lib/jobs";
+import { evidenceOf, type FileRun } from "../lib/artifacts";
 import type { LedgerClaim } from "../lib/types";
 import { Notice, errorText } from "./bits";
 
@@ -31,7 +35,9 @@ const HINT: Record<ClaimPill, string> = {
   "needs a look": "Only a person can tell: look, then say whether it does.",
 };
 
-export function ClaimsPanel({ job, claims, runId }: { job: string; claims: LedgerClaim[]; runId: string }) {
+/** `run`: the job's newest turn — a verdict is about it, and its files are the job's, where the evidence is read. */
+export function ClaimsPanel({ job, claims, run }: { job: string; claims: LedgerClaim[]; run: FileRun }) {
+  const runId = run.runId;
   const client = useStrutClient();
   const qc = useQueryClient();
   const [verifying, setVerifying] = useState<string | null>(null);
@@ -105,6 +111,7 @@ export function ClaimsPanel({ job, claims, runId }: { job: string; claims: Ledge
                 </span>
               </div>
               {c.latest?.content && <p className="text-xs text-muted-foreground">{c.latest.content}</p>}
+              <EvidenceView locator={c.latest?.locator} run={run} />
               {c.checks.length > 0 && (
                 <p className="text-xs text-muted-foreground">
                   {c.checks.map((k) => [k.name, checkWords(k.lastVerify)].filter(Boolean).join(": ")).join(" · ")}
@@ -128,3 +135,31 @@ export function ClaimsPanel({ job, claims, runId }: { job: string; claims: Ledge
     </div>
   );
 }
+
+/** A claim's latest evidence, drawn: a screenshot small, a recording to scrub, anything else a link. */
+function EvidenceView({ locator, run }: { locator: { url?: string; file?: string } | undefined; run: FileRun }) {
+  const host = useHost();
+  const ev = evidenceOf(locator);
+  if (!ev) return null;
+  if (ev.show === "walkthrough") return <WalkthroughPlayer mode="compact" workflow={run.workflow} runId={run.runId} path={ev.path} />;
+  if (ev.show === "image") return <EvidenceShot run={run} path={ev.path} href={ev.href} />;
+  return (
+    <button type="button" onClick={() => void host.openLink(ev.href)} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline">
+      <ExternalLink className="size-3" />
+      The evidence
+    </button>
+  );
+}
+
+/** A screenshot, small; a click opens it beside the chat. */
+function EvidenceShot({ run, path, href }: { run: FileRun; path: string; href: string }) {
+  const host = useHost();
+  const image = useRunFileUrl(run.workflow, run.runId, path);
+  if (!image.url) return null;
+  return (
+    <button type="button" onClick={() => void host.openLink(href)} title="Open beside the chat" className="block cursor-pointer rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <img src={image.url} alt="The evidence" className="max-h-40 max-w-full rounded-md border bg-muted/40 object-contain" />
+    </button>
+  );
+}
+

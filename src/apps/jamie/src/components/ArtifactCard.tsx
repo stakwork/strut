@@ -7,11 +7,11 @@
 // opens beside the chat from under it, for a page whose scripts should run.
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AppWindow, ChevronDown, ChevronRight, ExternalLink, FileText, Image as ImageIcon, Table2 } from "lucide-react";
+import { AppWindow, ChevronDown, ChevronRight, ExternalLink, FileCode, FileText, Film, Folder, Globe, Image as ImageIcon, Music, Table2, TriangleAlert, Video, type LucideIcon } from "lucide-react";
 import { useHost, useStrutClient } from "@strut/kit";
 import { ArtifactView, DocumentView, SheetView } from "strut/views";
 import { cn } from "@/lib/utils";
-import { artifactLink, placeArtifact, servedFile, type ArtifactPlace, type FileRun } from "../lib/artifacts";
+import { artifactLink, cardWord, placeArtifact, servedFile, type ArtifactPlace, type FileRun } from "../lib/artifacts";
 import type { ArtifactRef, JobView } from "../lib/types";
 import { CaptchaCard } from "./CaptchaCard";
 import { PullRequestCard } from "./PullRequestCard";
@@ -42,16 +42,18 @@ export function useJobRun(job: string | undefined, url?: string) {
 }
 
 /** `job`: the job it came from, when known (a pull request's Fix asks it). */
-export function ArtifactCard({ artifact, runs, conversation, job }: { artifact: ArtifactRef; runs: TurnRuns; conversation?: string; job?: string }) {
+export function ArtifactCard({ artifact, runs, conversation, job, defaultOpen = false }: { artifact: ArtifactRef; runs: TurnRuns; conversation?: string; job?: string; defaultOpen?: boolean }) {
   const place = placeArtifact(artifact, runs);
   const host = useHost();
   const served = artifact.url && servedFile(artifact.url) ? artifact.url.split(/[?#]/, 1)[0]! : undefined;
-  const [open, setOpen] = useState(place.show === "captcha");
+  const [open, setOpen] = useState(defaultOpen || place.show === "captcha");
   const pr = prOf(artifact);
   if (pr) return <PullRequestCard pr={pr} title={artifact.title} {...(job ?? artifact.job ? { job: job ?? artifact.job } : {})} {...(conversation ? { conversation } : {})} />;
   if (place.show === "captcha") return <CaptchaCard title={artifact.title} job={place.job} path={place.path} {...(place.run ? { run: place.run } : {})} {...(conversation ? { conversation } : {})} />;
   const inline = place.show === "file" || place.show === "content" || place.show === "sheet";
-  const Icon = place.show === "link" && place.what === "app" ? AppWindow : place.show === "sheet" || (place.show === "file" && place.kind === "table") ? Table2 : place.show === "file" && place.kind === "image" ? ImageIcon : FileText;
+  const Icon = iconOf(artifact, place);
+  // Its word on the right: where a link goes, else the agent's label or the kind's.
+  const word = place.show === "link" ? place.what : place.show === "missing" ? "" : cardWord(artifact, place.show === "file" ? place.path : "");
   // A served file drawn inline also opens beside the chat, where its scripts run.
   const beside = inline && served ? artifactLink(served) : undefined;
   const toggle = inline ? () => setOpen((o) => !o) : place.show === "link" ? () => void host.openLink(place.href) : undefined;
@@ -61,7 +63,7 @@ export function ArtifactCard({ artifact, runs, conversation, job }: { artifact: 
         <Icon className="size-3.5 shrink-0 text-muted-foreground" />
         {inline && (open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />)}
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{artifact.title}</span>
-        {place.show === "link" && <span className="shrink-0 text-xs text-muted-foreground">{place.what}</span>}
+        {word && <span className="shrink-0 text-xs text-muted-foreground">{word}</span>}
         {place.show === "link" && place.external && <ExternalLink className="size-3 shrink-0 text-muted-foreground" />}
       </span>
       {artifact.summary && !open && <span className="mt-1 block text-xs text-muted-foreground">{artifact.summary}</span>}
@@ -103,6 +105,35 @@ export function ArtifactCard({ artifact, runs, conversation, job }: { artifact: 
       )}
     </div>
   );
+}
+
+/** The card's icon, by what the entry is. */
+function iconOf(artifact: ArtifactRef, place: ArtifactPlace): LucideIcon {
+  if (place.show === "missing") return TriangleAlert;
+  if (place.show === "link" && place.what === "app") return AppWindow;
+  if (place.show === "sheet" || (place.show === "file" && place.kind === "table") || artifact.kind === "table") return Table2;
+  if (place.show === "link" && place.external) return Globe;
+  // The declared kind says more than how the file draws (a log is drawn as text).
+  const kind = artifact.kind && artifact.kind !== "url" ? artifact.kind : place.show === "file" ? place.kind : "";
+  switch (kind) {
+    case "image":
+      return ImageIcon;
+    case "walkthrough":
+      return Film;
+    case "video":
+      return Video;
+    case "audio":
+      return Music;
+    case "code":
+    case "diff":
+    case "json":
+    case "log":
+      return FileCode;
+    case "html":
+      return Globe;
+    default:
+      return place.show === "link" && place.what === "folder" ? Folder : FileText;
+  }
 }
 
 function Inline({ place, url }: { place: ArtifactPlace; url?: string }) {

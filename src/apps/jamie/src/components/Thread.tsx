@@ -27,6 +27,7 @@ import { turnDeliverables, type Shown } from "../lib/artifacts";
 import type { ConversationTurn, WakeMark } from "../lib/types";
 import { useConversation, useFork, useSend, useStop, useUpdateConversation } from "../hooks";
 import { ArtifactCard, type TurnRuns } from "./ArtifactCard";
+import { Deliverables } from "./Deliverables";
 import { ThreadPrs } from "./PullRequestCard";
 import { prKey, prOf } from "../lib/pr";
 import { Composer } from "./Composer";
@@ -281,11 +282,13 @@ function Turn({ turn, conversation, carded }: { turn: ConversationTurn; conversa
   const prJob = turn.wake && turn.wake !== true ? turn.wake.job : turn.jobs.length === 1 ? turn.jobs[0]!.job : undefined;
   const { delivered, own } = useMemo(() => turnDeliverables(turn), [turn]);
   // A pull request shows once in the thread, in the newest turn naming it.
-  const card = ({ artifact, job }: Shown) => {
+  const shownHere = ({ artifact }: Shown) => {
     const pr = prOf(artifact);
-    if (pr && threadPrs.get(prKey(pr)) !== turn.runId) return null;
+    return !pr || threadPrs.get(prKey(pr)) === turn.runId;
+  };
+  const card = ({ artifact, job }: Shown, open?: boolean) => {
     const from = job ?? prJob;
-    return <ArtifactCard key={`${job ?? ""}:${artifact.id}`} artifact={artifact} runs={runs} conversation={conversation} {...(from ? { job: from } : {})} />;
+    return <ArtifactCard key={`${job ?? ""}:${artifact.id}`} artifact={artifact} runs={runs} conversation={conversation} defaultOpen={!!open} {...(from ? { job: from } : {})} />;
   };
   return (
     <div className="flex flex-col gap-2" data-testid="turn" data-run-id={turn.runId} data-status={turn.status}>
@@ -315,7 +318,7 @@ function Turn({ turn, conversation, carded }: { turn: ConversationTurn; conversa
         </div>
       )}
       {!working && turn.ask && <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">{turn.ask}</div>}
-      {!working && delivered.map(card)}
+      {!working && <Deliverables items={delivered.filter(shownHere)} runs={runs} card={card} />}
       {turn.status === "error" && <Notice tone="error">{turn.error ?? "This turn failed."}</Notice>}
       {turn.status === "cancelled" && (
         <div className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
@@ -333,7 +336,7 @@ function Turn({ turn, conversation, carded }: { turn: ConversationTurn; conversa
         .map((p) => (
           <ProposalCard key={p.id} brief={p} />
         ))}
-      {own.map(card)}
+      <Deliverables items={own.filter(shownHere)} runs={runs} card={card} />
     </div>
   );
 }

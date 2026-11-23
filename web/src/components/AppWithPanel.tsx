@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../api";
-import { appToolInput, frameableHold, namesApp, panelTarget, type PanelTarget } from "../app-links";
+import { appToolInput, frameableHold, holdAddress, holdNavigation, namesApp, panelTarget, type PanelTarget } from "../app-links";
 import { STATE_LABEL, appVersionRows, isHeld, isSeeded, liveRelease, modeChange, panelChip, panelKey, rowChange, when, type LiveChange } from "../app-versions";
 import { errorMessage } from "../helpers";
-import { CloseIcon } from "../icons";
+import { ArrowLeftIcon, ArrowRightIcon, CloseIcon, ExternalIcon, ReloadIcon } from "../icons";
 import { useListedApp } from "../use-listed-app";
 import { AppHost, type HostedApp } from "./AppHost";
 import { ArtifactViewer } from "./ArtifactViewer";
@@ -27,7 +27,9 @@ import { WidthResizer } from "./FlyoutResizer";
 // localStorage); in a narrow container it lies over the app. A third thing
 // it opens is what a job holds at an address (`?job=<id>&hold=<kind>`, a
 // pod's app): the panel reads the address from the job (`GET
-// /jobs/:id/urls`), never from the link, and frames it with a tab beside.
+// /jobs/:id/urls`), never from the link, and frames it under a browser's
+// bar that never shows the address's token and loads nothing in the frame
+// off the address's own origin.
 // Everything else — a link to the app on screen, a workflow, a run, a job — goes to the
 // caller's `onNavigate` as before. The panel's own app links the same way:
 // a file or a third app replaces it, a link to the page beside it is that
@@ -93,10 +95,10 @@ export function AppWithPanel(props: AppHostProps) {
  *  (a sign-in that opens a window), and no navigating this page away. */
 const HOLD_SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-storage-access-by-user-activation";
 
-/** What a job holds at an address, in the panel: read from the job, framed
- *  under a bar with its host, Open in a tab and ✕. The address is on
- *  another site (a pod's), so a sign-in that needs its cookies may not hold
- *  in the frame — the tab always works. */
+/** What a job holds at an address, in the panel: read from the job, then
+ *  framed in a small browser (`HoldBrowser`). The address is on another
+ *  site (a pod's), so a sign-in that needs its cookies may not hold in the
+ *  frame — the tab always works. */
 function PanelHold(props: { job: string; hold: string; onClose: () => void }) {
   /** Undefined while the job is read; null when it holds no such address. */
   const [url, setUrl] = useState<string | null | undefined>(undefined);
@@ -112,18 +114,102 @@ function PanelHold(props: { job: string; hold: string; onClose: () => void }) {
     };
   }, [props.job, props.hold]);
   const title = props.hold.charAt(0).toUpperCase() + props.hold.slice(1);
+  if (url) return <HoldBrowser key={url} url={url} title={title} onClose={props.onClose} />;
   return (
     <div class="app-panel-app">
       <div class="app-panel-head">
         <span class="app-panel-title">{title}</span>
-        <span class="app-panel-sub">{url ? new URL(url).host : props.job}</span>
-        {url && <a class="btn btn-sm" href={url} target="_blank" rel="noopener noreferrer">Open in a tab</a>}
+        <span class="app-panel-sub">{props.job}</span>
         <button class="copy-btn" onClick={props.onClose} aria-label="Close" title="Close"><CloseIcon /></button>
       </div>
       <div class="app-panel-body">
-        {url
-          ? <iframe class="app-panel-frame" src={url} title={title} sandbox={HOLD_SANDBOX} referrerpolicy="no-referrer" allow="clipboard-read; clipboard-write; fullscreen" />
-          : <div class="empty">{error || (url === null ? `This job holds no ${props.hold} with an address now.` : "Reading the job…")}</div>}
+        <div class="empty">{error || (url === null ? `This job holds no ${props.hold} with an address now.` : "Reading the job…")}</div>
+      </div>
+    </div>
+  );
+}
+
+/** The hold framed under a browser's bar: Back and Forward over the
+ *  addresses entered here (the frame is another site's, so it never says
+ *  where its own links led), Reload, which spins until the page loads, the
+ *  address, Open in a tab and ✕. The bar never shows the hold's own address
+ *  past its origin (`holdAddress`: a pod's is a sign-in link with its
+ *  token), and only an address on the hold's origin loads in the frame
+ *  (`holdNavigation`): one anywhere else opens in a tab. */
+function HoldBrowser(props: { url: string; title: string; onClose: () => void }) {
+  const [entries, setEntries] = useState<string[]>([props.url]);
+  const [index, setIndex] = useState(0);
+  const [reloads, setReloads] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const current = entries[index] ?? props.url;
+  const [address, setAddress] = useState(() => holdAddress(props.url));
+
+  /** Loads `list[at]` in the frame, and shows it in the bar. */
+  const show = (list: string[], at: number) => {
+    setEntries(list);
+    setIndex(at);
+    setAddress(holdAddress(props.url, list[at]));
+    setLoading(true);
+  };
+  const visit = (input: string) => {
+    const to = holdNavigation(input, props.url);
+    if (!to) return;
+    if ("tab" in to) {
+      window.open(to.tab, "_blank", "noopener,noreferrer");
+      setAddress(holdAddress(props.url, current));
+      return;
+    }
+    show([...entries.slice(0, index + 1), to.frame], index + 1);
+  };
+
+  return (
+    <div class="app-panel-app">
+      <div class="app-panel-head hold-bar">
+        <button class="copy-btn" onClick={() => show(entries, index - 1)} disabled={index === 0} aria-label="Back" title="Back"><ArrowLeftIcon size={13} /></button>
+        <button class="copy-btn" onClick={() => show(entries, index + 1)} disabled={index >= entries.length - 1} aria-label="Forward" title="Forward"><ArrowRightIcon size={13} /></button>
+        <button
+          class={`copy-btn hold-reload${loading ? " is-loading" : ""}`}
+          onClick={() => {
+            setReloads((n) => n + 1);
+            setLoading(true);
+          }}
+          aria-label="Reload"
+          title="Reload"
+        >
+          <ReloadIcon />
+        </button>
+        <form
+          class="hold-address"
+          onSubmit={(e) => {
+            e.preventDefault();
+            visit(address);
+          }}
+        >
+          <input
+            class="hold-address-input"
+            value={address}
+            onInput={(e) => setAddress(e.currentTarget.value)}
+            onFocus={(e) => e.currentTarget.select()}
+            aria-label="Address"
+            spellcheck={false}
+            autocomplete="off"
+            autocapitalize="off"
+          />
+        </form>
+        <a class="copy-btn" href={props.url} target="_blank" rel="noopener noreferrer" aria-label="Open in a tab" title="Open in a tab"><ExternalIcon size={12} /></a>
+        <button class="copy-btn" onClick={props.onClose} aria-label="Close" title="Close"><CloseIcon /></button>
+      </div>
+      <div class="app-panel-body">
+        <iframe
+          key={`${index}:${reloads}`}
+          class="app-panel-frame"
+          src={current}
+          title={props.title}
+          sandbox={HOLD_SANDBOX}
+          referrerpolicy="no-referrer"
+          allow="clipboard-read; clipboard-write; fullscreen"
+          onLoad={() => setLoading(false)}
+        />
       </div>
     </div>
   );

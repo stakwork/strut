@@ -7,7 +7,8 @@
  *
  * The import compiles these sources into the importing app's document,
  * tree-shaken (§3.4), and they run as that app: every read or launch is a
- * step on ITS grants — `grants.workflows` for the run views and LaunchForm,
+ * step on ITS grants — `grants.workflows` for the run views, ArtifactView and
+ * WalkthroughPlayer (a run's files, `run/files`) and LaunchForm,
  * `graph/graph-get-batched`, `graph/graph-edges` (RunGraph), `graph/graph-neighbors`
  * and `graph/graph-search` in `grants.steps` for the graph views, `sheets/get-values` for SheetView
  * over a Google sheet; SpotCheck reads `run/provenance`, on the run's workflow; ConceptDiff reads
@@ -28,6 +29,8 @@ export { TaskForm, type TaskFormProps } from "./components/TaskForm";
 export { workerHeading } from "./lib/heading";
 export { WorkerPage, WorkHome, WorkerTask, TaskPhotos, TaskReplyView, PayPill, taskAsk, shownFields, isInternalKey, satsText, typeLabel, type WorkerPageProps, type WorkerTaskProps, type TaskPhotosProps } from "./components/WorkerTask";
 export { ArtifactView, type ArtifactViewProps, type RunFile } from "./components/ArtifactView";
+export { ZoomImage, type ZoomImageProps } from "./components/ZoomImage";
+export { WalkthroughPlayer, type WalkthroughPlayerProps, type WalkthroughMode } from "./components/WalkthroughPlayer";
 export { DocumentView, SafeHtml, type DocumentViewProps, type DocumentKind, type SafeHtmlProps } from "./components/DocumentView";
 export { MermaidDiagram, MermaidDiagrams, type MermaidDiagramProps } from "./components/MermaidDiagram";
 export { RunHealth, type RunHealthProps } from "./components/RunHealth";

@@ -115,6 +115,55 @@ export function frameableHold(url: string | undefined, origin: string): string |
   return u.origin === origin ? null : u.href;
 }
 
+/** What the hold panel's address bar shows for the address it frames
+ *  (`at`, the hold's own address by default): the hold's origin and "/"
+ *  for the hold's address, never the rest of it, since a pod's is a
+ *  sign-in link whose path is its token (`/_pods/open/<token>`); an address
+ *  typed since (`holdNavigation`, always on the hold's origin) as it is. */
+export function holdAddress(holdUrl: string, at: string = holdUrl): string {
+  let origin: string;
+  try {
+    origin = new URL(holdUrl).origin;
+  } catch {
+    return "";
+  }
+  return at === holdUrl ? `${origin}/` : at;
+}
+
+/** A host as someone types one with no scheme (`github.com/x`, `localhost:3000`). */
+const BARE_HOST = /^(localhost|\[[0-9a-f:.]+\]|[a-z0-9-]+(\.[a-z0-9-]+)+)(:\d+)?([/?#]|$)/i;
+const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i;
+
+/** Where an address typed in the hold panel's bar goes: in the frame when
+ *  it is on the hold's own origin (a path, `/settings` or `settings`, is
+ *  read against it), in a new tab when it is an http(s) address anywhere
+ *  else (a bare host gets https, a local one http), and nowhere (null) for
+ *  anything else: no `javascript:` or `data:` address reaches the frame or
+ *  a tab. The panel frames only what the job holds. */
+export function holdNavigation(input: string, holdUrl: string): { frame: string } | { tab: string } | null {
+  const text = input.trim();
+  if (!text) return null;
+  let origin: string;
+  try {
+    origin = new URL(holdUrl).origin;
+  } catch {
+    return null;
+  }
+  let typed = text;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text) && !text.startsWith("/")) {
+    if (BARE_HOST.test(text)) typed = `${LOCAL_HOST.test(text) ? "http" : "https"}://${text}`;
+    else if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return null;
+  }
+  let u: URL;
+  try {
+    u = new URL(typed, `${origin}/`);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  return u.origin === origin ? { frame: u.href } : { tab: u.href };
+}
+
 /** Where a link to ANOTHER app of this server's public view goes from a
  *  visitor's page alone (./components/SoloApp): this page's own address with
  *  that app and its `input` in place of this one's — `solo`, `public` and

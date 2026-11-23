@@ -73,10 +73,26 @@ export const FILES: Record<string, RunFile> = {
       url: "https://app.example.org/settings",
       status: "done",
       frames: [
-        { file: "frame-1.svg", caption: "Open the settings page" },
-        { file: "frame-2.svg", caption: "Pick the notifications row" },
-        { file: "frame-3.svg", caption: "Save — the toggle stays on" },
+        { file: "frame-1.svg", caption: "Open the settings page", pageUrl: "https://app.example.org/settings" },
+        { file: "frame-2.svg", caption: "Pick the notifications row", pageUrl: "https://app.example.org/settings#notifications" },
+        { file: "frame-3.svg", caption: "Save — the toggle stays on", pageUrl: "https://app.example.org/settings#notifications" },
       ],
+    }),
+  },
+  // The same flow stopped at its second step: the frame where it failed, and why.
+  "walkthrough-stopped/walkthrough.json": {
+    path: "walkthrough-stopped/walkthrough.json",
+    mediaType: "application/json",
+    bytes: 420,
+    text: JSON.stringify({
+      title: "Settings page, saved",
+      url: "https://app.example.org/settings",
+      status: "stopped",
+      frames: [
+        { file: "../walkthrough/frame-1.svg", caption: "Open the settings page", pageUrl: "https://app.example.org/settings" },
+        { file: "../walkthrough/frame-2.svg", caption: "Save the notifications row", failed: "The Save button never became enabled (waited 10 s)." },
+      ],
+      failed: ["The Save button never became enabled (waited 10 s)."],
     }),
   },
   "walkthrough/frame-1.svg": svgFile("walkthrough/frame-1.svg", frameSvg("Settings", -1)),

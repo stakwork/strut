@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   artifactKind, artifactLabel, artifactRel, directoryEntries, fileScopeOf, findArtifacts, isArtifactPath,
-  isDirectory, isPeerPath, isServedFilePath, parseWalkthrough, peerArtifactPath, resolveArtifactLink, viewerKind,
+  isDirectory, isPeerPath, isServedFilePath, parseWalkthrough, peerArtifactPath, resolveArtifactLink, viewerKind, walkthroughManifest,
 } from "./artifact-view.js";
 
 describe("artifactKind", () => {
@@ -223,6 +223,27 @@ describe("isDirectory / viewerKind", () => {
     assert.equal(viewerKind("/artifacts/1/book/", BOOK), "directory");
     assert.equal(viewerKind("/artifacts/1/book.zip", BOOK), null);
     assert.equal(viewerKind("/artifacts/1/README", BOOK), null);
+  });
+});
+
+describe("walkthroughManifest", () => {
+  const REC = ["walkthroughs/001/01.png", "walkthroughs/001/02.png", "walkthroughs/001/walkthrough.json", "notes/a.md"];
+  it("is the manifest itself, or the one in a directory the listing shows, with or without the slash", () => {
+    assert.equal(walkthroughManifest("/jobs/j/files/walkthroughs/001/walkthrough.json", null), "/jobs/j/files/walkthroughs/001/walkthrough.json");
+    assert.equal(walkthroughManifest("/jobs/j/files/walkthroughs/001", REC), "/jobs/j/files/walkthroughs/001/walkthrough.json");
+    assert.equal(walkthroughManifest("/jobs/j/files/walkthroughs/001/", REC), "/jobs/j/files/walkthroughs/001/walkthrough.json");
+  });
+  it("is null for a directory without one, before the listing, or outside a scope", () => {
+    assert.equal(walkthroughManifest("/jobs/j/files/notes", REC), null);
+    assert.equal(walkthroughManifest("/jobs/j/files/walkthroughs", REC), null, "only the directory that holds it");
+    assert.equal(walkthroughManifest("/jobs/j/files/walkthroughs/001", null), null);
+    assert.equal(walkthroughManifest("walkthroughs/001", REC), null);
+  });
+  it("makes viewerKind a walkthrough for that directory, a directory for its parent, and code text", () => {
+    assert.equal(viewerKind("/jobs/j/files/walkthroughs/001", REC), "walkthrough");
+    assert.equal(viewerKind("/jobs/j/files/walkthroughs", REC), "directory");
+    assert.equal(viewerKind("/jobs/j/files/src/App.tsx", null), "text");
+    assert.equal(viewerKind("/jobs/j/files/main.go", null), "text");
   });
 });
 

@@ -87,9 +87,11 @@ export function fileToken(path: string): Promise<string> {
   return fileScope(path).then((s) => s.token, () => "");
 }
 
-/** The text of an artifact, for the inline viewer (markdown / text files). */
-export async function fetchArtifactText(path: string): Promise<string> {
-  const res = await apiFetch(path);
+/** The text of an artifact, for the inline viewer (markdown / text files).
+ *  `init` as `fetch` takes it: a recording's manifest is read again with
+ *  `cache: "no-store"`, since it is rewritten after each frame. */
+export async function fetchArtifactText(path: string, init?: RequestInit): Promise<string> {
+  const res = await apiFetch(path, init);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.text();
 }

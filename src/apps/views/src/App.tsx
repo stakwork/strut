@@ -7,7 +7,7 @@ import { LANGS, StrutProvider, useStrutClient, useStrutHost, type HostState, typ
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, ConceptDiff, DocumentView, LaunchForm, TaskForm, WorkerTask, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WorkProducts, type RunGraphSelection,
+  AgentTrace, ArtifactView, ConceptDiff, DocumentView, LaunchForm, TaskForm, WorkerTask, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WalkthroughPlayer, WorkProducts, type RunGraphSelection,
 } from "./index";
 import { editEntry, type ConceptPage } from "@strut/kit";
 import { createFixtureClient } from "./fixtures/client";
@@ -468,6 +468,20 @@ const ENTRIES: Entry[] = [
           <ArtifactView workflow={WORKFLOW} runId={RUN_ID} path="notes.txt" />
           <ArtifactView workflow={WORKFLOW} runId={RUN_ID} path="report.pdf" />
         </div>
+      </div>
+    ),
+  },
+  {
+    name: "WalkthroughPlayer",
+    what: "A browser recording played like a video: play (800 ms a frame), a slider over a bar of one segment per step, the frame's caption and page, a filmstrip, ← → once it has focus; a recording in progress followed to its newest frame. Compact (no filmstrip, no keys) for inside a claim; a thumb, the newest frame with a play mark.",
+    grants: "grants.workflows: the run's workflow (run/files)",
+    usage: `<WalkthroughPlayer workflow="research" runId={runId} path={manifest} />  <WalkthroughPlayer … mode="compact" />  <WalkthroughPlayer … mode="thumb" onOpen={…} />`,
+    demo: () => (
+      <div className="grid gap-6 lg:grid-cols-2">
+        <WalkthroughPlayer workflow={WORKFLOW} runId={RUN_ID} path="walkthrough/walkthrough.json" />
+        <WalkthroughPlayer workflow={WORKFLOW} runId={RUN_ID} path="walkthrough-stopped/walkthrough.json" />
+        <WalkthroughPlayer workflow={WORKFLOW} runId={RUN_ID} path="walkthrough/walkthrough.json" mode="compact" className="max-w-sm" />
+        <WalkthroughPlayer workflow={WORKFLOW} runId={RUN_ID} path="walkthrough/walkthrough.json" mode="thumb" onOpen={() => {}} />
       </div>
     ),
   },
