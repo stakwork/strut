@@ -1,8 +1,8 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { createPortal } from "preact/compat";
 import { artifactUrl, downloadArtifact, fetchArtifactText, fileScopeOf } from "../api";
-import { artifactKind, artifactRel, directoryEntries, isPeerPath, parseWalkthrough, resolveArtifactLink, viewerKind } from "@strut/kit/folds";
-import { ArrowLeftIcon, CloseIcon } from "../icons";
+import { artifactKind, artifactRel, directoryEntries, isPeerPath, parseWalkthrough, resolveArtifactLink, viewerKind, walkthroughManifest } from "@strut/kit/folds";
+import { ArrowLeftIcon, CloseIcon, PauseIcon, PlayIcon } from "../icons";
 import { useFileBlob, useFileScope } from "../use-artifact-url";
 import { Markdown, type MarkdownLink } from "./Markdown";
 import { AppHost, type HostedApp } from "./AppHost";
@@ -14,7 +14,8 @@ import { AppHost, type HostedApp } from "./AppHost";
 // pdf + html in a frame (html sandboxed, scripts allowed — a step wrote it,
 // and the one thing its URL holds is the run's file token), text in a pre,
 // a DIRECTORY as one level of folders and files, a WALKTHROUGH (a
-// `browser/walkthrough` recording's manifest) as frames to scrub through.
+// `browser/walkthrough` recording's manifest, or the directory holding one:
+// `walkthroughManifest`) as frames to play and scrub through.
 // Opened from the eye beside
 // an artifact link (`ValueFields`) — and it MOVES: a link in a markdown file
 // that names a sibling (`resolveArtifactLink`) and a row of a directory open
@@ -55,12 +56,14 @@ export function ArtifactViewer(props: {
   const scope = useFileScope(path);
   const files = scope?.files ?? null;
   const kind = viewerKind(path, files);
+  // The file shown: the path, or for a recording's directory its manifest.
+  const file = (kind === "walkthrough" ? walkthroughManifest(path, files) : null) ?? path;
   const peer = isPeerPath(path);
   const hosted = props.app && path === props.path ? props.app : null;
   const wantsText = !hosted && (kind === "markdown" || kind === "text" || kind === "walkthrough" || (peer && kind === "html"));
   const wantsBlob = !hosted && peer && (kind === "image" || kind === "video" || kind === "audio" || kind === "pdf");
   const blob = useFileBlob(wantsBlob ? path : null, kind === "pdf" ? "application/pdf" : undefined);
-  const url = !scope ? undefined : peer ? blob.url ?? undefined : artifactUrl(path, scope.token);
+  const url = !scope ? undefined : peer ? blob.url ?? undefined : artifactUrl(file, scope.token);
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState("");
 
@@ -77,12 +80,12 @@ export function ArtifactViewer(props: {
     let cancelled = false;
     setText(null);
     setError("");
-    fetchArtifactText(path).then(
+    fetchArtifactText(file).then(
       (t) => { if (!cancelled) setText(t); },
       (e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); },
     );
     return () => { cancelled = true; };
-  }, [path, wantsText]);
+  }, [file, wantsText]);
 
   const go = (to: string) => { setTrail((t) => [...t, path]); setPath(to); };
   const back = () => {
@@ -121,7 +124,7 @@ export function ArtifactViewer(props: {
         ? <iframe class="artifact-frame" srcdoc={text ?? ""} title={path} sandbox="" />
         : <iframe class="artifact-frame" src={url} title={path} sandbox="allow-scripts" />;
       case "directory": return <Directory files={scope.files} path={path} token={scope.token} onOpen={go} />;
-      case "walkthrough": return <WalkthroughView text={text ?? ""} path={path} token={scope.token} />;
+      case "walkthrough": return <WalkthroughView key={file} text={text ?? ""} manifest={file} token={scope.token} />;
       default: return <div class="artifact-status">No inline viewer for this file type.</div>;
     }
   };
@@ -137,7 +140,7 @@ export function ArtifactViewer(props: {
           <a class="artifact-dialog-open" href={url} target="_blank" rel="noopener">Open in new tab ↗</a>
         )}
         {scope && kind !== "directory" && (
-          <button class="artifact-dialog-open" onClick={() => void downloadArtifact(path).catch(() => {})}>Download ↓</button>
+          <button class="artifact-dialog-open" onClick={() => void downloadArtifact(file).catch(() => {})}>Download ↓</button>
         )}
         {props.onClose && (
           <button class="copy-btn" onClick={props.onClose} aria-label="Close" title="Close"><CloseIcon /></button>
@@ -194,66 +197,150 @@ function Directory(props: { files: string[]; path: string; token: string; onOpen
   );
 }
 
-/** A walkthrough: the frame large, its caption and where the page was, a
- *  slider and a filmstrip to scrub with (← → step through). A recording that
- *  stopped says why under the frame it stopped on. The manifest as text when
- *  it does not parse — a half-written one is still worth reading. */
-function WalkthroughView(props: { text: string; path: string; token: string }) {
-  const w = parseWalkthrough(props.text, props.path);
+/** How long each frame shows while a walkthrough plays. */
+const STEP_MS = 800;
+/** How often a recording still in progress is read again. */
+const RECORDING_POLL_MS = 3000;
+const STATUS_WORDS: Record<string, string> = { recording: "Recording…", done: "Done", stopped: "Stopped" };
+
+/** A walkthrough, played like a video: every frame mounted and stacked, all
+ *  hidden but the one showing, so the browser has them by the time the
+ *  reader plays or scrubs to one; under it the step count, the caption and
+ *  where the page was, Play (a frame every STEP_MS; at the end it starts
+ *  over), a bar with a segment per step, those still ahead faded, to click
+ *  or drag, and a filmstrip. ← → step through while the player has focus.
+ *  A recording still in progress (`status: "recording"`) is read again
+ *  every few seconds, and the player follows its newest frame until the
+ *  reader picks one. A frame where the recording stopped is outlined in
+ *  red, with why. The manifest as text when it does not parse — a
+ *  half-written one is still worth reading. Keyed by the manifest. */
+function WalkthroughView(props: { text: string; manifest: string; token: string }) {
+  const [text, setText] = useState(props.text);
+  const w = parseWalkthrough(text, props.manifest);
+  const recording = w?.status === "recording";
   const count = w?.frames.length ?? 0;
-  const [at, setAt] = useState(0);
-  useEffect(() => { setAt(0); }, [props.path]);
+  // Null follows the newest frame: a recording opens on it, a finished one on its first.
+  const [at, setAt] = useState<number | null>(() => (recording ? null : 0));
+  const [playing, setPlaying] = useState(false);
+  const i = Math.max(0, Math.min(at ?? count - 1, count - 1));
+  const root = useRef<HTMLDivElement>(null);
+
+  // The arrows are the player's while it has focus, which it takes on opening.
+  useEffect(() => { root.current?.focus({ preventScroll: true }); }, []);
+
+  // Read a recording in progress again till it is done. A read that fails,
+  // or finds the manifest half-written, keeps what is shown.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "ArrowLeft") setAt((i) => Math.max(0, i - 1));
-      if (e.key === "ArrowRight") setAt((i) => Math.min(count - 1, i + 1));
+    if (!recording) return;
+    let on = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const later = () => {
+      timer = setTimeout(() => {
+        fetchArtifactText(props.manifest, { cache: "no-store" })
+          .then((t) => { if (on && parseWalkthrough(t, props.manifest)) setText(t); }, () => {})
+          .finally(() => { if (on) later(); });
+      }, RECORDING_POLL_MS);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [count]);
-  if (!w) return <pre class="artifact-text">{props.text}</pre>;
-  if (!count) return <div class="artifact-status">{w.status === "recording" ? "Recording — no frames yet." : "No frames."}</div>;
-  const i = Math.min(at, count - 1);
-  const frame = w.frames[i]!;
+    later();
+    return () => { on = false; clearTimeout(timer); };
+  }, [recording, props.manifest]);
+
+  // Playing: the next frame every STEP_MS from wherever the reader is, until the last.
+  useEffect(() => {
+    if (!playing) return;
+    const t = setTimeout(() => {
+      setAt(Math.min(i + 1, count - 1));
+      if (i + 1 >= count - 1) setPlaying(false);
+    }, STEP_MS);
+    return () => clearTimeout(t);
+  }, [playing, i, count]);
+
+  const togglePlay = () => {
+    // At the end, Play starts over.
+    if (!playing && i >= count - 1) setAt(0);
+    setPlaying(!playing);
+  };
+  const onKeyDown = (e: KeyboardEvent) => {
+    // The slider steps on its own arrows.
+    if (e.target instanceof HTMLInputElement) return;
+    if (e.key === "ArrowLeft") { e.preventDefault(); setAt(Math.max(0, i - 1)); }
+    if (e.key === "ArrowRight") { e.preventDefault(); setAt(Math.min(count - 1, i + 1)); }
+  };
+
+  if (!w) return <pre class="artifact-text">{text}</pre>;
+  const frame = w.frames[i];
+  const title = w.title ?? "Walkthrough";
   return (
-    <div class="walkthrough">
-      {(w.title || w.status) && (
-        <div class="walkthrough-head">
-          {w.title && <span class="walkthrough-title">{w.title}</span>}
-          {w.status && <span class={`walkthrough-status is-${w.status}`}>{w.status}</span>}
-        </div>
-      )}
-      <FileImg class={`walkthrough-frame${frame.failed ? " is-failed" : ""}`} path={frame.path} token={props.token} alt={frame.caption} />
-      <div class="walkthrough-caption">
-        <span class="walkthrough-count">{i + 1} / {count}</span>
-        <span class="walkthrough-text">{frame.caption}</span>
-        {frame.pageUrl && <span class="walkthrough-page" title={frame.pageUrl}>{frame.pageUrl}</span>}
+    <div class="walkthrough" ref={root} tabIndex={0} onKeyDown={onKeyDown} aria-label={title}>
+      <div class="walkthrough-head">
+        <span class="walkthrough-title">{title}</span>
+        {w.status && <span class={`walkthrough-status is-${w.status}`}>{STATUS_WORDS[w.status] ?? w.status}</span>}
       </div>
-      {frame.failed && <div class="artifact-status tone-error">{frame.failed}</div>}
-      {i === count - 1 && !frame.failed && w.failed.length > 0 && (
+      {!frame ? (
+        <div class="artifact-status">{recording ? "Recording — no frames yet." : "No frames."}</div>
+      ) : (
+        <>
+          <div class="walkthrough-stage">
+            {w.frames.map((f, n) => (
+              <div key={f.path} class={`walkthrough-cell${n === i ? "" : " is-hidden"}`} aria-hidden={n !== i || undefined}>
+                <FileImg
+                  class={`walkthrough-frame${f.failed ? " is-failed" : ""}`}
+                  path={f.path}
+                  token={props.token}
+                  alt={f.caption}
+                  {...(n !== i ? { loading: "lazy" as const } : {})}
+                />
+              </div>
+            ))}
+          </div>
+          <div class="walkthrough-caption">
+            <span class="walkthrough-count">{i + 1} / {count}</span>
+            <span class="walkthrough-text">{frame.caption}</span>
+            {frame.pageUrl && <span class="walkthrough-page" title={frame.pageUrl}>{frame.pageUrl}</span>}
+          </div>
+          {frame.failed && <div class="artifact-status tone-error">{frame.failed}</div>}
+          {count > 1 && (
+            <div class="walkthrough-controls">
+              <button type="button" class="walkthrough-play" onClick={togglePlay} aria-label={playing ? "Pause" : "Play"} title={playing ? "Pause" : "Play"}>
+                {playing ? <PauseIcon /> : <PlayIcon />}
+              </button>
+              <div class="walkthrough-bar">
+                {/* A segment per step between two frames; the ones still ahead are faded. */}
+                <div class="walkthrough-steps" aria-hidden="true">
+                  {Array.from({ length: count - 1 }, (_, n) => <span key={n} class={`walkthrough-step${n >= i ? " is-ahead" : ""}`} />)}
+                </div>
+                <input
+                  class="walkthrough-range"
+                  type="range"
+                  min={0}
+                  max={count - 1}
+                  value={i}
+                  aria-label="Frame"
+                  onInput={(e) => setAt(Number(e.currentTarget.value))}
+                />
+              </div>
+            </div>
+          )}
+          {count > 1 && (
+            <div class="walkthrough-strip">
+              {w.frames.map((f, n) => (
+                <button
+                  key={f.path}
+                  type="button"
+                  class={`walkthrough-thumb${n === i ? " is-current" : ""}${f.failed ? " is-failed" : ""}`}
+                  onClick={() => setAt(n)}
+                  title={f.caption}
+                >
+                  <FileImg path={f.path} token={props.token} alt={f.caption} loading="lazy" />
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+      {w.failed.length > 0 && !w.frames.some((f) => f.failed) && (
         <div class="artifact-status tone-error">{w.failed.join(" · ")}</div>
       )}
-      <input
-        class="walkthrough-slider"
-        type="range"
-        min={0}
-        max={count - 1}
-        value={i}
-        aria-label="Frame"
-        onInput={(e) => setAt(Number((e.target as HTMLInputElement).value))}
-      />
-      <div class="walkthrough-strip">
-        {w.frames.map((f, n) => (
-          <button
-            key={f.path}
-            class={`walkthrough-thumb${n === i ? " is-current" : ""}${f.failed ? " is-failed" : ""}`}
-            onClick={() => setAt(n)}
-            title={f.caption}
-          >
-            <FileImg path={f.path} token={props.token} alt={f.caption} loading="lazy" />
-          </button>
-        ))}
-      </div>
     </div>
   );
 }

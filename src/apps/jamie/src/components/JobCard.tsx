@@ -14,10 +14,11 @@ import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
 import { answeredSince, askedSecret, holdLinks, jobLook, jobRunWorkflow, livePicture, liveStrip, type HoldLink, type LiveItem, type LiveUpdate } from "../lib/jobs";
 import { inFlight } from "../lib/chat";
-import { artifactLink, openable } from "../lib/artifacts";
+import { artifactLink, carded } from "../lib/artifacts";
 import type { ArtifactRef, JobView } from "../lib/types";
 import { ArtifactCard, type TurnRuns } from "./ArtifactCard";
 import { ClaimsPanel } from "./ClaimsPanel";
+import { Deliverables } from "./Deliverables";
 import { ThreadPrs } from "./PullRequestCard";
 import { prKey, prOf } from "../lib/pr";
 import { Pill } from "./bits";
@@ -76,7 +77,7 @@ function JobRunCard({ job, runId, workflow, conversation }: JobCardProps) {
   const ask = typeof out.ask === "string" ? out.ask : (out.ask as { message?: string } | undefined)?.message;
   const look = run.isError ? { label: "Unreadable", tone: "muted" as const } : jobLook(status, ask);
   const title = view.data?.title ?? (typeof run.data?.["title"] === "string" ? run.data["title"] : job);
-  const artifacts = ((run.data?.artifacts ?? []) as ArtifactRef[]).filter(openable);
+  const artifacts = ((run.data?.artifacts ?? []) as ArtifactRef[]).filter(carded);
   const file = workflow ? { workflow, runId } : undefined;
   const runs: TurnRuns = { byJob: new Map(file ? [[job, file]] : []), byRun: new Map(file ? [[runId, file]] : []) };
   const captchas = artifacts.filter((a) => a.kind === "captcha");
@@ -122,14 +123,22 @@ function JobRunCard({ job, runId, workflow, conversation }: JobCardProps) {
           {ask && <p className="rounded-md bg-amber-500/10 px-2 py-1.5 text-sm"><span className="font-medium">Asks: </span>{ask}</p>}
           {secretBox}
           {error && <p className="text-xs text-rose-700 dark:text-rose-300">{error}</p>}
-          {artifacts.map((a) => (
-            <ArtifactCard key={a.id} artifact={a} runs={runs} job={job} {...(conversation ? { conversation } : {})} />
-          ))}
-          {view.data?.claims && view.data.claims.length > 0 && <ClaimsPanel job={job} claims={view.data.claims} runId={view.data.runs.find((r) => !r.parentRunId)?.runId ?? runId} />}
+          <Deliverables
+            items={artifacts.map((artifact) => ({ artifact, job }))}
+            runs={runs}
+            card={({ artifact }, opened) => <ArtifactCard key={artifact.id} artifact={artifact} runs={runs} job={job} defaultOpen={!!opened} {...(conversation ? { conversation } : {})} />}
+          />
+          {view.data?.claims && view.data.claims.length > 0 && <ClaimsPanel job={job} claims={view.data.claims} run={claimsRun(view.data.runs, runId, workflow)} />}
         </div>
       )}
     </div>
   );
+}
+
+/** The run a job's claims are about: its newest turn (whose files are the job's, where their evidence is read). */
+function claimsRun(runs: JobView["runs"], runId: string, workflow?: string): { workflow: string; runId: string } {
+  const newest = runs.find((r) => !r.parentRunId);
+  return newest ? { workflow: newest.workflow, runId: newest.runId } : { workflow: workflow ?? "job", runId };
 }
 
 /** What the job holds at an address: beside the chat (the host reads the

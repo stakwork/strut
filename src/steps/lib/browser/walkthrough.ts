@@ -10,7 +10,7 @@ export default defineStep({
     "Caption only the steps a person should see — the page after a click, the form filled — never a wait. A recording is a few frames; a longer flow is several walkthroughs, one per claim. Explore with the atomic browser/* steps first, then write the path that works here: the recording replays only that. " +
     "Like browser/verify it runs in a browser of its OWN, signed out with empty storage — nothing an earlier recording signed into — so a flow behind a sign-in signs in in `steps`, and the list is checked before anything opens (a wrong one starts no recording). " +
     "A step that fails, or an expectation that does not hold, is a result: supports: false, the recording ends on a frame of where the page got to, marked with why. " +
-    "The recording is a directory, walkthroughs/NNN/ (frames 01.png, 02.png, … and walkthrough.json), under the job's directory on a job's run; `locator` is its manifest. To hand it to the person, list it in `artifacts` by that path with kind \"walkthrough\". As a claim's check its evidence is the recording. You see the last frame; open any other with job/read.",
+    "The recording is a directory, walkthroughs/NNN/ (frames 01.png, 02.png, … and walkthrough.json), under the job's directory on a job's run; `locator` is its manifest. To hand it to the person, list `artifact` as one of the job's artifacts, as given (it names the manifest, which is what plays). As a claim's check its evidence is the recording. You see the last frame; open any other with job/read.",
   input: z.object({
     url: z.string().describe("http(s) URL to open — on a job's check usually {{ input.urls.pod }} plus a path"),
     title: z.string().optional().describe("what the recording shows, for the person: \"Switch billing to annual\""),
@@ -38,6 +38,9 @@ export default defineStep({
     content: z.string(),
     locator: z.object({ path: z.string(), url: z.string() }).describe("the recording's manifest: walkthroughs/NNN/walkthrough.json, and its served link"),
     kind: z.literal("walkthrough").describe("the artifact kind to list it under"),
+    artifact: z
+      .object({ id: z.string(), kind: z.literal("walkthrough"), title: z.string(), path: z.string() })
+      .describe("the recording as one of the job's artifacts: list it as given"),
     frames: z.array(z.object({ file: z.string(), caption: z.string(), url: z.string() })),
     errors: z.array(z.string()),
     pageUrl: z.string().describe("the page's URL after the steps"),
@@ -48,8 +51,12 @@ export default defineStep({
     const { small, path, url, frames, supports, content, failed, errors, pageUrl, title } = await browserOf(ctx).walkthrough(ctx.runId, cfg, shotSinkOf(ctx));
     // As an agent tool the model sees the last frame, 0.6×, beside the verdict.
     const last = frames[frames.length - 1]!;
+    // The entry names the MANIFEST, never the directory: every viewer plays
+    // a walkthrough.json (an agent once listed walkthroughs/001 and the
+    // person got a folder listing).
+    const artifact = { id: `walkthrough-${path.split("/").slice(-2, -1)[0] ?? "1"}`, kind: "walkthrough" as const, title: cfg.title || title || "Recording", path };
     return withMedia(
-      { supports, content, locator: { path, url }, kind: "walkthrough" as const, frames, errors, pageUrl, title, failed },
+      { supports, content, locator: { path, url }, kind: "walkthrough" as const, artifact, frames, errors, pageUrl, title, failed },
       [{ mediaType: "image/png", data: small, filename: last.file }],
     );
   },

@@ -263,6 +263,8 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
     const lines = [...(rec.runs ?? [])].reverse();
     const limit = opts.limit && opts.limit > 0 ? opts.limit : THREADS_RUN_LIMIT;
     const exists = existsIn(rootOf(rec.name));
+    // What the job holds at an address: a deliverable link there is left out.
+    const held = async () => (rec.holds ?? []).flatMap((h) => (h.url ? [h.url] : []));
     const runs: ThreadRun[] = [];
     for (const line of lines.slice(0, limit)) {
       if (!(await readable(line.workflow))) continue;
@@ -273,7 +275,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
         if (err instanceof RunArchiveError) return [];
         throw err;
       });
-      const artifacts = summary?.status === "success" ? await resolveArtifactRefs(summary.output, { runId: line.runId, job: rec.name, exists, ...appsAt }) : undefined;
+      const artifacts = summary?.status === "success" ? await resolveArtifactRefs(summary.output, { runId: line.runId, job: rec.name, exists, held, ...appsAt }) : undefined;
       const stale = !summary && deps.isLive && !deps.isLive(line.workflow, line.runId);
       runs.push({ ...line, summary, ...(stale ? { stale: true as const } : {}), events, ...(artifacts?.length ? { artifacts } : {}) });
     }
@@ -301,11 +303,16 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       }
     }
     const exists = existsIn(rootOf(rec.name));
+    // What the job holds at an address: a deliverable link there is left out.
+    const held = async () => (rec.holds ?? []).flatMap((h) => (h.url ? [h.url] : []));
     const artifacts: JobArtifact[] = [];
     for (const { raw, runId } of kept) {
-      const [ref] = (await resolveArtifactRefs({ artifacts: [raw] }, { runId, job: rec.name, exists, ...appsAt })) ?? [];
+      const [ref] = (await resolveArtifactRefs({ artifacts: [raw] }, { runId, job: rec.name, exists, held, ...appsAt })) ?? [];
       if (!ref) continue;
-      const path = typeof raw["path"] === "string" && ref.url ? raw["path"].replace(/^\/+/, "") : undefined;
+      // The file the entry resolved to (a recording's directory resolves to
+      // its manifest), relative to the job's directory: what job/read takes.
+      const prefix = `/jobs/${encodeURIComponent(rec.name)}/files/`;
+      const path = typeof raw["path"] === "string" && ref.url ? (ref.url.startsWith(prefix) ? ref.url.slice(prefix.length) : raw["path"].replace(/^\/+/, "")) : undefined;
       artifacts.push({ ...ref, runId, ...(path ? { path } : {}) });
     }
     return { artifacts, ...(text !== undefined ? { text } : {}) };

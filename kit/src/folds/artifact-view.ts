@@ -31,6 +31,11 @@ const BY_EXT: Record<string, ArtifactKind> = {
   txt: "text", json: "text", csv: "text", tsv: "text", yaml: "text", yml: "text",
   toml: "text", xml: "text", log: "text", vtt: "text", srt: "text", diff: "text",
   patch: "text", js: "text", ts: "text", py: "text", sh: "text",
+  // Source an agent wrote, read as text: the server's `code`.
+  tsx: "text", jsx: "text", mjs: "text", cjs: "text", rb: "text", go: "text", rs: "text",
+  css: "text", scss: "text", sql: "text", java: "text", kt: "text", swift: "text",
+  c: "text", h: "text", cpp: "text", hpp: "text", cs: "text", php: "text", lua: "text",
+  ini: "text", vue: "text", svelte: "text", graphql: "text", gql: "text", proto: "text",
 };
 
 /** A recording's manifest (`browser/walkthrough`, plans/live-artifacts.md
@@ -149,11 +154,29 @@ export function isDirectory(files: string[], path: string): boolean {
   return files.some((f) => f.startsWith(prefix));
 }
 
-/** What the viewer shows for a path: `artifactKind`, else "directory" when
- *  the scope's listing has files under it. Null when nothing renders it —
- *  or, for a path with no extension, while the listing is not in yet. */
+/** The manifest of the recording `path` names: the path itself when it is a
+ *  `walkthrough.json`, `<dir>/walkthrough.json` when it names a directory
+ *  the scope's listing shows one in (an entry that names the recording's
+ *  directory, as an agent may list it), else null. */
+export function walkthroughManifest(path: string, files: readonly string[] | null): string | null {
+  if ((path.split("/").pop() ?? "") === WALKTHROUGH_MANIFEST) return path;
+  const rel = files ? artifactRel(path) : null;
+  if (rel == null) return null;
+  const dir = rel.replace(/\/+$/, "");
+  if (!files!.includes(dir ? `${dir}/${WALKTHROUGH_MANIFEST}` : WALKTHROUGH_MANIFEST)) return null;
+  return `${path.replace(/\/+$/, "")}/${WALKTHROUGH_MANIFEST}`;
+}
+
+/** What the viewer shows for a path: `artifactKind`, else "walkthrough"
+ *  for a directory holding a recording's manifest (`walkthroughManifest`:
+ *  the viewer opens that), else "directory" when the scope's listing has
+ *  files under it. Null when nothing renders it — or, for a path with no
+ *  extension, while the listing is not in yet. */
 export function viewerKind(path: string, files: string[] | null): ArtifactKind | null {
-  return artifactKind(path) ?? (files && isDirectory(files, path) ? "directory" : null);
+  const kind = artifactKind(path);
+  if (kind || !files) return kind;
+  if (walkthroughManifest(path, files)) return "walkthrough";
+  return isDirectory(files, path) ? "directory" : null;
 }
 
 /** One level of a directory in a listing: the names of the folders and of

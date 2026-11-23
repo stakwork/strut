@@ -359,3 +359,25 @@ export function ChevronRightIcon({ size = 14, ...rest }: IconProps) {
 export function ArrowRightIcon({ size = 14, ...rest }: IconProps) {
   return <Outline size={size} rest={rest}><path d="M5 12h14M13 6l6 6-6 6" /></Outline>;
 }
+
+/** A circular arrow: load the page again (the hold panel's Reload). */
+export function ReloadIcon({ size = 13, ...rest }: IconProps) {
+  return <Outline size={size} rest={rest}><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></Outline>;
+}
+
+export function PlayIcon({ size = 12, ...rest }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true" {...rest}>
+      <path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z" />
+    </svg>
+  );
+}
+
+export function PauseIcon({ size = 12, ...rest }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true" {...rest}>
+      <rect x="6" y="4" width="4" height="16" rx="1" />
+      <rect x="14" y="4" width="4" height="16" rx="1" />
+    </svg>
+  );
+}

@@ -9018,7 +9018,12 @@ export async function createStrut<TServices = unknown>(
     return { version: v.version, hash: build?.hash ?? v.hash, ...(build?.builtAt ? { builtAt: build.builtAt } : {}) };
   };
   const artifactRefs = (runId: string, output: unknown, job: string | undefined): Promise<ArtifactRef[] | undefined> =>
-    resolveArtifactRefs(output, { runId, ...(job ? { job } : {}), exists: artifactFileExists, appVersion: appVersionOf });
+    resolveArtifactRefs(output, {
+      runId,
+      ...(job ? { job, held: async () => ((await readJobRecord(jobRoot(dataDir, job)))?.holds ?? []).flatMap((h) => (h.url ? [h.url] : [])) } : {}),
+      exists: artifactFileExists,
+      appVersion: appVersionOf,
+    });
 
   // ── Runs as a capability (src/runs.ts; plans/apps.md §5) ──────────────
   // What the `run/*` steps are thin over — list, read, launch, cancel, a

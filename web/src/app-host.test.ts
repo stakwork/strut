@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appKey, appMessage, appPageAddress, appToolInput, frameableHold, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, publicAppHop, soloTheme, strutLink } from "./app-links";
+import { appKey, appMessage, appPageAddress, appToolInput, frameableHold, holdAddress, holdNavigation, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, publicAppHop, soloTheme, strutLink } from "./app-links";
 import { appLink } from "../../kit/src/links";
 
 /** The pure parts of the app host's relay (./app-links, what ./app-host
@@ -99,6 +99,41 @@ describe("the app host", () => {
     assert.equal(frameableHold(undefined, here), null, "the hold is gone");
     assert.equal(frameableHold("https://box.stakwork.ai/secrets", here), null, "this page's origin");
     for (const url of ["javascript:alert(1)", "data:text/html,x", "/relative", "not a url"]) assert.equal(frameableHold(url, here), null, url);
+  });
+
+  const hold = "https://p1a2b3-3000.pods.stakwork.ai/_pods/open/tok3n";
+  const pod = "https://p1a2b3-3000.pods.stakwork.ai";
+
+  it("a hold's address bar shows its origin, never the sign-in link's token; an address typed since as it is", () => {
+    assert.equal(holdAddress(hold), `${pod}/`);
+    assert.equal(holdAddress(hold, hold), `${pod}/`, "back at the hold's own address");
+    assert.equal(holdAddress(hold, `${pod}/settings?tab=1`), `${pod}/settings?tab=1`);
+    assert.equal(holdAddress("not a url"), "");
+  });
+
+  it("an address typed in a hold's panel: its own origin in the frame, any other http(s) address in a tab, nothing else anywhere", () => {
+    for (const [input, at] of [
+      ["/settings", `${pod}/settings`],
+      ["settings?tab=1", `${pod}/settings?tab=1`],
+      ["  /a/b#c  ", `${pod}/a/b#c`],
+      [`${pod}/x`, `${pod}/x`],
+      [`${pod}/`, `${pod}/`],
+      [hold, hold],
+    ]) assert.deepEqual(holdNavigation(input!, hold), { frame: at }, input);
+    for (const [input, at] of [
+      ["https://github.com/stakwork", "https://github.com/stakwork"],
+      ["github.com/stakwork", "https://github.com/stakwork"],
+      ["localhost:3000/x", "http://localhost:3000/x"],
+      ["//evil.test/x", "https://evil.test/x"],
+      ["\\\\evil.test/x", "https://evil.test/x"],
+      ["http://p1a2b3-3000.pods.stakwork.ai/x", "http://p1a2b3-3000.pods.stakwork.ai/x"],
+      ["https://p1a2b3-3000.pods.stakwork.ai.evil.test/", "https://p1a2b3-3000.pods.stakwork.ai.evil.test/"],
+      ["https://p1a2b3-3000.pods.stakwork.ai@evil.test/", "https://p1a2b3-3000.pods.stakwork.ai@evil.test/"],
+    ]) assert.deepEqual(holdNavigation(input!, hold), { tab: at }, input);
+    for (const input of ["", "   ", "javascript:alert(1)", "JavaScript:alert(1)", "java\tscript:alert(1)", "data:text/html,x", "mailto:a@b.test", "file:///etc/passwd", "ftp://x.test/"]) {
+      assert.equal(holdNavigation(input, hold), null, input);
+    }
+    assert.equal(holdNavigation("/x", "not a url"), null, "no hold, nowhere");
   });
 
   it("a link to the app on screen is told apart from one to another app", () => {

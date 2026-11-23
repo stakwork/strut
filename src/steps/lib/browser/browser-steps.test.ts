@@ -342,6 +342,8 @@ test("walkthrough forwards its list with captions, answers in the check contract
     ...VERDICT,
     locator: { path: WALKED.path, url: WALKED.url },
     kind: "walkthrough",
+    // The entry the agent lists names the manifest, never the directory.
+    artifact: { id: "walkthrough-001", kind: "walkthrough", title: "Switch billing to annual", path: WALKED.path },
     frames: WALKED.frames,
   });
   assert.deepEqual(mapCheckResult("browser/walkthrough", { status: "success", output: out }), {

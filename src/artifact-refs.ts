@@ -208,7 +208,20 @@ export interface ResolveArtifactsAt {
    *  its build; null for no such app or version. Absent where there are no
    *  apps: an `app` entry is then an error. */
   appVersion?: (name: string, version?: string) => Promise<{ version: string; hash?: string; builtAt?: string } | null>;
+  /** The addresses the run's job holds now (its holds' `url`s), read only
+   *  when an entry is a link: a link on one of their origins is left out,
+   *  since the job's card already shows what the job holds (a pod's app),
+   *  and the link an agent copies there is often a short-lived sign-in. */
+  held?: () => Promise<readonly string[]>;
 }
+
+const originOf = (url: string): string | null => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+};
 
 /** The `artifacts` list of a run's output, if it carries one — the raw
  *  entries, unresolved. */
@@ -261,6 +274,12 @@ export function liftedArtifacts(output: unknown): Record<string, unknown>[] | un
 export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsAt): Promise<ArtifactRef[] | undefined> {
   const entries = artifactEntriesOf(output);
   if (!entries) return undefined;
+  let heldOrigins: Promise<Set<string>> | undefined;
+  const held = () =>
+    (heldOrigins ??= (at.held?.() ?? Promise.resolve([])).then(
+      (urls) => new Set(urls.map(originOf).filter((o): o is string => !!o)),
+      () => new Set<string>(),
+    ));
   const out: ArtifactRef[] = [];
   for (const raw of entries) {
     if (!isRecord(raw)) continue;
@@ -317,14 +336,25 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
         }
       }
     } else if (path !== undefined) {
-      const rel = path.replace(/^\/+/, "");
+      let rel = path.replace(/^\/+/, "");
       const bad = rel.split("/").includes("..") || !rel;
-      if (!text(raw["kind"])) ref.kind = artifactKind(rel);
+      // A recording handed over by its directory (`walkthroughs/001`): the
+      // manifest inside is what every viewer plays, so it is the entry's file.
+      if (!bad && rel.split("/").pop() !== WALKTHROUGH_MANIFEST && (ref.kind === "walkthrough" || (!text(raw["kind"]) && artifactKind(rel) === "url"))) {
+        const manifest = `${rel.replace(/\/+$/, "")}/${WALKTHROUGH_MANIFEST}`;
+        if (await at.exists(fileUrl(manifest))) {
+          rel = manifest;
+          ref.kind = "walkthrough";
+        }
+      }
+      if (!text(raw["kind"]) && ref.kind !== "walkthrough") ref.kind = artifactKind(rel);
       if (bad) error = "bad path";
       else if (ref.kind === APP_KIND) error = `an app is handed over by name once published — { kind: "app", app: "<name>" } after app/publish; a directory is no app`;
       else if (await at.exists(fileUrl(rel))) ref.url = fileUrl(rel);
       else error = "not found";
     } else if (url !== undefined) {
+      const origin = /^https?:\/\//i.test(url) ? originOf(url) : null;
+      if (origin && at.held && (await held()).has(origin)) continue;
       if (!text(raw["kind"])) ref.kind = artifactKind(url);
       if (/^(https?:\/\/|\/)/.test(url)) ref.url = url;
       else error = "bad url";

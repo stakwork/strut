@@ -27,7 +27,7 @@ import evidenceStep from "../steps/lib/job/evidence.js";
 import type { JobsCapability } from "../jobs.js";
 import type { Conversations } from "../conversations.js";
 import { BUSY_NOTICE, NOT_SHARED_NOTICE, NOT_YOURS_NOTICE, readRefusal, detectSlash, groupByDay, hostPlace, insertSlash, isOwn, mayContinue, modelChoices, modelParams, newConversationId, ownerLabel, readsAsAdmin, sendRefusal, sentModel, silentReply, timeLine, turnContext, withoutAsk } from "./jamie/src/lib/chat.js";
-import { appKey, openable, placeArtifact, servedFile, turnDeliverables } from "./jamie/src/lib/artifacts.js";
+import { appKey, cardWord, carded, evidenceOf, inlineKind, openable, placeArtifact, placementOf, servedFile, turnDeliverables } from "./jamie/src/lib/artifacts.js";
 import { answeredSince, askedSecret, captchaPrompt, claimPill, holdLinks, jobLook, jobRunWorkflow, livePicture, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
 import { canMerge, checksLine, fixPrompt, prKey, prLive, prOf, prPill } from "./jamie/src/lib/pr.js";
@@ -189,6 +189,38 @@ describe("strut/jamie — the pure parts", () => {
     assert.deepEqual(place({ id: "n", kind: "markdown", title: "Note", content: "# Hi" }), { show: "content", kind: "markdown", text: "# Hi" });
     assert.deepEqual(place({ id: "k", kind: "captcha", title: "Captcha", url: "/jobs/j1/files/shots/captcha-1.json" }), { show: "captcha", job: "j1", path: "shots/captcha-1.json", run: { workflow: "job", runId: "r-job" } });
     assert.deepEqual(place({ id: "m", kind: "markdown", title: "Gone", error: "not found: x.md" }), { show: "missing", text: "not found: x.md" });
+    // The declared kind where it says more than the path: a recording listed
+    // by its directory plays from its manifest; a spreadsheet file is the host's.
+    assert.deepEqual(place({ id: "w", kind: "walkthrough", title: "Sign in", url: "/jobs/j1/files/walkthroughs/001" }), { show: "file", kind: "walkthrough", path: "walkthroughs/001/walkthrough.json", run: { workflow: "job", runId: "r-job" }, job: "j1" });
+    assert.equal(place({ id: "x", kind: "table", title: "Book", url: "/jobs/j1/files/book.xlsx" }).show, "link", "an .xlsx is no CSV");
+    assert.equal(inlineKind("rows.json", "table"), "table");
+    assert.equal(inlineKind("src/App.tsx"), "text", "source reads as text");
+    // A document's HTML rendition draws inline.
+    assert.deepEqual(place({ id: "d", kind: "docx", title: "Contract", url: "/jobs/j1/files/c.docx", render: "/jobs/j1/files/c.html" }), { show: "file", kind: "html", path: "c.html", run: { workflow: "job", runId: "r-job" }, job: "j1" });
+    // Words of a plain-text kind are text, not markdown: a diff's lines are no list.
+    assert.deepEqual(place({ id: "df", kind: "diff", title: "Patch", content: "- a\n+ b" }), { show: "content", kind: "text", text: "- a\n+ b" });
+    // The card's word: the agent's label, else its kind's.
+    assert.equal(cardWord({ kind: "walkthrough" }), "recording");
+    assert.equal(cardWord({ kind: "markdown", label: "Plan" }), "Plan");
+    assert.equal(cardWord({ kind: "url" }, "notes/x.bin"), "file");
+    assert.equal(cardWord({ kind: "markdown" }), "");
+  });
+
+  it("how deliverables lay out: pictures as thumbnails, reference material folded, the rest as rows; a claim's evidence drawn in place", () => {
+    const lay = (ref: Parameters<typeof placeArtifact>[0]) => placementOf(ref, placeArtifact(ref, runs));
+    assert.equal(lay({ id: "s", kind: "image", title: "Shot", url: "/jobs/j1/files/shots/001.png" }), "thumb");
+    assert.equal(lay({ id: "w", kind: "walkthrough", title: "Flow", url: "/jobs/j1/files/walkthroughs/001/walkthrough.json" }), "thumb");
+    assert.equal(lay({ id: "v", kind: "video", title: "Clip", url: "/jobs/j1/files/clip.mp4" }), "thumb");
+    assert.equal(lay({ id: "l", kind: "log", title: "Build log", url: "/jobs/j1/files/build.log" }), "folded");
+    assert.equal(lay({ id: "d", kind: "diff", title: "Patch", content: "- a" }), "folded");
+    assert.equal(lay({ id: "p", kind: "markdown", title: "Plan", url: "/jobs/j1/files/plan.md" }), "row");
+    assert.equal(lay({ id: "n", kind: "text", title: "Notes", url: "/jobs/j1/files/notes.txt" }), "row", "notes are no log");
+    assert.equal(lay({ id: "pr", kind: "pull_request", title: "PR", url: "https://github.com/a/b/pull/1" }), "row");
+    assert.deepEqual(evidenceOf({ url: "/jobs/j1/files/shots/002.png?t=x" }), { show: "image", path: "shots/002.png", href: "?artifact=%2Fjobs%2Fj1%2Ffiles%2Fshots%2F002.png" });
+    assert.deepEqual(evidenceOf({ url: "/jobs/j1/files/walkthroughs/001/walkthrough.json" }), { show: "walkthrough", path: "walkthroughs/001/walkthrough.json", href: "?artifact=%2Fjobs%2Fj1%2Ffiles%2Fwalkthroughs%2F001%2Fwalkthrough.json" });
+    assert.deepEqual(evidenceOf({ url: "/jobs/j1/files/out.html" }), { show: "link", href: "?artifact=%2Fjobs%2Fj1%2Ffiles%2Fout.html", external: false });
+    assert.deepEqual(evidenceOf({ url: "https://pod.example/settings" }), { show: "link", href: "https://pod.example/settings", external: true });
+    assert.equal(evidenceOf(undefined), null);
   });
 
   it("an app named only by its document's link is still an app; an entry that opens nothing is no card", () => {
@@ -197,12 +229,14 @@ describe("strut/jamie — the pure parts", () => {
     assert.deepEqual(placeArtifact({ id: "a", kind: "app", title: "Ask X", url: "/apps/x-research/v2/files/dist/index.html" }, runs), { show: "link", href: "?app=x-research%40v2", external: false, what: "app" });
     assert.equal(openable({ id: "x", kind: "url", title: "Ask X", summary: "The app" }), false, "a copy that kept only its title and summary");
     assert.equal(openable({ id: "m", kind: "markdown", title: "Gone", error: "not found" }), false);
+    assert.equal(carded({ id: "m", kind: "markdown", title: "Gone", error: "not found" }), true, "a job's deliverable says why it is missing");
+    assert.equal(carded({ id: "x", kind: "url", title: "Ask X" }), false);
     assert.equal(openable({ id: "a", kind: "app", title: "Ask X", app: { name: "x-research", version: "v2" } }), true);
     assert.equal(openable({ id: "n", kind: "markdown", title: "Note", content: "# Hi" }), true);
     assert.equal(openable({ id: "f", kind: "markdown", title: "Far", peer: "acme-web", job: "j7", path: "report.md" }), true);
   });
 
-  it("a turn's deliverables: under a wake's reply what the job delivered; the reply's copy of one, or an entry that opens nothing, never shows", () => {
+  it("a turn's deliverables: under a wake's reply what the job delivered, a failed one saying why; the reply's copy of one, or its entry that opens nothing, never shows", () => {
     const app = { id: "ask-x", kind: "app", title: "Ask X", url: "/apps/x-research/v2/files/dist/index.html", app: { name: "x-research", version: "v2" } };
     const plan = { id: "plan", kind: "markdown", title: "Plan", url: "/jobs/j1/files/plan.md" };
     const { delivered, own } = turnDeliverables({
@@ -215,7 +249,7 @@ describe("strut/jamie — the pure parts", () => {
         { id: "pr", kind: "pull_request", title: "PR", url: "https://github.com/a/b/pull/1" },
       ],
     });
-    assert.deepEqual(delivered, [{ artifact: app, job: "j1" }, { artifact: plan, job: "j1" }]);
+    assert.deepEqual(delivered.map((d) => d.artifact.id), ["ask-x", "plan", "gone"]);
     assert.deepEqual(own.map((s) => s.artifact.id), ["pr"]);
     assert.deepEqual(turnDeliverables({}), { delivered: [], own: [] });
   });

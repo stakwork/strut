@@ -466,6 +466,33 @@ describe("jobs — artifact refs", () => {
     assert.deepEqual(ref, { id: "w", kind: "walkthrough", title: "W", url: jobFileUrl("a/b", "walkthroughs/004/walkthrough.json") });
   });
 
+  it("a link on an origin the job holds is left out (the job's card shows the hold); every other entry stays", async () => {
+    const at = { runId: "r", job: "j", exists: async () => true, held: async () => ["https://p1-3000.pods.example/_pods/open/long"] };
+    const refs = (await resolveArtifactRefs({ artifacts: [
+      { id: "pod", title: "The app", url: "https://p1-3000.pods.example/_pods/open/short" },
+      { id: "other", title: "Docs", url: "https://p1-8000.pods.example/" },
+      { id: "plan", title: "Plan", path: "plan.md" },
+    ] }, at))!;
+    assert.deepEqual(refs.map((r) => r.id), ["other", "plan"]);
+    const none = (await resolveArtifactRefs({ artifacts: [{ id: "pod", title: "The app", url: "https://p1-3000.pods.example/" }] }, { ...at, held: async () => [] }))!;
+    assert.deepEqual(none.map((r) => r.id), ["pod"], "nothing held: the link stays");
+  });
+
+  it("a recording handed over by its directory resolves to the manifest inside, kind or no kind; a directory without one stays as it is", async () => {
+    const files = new Set(["/jobs/j/files/walkthroughs/001", "/jobs/j/files/walkthroughs/001/walkthrough.json", "/jobs/j/files/shots"]);
+    const at = { runId: "r", job: "j", exists: async (u: string) => files.has(u) };
+    const refs = (await resolveArtifactRefs({ artifacts: [
+      { id: "a", title: "A", kind: "walkthrough", path: "walkthroughs/001" },
+      { id: "b", title: "B", path: "walkthroughs/001/" },
+      { id: "c", title: "C", path: "shots" },
+    ] }, at))!;
+    assert.deepEqual(refs.map((r) => [r.id, r.kind, r.url]), [
+      ["a", "walkthrough", "/jobs/j/files/walkthroughs/001/walkthrough.json"],
+      ["b", "walkthrough", "/jobs/j/files/walkthroughs/001/walkthrough.json"],
+      ["c", "url", "/jobs/j/files/shots"],
+    ]);
+  });
+
   const at = (job?: string) => ({
     runId: "run-1",
     ...(job ? { job } : {}),
