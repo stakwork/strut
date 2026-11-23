@@ -186,10 +186,11 @@ export function useLabel(drawn: Drawn, outcome: Outcome): string | null {
   return drawn.order[1] === "change" ? "Put it in" : "Take it out";
 }
 
-/** A case in a line: the one thing it says (`{ prompt }` reads as the prompt), else its input as it is. */
+/** A case in a line: the one thing it says, else its `prompt` (a job's `{ kind, prompt }` reads as the prompt), else its input as it is. */
 export function caseLabel(c: Pick<Case, "input">): string {
   const values = Object.values(c.input ?? {});
   if (values.length === 1 && typeof values[0] === "string") return values[0];
+  if (typeof c.input?.["prompt"] === "string") return c.input["prompt"];
   return JSON.stringify(c.input ?? {});
 }
 
@@ -207,12 +208,31 @@ export function workflowFor(check: Pick<Check, "cases">, others: readonly Pick<C
   return check.cases[0]?.workflow ?? others.find((o) => o.cases.length)?.cases[0]!.workflow;
 }
 
-/** A message as a new case of `check`, shaped like the ones it has; null without a message or a workflow. */
-export function caseFor(check: Pick<Check, "cases">, message: string, workflow: string | undefined): Case | null {
+/** The workflow whose input names the kind of work, by the name of its page (`input.kind`: the job opens with it). */
+const JOB = "job";
+
+/**
+ * A message as a new case of `check`, shaped like the ones it has; null
+ * without a message or a workflow. A JOB's case keeps the kind the cases
+ * already run as (this check's, else another's on the page), and the first
+ * runs as the page's own kind (`concept`): a check judges only work that
+ * opened its page, and a job opens its kind's page, so a job with no kind
+ * would never be judged.
+ */
+export function caseFor(
+  check: Pick<Check, "cases">,
+  message: string,
+  workflow: string | undefined,
+  concept?: string,
+  others: readonly Pick<Check, "cases">[] = [],
+): Case | null {
   const text = message.trim();
   const flow = workflow?.trim();
   if (!text || !flow) return null;
-  return { workflow: flow, input: { [messageField(check.cases)]: text } };
+  const field = messageField(check.cases);
+  if (flow !== JOB) return { workflow: flow, input: { [field]: text } };
+  const kind = [...check.cases, ...others.flatMap((o) => o.cases)].find((c) => c.workflow === JOB && typeof c.input?.["kind"] === "string")?.input["kind"] ?? concept;
+  return { workflow: flow, input: { ...(typeof kind === "string" && kind ? { kind } : {}), [field]: text } };
 }
 
 /** Who wrote a check, as the page says it. */
@@ -227,7 +247,11 @@ const line = (v: unknown): string => (typeof v === "string" ? v : v === undefine
 
 /** A trial's message: its input's one string, else the input as it is. */
 export function messageOf(input: unknown): string {
-  if (input && typeof input === "object" && !Array.isArray(input)) return caseLabel({ input: input as Record<string, unknown> });
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    // The run's whole input: its one string, else all of it.
+    const values = Object.values(input);
+    return values.length === 1 && typeof values[0] === "string" ? values[0] : JSON.stringify(input);
+  }
   return line(input);
 }
 

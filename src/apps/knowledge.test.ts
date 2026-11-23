@@ -308,6 +308,22 @@ describe("strut/knowledge: a Concept's checks and the tests of its page", () => 
     assert.deepEqual(caseFor({ cases: [] }, "Hi", "greeter"), { workflow: "greeter", input: { prompt: "Hi" } });
     assert.equal(caseFor({ cases: [] }, "Hi", undefined), null);
     assert.equal(caseFor({ cases: [ask] }, " ", "orchestrator"), null);
+    assert.deepEqual(caseFor({ cases: [ask] }, "Hi", "orchestrator", "Orchestrator"), { workflow: "orchestrator", input: { prompt: "Hi" } }, "only a job's case takes a kind");
+  });
+
+  it("a job's case keeps the kind its page's cases run as, and the first runs as the page's own, so the job opens the page", () => {
+    const ask = { workflow: "orchestrator", input: { prompt: "Can you use bash?" } };
+    const hive = { workflow: "job", input: { kind: "Pod Setup", prompt: "Set up the workspace hive" } };
+    assert.equal(caseLabel(hive), "Set up the workspace hive", "a job's case reads as its prompt");
+    // The first case of a page's check: a job of the page's own kind.
+    assert.deepEqual(caseFor({ cases: [] }, "Set up the workspace shop", "job", "Pod Setup"), { workflow: "job", input: { kind: "Pod Setup", prompt: "Set up the workspace shop" } });
+    // Beside one: its kind, here another page's (a claim on Plan tested by Code Change jobs).
+    const change = { workflow: "job", input: { kind: "Code Change", prompt: "Fix the login" } };
+    assert.deepEqual(caseFor({ cases: [change] }, "Add a page", "job", "Plan"), { workflow: "job", input: { kind: "Code Change", prompt: "Add a page" } });
+    // A check with none takes another check's on the page.
+    assert.deepEqual(caseFor({ cases: [] }, "Set up shop", "job", "Pod Setup", [{ cases: [ask] }, { cases: [hive] }]), { workflow: "job", input: { kind: "Pod Setup", prompt: "Set up shop" } });
+    // No page to name: no kind.
+    assert.deepEqual(caseFor({ cases: [] }, "Hi", "job"), { workflow: "job", input: { prompt: "Hi" } });
   });
 
   it("who wrote a check; a sample's message and reply; what is running; the samples asked for", () => {

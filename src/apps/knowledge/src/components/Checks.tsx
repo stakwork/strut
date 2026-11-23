@@ -182,14 +182,16 @@ function CheckCard({ check, view, acts }: { check: Check; view: ChecksView; acts
   const [message, setMessage] = useState("");
   const [flow, setFlow] = useState("");
   const { passed, judged } = tally(check.samples);
-  const known = workflowFor(check, view.checks.filter((c) => c.id !== check.id));
+  const others = view.checks.filter((c) => c.id !== check.id);
+  const known = workflowFor(check, others);
   const running = view.running.some((b) => b.claim === check.id);
   const at = `check:${check.id}`;
   // What a person said about it, when that is the newest word on it (a judge's verdict names nobody).
   const said = check.latest?.mode === "asserted" && check.latest.by ? evidenceLine(check.latest) : null;
   const setCases = (cases: Check["cases"]) => acts.act(async () => void (await client.run("knowledge/cases", { claim: check.id, cases })));
+  const caseOf = () => caseFor(check, message, known ?? flow, view.concept, others);
   const add = () => {
-    const c = caseFor(check, message, known ?? flow);
+    const c = caseOf();
     if (!c) return;
     void setCases([...check.cases, c]).then(() => setMessage(""));
   };
@@ -265,7 +267,7 @@ function CheckCard({ check, view, acts }: { check: Check; view: ChecksView; acts
               className="h-7 min-w-0 flex-1 text-xs"
               data-testid="check-message"
             />
-            <Button size="sm" variant="ghost" className="h-7" disabled={acts.busy || !caseFor(check, message, known ?? flow)} onClick={add} data-testid="check-add-message">
+            <Button size="sm" variant="ghost" className="h-7" disabled={acts.busy || !caseOf()} onClick={add} data-testid="check-add-message">
               <Plus />
               Add message
             </Button>
