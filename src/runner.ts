@@ -31,6 +31,7 @@ import { resolveSettings } from "./extensions.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import { appSessionId, hostSessionId, peerSessionId, publicSessionId, type SessionsCapability } from "./session-store.js";
 import { bindGraph } from "./graph-writes.js";
+import { bindNodeFiles } from "./node-files.js";
 import { bindBranch, branchOfServices, type BranchesCapability } from "./branches.js";
 import { outputTooBig } from "./output-cap.js";
 import { guardEscapes } from "./escaped-errors.js";
@@ -575,7 +576,7 @@ async function executeRun<TServices = unknown>(
   // On a Concept branch its Concepts are the branch's (bindBranch); on any
   // run, a conversation stays on its first turn's branch.
   const { services, reporter: graphReports } = bindGraph(
-    bindTrial(bindBranch(
+    bindNodeFiles(bindTrial(bindBranch(
       bindApp(
         bindPeer(
           bindHost(bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, opts?.credit ?? runId), opts?.origin, opts?.host),
@@ -589,7 +590,7 @@ async function executeRun<TServices = unknown>(
         opts?.continues,
       ),
       branch,
-    ), opts?.trial),
+    ), opts?.trial), runId),
     { runId, ...(opts?.job ? { job: opts.job } : {}), ...((opts?.actor ?? opts?.principal) ? { actor: (opts?.actor ?? opts?.principal)! } : {}) },
   );
 

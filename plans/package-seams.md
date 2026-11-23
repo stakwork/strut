@@ -1,6 +1,10 @@
 # Package seams: a package adds to strut without changing it
 
-> **Status (2026-11-23): proposed. Nothing is built.** The owner asked,
+> **Status (2026-11-23): items 1–3 being built on strut#851; item 4
+> (panels) waits on its open question.** Item 1, files on a node, is
+> BUILT (`src/node-files.ts`, `node/files`, `node/write-files`;
+> docs/graph.md). What the build decided where this plan was silent is
+> marked *Built:* in each section. The owner asked,
 > about the code and pods packages: *"how can we make this generic so
 > other people could build similar packages that add functionality to
 > strut without changing strut itself?"* This plan answers with four
@@ -62,7 +66,7 @@ every way, uses the same four.
 | # | Question | Answer | Status |
 | --- | --- | --- | --- |
 | 1 | Where packages meet | **In the graph, by type name.** A package writes its own nodes and its own files, and reads anyone's | proposed: what strut-code and pods do already |
-| 2 | Files a package keeps | **On a node:** a folder for each package on any node, versioned at each write, gone with the node (§1) | proposed |
+| 2 | Files a package keeps | **On a node:** a folder for each package on any node, versioned at each write, gone with the node (§1) | built |
 | 3 | How a package acts on another's write | **`on:` in `strut.yaml`:** a workflow run when a node of a type is created, updated or deleted, as the person whose run wrote it (§2) | proposed |
 | 4 | How a package shows its part | **Panels** (§3; stadeum `plans/software.md` §5, item 14) | proposed there |
 | 5 | A forge's steps | **Named on its `provides.git` entry.** Strut's `git/repositories` and `git/pull-request` pick them by host (§4) | proposed |
@@ -108,6 +112,24 @@ ctx.services.nodeFiles.list(ref_id) → [{ package, version, at, runId, bytes, p
 - **Not the `files/` area** of `plans/workspace-files-and-includes.md`
   (not built). That one holds a workflow's prompts and is published like
   a workflow. These files belong to a node.
+
+*Built (2026-11-23):* as above, with the proposed defaults for open
+questions 1 and 2 (the last 20 versions, 10 MB a version). Where the plan
+was silent:
+
+- **A delete for good.** Strut deletes no node for good itself: a delete
+  is soft. So a sweep, at boot and daily, removes the folder of every node
+  the graph no longer holds at all, live or soft-deleted, whoever removed
+  it (raw Cypher, another process, a Concept branch's drop).
+- **A write needs a live node** where the server has a graph: a typo, or
+  a soft-deleted node, takes no new version. With no graph (a file
+  workspace) nothing is checked.
+- **The box's own steps** write `strut/`, as strut's do. `node/write-files`
+  writes the calling workflow's package's folder, and a package's step that
+  calls it keeps its own package's.
+- **A read** takes the caller's own folder unless it names a package.
+  `node/files` answers a file's text, or `{ base64 }` when it is not UTF-8,
+  and `node/write-files` takes the same.
 
 ## 2. Workflows on graph writes: `on:`
 

@@ -195,6 +195,7 @@ import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from ".
 import { isStrutType } from "./graph/strut-schemas.js";
 import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
 import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
+import { nodeFilesCapability, nodeFileStore } from "./node-files.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
 import { buildClaimsAuthoring, type ClaimsReconcileOutcome } from "./claims-authoring.js";
@@ -1160,6 +1161,11 @@ export async function createStrut<TServices = unknown>(
   const dataDir =
     opts.dataDir ??
     (fileBacked ? baseWorkspace.path : (bootEnv()["STRUT_WORKSPACE"] ?? "./workspace"));
+  // FILES ON A NODE (src/node-files.ts, plans/package-seams.md §1): every
+  // package's folder on every node, under `<dataDir>/nodes`. A write lands
+  // only on a node the graph holds live; a delete for good takes them
+  // (`sweepNodeFiles`, below).
+  const nodeFiles = nodeFileStore(dataDir, graph ? { live: async (ref) => !!(await graph.reader.getNode(ref)) } : {});
   // The HISTORY (src/history.ts, plans/concept-history.md): the whole
   // workspace committed to `<dataDir>/history.git` each time strut hears a
   // write. The store everything below publishes through is watched, so a
@@ -1719,6 +1725,9 @@ export async function createStrut<TServices = unknown>(
     // step to its caller's list (src/graph/scope.ts).
     ...(graph ? { graph: graphView({ ...graph, close: async () => undefined }, opts.graphReaders) } : {}),
     ...(graphChanges ? { graphChanges } : {}),
+    // Files on a node: strut's own folder here; a package's step gets its
+    // package's through its fence, and each run's writes name it (runner.ts).
+    nodeFiles: nodeFilesCapability(nodeFiles),
     // The Concept branches a run may be on (the runner checks its launch's).
     ...(branchesCap ? { branches: branchesCap } : {}),
     // Which Concept pages come from git, and their proposals (item e).
@@ -11483,6 +11492,8 @@ export async function createStrut<TServices = unknown>(
   let serveBooted: Promise<unknown> = Promise.resolve();
   /** The ledger's daily sweep (plans/paid-runs.md §5, "Expiry"). */
   let ledgerSweepTimer: ReturnType<typeof setInterval> | undefined;
+  let nodeFilesSweepTimer: ReturnType<typeof setInterval> | undefined;
+  let nodeFilesSwept: Promise<void> | undefined;
 
   async function close(): Promise<void> {
     parking.close();
@@ -11492,6 +11503,9 @@ export async function createStrut<TServices = unknown>(
     bootTimer = undefined;
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
+    if (nodeFilesSweepTimer) clearInterval(nodeFilesSweepTimer);
+    nodeFilesSweepTimer = undefined;
+    await nodeFilesSwept;
     tasks.stop();
     publicTools.close();
     withdrawals.stop();
@@ -11639,6 +11653,26 @@ export async function createStrut<TServices = unknown>(
     if (ledgerOpen) void sweepLedger();
   }, 24 * 60 * 60 * 1000);
   ledgerSweepTimer.unref?.();
+  // A node gone for good takes its files (src/node-files.ts): at boot and
+  // daily, the folder of every node the graph holds no more — live or
+  // soft-deleted — goes, whoever removed the node. A read that fails keeps
+  // the folder.
+  const sweepNodeFiles = async () => {
+    if (!graph) return;
+    try {
+      const gone = await nodeFiles.sweep(async (ref) => !!(await graph.tx((tx) => graph.nodeEngine.readRaw(tx, ref)).catch(() => true)));
+      if (gone.length) console.log(`[node-files] ${gone.length} node(s) gone for good: their files removed`);
+    } catch (err) {
+      console.error(`[node-files] the sweep failed:`, err);
+    }
+  };
+  if (graph) {
+    nodeFilesSwept = sweepNodeFiles();
+    nodeFilesSweepTimer = setInterval(() => {
+      nodeFilesSwept = sweepNodeFiles();
+    }, 24 * 60 * 60 * 1000);
+    nodeFilesSweepTimer.unref?.();
+  }
   // The task store is the `task` SOURCE of parked runs (plans/human-steps.md
   // §2.3, §3): a `human` step parks on `task:<id>`; a task that leaves
   // `open` — answered, expired, cancelled — wakes its run, whose step runs

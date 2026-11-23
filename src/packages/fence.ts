@@ -36,6 +36,9 @@
  * git steps it calls with its ctx still use the run's: the view answers
  * them (`keepGitTokens`), and they send the token to its host alone.
  *
+ * Its node files the same way (src/node-files.ts, plans/package-seams.md
+ * §1): `nodeFiles` writes its package's folder on a node, and no other.
+ *
  * Steps only: a bought WORKFLOW is YAML whose `secretsEnv` names a person
  * reads in the install ask; a bought step is code that could ask for any
  * name at run time. Not isolation — the step still has `shell` and `http` —
@@ -49,6 +52,7 @@ import type { PeersCapability } from "../peers.js";
 import type { ProposalsCapability } from "../proposals.js";
 import type { RunsCapability } from "../runs.js";
 import type { Upstream, WorkspaceStore } from "../workspace.js";
+import { nodeFilesAs, type NodeFilesCapability } from "../node-files.js";
 
 export type Fence = Pick<Upstream, "package" | "secrets" | "git" | "provides">;
 
@@ -140,6 +144,8 @@ function fencedContext(ctx: StepContext<any> | undefined, type: string, fence: F
           }
         : {}),
       ...heldToItsRun(services, ctx, type, fence),
+      // Its node files are its package's folder (src/node-files.ts).
+      ...(services["nodeFiles"] ? { nodeFiles: nodeFilesAs(services["nodeFiles"] as NodeFilesCapability, fence.package) } : {}),
     },
   };
 }

@@ -52,6 +52,7 @@ import type { KnowledgeCapability } from "./knowledge.js";
 import type { TrialsCapability } from "./trials.js";
 import type { BranchesCapability } from "./branches.js";
 import type { ConceptSources } from "./concept-sources.js";
+import type { NodeFilesCapability } from "./node-files.js";
 
 // ── secrets ────────────────────────────────────────────────────────────────
 
@@ -735,6 +736,12 @@ export interface StrutCapabilities {
    *  /public-view`'s own save. Nothing on it removes from the view. Set by
    *  the standard server; a host's own wins. */
   publicView?: PublicViewCapability;
+  /** FILES ON A NODE (src/node-files.ts, plans/package-seams.md §1): one
+   *  package's folder on any node, versioned at each write — strut's own
+   *  (`strut/`) on the shared bag, a package's step's own behind its fence,
+   *  each write recorded with its run. Set by the standard server under
+   *  `<dataDir>/nodes`. */
+  nodeFiles?: NodeFilesCapability;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local
