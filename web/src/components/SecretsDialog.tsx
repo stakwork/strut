@@ -16,6 +16,7 @@ export function SecretsDialog(props: { onClose: () => void }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
+  const [confirmOverwrite, setConfirmOverwrite] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
@@ -38,6 +39,15 @@ export function SecretsDialog(props: { onClose: () => void }) {
       setError("Value is required");
       return;
     }
+    if (secrets.some((s) => s.name === name)) {
+      setConfirmOverwrite(name);
+      return;
+    }
+    await doSave();
+  };
+
+  const doSave = async () => {
+    setConfirmOverwrite(null);
     setBusy(true);
     setError("");
     try {
@@ -171,6 +181,28 @@ export function SecretsDialog(props: { onClose: () => void }) {
           </button>
         </div>
       </div>
+      {confirmOverwrite !== null && (
+        <div class="dialog-backdrop">
+          <div class="dialog">
+            <div class="dialog-title">Overwrite secret?</div>
+            <div class="dialog-hint">
+              A secret named "{confirmOverwrite}" already exists. Overwrite?
+            </div>
+            <div class="dialog-actions">
+              <button
+                class="btn"
+                disabled={busy}
+                onClick={() => setConfirmOverwrite(null)}
+              >
+                Cancel
+              </button>
+              <button class="btn btn-primary" disabled={busy} onClick={doSave}>
+                Overwrite
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
