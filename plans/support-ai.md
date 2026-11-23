@@ -1,11 +1,11 @@
 # Support answers with AI
 
-> **Status (2026-11-23): proposed. Nothing built.**
+> **Status (2026-11-23): ruled. Item 1 built (#855).**
 >
 > - **Written against:** strut `main` @94bf903a.
 > - **The Rulings** are Evan's, from one conversation on 2026-11-23.
-> - **The open questions in §8** carry this plan's defaults. Evan may
->   overrule them.
+> - **§8's open questions** were ruled the same day: Evan took every
+>   default ("go with your defaults").
 > - **Companion to:**
 >   - `support-chat.md`: Support as staff use it today;
 >   - `people-and-hosts.md` §5: Support as an app (its SQLite, its tools,
@@ -126,19 +126,28 @@ Two catches:
 A new read step, one tool:
 
 ```
-app/public-files { app?, path? }
+app/public-files { app?, path?, maxChars? }
 ```
 
-- With no `app`: the public view's apps, each with its title and the
-  version people open.
-- With `app`: that app's files at that version, each `{ path, size, sha }`.
-- With `app` and `path`: one file's text, cut like `job/read`'s.
+- With no `app`: the public view's apps, each with its title, description
+  and the version people open.
+- With `app`: that app's source files at that version, each `{ path, size,
+  sha }`.
+- With `app` and `path`: one file's text, cut like `job/read`'s, or
+  `binary: true`.
 
 It reads only apps in the public view, and only the version people open (the
 app's live version, which the public view holds). It takes no other version
 and no other app. It is `app/get`'s files, narrowed to what any visitor can
 open. `app/get` itself reads every app on the box, private and admin apps
 included, so it is not given to these agents.
+
+**Built (#855):**
+- A version's files are its tree: the sources an app version's identity is
+  made of. That leaves out `dist/` (built from them), `data.db`, dotfiles and
+  `node_modules/`.
+- A path is read only when it is in that list.
+- The public view's capability gained `apps()`, the names it lists.
 
 ### 2.3 The `Worker Help` Concept
 
@@ -319,9 +328,9 @@ box.
 - The welcome, payout lines, files and the daemon's push are unchanged.
 - No new route. `specs/API.md` §22 gains the new tools.
 
-## 8. Open questions (defaults)
+## 8. Open questions (ruled 2026-11-23: the defaults)
 
-| # | Question | Default |
+| # | Question | Ruled |
 | --- | --- | --- |
 | 1 | Does an AI reply say it is AI? | No label: every reply is from "Support" (support-chat ruling 4). The posture never claims to be a person, and staff see the mark |
 | 2 | Whose model access pays for the runs? | The admin who set the mode (`ai_by`): strut's "everything is a person" rule, as a subscription keeps the actor who set it up. Another admin hands it over by setting the mode again |
@@ -336,7 +345,7 @@ box.
 
 | # | What | Where |
 | --- | --- | --- |
-| 1 | `app/public-files`: list and read a public-view app's files at the version people open | `src/steps/lib/app/` |
+| 1 | `app/public-files`: list and read a public-view app's files at the version people open. **Built (#855)** | `src/steps/lib/app/`, `src/public-view.ts` |
 | 2 | The `Worker Help` Concept, written from Peel (Apple and Android) and the kit's worker pages | `src/concepts/` |
 | 3 | Draft mode: `db/002-support-ai.sql`, `support/context`, `support/answer`, the `support-reply` workflow, receive's trigger | `src/apps/staff/`, `src/steps/lib/support/`, `src/workflows/system/` |
 | 4 | The page: the mode, drafts, handoffs, the AI mark | `src/apps/staff/src/` |

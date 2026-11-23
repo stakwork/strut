@@ -283,6 +283,10 @@ export interface PublicViewCapability {
    *  (`publicAppLinks`) when it is and this server has seen where it is
    *  reached: what strut/staff hands a task type's workers. A read. */
   share(name: string): Promise<AppShare>;
+  /** The names of the apps in the public view: what `app/public-files`
+   *  reads (plans/support-ai.md §2.2). A read. Optional: a host's own
+   *  `publicView` may not list them. */
+  apps?(): Promise<string[]>;
 }
 
 /** A public view app's share (`PublicViewCapability.share`). */
@@ -339,6 +343,10 @@ export function createPublicViewDoor(deps: PublicViewDoorDeps): PublicViewCapabi
       const listed = (await deps.view()).apps.some((a) => a.name === name);
       const base = listed ? deps.base?.() : undefined;
       return { public: listed, ...(base ? publicAppLinks(base, name) : {}) };
+    },
+
+    async apps() {
+      return (await deps.view()).apps.map((a) => a.name);
     },
 
     async addApp(name, version, o) {
