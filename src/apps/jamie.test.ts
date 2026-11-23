@@ -275,8 +275,27 @@ describe("strut/jamie — the pure parts", () => {
       "r1",
     );
     assert.equal(strip.status, "Reading the repo");
+    assert.deepEqual(strip.items, [], "a line with no checklist");
     assert.deepEqual(strip.tally, ["1 recording, 1 stopped", "2 shots", "pod held", "2 checks: 1 supported, 1 waiting on a look"]);
     assert.equal(strip.shot?.url, "/jobs/j/files/w/walkthrough.json");
+  });
+
+  it("the live strip's checklist: the newest status's items, what is whole of them; an older status's never", () => {
+    const at = "2026-11-04T10:00:00Z";
+    const first = { kind: "status", at, runId: "r1", title: "Reading the repo", detail: { items: [{ text: "Read the repo", state: "doing" }, { text: "Write the fix", state: "todo" }] } };
+    assert.deepEqual(liveStrip([first], "r1").items, [{ text: "Read the repo", state: "doing" }, { text: "Write the fix", state: "todo" }]);
+    // The feed keeps one status per run, the newest: its list is the list.
+    const next = {
+      kind: "status",
+      at,
+      runId: "r1",
+      title: "Writing the fix",
+      detail: { round: 2, items: [{ text: "Read the repo", state: "done" }, { text: "Write the fix", state: "doing" }, { text: "", state: "todo" }, { text: "Ship it", state: "later" }, null] },
+    };
+    const strip = liveStrip([{ kind: "status", at, runId: "r0", title: "an older turn's", detail: { items: [{ text: "x", state: "done" }] } }, next], "r1");
+    assert.equal(strip.status, "Writing the fix");
+    assert.deepEqual(strip.items, [{ text: "Read the repo", state: "done" }, { text: "Write the fix", state: "doing" }], "an empty step or an unknown state is dropped");
+    assert.deepEqual(liveStrip([{ kind: "status", at, runId: "r1", title: "x", detail: { items: "not a list" } }], "r1").items, []);
   });
 
   it("the live strip's tile: a shot is its own picture, a recording its newest frame; only the job's own files", () => {

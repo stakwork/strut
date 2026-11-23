@@ -58,6 +58,24 @@ export interface LiveUpdate {
   id?: string;
   title?: string;
   state?: string;
+  /** Small and kind-specific: a status's checklist is `detail.items`. */
+  detail?: Record<string, unknown>;
+}
+
+/** One step of a turn's checklist (`job/status`'s `items`). */
+export interface LiveItem {
+  text: string;
+  state: "todo" | "doing" | "done";
+}
+
+/** A status update's checklist, what is whole of it; none when it has none. */
+function checklist(u: LiveUpdate): LiveItem[] {
+  const items = u.detail?.["items"];
+  if (!Array.isArray(items)) return [];
+  return items.flatMap((i): LiveItem[] => {
+    const { text, state } = (i ?? {}) as { text?: unknown; state?: unknown };
+    return typeof text === "string" && text && (state === "todo" || state === "doing" || state === "done") ? [{ text, state }] : [];
+  });
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -69,13 +87,21 @@ const VERDICTS: Array<[state: string, word: string]> = [
 ];
 
 /** What the live strip says under a running job: its own line of what it
- *  is doing (`status`, the newest), and how many of each other thing —
- *  recordings, shots, what it holds, the checks' verdicts — never a list.
- *  Only updates of the run in flight (`runId`) when it is known. */
-export function liveStrip(updates: readonly LiveUpdate[], runId?: string): { status?: string; tally: string[]; shot?: LiveUpdate } {
+ *  is doing and its checklist (`status`, the newest, and its `items`), and
+ *  how many of each other thing — recordings, shots, what it holds, the
+ *  checks' verdicts — never a list of them. Only updates of the run in
+ *  flight (`runId`) when it is known. */
+export function liveStrip(updates: readonly LiveUpdate[], runId?: string): { status?: string; items: LiveItem[]; tally: string[]; shot?: LiveUpdate } {
   const mine = runId ? updates.filter((u) => !u.runId || u.runId === runId) : updates;
   let status: string | undefined;
-  for (let i = mine.length - 1; i >= 0; i--) if (mine[i]!.kind === "status" && mine[i]!.title) { status = mine[i]!.title; break; }
+  let items: LiveItem[] = [];
+  for (let i = mine.length - 1; i >= 0; i--) {
+    if (mine[i]!.kind === "status" && mine[i]!.title) {
+      status = mine[i]!.title;
+      items = checklist(mine[i]!);
+      break;
+    }
+  }
   const things = mine.filter((u) => u.kind !== "status" && u.kind !== "graph" && u.kind !== "verify" && u.kind !== "proposal");
   const tally: string[] = [];
   const recordings = things.filter((u) => u.kind === "walkthrough");
@@ -100,7 +126,7 @@ export function liveStrip(updates: readonly LiveUpdate[], runId?: string): { sta
   // The newest picture it took (the store keeps the newest last).
   const visuals = things.filter((u) => (u.kind === "image" || u.kind === "walkthrough") && u.url);
   const shot = visuals[visuals.length - 1];
-  return { ...(status ? { status } : {}), tally, ...(shot ? { shot } : {}) };
+  return { ...(status ? { status } : {}), items, tally, ...(shot ? { shot } : {}) };
 }
 
 /** The live strip's tile for `liveStrip`'s `shot`, from the job's own

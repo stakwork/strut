@@ -978,6 +978,23 @@ describe("jobs — over HTTP", () => {
     assert.deepEqual(await jobStatus.run({ title: "x" }, { runId: "r", job: "j", services } as never), { sent: true, job: "j" });
     assert.deepEqual(told, [["j", { kind: "status", id: "r", runId: "r", title: "x" }]]);
   });
+
+  it("job/status carries the turn's checklist whole, in its detail beside what else it holds", async () => {
+    const jobStatus = (await import("./steps/lib/job/status.js")).default;
+    const told: unknown[] = [];
+    const services = { jobs: { notify: (...a: unknown[]) => void told.push(a) } };
+    const items = [
+      { text: "Read the repo", state: "done" },
+      { text: "Write the fix", state: "doing" },
+      { text: "Run the tests", state: "todo" },
+    ];
+    const cfg = jobStatus.input.parse({ title: "Writing the fix", items, detail: { round: 1 } });
+    await jobStatus.run(cfg, { runId: "r", job: "j", services } as never);
+    assert.deepEqual(told, [["j", { kind: "status", id: "r", runId: "r", title: "Writing the fix", detail: { round: 1, items } }]]);
+    // A step's state is one of three; at most eight steps.
+    assert.equal(jobStatus.input.safeParse({ title: "x", items: [{ text: "a", state: "started" }] }).success, false);
+    assert.equal(jobStatus.input.safeParse({ title: "x", items: Array.from({ length: 9 }, (_, i) => ({ text: `s${i}`, state: "todo" })) }).success, false);
+  });
 });
 
 // ── the index (plans/job-index.md) ───────────────────────────────────────

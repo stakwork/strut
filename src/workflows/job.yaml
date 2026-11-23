@@ -202,6 +202,9 @@ params:
     - browser/walkthrough
     - strut/list-peers
     - strut/run-workflow
+    # What the turn is doing now, and its checklist, to whoever watches the
+    # job (plans/live-feeds.md §4): the job card's live strip.
+    - job/status
     - job/list
     - job/get
     - job/read
@@ -266,6 +269,11 @@ params:
 
     If you cannot go on without a decision from the person, stop and put
     the question in `ask`; their answer is the next turn's message.
+
+    The person sees nothing of a turn until it ends unless you tell them:
+    when a turn is more than a quick answer, set out its steps with
+    job/status (`items`) before you start, and send them again as each
+    one moves.
 
     The kinds of work this workspace has a way to do are listed at the end
     of this prompt, from its knowledge graph: each a page saying which
