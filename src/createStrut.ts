@@ -226,7 +226,8 @@ import { PROPOSAL_FEED_READ_MAX, createProposalFeed } from "./proposal-feed.js";
 import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, PROPOSAL_LIST_DEFAULT, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
+import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobHolder, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
+import { createPrChecks } from "./pr-checks.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { ARCHIVE_LOCAL_WINDOW, createRetention, fleetRetentionFromEnv, formatRetention, type Retainer } from "./retention.js";
@@ -1622,6 +1623,41 @@ export async function createStrut<TServices = unknown>(
   const gitSecret: GitSecretOf = (url) => boxGitSecret(url);
   // A person's own machine: with no token, git keeps its own credentials.
   const gitLocal = opts.git?.local ?? bootEnv()["STRUT_GIT_LOCAL"] === "1";
+  // A job's pull request fails its checks (src/pr-checks.ts,
+  // plans/pr-checks.md): one turn to fix it, as the person whose turn
+  // delivered it, naming that turn's conversation so its end wakes it — the
+  // PR card's Fix, made by the server. `job/pr-checks` says when.
+  const prChecks = createPrChecks({
+    dataDir,
+    artifacts: async (job) => (await jobIndex.get(job, { threads: false }))?.artifacts ?? [],
+    reporter: async (rec, runId) => {
+      const line = rec.runs?.find((r) => r.runId === runId);
+      if (!line) return undefined;
+      const start = (await store.getRunEvents(line.workflow, runId).catch(() => [])).find((e) => e.type === "run.start");
+      if (!start) return undefined;
+      const conversation = start.startedBy?.session ?? start.conversation;
+      const model = start.params?.["model"];
+      return {
+        ...(conversation ? { conversation } : {}),
+        ...(start.actor ? { actor: start.actor } : {}),
+        ...(start.principal ? { principal: start.principal } : {}),
+        ...(typeof model === "string" ? { model } : {}),
+      };
+    },
+    token: async (principal, url) => {
+      const secrets = (services as { secrets?: SecretsCapability }).secrets;
+      return (principal && secrets?.forPrincipal ? secrets.forPrincipal(principal) : secrets)?.git?.(url);
+    },
+    busy: (job) => jobHolder(jobRoot(dataDir, job)) !== undefined,
+    launch: async (o) => {
+      await assertWorkflowEnabled(workspace, o.workflow);
+      return launchDetached(
+        await workspace.getWorkflow(o.workflow),
+        { input: { prompt: o.prompt }, job: o.job, conversation: o.conversation, wake: true, ...(o.model ? { params: { model: o.model } } : {}) },
+        { ...(o.actor ? { actor: o.actor } : {}), ...(o.principal ? { principal: o.principal } : {}) },
+      );
+    },
+  });
   const services = {
     ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir, gitSecret, gitLocal }) as unknown as Record<
       string,
@@ -1646,6 +1682,8 @@ export async function createStrut<TServices = unknown>(
       // job's top-level run in flight (its turn), when there is one.
       runOf: (job) => [...controllers.values()].find((c) => c.job?.id === job && !c.parent)?.runId,
     }),
+    // What `job/pr-checks` runs: `check` alone, which names no person.
+    prChecks: { check: (o?: { url?: string }) => prChecks.check(o) },
     peers: peersCap,
     // Proposals (plans/proposals.md): the record a gated tool call writes
     // and the proposal/* steps read; a job's host hears each as a
