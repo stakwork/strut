@@ -27,7 +27,7 @@ import {
 } from "./knowledge/src/lib/learning.js";
 import { cycleSpan, cycleWords, cyclesFor, cyclesUnavailable, runsOf, CYCLES_STEP, type DreamCycle } from "./knowledge/src/lib/cycles.js";
 import {
-  DOTS_MAX, allSamples, capped, caseFor, caseLabel, drawnOf, heldOf, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, tally, tallyWords, useLabel, verdictOf, workflowFor, type Sample,
+  DOTS_MAX, allSamples, capped, caseFor, caseLabel, costWords, drawnOf, durationWords, heldOf, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, spendOf, spendWords, tally, tallyWords, useLabel, verdictOf, workflowFor, type Sample,
 } from "./knowledge/src/lib/checks.js";
 import { readDiff, readLog, readPage, readProposalEntry } from "./views/src/lib/history.js";
 import { foldConceptDiff } from "../../kit/src/folds/concept-diff.js";
@@ -240,6 +240,19 @@ describe("strut/knowledge: a Concept's checks and the tests of its page", () => 
     assert.deepEqual(tally(many), { passed: 10, judged: 16 });
     assert.equal(tallyWords(many), "10 of 16 passed");
     assert.equal(tallyWords([]), "Not run yet");
+  });
+
+  it("beside the verdicts, what their runs took and cost on average: each run once, however many checks judged it", () => {
+    const ran = (run: string, ms: number, cost: number, supports = true): Sample => ({ run, supports, ms, cost, trial: true });
+    // Two checks judged the same two runs: the runs count once.
+    const side = [ran("a", 600_000, 0.5), ran("b", 1_200_000, 0.7), ran("a", 600_000, 0.5, false), ran("b", 1_200_000, 0.7)];
+    assert.deepEqual(spendOf(side), { runs: 2, ms: 900_000, cost: 0.6 });
+    assert.equal(spendWords(side), "15 min · $0.60 a run");
+    assert.equal(spendWords([ran("a", 850_601, 0.6409914)]), "14 min · $0.64", "one run is not an average");
+    assert.equal(spendOf([s(true)]), null, "a person's own work says nothing");
+    assert.equal(spendWords([]), "");
+    assert.deepEqual([durationWords(45_000), durationWords(59_400), durationWords(3_900_000), durationWords(7_200_000)], ["45 s", "59 s", "1 h 5 min", "2 h"]);
+    assert.deepEqual([costWords(0), costWords(0.003), costWords(0.656)], ["$0", "under $0.01", "$0.66"]);
   });
 
   it("which wording did better is the share that passed on each; none while a side has no verdict", () => {

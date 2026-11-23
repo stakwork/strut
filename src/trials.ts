@@ -77,6 +77,13 @@ export interface Sample {
   /** A trial's: the `TestCase` it replayed, by id. Absent on a person's own work. */
   case?: string;
   trial?: true;
+  /** A trial's: how long its run took, in milliseconds, and what its model
+   *  calls cost, in dollars (0 when none did), from the run's own summary
+   *  (`durationMs`, `totals.cost`: its sub-agents and the runs it waited on
+   *  included). Not a verdict: read beside one, so a change that passes as
+   *  often in half the time shows. */
+  ms?: number;
+  cost?: number;
 }
 
 /** A case as a claim lists it: the `TestCase`'s id, the workflow and its input. */
@@ -463,6 +470,24 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
           cases.set(c.id, k);
         }),
       );
+      // A trial's time and cost, from its run's summary: read once a run,
+      // however many claims judged it.
+      const spend = new Map<string, Promise<Pick<Sample, "ms" | "cost">>>();
+      const spentBy = (workflow: string, run: string) => {
+        const k = `${workflow}\n${run}`;
+        if (!spend.has(k)) {
+          spend.set(
+            k,
+            deps.store.getRunSummary(workflow, run).then(
+              (r) => (r ? { ...(typeof r.durationMs === "number" ? { ms: r.durationMs } : {}), cost: r.totals?.cost ?? 0 } : {}),
+              () => ({}),
+            ),
+          );
+        }
+        return spend.get(k)!;
+      };
+      const trialSamples = [...verdicts.values()].flatMap((m) => [...m.values()].flat()).filter((s) => s.trial && s.workflow);
+      await Promise.all(trialSamples.map(async (s) => Object.assign(s, await spentBy(s.workflow!, s.run))));
       const side = (s: { version: string; docs: string }): TestSide => ({
         version: s.version,
         docs: s.docs,

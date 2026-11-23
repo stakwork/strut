@@ -199,6 +199,13 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.equal(samples.length, 4, "an on_change check judged every sample of its trial");
     assert.ok(samples.every((s) => s.supports && s.trial && s.workflow === ORCHESTRATOR_WORKFLOW), JSON.stringify(samples));
     assert.deepEqual([...new Set(samples.map((s) => s.case))].sort(), [bash, job].sort());
+    // Beside each verdict, what its run took and cost, from the run's own summary.
+    for (const s of samples) {
+      const ran = (await store.getRunSummary(ORCHESTRATOR_WORKFLOW, s.run))!;
+      assert.equal(s.ms, ran.durationMs);
+      assert.equal(s.cost, ran.totals?.cost ?? 0);
+    }
+    assert.ok(samples.some((s) => (s.cost ?? 0) > 0), "a turn that called the model cost something");
     assert.equal(turns, 4);
     // The case both checks are tested by: each of its runs judged by both, whatever their policy. The other
     // check judges the rest as its own policy says (once per version).
@@ -412,6 +419,8 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
       const summary = (await store.getRunSummary("job", s.run))!;
       assert.match(summary.job ?? "", /^trial-/, "each sample is a job of its own");
       assert.deepEqual(summary.trial, { case: setup!.id, claims: [added.id] });
+      assert.equal(s.ms, summary.durationMs, "its run's time, read after its job is gone");
+      assert.equal(s.cost, 0, "nothing in it called a model");
       jobs.push(summary.job!);
       const root = jobRoot(dir, summary.job!);
       assert.ok(!existsSync(root) && !existsSync(`${root}.json`), "the job is gone once judged");
