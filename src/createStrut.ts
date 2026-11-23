@@ -4745,6 +4745,8 @@ export async function createStrut<TServices = unknown>(
   app.get("/apps", async (c) => {
     const listed = await apps.list();
     const full = (await scopeOf(c)) === "full";
+    // private: the list varies by the caller's scope (admin apps).
+    c.header("Cache-Control", "private, max-age=30");
     return c.json({ apps: full ? listed : listed.filter((a) => !a.admin) });
   });
   const adminAppRefusal = async (c: Context, name: string, version?: string): Promise<Response | null> => {

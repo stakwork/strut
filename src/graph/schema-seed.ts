@@ -176,6 +176,11 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
        FOR (n:\`${schema.type}\`) REQUIRE (n.node_key, n.namespace) IS UNIQUE`,
     );
     await ddl(`CREATE INDEX IF NOT EXISTS FOR (n:\`${schema.type}\`) ON (n.node_key)`);
+    if (schema.type === "StrutAppVersion") {
+      // listApps reads every version of a namespace in one query.
+      await ddl(`CREATE INDEX IF NOT EXISTS FOR (n:\`StrutAppVersion\`) ON (n.namespace)`);
+      await ddl(`CREATE INDEX IF NOT EXISTS FOR (n:\`StrutAppVersion\`) ON (n.namespace, n.name)`);
+    }
   }
 
   // 4a. The search-text keyword index, on a graph strut alone holds (no
