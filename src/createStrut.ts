@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, RunTrial, StepContext } from "./core.js";
+import type { AnyStepDef, Flow, McpServer, OnWriteMark, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, RunTrial, StepContext } from "./core.js";
 import type { RunStore } from "./store.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, localRuns, summarizeFromEvents } from "./store.js";
 import { RunArchiveError, archiveFromEnv, checkArchive, errorText, type RunArchive } from "./run-archive.js";
@@ -123,6 +123,7 @@ import { FileWaitingIndex, MemoryWaitingIndex, createParking, type ParkSource, t
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
 import { packageJobGrants, seedJobWorkflow, strutGrantProblem, withJobGrants, type JobSeedOptions } from "./job-seed.js";
 import { installedSchedules } from "./packages/schedules.js";
+import { installedTriggers, matches, ON_CHAIN_MAX, type InstalledTrigger } from "./packages/on.js";
 import { findConcept, PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
@@ -194,7 +195,7 @@ import { createConceptSources, DEV_CONCEPTS_ENV, devConcepts, type ConceptSource
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
 import { isStrutType } from "./graph/strut-schemas.js";
 import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
-import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
+import { createGraphChangeFeed, GRAPH_FEED_READ_MAX, type OnWrites } from "./graph-writes.js";
 import { nodeFilesCapability, nodeFileStore } from "./node-files.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
@@ -3652,6 +3653,8 @@ export async function createStrut<TServices = unknown>(
         ...(p.version ? { version: p.version } : {}),
         ...(p.changed ? { resumeChanged: p.changed } : {}),
         ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
+        // A run `on:` started stays held to its chain (src/packages/on.ts).
+        ...(p.runStart.onWrite ? { onWrite: p.runStart.onWrite } : {}),
         ...(p.runStart.origin === "peer" ? { origin: "peer" as const } : {}),
         ...(p.runStart.origin === "peer" && p.runStart.peerPerson ? { peerPerson: true } : {}),
         // A host's turn stays the host's: never an admin's, its sessions under it.
@@ -5600,7 +5603,7 @@ export async function createStrut<TServices = unknown>(
   let packageWrites: Promise<unknown> = Promise.resolve();
   // Each write seeds `job` again after it, in its turn (`seedJob`, above),
   // and makes the packages' schedules what they now ship (`syncSchedules`,
-  // below, where the automations are made).
+  // below, where the automations are made), and their `on:` (`syncOn`).
   const oneAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
     const next = packageWrites.then(async () => {
       try {
@@ -5609,6 +5612,7 @@ export async function createStrut<TServices = unknown>(
         await seedJob();
         await syncGitHosts();
         await syncSchedules();
+        await syncOn();
       }
     });
     packageWrites = next.catch(() => undefined);
@@ -8272,6 +8276,9 @@ export async function createStrut<TServices = unknown>(
        *  `peer:person`): the run may open its actor's own sessions. */
       peerPerson?: boolean;
       automation?: { id: string };
+      /** A package's `on:` started it (src/packages/on.ts): recorded on
+       *  `run.start`, its graph writes held to the chain. */
+      onWrite?: OnWriteMark;
       /** The app the run is launched for (`run/launch` under `ctx.app`):
        *  recorded with `origin: "app"`, handed to every step as `ctx.app`. */
       app?: AppRef;
@@ -8426,6 +8433,7 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.origin === "host" && extra.host ? { host: extra.host } : {}),
         ...(extra?.continues ? { continues: extra.continues } : {}),
         ...(extra?.automation ? { automation: extra.automation } : {}),
+        ...(extra?.onWrite ? { onWrite: extra.onWrite } : {}),
         ...(extra?.app ? { app: extra.app } : {}),
         ...(extra?.actor ? { actor: extra.actor } : {}),
         ...(principal ? { principal } : {}),
@@ -9365,10 +9373,49 @@ export async function createStrut<TServices = unknown>(
     }
   };
   await syncSchedules();
+  // WORKFLOWS ON GRAPH WRITES (src/packages/on.ts, plans/package-seams.md
+  // §2): the `on:` entries installed packages ship, read at boot and after
+  // every package write (`oneAtATime`), so an uninstall drops them. Every
+  // run's graph view hands this each send's node writes (bindGraph,
+  // src/graph-writes.ts); a match launches its workflow detached, as the
+  // person of the run that wrote, with `{ ref_id, type, op, by }`.
+  let packageTriggers: InstalledTrigger[] = [];
+  const syncOn = async (): Promise<void> => {
+    try {
+      const { triggers, unread } = await installedTriggers({ workspace, cache: packageStore, ...(graph ? { graph } : {}) });
+      packageTriggers = [...triggers, ...packageTriggers.filter((t) => unread.includes(t.package))];
+    } catch (err) {
+      console.warn("[on] could not read the packages' on: entries:", err instanceof Error ? err.message : err);
+    }
+  };
+  await syncOn();
+  const launchOn = async (t: InstalledTrigger, mark: OnWriteMark, actor: string): Promise<void> => {
+    const what = `${mark.op} ${mark.type} ${mark.ref_id}`;
+    try {
+      await assertWorkflowEnabled(workspace, t.workflow);
+      const flow = await workspace.getWorkflow(t.workflow);
+      const runId = launchDetached(flow, { input: { ref_id: mark.ref_id, type: mark.type, op: mark.op, by: mark.by } }, { actor, onWrite: mark });
+      console.log(`[on] ${what} (by ${mark.by}) started ${t.workflow} run ${runId}`);
+    } catch (err) {
+      console.warn(`[on] ${what} (by ${mark.by}) did not start ${t.workflow}:`, err instanceof Error ? err.message : err);
+    }
+  };
+  const onWrites: OnWrites = {
+    fire(writes, by) {
+      if (!packageTriggers.length) return;
+      const { launches, stopped } = matches(packageTriggers, writes, by);
+      for (const { trigger, write } of stopped) {
+        console.warn(`[on] run ${by.runId}: ${write.op} ${write.type} ${write.ref_id} would start ${trigger.workflow}, but its chain of on: runs holds ${ON_CHAIN_MAX} already — nothing started`);
+      }
+      for (const { trigger, mark } of launches) void launchOn(trigger, mark, by.actor!);
+    },
+  };
   // The `automation/*` steps' door (src/steps/lib/automation/), unless the
   // consumer's bag brought its own: an automation made from a turn reports
   // where that turn does.
   const bag = services as Record<string, unknown>;
+  // What every run's graph view tells of its writes (src/graph-writes.ts).
+  bag["onWrites"] = onWrites;
   if (!bag["automations"]) {
     bag["automations"] = {
       api: automations,

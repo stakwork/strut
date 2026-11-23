@@ -128,9 +128,11 @@ function fencedContext(ctx: StepContext<any> | undefined, type: string, fence: F
   const services = ctx?.services as (Record<string, unknown> & { secrets?: SecretsCapability }) | undefined;
   if (!ctx || !services || typeof services !== "object") return ctx as StepContext<any>;
   // Not a package step's: a blank of the deployment's to fill, the
-  // scheduler's API (a package's schedules are its `schedules:`), and
-  // trials (an admin's page starts them).
-  const { secretBlanks: _blanks, automations: _automations, trials: _trials, ...rest } = services;
+  // scheduler's API (a package's schedules are its `schedules:`), trials
+  // (an admin's page starts them), and the `on:` dispatch, which names a
+  // person (a package's `on:` is its manifest's; its writes are heard
+  // through the run's graph view, which holds it already).
+  const { secretBlanks: _blanks, automations: _automations, trials: _trials, onWrites: _onWrites, ...rest } = services;
   return {
     ...ctx,
     services: {

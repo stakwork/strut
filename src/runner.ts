@@ -16,7 +16,7 @@ import type {
 } from "./core.js";
 export type { RunEndInfo } from "./core.js";
 import { assertWorkflowEnabled } from "./workspace.js";
-import { accessedNodesOf, messagesOf, takeUsage, TRIAL_HELD, type AccessedNode, type ModelUsage, type RunTrial, type StartedBy, type WakeMark } from "./core.js";
+import { accessedNodesOf, messagesOf, takeUsage, TRIAL_HELD, type AccessedNode, type ModelUsage, type OnWriteMark, type RunTrial, type StartedBy, type WakeMark } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import { baseType, parseStepRef } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
@@ -121,6 +121,11 @@ export interface RunOptions<TServices = unknown> {
    *  summary (see `RunSummary.automation`), handed to every step as
    *  `ctx.automation`. The scheduler's launch is the one site that sets it. */
   automation?: { id: string };
+  /** A package's `on:` started this run (`OnWriteMark`, src/packages/on.ts):
+   *  recorded on `run.start`, read back by a resume, and handed to the run's
+   *  graph view, so its writes fire no entry of its own package and none
+   *  past the chain's end. strut's dispatch is the one site that sets it. */
+  onWrite?: OnWriteMark;
   /** Recorded on a check run's `run.start` (see `RunEvent.verify`). */
   verify?: { checkId: string; subject: string; sourceRunId: string };
   /** The run is the AI's whatever its workflow (src/reach.ts): the meta
@@ -591,7 +596,14 @@ async function executeRun<TServices = unknown>(
       ),
       branch,
     ), opts?.trial), runId),
-    { runId, ...(opts?.job ? { job: opts.job } : {}), ...((opts?.actor ?? opts?.principal) ? { actor: (opts?.actor ?? opts?.principal)! } : {}) },
+    {
+      runId,
+      ...(opts?.job ? { job: opts.job } : {}),
+      ...((opts?.actor ?? opts?.principal) ? { actor: (opts?.actor ?? opts?.principal)! } : {}),
+      ...(opts?.onWrite ? { onWrite: opts.onWrite } : {}),
+      // A trial's writes are a try, not a change to the box: no `on:` fires.
+      ...(opts?.trial ? { trial: true } : {}),
+    },
   );
 
   const onEvent = opts?.onEvent;
@@ -692,6 +704,7 @@ async function executeRun<TServices = unknown>(
       ...(opts?.origin === "host" && opts.host ? { host: opts.host } : {}),
       ...(opts?.continues ? { continues: opts.continues } : {}),
       ...(opts?.automation ? { automation: opts.automation } : {}),
+      ...(opts?.onWrite ? { onWrite: opts.onWrite } : {}),
       ...(opts?.verify ? { verify: opts.verify } : {}),
       ...(opts?.actor ? { actor: opts.actor } : {}),
       ...(opts?.principal ? { principal: opts.principal } : {}),

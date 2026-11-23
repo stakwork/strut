@@ -3,7 +3,8 @@
 > **Status (2026-11-23): items 1–3 being built on strut#851; item 4
 > (panels) waits on its open question.** Item 1, files on a node, is
 > BUILT (`src/node-files.ts`, `node/files`, `node/write-files`;
-> docs/graph.md). What the build decided where this plan was silent is
+> docs/graph.md). Item 2, `on:`, is BUILT (`src/packages/on.ts`, the
+> reporter's send in `src/graph-writes.ts`; docs/packages.md). What the build decided where this plan was silent is
 > marked *Built:* in each section. The owner asked,
 > about the code and pods packages: *"how can we make this generic so
 > other people could build similar packages that add functionality to
@@ -67,7 +68,7 @@ every way, uses the same four.
 | --- | --- | --- | --- |
 | 1 | Where packages meet | **In the graph, by type name.** A package writes its own nodes and its own files, and reads anyone's | proposed: what strut-code and pods do already |
 | 2 | Files a package keeps | **On a node:** a folder for each package on any node, versioned at each write, gone with the node (§1) | built |
-| 3 | How a package acts on another's write | **`on:` in `strut.yaml`:** a workflow run when a node of a type is created, updated or deleted, as the person whose run wrote it (§2) | proposed |
+| 3 | How a package acts on another's write | **`on:` in `strut.yaml`:** a workflow run when a node of a type is created, updated or deleted, as the person whose run wrote it (§2) | built |
 | 4 | How a package shows its part | **Panels** (§3; stadeum `plans/software.md` §5, item 14) | proposed there |
 | 5 | A forge's steps | **Named on its `provides.git` entry.** Strut's `git/repositories` and `git/pull-request` pick them by host (§4) | proposed |
 
@@ -184,6 +185,25 @@ on:
   bakes it. Pods' `drop-images` deletes the workspace's images. Code names
   neither. Unlike it: a CRM package's `created: Customer` sends a welcome,
   and a legal package's `updated: Matter` checks its deadlines again.
+
+*Built (2026-11-23):* as above. Where the plan was silent:
+
+- **The mark.** A run `on:` started carries `onWrite: { package, op, type,
+  ref_id, by, depth }` on its `run.start`, kept by a resume. That is what
+  says it was started by `on: created Workspace` and by which run, and what
+  holds its own writes to the guards.
+- **The chain's stop** is a warning in the server's log naming the writing
+  run, not a line in that run's log: a run's log has no free-form line.
+- **Deleted, then restored, in one send** folds to `updated`: the node was
+  there before and is there after.
+- **A proposal's apply** fires as the person who accepted it, the apply's
+  actor, with `by: proposal:<id>`.
+- **The install card** says each entry on its workflow ("when a Workspace
+  is created, as the person whose run did it"): an install lets a package
+  run as anyone whose run writes that type.
+- **Open question 3** is left open: an `updated` entry fires on every
+  update. `fields:` is not built.
+- `event:` entries are not built, so the strict manifest refuses one.
 
 ## 3. Panels
 

@@ -45,6 +45,13 @@
  * not there, a trigger the automations' grammar does not have, and a
  * `once`; the packages' sync makes the automations (./schedules.ts).
  *
+ * Its `on:` names workflows of the package strut runs when a node of a
+ * type is created, updated or deleted (plans/package-seams.md §2): each
+ * entry one op, one graph type and one of the package's OWN workflows, by
+ * its name inside the package (`{ created: Workspace, workflow: setup }`).
+ * `readPackage` resolves them and refuses a workflow the package does not
+ * carry; strut matches them at each graph write it hears (./on.ts).
+ *
  * A Concept page comes in two forms (plans/concept-history.md §2.1, read by
  * `parseConceptFile`, src/concept-seed.ts): the old `concepts/<Name>.md`,
  * named by its file, with a `description` and one `parent`; and the new
@@ -122,6 +129,26 @@ const scheduleTrigger = z.unknown().transform((raw, ctx): TriggerDraft => {
   if (parsed.data.every === "once") ctx.addIssue({ code: "custom", path: ["every"], message: "a package's schedule recurs: interval, day, week or month" });
   return parsed.data;
 });
+
+/** The ops an `on:` entry names: what happened to the node. */
+export const ON_OPS = ["created", "updated", "deleted"] as const;
+export type OnOp = (typeof ON_OPS)[number];
+
+const graphTypeName = z.string().regex(GRAPH_TYPE_NAME, "a graph type is a letter then letters, digits or _ (Workspace)");
+
+/** One `on:` entry: exactly one op naming a type, and the workflow. */
+const onEntry = z
+  .object({
+    created: graphTypeName.optional(),
+    updated: graphTypeName.optional(),
+    deleted: graphTypeName.optional(),
+    workflow: z.string().min(1),
+  })
+  .strict()
+  .superRefine((e, ctx) => {
+    const ops = ON_OPS.filter((op) => e[op] !== undefined);
+    if (ops.length !== 1) ctx.addIssue({ code: "custom", message: `an entry names one op — created, updated or deleted — and its type${ops.length ? `, not ${ops.join(" and ")}` : ""}` });
+  });
 
 const manifestSchema = z
   .object({
@@ -202,6 +229,11 @@ const manifestSchema = z
           .strict(),
       )
       .optional(),
+    // The package's own workflows strut runs when a node of a type is
+    // created, updated or deleted (plans/package-seams.md §2, ./on.ts): one
+    // op, one type, one workflow an entry. Strict like the rest: an older
+    // strut refuses the package instead of installing it without them.
+    on: z.array(onEntry).optional(),
     // The packages a bundle lists, each by the `git+` branch it is followed
     // at (./subscriptions.ts). A bundle holds nothing else (`readPackage`).
     bundle: z.array(z.string().min(1)).min(1, "a bundle lists at least one package").optional(),
@@ -211,7 +243,7 @@ const manifestSchema = z
 export type PackageManifest = z.infer<typeof manifestSchema>;
 
 /** What a bundle may not carry: what belongs to a package's own items. */
-const NOT_IN_A_BUNDLE = ["requires", "job", "provides", "schedules"] as const;
+const NOT_IN_A_BUNDLE = ["requires", "job", "provides", "schedules", "on"] as const;
 
 /** Every secret a package's steps may read: `requires.secrets` and
  *  `requires.optional` — its fence. */
@@ -245,6 +277,16 @@ export interface PackageInfo {
   job?: JobGrant;
   /** The manifest's `schedules:`, each on a workflow of the package. */
   schedules?: PackageSchedule[];
+  /** The manifest's `on:`, each on a workflow of the package. */
+  on?: PackageTrigger[];
+}
+
+/** A workflow of the package strut runs when a node of `type` is `op`
+ *  (plans/package-seams.md §2): on the workflow's full name. */
+export interface PackageTrigger {
+  op: OnOp;
+  type: string;
+  workflow: string;
 }
 
 /** A workflow of the package strut runs on a schedule: an automation's
@@ -404,8 +446,17 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
     hosts.add(host);
   }
   const schedules = manifest.schedules ? resolveSchedules(pkg, manifest.schedules, items, problems) : undefined;
+  const on = manifest.on ? resolveOn(pkg, manifest.on, items, problems) : undefined;
   if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);
-  return { manifest, digest: `sha256:${await hashTree(dir, files)}`, files, items, ...(job ? { job } : {}), ...(schedules ? { schedules } : {}) };
+  return {
+    manifest,
+    digest: `sha256:${await hashTree(dir, files)}`,
+    files,
+    items,
+    ...(job ? { job } : {}),
+    ...(schedules ? { schedules } : {}),
+    ...(on ? { on } : {}),
+  };
 }
 
 /** A bundle: its list, each entry a branch to follow and a repository
@@ -451,6 +502,26 @@ function resolveSchedules(pkg: string, entries: NonNullable<PackageManifest["sch
     named.add(name);
     for (const p of checkInputTemplates(e.input ?? {})) problems.push(`${at}.input: ${p}`);
     return { name, workflow: `${pkg}/${e.workflow}`, trigger: e.trigger, input: e.input ?? {} };
+  });
+}
+
+/** The manifest's `on:` over the package's own workflows: each names one
+ *  by its name inside the package, so a write never runs strut's workflow
+ *  or another package's. The same entry twice is a problem. */
+function resolveOn(pkg: string, entries: NonNullable<PackageManifest["on"]>, items: PackageItem[], problems: string[]): PackageTrigger[] {
+  const own = new Set(items.filter((i) => i.kind === "workflow").map((i) => i.name));
+  const seen = new Set<string>();
+  return entries.map((e, i) => {
+    const op = ON_OPS.find((o) => e[o] !== undefined)!;
+    const type = e[op]!;
+    const at = `${MANIFEST_FILE}: on[${i}]`;
+    if (!own.has(`${pkg}/${e.workflow}`)) {
+      problems.push(`${at}.workflow: ${JSON.stringify(e.workflow)} is not a workflow of the package — an entry names one of the package's own workflows (workflows/<name>.yaml) by <name>`);
+    }
+    const key = `${op} ${type} ${e.workflow}`;
+    if (seen.has(key)) problems.push(`${at}: ${op}: ${type} runs ${e.workflow} twice`);
+    seen.add(key);
+    return { op, type, workflow: `${pkg}/${e.workflow}` };
   });
 }
 

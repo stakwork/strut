@@ -38,6 +38,10 @@
  *     live graph's (ruling 3) and touches main; one of unknown type, both
  *     (`historySides`).
  *
+ *   - to a package's `on:` (src/packages/on.ts, plans/package-seams.md §2),
+ *     when the bag has `onWrites`: each send's node writes folded to one op
+ *     per node (`netOps`), with who wrote — never a branch's or a trial's.
+ *
  * Not heard: a write through raw Cypher (`graph.query`), a write by another
  * process (jarvis, an ingest, a host writing the database itself), and
  * strut's own bookkeeping (`QUIET`). A transaction that rolls back after a
@@ -45,6 +49,7 @@
  * graph as it was.
  */
 
+import type { OnWriteMark } from "./core.js";
 import type { HistoryCapability } from "./history.js";
 import type { JobUpdateInput } from "./jobs.js";
 import { LiveFeed, type FeedRead } from "./live-feed.js";
@@ -146,6 +151,56 @@ export function createGraphChangeFeed(opts: { max?: number; gatherMs?: number } 
   };
 }
 
+// ── what a send's node writes start ──────────────────────────────────────
+
+/** One node's writes in a send, folded to one op (`netOps`). */
+export interface NodeWrite {
+  ref_id: string;
+  type: string;
+  op: GraphChange["op"];
+}
+
+/** Who wrote: the run (or `proposal:<id>`), its person, and the run's own
+ *  `on:` mark when a package's `on:` started it. */
+export interface WriteBy {
+  runId: string;
+  actor?: string;
+  mark?: OnWriteMark;
+}
+
+/** The bag's `onWrites` (src/packages/on.ts, plans/package-seams.md §2):
+ *  told each send's node writes, folded, unless the writes are on a
+ *  Concept branch or in a trial. Never awaited, never a failed write. */
+export interface OnWrites {
+  fire(writes: readonly NodeWrite[], by: WriteBy): void;
+}
+
+/**
+ * One op per node for a send's writes, in the order they were made: a node
+ * created, then updated, is `created`; created and deleted in the same send,
+ * nothing; updated, then deleted, `deleted`; deleted and then restored,
+ * `updated` — it was there before and is there after. A node whose type
+ * the send could not learn is left out.
+ */
+export function netOps(writes: ReadonlyArray<{ ref_id: string; op: GraphChange["op"]; type?: string | undefined }>): NodeWrite[] {
+  const by = new Map<string, { first: GraphChange["op"]; last: GraphChange["op"]; type?: string }>();
+  for (const w of writes) {
+    const had = by.get(w.ref_id);
+    if (!had) by.set(w.ref_id, { first: w.op, last: w.op, ...(w.type ? { type: w.type } : {}) });
+    else {
+      had.last = w.op;
+      if (w.type) had.type = w.type;
+    }
+  }
+  const out: NodeWrite[] = [];
+  for (const [ref_id, { first, last, type }] of by) {
+    if (!type) continue;
+    const op = first === "created" ? (last === "deleted" ? null : "created") : last === "deleted" ? "deleted" : "updated";
+    if (op) out.push({ ref_id, type, op });
+  }
+  return out;
+}
+
 /** What a reporter reads a node's type with: the backend's reader. */
 interface TypeReader {
   getNode(ref_id: string): Promise<{ node_type?: string | undefined } | null>;
@@ -188,6 +243,11 @@ export function graphReporter(o: {
   actor?: string;
   /** The Concept branch the writes are on (src/branches.ts). */
   branch?: string;
+  /** Told each send's node writes, folded (`netOps`): a package's `on:`
+   *  (src/packages/on.ts). Never on a Concept branch. */
+  onWrites?: OnWrites;
+  /** The run's own mark, when a package's `on:` started it. */
+  onWrite?: OnWriteMark;
   debounceMs?: number;
   maxDelayMs?: number;
 }): GraphReporter {
@@ -266,6 +326,19 @@ export function graphReporter(o: {
       tellHistory();
     }
     if (out.length === 0) return;
+    // A package's `on:` (plans/package-seams.md §2): what this send did to
+    // each node, once. A branch's writes are a try, not a change to the box.
+    if (o.onWrites && !o.branch) {
+      const nodes = netOps(out.filter((c) => c.kind === "node").map((c) => ({ ref_id: c.ref_id, op: c.op, type: c.node_type })));
+      const by = o.runId ?? o.id;
+      if (nodes.length && by) {
+        try {
+          o.onWrites.fire(nodes, { runId: by, ...(o.actor ? { actor: o.actor } : {}), ...(o.onWrite ? { mark: o.onWrite } : {}) });
+        } catch (err) {
+          console.warn(`[graph-writes] on: for ${by} not fired: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
     o.feed?.push(out);
     if (!o.job || !o.notify) return;
     writes += out.length;
@@ -479,7 +552,18 @@ export function reportingGraph<G extends object>(graph: G, r: GraphReporter): G 
  */
 export function bindGraph<TServices>(
   services: TServices,
-  o: { runId?: string; id?: string; job?: string; actor?: string; debounceMs?: number; maxDelayMs?: number },
+  o: {
+    runId?: string;
+    id?: string;
+    job?: string;
+    actor?: string;
+    /** The run's own `on:` mark (src/packages/on.ts). */
+    onWrite?: OnWriteMark;
+    /** A trial: its writes start nothing (`onWrites` is not told). */
+    trial?: boolean;
+    debounceMs?: number;
+    maxDelayMs?: number;
+  },
 ): { services: TServices; reporter?: GraphReporter } {
   if (services == null || typeof services !== "object") return { services };
   const bag = services as {
@@ -487,6 +571,7 @@ export function bindGraph<TServices>(
     graphChanges?: GraphChangeFeed;
     jobs?: { notify?: (job: string, update: JobUpdateInput) => void };
     history?: Pick<HistoryCapability, "waiting" | "touch" | "skipped">;
+    onWrites?: OnWrites;
   };
   const graph = bag.graph;
   if (!graph || (!graph.nodes && !graph.edges)) return { services };
@@ -494,7 +579,9 @@ export function bindGraph<TServices>(
   const ns = branchOf(graph);
   const branch = ns ? ns.slice(BRANCH_NAMESPACE_PREFIX.length) : undefined;
   const notify = bag.jobs?.notify ? (job: string, update: JobUpdateInput) => bag.jobs!.notify!(job, update) : undefined;
-  if (!bag.graphChanges && !bag.history && !(o.job && notify)) return { services };
+  // A package's `on:`: never for a trial's writes, nor a branch's.
+  const onWrites = bag.onWrites && !o.trial && !branch ? bag.onWrites : undefined;
+  if (!bag.graphChanges && !bag.history && !onWrites && !(o.job && notify)) return { services };
   // The change feed's types come from the whole graph, whoever wrote
   // (a view's reader is held to the jobs list, src/graph/scope.ts).
   const typeReader = (fullReaderOf(graph) as TypeReader | undefined) ?? graph.reader;
@@ -508,6 +595,8 @@ export function bindGraph<TServices>(
     ...(bag.history ? { history: bag.history } : {}),
     ...(o.actor ? { actor: o.actor } : {}),
     ...(branch ? { branch } : {}),
+    ...(onWrites ? { onWrites } : {}),
+    ...(o.onWrite ? { onWrite: o.onWrite } : {}),
     ...(o.debounceMs !== undefined ? { debounceMs: o.debounceMs } : {}),
     ...(o.maxDelayMs !== undefined ? { maxDelayMs: o.maxDelayMs } : {}),
   });

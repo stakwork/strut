@@ -205,6 +205,23 @@ export interface RunTrial {
   claims: string[];
 }
 
+/**
+ * A run that `on:` started (plans/package-seams.md §2, src/packages/on.ts):
+ * the package whose entry it is, the write that fired it — what happened to
+ * which node of which type, and the run (or `proposal:<id>`) that wrote —
+ * and how many `on:` runs its chain holds with this one. Set by strut's
+ * dispatch alone, recorded on `run.start`, read back by a resume; its own
+ * graph writes fire no entry of its package, and none past the chain's end.
+ */
+export interface OnWriteMark {
+  package: string;
+  op: "created" | "updated" | "deleted";
+  type: string;
+  ref_id: string;
+  by: string;
+  depth: number;
+}
+
 /** What a step answers in a trial instead of doing what would leave it. */
 export const TRIAL_HELD = "held: this run is a trial, so nothing it starts leaves it";
 
@@ -657,6 +674,9 @@ export interface RunEvent {
   continues?: string;
   /** On a scheduled run's `run.start`: the automation that fired it. */
   automation?: { id: string };
+  /** On the `run.start` of a run a package's `on:` started: the write that
+   *  fired it (`OnWriteMark`). */
+  onWrite?: OnWriteMark;
   /** On `run.start`: who launched the run (`actor`) and who pays for it
    *  (`principal`) — see `StepContext`. Recorded so a resume bills the same
    *  person even if the workflow's owner has changed since. */
