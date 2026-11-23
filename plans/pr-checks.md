@@ -147,10 +147,11 @@ request, against a user token's 5,000. An open card reads 360.
 
 ```yaml
 schedules:
-  - name: pr-checks
-    workflow: pr-checks          # one step: job/pr-checks
-    trigger: { interval: { minutes: 5 } }
+  - workflow: pr-checks          # workflows/pr-checks.yaml: one step, job/pr-checks
+    trigger: { every: interval, minutes: 5 }
 ```
+
+That's stakwork/strut-github#4.
 
 The schedule runs as the package's owner, who reads nothing and launches
 nothing themself: the step does both, as each job's person. An admin can
