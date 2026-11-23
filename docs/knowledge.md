@@ -408,7 +408,12 @@ index. A change in this area updates this file, not AGENTS.md.
   on the evidence of each claim it tests). A sample is one run and its
   verdicts; four run at once across everything in flight, and what is in
   flight is in memory only (a restart forgets the samples not yet
-  started).
+  started). Beside its verdicts, a sample says what its run took and cost
+  (`ms` and `cost` on a trial's sample in `checks`, from the run's own
+  summary: `durationMs`, and `totals.cost`, which counts its sub-agents
+  and the runs it waited on), so a change that passes as often in half
+  the time shows. Neither is a verdict, and nothing is stored for them:
+  the summary is read when the page is.
   A PAGE'S FILE CARRIES ITS CLAIMS: the front matter's `claims:` block, in
   either form of page file (`parseConceptFile` → `ConceptFile.claims`,
   `readPageClaims`, claims-schemas.ts): each claim its `text`, the
@@ -603,7 +608,7 @@ a WORK (plans/concept-evals.md, rulings 5 and 9): a root run and every run it ca
 
 ### `src/trials.ts`
 
-trials and tests (plans/claim-trials.md; "Trials and tests" above): `createTrials({ dataDir, graph, claims, verifier, store, branches?, sources?, history?, hasWorkflow, run })` → `ctx.services.trials`, set by createStrut wherever the claims layer is on, a host's own winning. `checks(concept)` (the one read), `addCheck` (a person's claim with the standard check), `setCases`, `trial({ claim, n })` and `test({ concept, docs, n } | { test, n })` (both return at once with the batch; the samples run four at a time and each is `run` then `verifier.verifyRun`), `use({ test, proposer })`, `sample({ workflow, run })` (null unless the run's summary carries `trial`), `seed(pages, speaker)` (the claims and cases a seeded page's file carries) and `sweep()` (the test branches a restart left). Pure and exported for the tests: `sampleOf` (an evidence row as a verdict, or null when it is none of a check's) and `orient` (a test as the page reads it now). Cases are `TestCase` nodes (above); on disk under `<dataDir>/trials/`: `tests/<id>.json` (a `cases/` folder an earlier strut wrote is read by nothing). Tested end to end on a graph in src/graph/trials.test.ts (a stand-in model: the seeded page's two checks sharing one case node and both judging its runs, a held job, a test whose branch is dropped, a page from git refused, an ordinary page taking the other wording, a job's case run as a job of its own whose hold is released once judged, a reworded claim keeping its cases).
+trials and tests (plans/claim-trials.md; "Trials and tests" above): `createTrials({ dataDir, graph, claims, verifier, store, branches?, sources?, history?, hasWorkflow, run })` → `ctx.services.trials`, set by createStrut wherever the claims layer is on, a host's own winning. `checks(concept)` (the one read; a trial's sample carries its run's `ms` and `cost` from the run's own summary, read once a run), `addCheck` (a person's claim with the standard check), `setCases`, `trial({ claim, n })` and `test({ concept, docs, n } | { test, n })` (both return at once with the batch; the samples run four at a time and each is `run` then `verifier.verifyRun`), `use({ test, proposer })`, `sample({ workflow, run })` (null unless the run's summary carries `trial`), `seed(pages, speaker)` (the claims and cases a seeded page's file carries) and `sweep()` (the test branches a restart left). Pure and exported for the tests: `sampleOf` (an evidence row as a verdict, or null when it is none of a check's) and `orient` (a test as the page reads it now). Cases are `TestCase` nodes (above); on disk under `<dataDir>/trials/`: `tests/<id>.json` (a `cases/` folder an earlier strut wrote is read by nothing). Tested end to end on a graph in src/graph/trials.test.ts (a stand-in model: the seeded page's two checks sharing one case node and both judging its runs, a held job, a test whose branch is dropped, a page from git refused, an ordinary page taking the other wording, a job's case run as a job of its own whose hold is released once judged, a reworded claim keeping its cases).
 
 ### `src/knowledge.ts`
 

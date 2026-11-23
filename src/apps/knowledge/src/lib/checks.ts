@@ -25,6 +25,9 @@ export interface Sample {
   /** A trial's: the case it replayed, by its id. */
   case?: string;
   trial?: true;
+  /** A trial's: how long its run took (milliseconds) and what its model calls cost (dollars). */
+  ms?: number;
+  cost?: number;
 }
 
 export interface Check extends PageClaim {
@@ -94,6 +97,36 @@ export function tally(samples: readonly Pick<Sample, "supports">[]): { passed: n
 export function tallyWords(samples: readonly Pick<Sample, "supports">[]): string {
   const { passed, judged } = tally(samples);
   return judged ? `${passed} of ${judged} passed` : "Not run yet";
+}
+
+/** What the runs behind some verdicts took and cost, on average: each run
+ *  once, however many checks judged it. Null when none says (no trial's). */
+export function spendOf(samples: readonly Pick<Sample, "run" | "ms" | "cost">[]): { runs: number; ms: number; cost: number } | null {
+  const runs = new Map<string, { ms: number; cost: number }>();
+  for (const s of samples) if (typeof s.ms === "number") runs.set(s.run, { ms: s.ms, cost: s.cost ?? 0 });
+  if (!runs.size) return null;
+  const all = [...runs.values()];
+  return { runs: all.length, ms: all.reduce((t, r) => t + r.ms, 0) / all.length, cost: all.reduce((t, r) => t + r.cost, 0) / all.length };
+}
+
+/** "45 s", "14 min", "1 h 5 min". */
+export function durationWords(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  const min = Math.round(s / 60);
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ""}`;
+}
+
+/** "$0.66", "under $0.01", "$0" when nothing called a model. */
+export function costWords(cost: number): string {
+  if (cost <= 0) return "$0";
+  return cost < 0.005 ? "under $0.01" : `$${cost.toFixed(2)}`;
+}
+
+/** "14 min · $0.66" for one run, "… a run" for the average of several; "" when nothing says. */
+export function spendWords(samples: readonly Pick<Sample, "run" | "ms" | "cost">[]): string {
+  const s = spendOf(samples);
+  return s ? `${durationWords(s.ms)} · ${costWords(s.cost)}${s.runs > 1 ? " a run" : ""}` : "";
 }
 
 /** Every check's verdicts on one wording of a test. */

@@ -2813,8 +2813,10 @@ on each, and which of the two it `tried` (`change` until it is used, then
 [{ id, text, status, speaker?, latest?, cases, samples }], tests: [{ id,
 at, page: { version, docs, samples }, change: { … }, live, tried }], running: [{
 id, test?, claim?, total, done, errors }], problem? }`, a sample `{ run,
-workflow?, supports, content?, at?, case?, trial? }` (`case`: the id of
-the TestCase a trial replayed). An ADMIN's page also
+workflow?, supports, content?, at?, case?, trial?, ms?, cost? }` (`case`: the id of
+the TestCase a trial replayed; `ms` and `cost`, a trial's only: how long its
+run took and what its model calls cost in dollars, 0 when none did, from the
+run's summary). An ADMIN's page also
 calls `knowledge/trial { claim, n }` (each case `n` times, as trials, each
 judged by every claim its case tests: the jobs, proposals and runs on
 other servers a trial would start are held, and a case whose workflow is

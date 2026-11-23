@@ -16,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useChecks } from "../lib/read";
 import {
-  allSamples, capped, caseFor, caseLabel, drawnOf, heldOf, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, tally, tallyWords, useLabel, verdictOf, workflowFor,
+  allSamples, capped, caseFor, caseLabel, drawnOf, heldOf, messageOf, outcomeOf, replyOf, runningWords, samplesOf, speakerLabel, spendOf, spendWords, tally, tallyWords, useLabel, verdictOf, workflowFor,
   type Check, type ChecksView, type PageTest, type Sample,
 } from "../lib/checks";
 import { CLAIM_STATUS, byStatus, claimsUnavailable, evidenceLine } from "../lib/learning";
@@ -125,6 +125,11 @@ function SamplePanel({ sample, admin }: { sample: Sample; admin: boolean }) {
         </>
       )}
       {!open && !sample.trial && <p className="text-muted-foreground">A person's own work, judged as it happened: it is not opened here.</p>}
+      {typeof sample.ms === "number" && (
+        <p className="text-muted-foreground" data-testid="check-sample-spend">
+          Took {spendWords([sample])}
+        </p>
+      )}
       <p className={cn("flex items-start gap-1.5", sample.supports ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300")}>
         {sample.supports ? <CheckIcon className="mt-0.5 size-3.5 shrink-0" /> : <X className="mt-0.5 size-3.5 shrink-0" />}
         <span className="break-words">{sample.content || (sample.supports ? "Holds to the rule." : "Breaks the rule.")}</span>
@@ -225,19 +230,28 @@ function CheckCard({ check, view, acts }: { check: Check; view: ChecksView; acts
         )}
       </div>
       <ul className="space-y-0.5 pl-6">
-        {check.cases.map((c, k) => (
-          <li key={c.id ?? k} className="flex items-center gap-2" data-testid="check-case">
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={caseLabel(c)}>
-              {caseLabel(c)}
-            </span>
-            <Dots samples={check.samples.filter((s) => !!c.id && s.case === c.id)} at={`${at}:${c.id ?? k}`} picked={acts.picked} onPick={acts.onPick} />
-            {acts.admin && (
-              <button type="button" aria-label="Remove this message" disabled={acts.busy} onClick={() => void setCases(check.cases.filter((_, i) => i !== k))} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
-                <X className="size-3" />
-              </button>
-            )}
-          </li>
-        ))}
+        {check.cases.map((c, k) => {
+          const ran = check.samples.filter((s) => !!c.id && s.case === c.id);
+          const spent = spendOf(ran);
+          return (
+            <li key={c.id ?? k} className="flex items-center gap-2" data-testid="check-case">
+              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={caseLabel(c)}>
+                {caseLabel(c)}
+              </span>
+              <Dots samples={ran} at={`${at}:${c.id ?? k}`} picked={acts.picked} onPick={acts.onPick} />
+              {spent && (
+                <span className="shrink-0 text-xs tabular-nums text-muted-foreground" title={spent.runs > 1 ? `On average over ${spent.runs} runs` : undefined} data-testid="check-case-spend">
+                  {spendWords(ran)}
+                </span>
+              )}
+              {acts.admin && (
+                <button type="button" aria-label="Remove this message" disabled={acts.busy} onClick={() => void setCases(check.cases.filter((_, i) => i !== k))} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
+                  <X className="size-3" />
+                </button>
+              )}
+            </li>
+          );
+        })}
         {!check.cases.length && <li className="text-xs text-muted-foreground">No message tests this yet.</li>}
         {acts.admin && (
           <li className="flex items-center gap-1.5 pt-1">
@@ -301,6 +315,11 @@ function TestCard({ test, view, acts, onUsed }: { test: PageTest; view: ChecksVi
           ))}
         </div>
       ))}
+      {drawn.order.some((s) => spendOf(allSamples(test[s]))) && (
+        <p className="text-xs tabular-nums text-muted-foreground" data-testid="test-spend">
+          {drawn.order.map((s, i) => `${drawn.labels[i]}: ${spendWords(allSamples(test[s])) || "—"}`).join("; ")}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         {verdict ? (
           <span className={cn("rounded border px-1.5 text-[11px]", chip(verdict.good))} data-testid="test-outcome" data-outcome={outcome}>
