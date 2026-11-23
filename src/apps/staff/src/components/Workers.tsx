@@ -10,11 +10,12 @@
 // conversation with Support (plans/support-chat.md §3) where Support answers.
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { useStrutClient } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,7 +23,7 @@ import { cn } from "@/lib/utils";
 import {
   balanceCells, fmtSats, fmtWhen, grantedBy, leaseOutcome, OPEN_GRANT_BY, reviewText, standingLow, standingText, STATUS_WORDS, whoElse, whoOf, type Place, type Shown,
 } from "../lib/view";
-import type { TaskType, TypeShare, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
+import type { TaskType, TypeNumbers, TypeShare, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
 import { Avatar, Back, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
 import { BringWorkersIn } from "./Share";
 
@@ -51,6 +52,7 @@ export function Workers(props: Props) {
 
 function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
   const [find, setFind] = useState("");
+  const [reviewWorker, setReviewWorker] = useState<Worker | null>(null);
   const words = find.trim().toLowerCase();
   const list = words ? props.workers.filter((w) => `${whoOf(w)} ${w.name ?? ""} ${w.actor}`.toLowerCase().includes(words)) : props.workers;
   const able = props.workers.filter((w) => w.status === "active").length;
@@ -142,8 +144,10 @@ function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
                         {w.balance && w.balance.heldMsat > 0 && <div className="text-xs text-muted-foreground">{fmtSats(w.balance.heldMsat)} held</div>}
                       </TableCell>
                     )}
-                    <TableCell className="pl-0 text-muted-foreground">
-                      <ChevronRight aria-hidden className="size-4" />
+                    <TableCell className="pl-0">
+                      <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setReviewWorker(w); }}>
+                        Review
+                      </Button>
                     </TableCell>
                   </TableRow>
                 );
@@ -152,7 +156,146 @@ function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
           </Table>
         </div>
       )}
+      {reviewWorker && <ReviewModal worker={reviewWorker} types={props.types} shown={props.shown} go={props.go} onClose={() => setReviewWorker(null)} />}
     </section>
+  );
+}
+
+function ReviewModal(props: { worker: Worker; types: TaskType[] | undefined; shown: Shown; go: (p: Place) => void; onClose: () => void }) {
+  const w = props.worker;
+  const client = useStrutClient();
+  const { act, busy, error } = useAct();
+  const [grantType, setGrantType] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+  const detail = useQuery({ queryKey: ["staff", "worker", w.actor], queryFn: () => client.run<{ worker: Worker } & WorkerActivity>("staff/worker", { actor: w.actor }) });
+  const numbers = useQuery({ queryKey: ["staff", "numbers", 90], queryFn: () => client.run<TypeNumbers[]>("staff/numbers", { days: 90 }) });
+  const live = w.grants.filter((g) => g.revokedAt === undefined);
+  const revoked = w.grants.filter((g) => g.revokedAt !== undefined);
+  const grantable = (props.types ?? []).filter((t) => !live.some((g) => g.type === t.name));
+  const mine = (numbers.data ?? []).flatMap((t) => {
+    const n = t.workers.find((x) => x.worker === w.actor);
+    return n ? [{ type: t.type, answered: n.answered }] : [];
+  });
+  const total = mine.reduce((a, b) => a + b.answered, 0);
+  const [earned, held, free] = balanceCells(w.balance);
+  const standing = Object.entries(w.standing ?? {});
+  return (
+    <Dialog open onOpenChange={(o) => !o && props.onClose()}>
+      <DialogContent className="max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex flex-wrap items-center gap-2">
+            {whoOf(w)} <StatusBadge status={w.status} />
+          </DialogTitle>
+          <DialogDescription className="font-mono text-xs break-all">{w.actor}</DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-4">
+          <Section title="Who">
+            {whoElse(w) && <Note>{whoElse(w)}</Note>}
+            <Note>
+              Joined {fmtWhen(w.firstSeen)}
+              {w.grants[0]?.by ? ` · first grant ${grantedBy(w.grants[0])}` : ""}
+            </Note>
+            {w.note && <p className="text-sm whitespace-pre-wrap">{w.note}</p>}
+          </Section>
+
+          {props.shown.earnings && w.balance && (
+            <section className="grid grid-cols-3 gap-4 rounded-lg border p-4">
+              <Figure label="Earned" value={earned} />
+              <Figure label="Held" value={held} />
+              <Figure label="Withdrawable" value={free} />
+            </section>
+          )}
+
+          <Section title="Activity">
+            {detail.error ? (
+              <ErrorLine error={detail.error} />
+            ) : !detail.data ? (
+              <Loading>Reading their activity…</Loading>
+            ) : (
+              <>
+                {detail.data.holding ? (
+                  <Note>Working on a task of {detail.data.holding.type}, theirs until {fmtWhen(detail.data.holding.expires)}.</Note>
+                ) : (
+                  <Note>No task in progress.</Note>
+                )}
+                <Note>
+                  {w.week ?? 0} answers this week
+                  {detail.data.recent?.[0] ? ` · last took a task ${fmtWhen(detail.data.recent[0].lease.taken)}` : ""}
+                </Note>
+              </>
+            )}
+            {numbers.error ? (
+              <ErrorLine error={numbers.error} />
+            ) : !numbers.data ? (
+              <Loading>Reading their numbers…</Loading>
+            ) : (
+              <Note>
+                {total} answered in 90 days{mine.length ? `: ${mine.map((m) => `${m.type} ${m.answered}`).join(", ")}` : ""}
+              </Note>
+            )}
+            {standing.map(([t, s]) => (
+              <div key={t} className={cn("text-xs", standingLow(s) && "text-destructive")}>
+                {t}: {standingText(s)}
+              </div>
+            ))}
+          </Section>
+
+          <Section title="Grants">
+            {live.length === 0 && <Note>Not let in to any work yet.</Note>}
+            {live.map((g) => (
+              <div key={g.type} className="text-sm">
+                <span className="font-medium">{g.type}</span>{" "}
+                <span className="text-xs text-muted-foreground">since {fmtWhen(g.at)}{g.by ? ` ${grantedBy(g)}` : ""}</span>
+              </div>
+            ))}
+            {revoked.map((g) => (
+              <div key={g.type} className="text-sm">
+                <span className="font-medium">{g.type}</span>{" "}
+                <span className="text-xs text-muted-foreground">
+                  revoked {fmtWhen(g.revokedAt!)} by {g.revokedBy === "standing" ? "standing (automatic)" : (g.revokedBy ?? "someone")}
+                  {g.why ? `: ${g.why}` : ""}
+                </span>
+              </div>
+            ))}
+          </Section>
+          {notice && <Note>{notice}</Note>}
+          <ErrorLine error={error} />
+        </div>
+        <DialogFooter className="flex-wrap items-center gap-2 sm:justify-start">
+          {grantable.length > 0 && (
+            <>
+              <NativeSelect aria-label="Type to grant" value={grantType} onChange={(e) => setGrantType(e.target.value)}>
+                <NativeSelectOption value="">Grant a type…</NativeSelectOption>
+                {grantable.map((t) => (
+                  <NativeSelectOption key={t.name} value={t.name}>
+                    {t.name}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+              <Button
+                size="sm"
+                disabled={!grantType || busy !== null}
+                onClick={() =>
+                  void act("grant", () => client.run<{ notice?: string }>("staff/grant", { actor: w.actor, type: grantType })).then((r) => {
+                    if (r) { setNotice(r.notice ?? "Granted."); setGrantType(""); }
+                  })
+                }
+              >
+                Grant
+              </Button>
+            </>
+          )}
+          {w.status !== "suspended" && w.status !== "banned" && (
+            <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void act("suspend", () => client.run("staff/set-worker", { actor: w.actor, status: "suspended" })).then((r) => r !== undefined && props.onClose())}>
+              Suspend
+            </Button>
+          )}
+          <button type="button" className="ml-auto text-sm underline underline-offset-2" onClick={() => { props.go({ tab: "workers", worker: w.actor }); props.onClose(); }}>
+            Full page →
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -200,7 +343,7 @@ function WorkerDetail(props: Props & { actor: string }) {
       <div className="flex flex-wrap items-center gap-2">
         {(w.status === "new" || w.status === "suspended" || w.status === "banned") && (
           <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => setStatus("active")}>
-            {w.status === "new" ? "Let in" : "Lift"}
+            {w.status === "new" ? "Review" : "Lift"}
           </Button>
         )}
         {w.status !== "suspended" && w.status !== "banned" && (
@@ -316,7 +459,7 @@ function WorkerDetail(props: Props & { actor: string }) {
                 })
               }
             >
-              Let in
+              Grant
             </Button>
           </div>
         )}
