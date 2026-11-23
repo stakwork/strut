@@ -316,7 +316,8 @@ export function answeredSince(runs: Array<{ runId: string; parentRunId?: string 
 // ── What the job holds, at its address (plans/job-claims.md §3) ──────────
 // `job/get`'s `urls`: the first hold of each kind that has an address — a
 // pod's app, `{ pod: "https://…" }`, the 12-hour link the pods package keeps
-// on the hold once the agent asks for one. A row on the card for each, from
+// on the hold once the agent asks for one — then each hold's named links, a
+// pod's other frontends (`{ pod, admin }`). A row on the card for each, from
 // the job's state rather than the agent's reply: beside the chat (the host's
 // panel, which reads the address from the job itself) or in a tab. The row
 // goes when the hold does.

@@ -136,11 +136,12 @@ const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i;
 
 /** Where an address typed in the hold panel's bar goes: in the frame when
  *  it is on the hold's own origin (a path, `/settings` or `settings`, is
- *  read against it), in a new tab when it is an http(s) address anywhere
- *  else (a bare host gets https, a local one http), and nowhere (null) for
- *  anything else: no `javascript:` or `data:` address reaches the frame or
- *  a tab. The panel frames only what the job holds. */
-export function holdNavigation(input: string, holdUrl: string): { frame: string } | { tab: string } | null {
+ *  read against it) or on the origin of another of the job's addresses
+ *  (`also`: a pod's other frontend), in a new tab when it is an http(s)
+ *  address anywhere else (a bare host gets https, a local one http), and
+ *  nowhere (null) for anything else: no `javascript:` or `data:` address
+ *  reaches the frame or a tab. The panel frames only what the job holds. */
+export function holdNavigation(input: string, holdUrl: string, also: readonly string[] = []): { frame: string } | { tab: string } | null {
   const text = input.trim();
   if (!text) return null;
   let origin: string;
@@ -161,7 +162,14 @@ export function holdNavigation(input: string, holdUrl: string): { frame: string 
     return null;
   }
   if (u.protocol !== "https:" && u.protocol !== "http:") return null;
-  return u.origin === origin ? { frame: u.href } : { tab: u.href };
+  const held = (a: string) => {
+    try {
+      return new URL(a).origin === u.origin;
+    } catch {
+      return false;
+    }
+  };
+  return u.origin === origin || also.some(held) ? { frame: u.href } : { tab: u.href };
 }
 
 /** Where a link to ANOTHER app of this server's public view goes from a

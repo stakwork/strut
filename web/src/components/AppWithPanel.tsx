@@ -102,11 +102,17 @@ const HOLD_SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups a
 function PanelHold(props: { job: string; hold: string; onClose: () => void }) {
   /** Undefined while the job is read; null when it holds no such address. */
   const [url, setUrl] = useState<string | null | undefined>(undefined);
+  /** The job's other addresses (a pod's other frontend), which the bar loads in the frame too. */
+  const [also, setAlso] = useState<string[]>([]);
   const [error, setError] = useState("");
   useEffect(() => {
     let on = true;
     api.getJobUrls(props.job).then(
-      (r) => on && setUrl(frameableHold(r.urls[props.hold], location.origin)),
+      (r) => {
+        if (!on) return;
+        setUrl(frameableHold(r.urls[props.hold], location.origin));
+        setAlso(Object.values(r.urls).flatMap((u) => frameableHold(u, location.origin) ?? []));
+      },
       (err) => on && setError(errorMessage(err)),
     );
     return () => {
@@ -114,7 +120,7 @@ function PanelHold(props: { job: string; hold: string; onClose: () => void }) {
     };
   }, [props.job, props.hold]);
   const title = props.hold.charAt(0).toUpperCase() + props.hold.slice(1);
-  if (url) return <HoldBrowser key={url} url={url} title={title} onClose={props.onClose} />;
+  if (url) return <HoldBrowser key={url} url={url} also={also} title={title} onClose={props.onClose} />;
   return (
     <div class="app-panel-app">
       <div class="app-panel-head">
@@ -134,9 +140,10 @@ function PanelHold(props: { job: string; hold: string; onClose: () => void }) {
  *  where its own links led), Reload, which spins until the page loads, the
  *  address, Open in a tab and ✕. The bar never shows the hold's own address
  *  past its origin (`holdAddress`: a pod's is a sign-in link with its
- *  token), and only an address on the hold's origin loads in the frame
+ *  token), and only an address on the origin of the hold or of another of
+ *  the job's addresses (a pod's other frontend) loads in the frame
  *  (`holdNavigation`): one anywhere else opens in a tab. */
-function HoldBrowser(props: { url: string; title: string; onClose: () => void }) {
+function HoldBrowser(props: { url: string; also: string[]; title: string; onClose: () => void }) {
   const [entries, setEntries] = useState<string[]>([props.url]);
   const [index, setIndex] = useState(0);
   const [reloads, setReloads] = useState(0);
@@ -152,7 +159,7 @@ function HoldBrowser(props: { url: string; title: string; onClose: () => void })
     setLoading(true);
   };
   const visit = (input: string) => {
-    const to = holdNavigation(input, props.url);
+    const to = holdNavigation(input, props.url, props.also);
     if (!to) return;
     if ("tab" in to) {
       window.open(to.tab, "_blank", "noopener,noreferrer");

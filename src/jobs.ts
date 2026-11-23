@@ -157,6 +157,11 @@ export interface JobHold {
    *  plans/job-claims.md §3) — so a check survives a dropped and
    *  re-claimed pod without an edit. Passed through, never read here. */
   url?: string;
+  /** More addresses on the same thing, by name (a pod's second frontend:
+   *  `{ admin: "https://…" }`). Each is the job's `urls.<name>` beside
+   *  `urls.<kind>`, and a row of its own on Jamie's job card. Passed
+   *  through, never read here. */
+  links?: Record<string, string>;
 }
 
 /** Where a job's directory lives — the same path for every run that names

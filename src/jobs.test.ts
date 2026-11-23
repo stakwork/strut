@@ -1261,6 +1261,17 @@ describe("jobs — the index (plans/job-index.md)", () => {
     );
     assert.deepEqual(v.urls, { pod: "https://pod-2.example", browser: "ws://browser-1.example" });
     assert.deepEqual(holdUrls([]), {});
+    // A hold's named links (a pod's other frontend) join by name, after
+    // every kind: a name never takes a kind's place, and the first wins.
+    const since = "2026-11-23T00:00:00.000Z";
+    const rel = { type: "fake/release", input: {} };
+    assert.deepEqual(
+      holdUrls([
+        { id: "p", kind: "pod", since, release: rel, url: "https://p-3000.example/open", links: { admin: "https://p-5173.example/open", vm: "https://p-1.example", "": "https://p-2.example" } },
+        { id: "v", kind: "vm", since, release: rel, url: "https://vm.example", links: { admin: "https://other.example" } },
+      ]),
+      { pod: "https://p-3000.example/open", vm: "https://vm.example", admin: "https://p-5173.example/open" },
+    );
     // The fold alone, for the side panel beside an app (a member reads it).
     assert.deepEqual((await api("/jobs/j-u/urls")).json, { job: "j-u", urls: v.urls });
     assert.equal((await api("/jobs/no-such-job/urls")).status, 404);
