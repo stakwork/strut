@@ -7152,7 +7152,12 @@ admin saves it, a trigger on `settings` keeps when it was turned on
 (`welcome_since`); a `contact` record newer than that marks the
 conversation's welcome due, and `support-outbox` sends it, once per worker
 (`welcomed_at`). Saving again keeps `welcome_since`; clearing the text
-turns it off, and the next save starts again from then.
+turns it off, and the next save starts again from then. A worker who
+already had Peel adds no contact (Peel ignores an invite on an account it
+has; a Share link carries none), so a worker's FIRST `task/me` or
+`task/next` here, signed in with Peel, sends it too: to the Sphinx address
+their session carries (`POST /dm { to: <address> }`, the daemon meeting them
+there for 3 sats), unless Support already has a conversation with them.
 
 **Payout lines** (`plans/support-chat.md` §6). When a worker's payout
 settles (§22, "Payouts"), the engine writes to them from Support `"Paid you

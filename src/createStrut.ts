@@ -52,7 +52,7 @@ import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
 import { taskRoutes } from "./tasks/routes.js";
 import { sphinxCapability, type SphinxDaemon } from "./payments/sphinx-dm.js";
-import { payoutLine, SUPPORT_APP } from "./steps/lib/support/_shared.js";
+import { payoutLine, SUPPORT_APP, welcomeWorker } from "./steps/lib/support/_shared.js";
 import { dirTestFiles, memoryTestFiles, testFilesRoot } from "./tasks/test-files.js";
 import { saveAnswerAttachments } from "./tasks/answer-files.js";
 import { standingTask } from "./tasks/standing.js";
@@ -1607,6 +1607,13 @@ export async function createStrut<TServices = unknown>(
       console.warn(`[support] the payout's line could not be sent: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
+  /** A worker's first time in Tasks: Support's welcome to their Sphinx
+   *  address (plans/support-chat.md §11), while strut/staff has its tables
+   *  and the daemon its message token. */
+  const supportWelcome = async (w: { actor: string; address: string }): Promise<void> => {
+    if (!appDb.has(SUPPORT_APP) || !(await sphinxDaemon())) return;
+    await welcomeWorker(await appDb.open(SUPPORT_APP), sphinx, w);
+  };
   /** Does a run for this app carry `sphinx` (§4)? An admin's first-party
    *  app — a `strut/` name at a version strut seeded, its manifest
    *  `admin: true` — so `strut/staff`'s `support-outbox`. No other run's. */
@@ -1848,6 +1855,7 @@ export async function createStrut<TServices = unknown>(
     // Withdraw (plans/human-steps.md §8.2): the payer's third door, built
     // below beside the withdrawals it sends through.
     payouts: { pay: (actor, o) => payouts.pay(actor, o), view: (actor, o) => payouts.view(actor, o) },
+    newWorker: supportWelcome,
     // Invites (plans/human-steps.md §5.8): the token an invite's link opens
     // the worker app with gives its worker the app's invite-only types,
     // while the daemon still has the invite — cancelled or failed, it

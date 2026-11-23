@@ -355,8 +355,9 @@ plans/support-chat.md §7, built in stakwork/sphinx#435
 pay token is and refused when it equals the receive or the pay token. It
 opens the routes below and nothing else: not tribes, join, leave,
 invoices, pay, keysend, invites or the admin routes. The only sats it can
-spend are what a DM to an existing contact costs: 0, or 1 sat a part while
-their key is unconfirmed. It never meets a new contact. Strut calls
+spend are what a DM costs: 0 to a confirmed contact, 1 sat a part while
+their key is unconfirmed, and 3 sats more to meet someone new by their
+address (Support's welcome to a worker who already had Peel). Strut calls
 `POST /dm`, `POST /dm/:id/delete`, `PUT` / `DELETE /dm/photo` (the `sphinx`
 capability, `src/payments/sphinx-dm.ts`); `GET /dms` and `GET
 /dm/:id/file` stay the daemon's, and strut does not call them. Fields may
@@ -372,7 +373,7 @@ GET /dms?after=<seq>&limit=100
 GET /dm/:id/file
 → the decrypted bytes; content-type the file's type; content-disposition the sender's name
 
-POST /dm { "id": "<strut's, 64 hex>", "to": "<the contact's pubkey>", "text": "…", "reply": "<sphinx id>",
+POST /dm { "id": "<strut's, 64 hex>", "to": "<the contact's pubkey, or anyone's address>", "text": "…", "reply": "<sphinx id>",
            "file": { "data": "<standard base64>", "type": "image/jpeg", "name": "receipt.jpg" } }
 → the send's item, as the feed shows it: { "seq": 31, "id": "<sphinx id>", "clientId": "<strut's>", …, "status": "sent" }
 
@@ -429,8 +430,11 @@ POST /dm/:id/delete                                            → the item, "de
   `fileError`, strut's "too large" line, ruling 10), `404 not_found`, `410
   deleted`, `403 host_not_allowed` (the daemon opens no files,
   `DAEMON_MEMES_HOSTS`), `422 unreadable` and `502 memes_failed`.
-- **`POST /dm`**: a text to an existing contact, by pubkey — never a tribe,
-  never someone the account has not met. `id` is 1 to 128 printable
+- **`POST /dm`**: a text to a contact, by pubkey, or to anyone by their
+  address (`<pubkey>_<lsp pubkey>_<scid>`): someone the account has not met
+  is met there first (a key exchange, 3 sats), and a Retry of that send goes
+  to the same address. Never a tribe, and never someone new by pubkey alone
+  (`not_a_contact`). `id` is 1 to 128 printable
   characters (strut sends 64 hex); `reply` quotes a message by its id. The
   answer is the send's item as the feed shows it, once the LSP has spoken
   or about 10 s have passed (then `sending`): strut waits 30 s. **The same

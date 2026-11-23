@@ -39,8 +39,10 @@
  * one. `GET /dm/:id/file` the file's bytes with its type and the sender's
  * name in `content-disposition` (the feed's `fileName` is made from the
  * type), `413 too_large` over 25 MiB, `410 deleted`, `404 not_found`. `POST
- * /dm { id, to, text, reply? }` sends to a contact (`400 not_a_contact`,
- * `400 too_long` past 32 KiB) and answers the send's item; the same `id`
+ * /dm { id, to, text, reply? }` sends to a contact by pubkey, or to anyone by
+ * address, meeting someone new there first with no record of it in the
+ * feed (`400 not_a_contact` for a pubkey it never met, `400 too_long` past
+ * 32 KiB) and answers the send's item; the same `id`
  * never sends twice — a failed one is tried again with its first text;
  * `sent` at once, or as `/next-dm { state: "failed" | "pending" }` says
  * (`failed` with nothing sent, no id; `sending` until `POST /settle/<id>`).
@@ -500,7 +502,10 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
         if (typeof id !== "string" || !/^[\x21-\x7e]{1,128}$/.test(id)) return reply(res, 400, { error: "id must be 1 to 128 printable characters, no spaces", code: "bad_request" });
         const had = dms.get(`send:${id}`);
         if (had && had.status !== "failed") return reply(res, 200, had);
-        const to = had ? had.peer.pubkey : b["to"];
+        // `to`: a contact's pubkey, or anyone's address (met there first).
+        const named = had ? had.peer.pubkey : typeof b["to"] === "string" ? b["to"].trim().toLowerCase() : b["to"];
+        const at = typeof named === "string" ? /^(0[23][0-9a-f]{64})_0[23][0-9a-f]{64}_\d+$/.exec(named) : null;
+        const to = at ? at[1] : named;
         const text = had ? had.text : typeof b["text"] === "string" && b["text"] ? b["text"] : null;
         const replyTo = had ? had.replyTo : typeof b["reply"] === "string" && b["reply"] ? b["reply"] : null;
         const f = b["file"] as { data?: unknown; type?: unknown; name?: unknown } | undefined;
@@ -517,12 +522,16 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
           if (!/^[\w.+-]+\/[\w.+-]+$/.test(type)) return reply(res, 400, { error: "file.type must be a MIME type", code: "bad_request" });
           file = { bytes, type, name: had ? had.fileName! : typeof f.name === "string" && f.name ? f.name : nameOfType(type) };
         }
-        if (typeof to !== "string" || !/^0[23][0-9a-f]{64}$/.test(to)) return reply(res, 400, { error: "to must be a contact's pubkey (66 hex characters)", code: "bad_request" });
+        if (typeof to !== "string" || !/^0[23][0-9a-f]{64}$/.test(to)) return reply(res, 400, { error: "to must be a contact's pubkey (66 hex characters) or an address", code: "bad_request" });
         if (!file && (typeof text !== "string" || !text.trim())) return reply(res, 400, { error: "text is required without a file", code: "bad_request" });
         // A file's own fields count 1 KiB (the daemon's MEDIA_FIELDS_BYTES).
         const size = Buffer.byteLength(JSON.stringify({ content: text ?? "", ...(replyTo ? { replyUuid: replyTo } : {}) }), "utf8") + (file ? 1024 : 0);
         if (size > DM_MAX_SEND_BYTES) return reply(res, 400, { error: `text too long: ${size} bytes, at most ${DM_MAX_SEND_BYTES}`, code: "too_long" });
-        if (!contacts.has(to)) return reply(res, 400, { error: `${to} is not one of the account's contacts`, code: "not_a_contact" });
+        if (!contacts.has(to)) {
+          if (!at) return reply(res, 400, { error: `${to} is not one of the account's contacts`, code: "not_a_contact" });
+          contacts.set(to, null);
+          log(`met ${to.slice(0, 10)}… at their address`);
+        }
         const outcome = nextDm;
         nextDm = undefined;
         // failed: nothing went out (no Sphinx id); pending: the LSP has not answered.

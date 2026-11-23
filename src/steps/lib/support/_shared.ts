@@ -298,8 +298,11 @@ export const newClientId = (): string => randomBytes(32).toString("hex");
 
 /** Sends a message kept as `sending` (`keepOwn`), its file from Support's own
  *  copy, and keeps what the daemon answered — unless its record came first.
- *  Never throws for the daemon: a refusal is the message's `failed`. */
-export async function deliver(db: DatabaseSync, sphinx: SphinxCapability, key: number): Promise<Record<string, unknown>> {
+ *  `address`: the worker's Sphinx address, for someone Support has not met
+ *  (the daemon meets them there first, and keeps it for a Retry); else the
+ *  conversation's pubkey. Never throws for the daemon: a refusal is the
+ *  message's `failed`. */
+export async function deliver(db: DatabaseSync, sphinx: SphinxCapability, key: number, address?: string): Promise<Record<string, unknown>> {
   const r = one(db, "SELECT pubkey, client_id, text, reply_to, kind, media_type, file_name FROM messages WHERE key = ?", key);
   if (!r || typeof r["client_id"] !== "string") throw new Error(`no message ${key} of Support's to send`);
   const bytes = r["kind"] === "file" ? (one(db, "SELECT bytes FROM files WHERE key = ?", key)?.["bytes"] as Uint8Array | undefined) : undefined;
@@ -310,7 +313,7 @@ export async function deliver(db: DatabaseSync, sphinx: SphinxCapability, key: n
   try {
     const answer = await sphinx.send({
       id: r["client_id"],
-      to: r["pubkey"] as string,
+      to: address ?? (r["pubkey"] as string),
       ...(typeof r["text"] === "string" && r["text"] ? { text: r["text"] } : {}),
       ...(typeof r["reply_to"] === "string" ? { reply: r["reply_to"] } : {}),
       ...(bytes ? { file: { data: Buffer.from(bytes).toString("base64"), type: (r["media_type"] as string) ?? "application/octet-stream", ...(typeof r["file_name"] === "string" ? { name: r["file_name"] } : {}) } } : {}),
@@ -363,6 +366,34 @@ export async function payoutLine(db: DatabaseSync, sphinx: SphinxCapability, p: 
     await sendOwn(db, sphinx, { pubkey: c["pubkey"] as string, text: `Paid you ${sats.toLocaleString("en-US")} sat${sats === 1 ? "" : "s"}`, by: "payout" }, createHash("sha256").update(`payout ${p.key}`).digest("hex"));
   } catch (err) {
     console.warn(`[support] the payout's line could not be sent: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * A worker's first time in Tasks (plans/support-chat.md §11): the welcome,
+ * once an admin has saved one, to the Sphinx address their sign-in carried.
+ * So someone who already had Peel — whose invite Peel ignored, or who came
+ * by a Share link — has Support as a contact too: the daemon meets them at
+ * the address first (3 sats). Never to anyone Support already has a
+ * conversation with (ruling 8 leaves the backlog alone; an invite's new
+ * account is welcomed by its key exchange, whichever comes first), and once
+ * per worker (`welcomed_at`). The engine's own, as the payout line. Never
+ * throws.
+ */
+export async function welcomeWorker(db: DatabaseSync, sphinx: SphinxCapability, w: { actor: string; address: string }): Promise<void> {
+  try {
+    const pubkey = /^(0[23][0-9a-f]{64})_0[23][0-9a-f]{64}_\d+$/.exec(w.address)?.[1];
+    if (!pubkey || actorOfPubkey(pubkey) !== w.actor) return;
+    const at = now();
+    const key = tx(db, () => {
+      const text = welcomeOf(db).text;
+      if (!text.trim() || one(db, "SELECT 1 FROM conversations WHERE pubkey = ?", pubkey)) return undefined;
+      db.prepare("INSERT INTO conversations (pubkey, actor, first_at, welcomed_at) VALUES (?, ?, ?, ?)").run(pubkey, w.actor, at, at);
+      return keepOwn(db, { pubkey, text, by: "welcome" }, newClientId(), at);
+    });
+    if (key !== undefined) await deliver(db, sphinx, key, w.address);
+  } catch (err) {
+    console.warn(`[support] ${w.actor}'s welcome could not be sent: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

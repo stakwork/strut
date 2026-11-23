@@ -250,7 +250,9 @@ STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
   them; the MESSAGE token alone, `MESSAGE_TOKEN`, default `demo-message`,
   set as `LIGHTNING_DAEMON_MESSAGE_TOKEN`): `GET /dms?after=`, `GET
   /dm/:id/file` (`413 too_large` over 25 MiB, `410 deleted`), `POST /dm`
-  (`400 not_a_contact`, `400 too_long`; `file { data, type, name }`), `PUT
+  (`to` a contact's pubkey, or an address, where it meets someone new with
+  no record in the feed; `400 not_a_contact`, `400 too_long`; `file { data,
+  type, name }`), `PUT
   /dm/photo` / `DELETE /dm/photo`, `POST /dm/:id/delete`, as
   stakwork/sphinx#436 answers them. Play a worker with `POST /worker-dm {
   pubkey?, alias?, text?, replyTo?, sats?, time?, file?: { name, type,
