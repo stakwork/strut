@@ -2802,19 +2802,23 @@ grants: `knowledge/claims`, `knowledge/checks`, `knowledge/add-check`,
 `knowledge/sample`, `knowledge/cycles`, `proposal/list`, `proposal/get` and
 `proposal/decide`. A Concept's panel lists its CHECKS (`knowledge/checks {
 concept }`, shown only when the page it answers is that node;
-plans/claim-trials.md): each claim, the cases that test it (`{ workflow,
-input }`) and a dot per verdict on the page's wording now, and the TESTS of
+plans/claim-trials.md): each claim, the cases that test it (`{ id,
+workflow, input }`, `id` the TestCase node several claims may share) and a
+dot per verdict on the page's wording now, and the TESTS of
 the page, each two wordings (`page`, `change`) with every claim's verdicts
 on each, and which of the two it `tried` (`change` until it is used, then
 `page`). The answer is `{ concept, ref_id, version, docs, fromGit?, checks:
 [{ id, text, status, speaker?, latest?, cases, samples }], tests: [{ id,
 at, page: { version, docs, samples }, change: { … }, live, tried }], running: [{
 id, test?, claim?, total, done, errors }], problem? }`, a sample `{ run,
-workflow?, supports, content?, at?, case?, trial? }`. An ADMIN's page also
-calls `knowledge/trial { claim, n }` (each case `n` times, as trials: the
-jobs, proposals and runs on other servers a trial would start are held; a
-trial's `run.start` and summary carry `trial: { claim, case? }`, and no
-launch body takes the field),
+workflow?, supports, content?, at?, case?, trial? }` (`case`: the id of
+the TestCase a trial replayed). An ADMIN's page also
+calls `knowledge/trial { claim, n }` (each case `n` times, as trials, each
+judged by every claim its case tests: the jobs, proposals and runs on
+other servers a trial would start are held, and a case whose workflow is
+a job's runs as a job of its own, closed once judged; a trial's
+`run.start` and summary carry `trial: { case, claims }`, and no launch
+body takes the field),
 `knowledge/cases { claim, cases }`, `knowledge/add-check { concept, text }`,
 `knowledge/test { concept, docs, n }` or `{ test, n }` (the page against a
 changed wording; nothing on the page changes), `knowledge/use { test }`

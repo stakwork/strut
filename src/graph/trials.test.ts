@@ -10,14 +10,19 @@ import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import type { GraphBackend } from "./backend.js";
+import { ClaimsWriter } from "./claims-writer.js";
 import { projectionsSettled } from "./projector.js";
 import { testBackends } from "./test-util.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
 import { createStrut, type Strut } from "../createStrut.js";
+import { defineStep, type AnyStepDef, type StepContext } from "../core.js";
+import { jobRoot, type JobsCapability } from "../jobs.js";
 import { ORCHESTRATOR_PAGE, ORCHESTRATOR_WORKFLOW, orchestratorRules } from "../orchestrator-seed.js";
 import { createRegistry } from "../steps/registry.js";
 import { MemoryRunStore, type RunStore } from "../store.js";
@@ -110,11 +115,11 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     await rm(dir, { recursive: true, force: true, maxRetries: 5 });
   });
 
-  const boot = async (): Promise<Strut> => {
+  const boot = async (steps: AnyStepDef[] = []): Promise<Strut> => {
     const strut = await createStrut({
       workspace: new GraphWorkspaceStore(backend, { materializeDir: join(dir, "steps") }),
       store,
-      registry: await createRegistry([]),
+      registry: await createRegistry(steps),
       dataDir: dir,
       serveUi: false, enableChat: false, scheduler: false, stt: false, autoResume: false, wakeDelayMs: 0,
       job: false, builder: false, orchestrator: {},
@@ -161,19 +166,30 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     for (const c of [check, quiet]) {
       assert.ok(c, JSON.stringify(view.checks.map((x) => x.text)));
       assert.equal(c.speaker, SEED_SPEAKER);
-      assert.deepEqual(c.cases, [{ workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "Can you use bash?" } }]);
+      assert.deepEqual(c.cases.map(({ workflow, input }) => ({ workflow, input })), [{ workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "Can you use bash?" } }]);
       assert.deepEqual(c.samples, [], "nothing ran yet");
     }
+    // The page's file gives both claims the same message: ONE TestCase, which tests both.
+    const bash = check.cases[0]!.id;
+    assert.equal(quiet.cases[0]!.id, bash);
+    const d = backend.dialect;
+    const testCases = async () => Number((await backend.query(`MATCH ${d.node("t", "TestCase")} RETURN count(t) AS n`))[0]!["n"]);
+    assert.equal(Number((await backend.query(`MATCH ${d.node("t", "TestCase", { id: "$id" })} RETURN count(t) AS n`, { id: bash }))[0]!["n"]), 1);
+    const written = await testCases();
     assert.ok(view.fromGit, "its text comes from git");
     // A second boot adds nothing: the same sentence, the same cases.
     await trials.seed([{ name: ORCHESTRATOR_PAGE, claims: [check, quiet].map((c) => ({ text: c.text, cases: c.cases })) }], SEED_SPEAKER);
     const again = (await trials.checks(ORCHESTRATOR_PAGE))!;
     assert.deepEqual(again.checks.map((c) => c.id).sort(), [check.id, quiet.id].sort());
     assert.equal(of(again, check.id).cases.length, 1);
+    assert.equal(await testCases(), written, "no case written twice");
 
     // One more case, a person's: the turn it gets would start a job.
     const cases = [...check.cases, { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "START A JOB for the thing" } }];
-    ok(await trials.setCases({ claim: check.id, cases }));
+    const set = ok(await trials.setCases({ claim: check.id, cases }));
+    assert.equal(set.cases[0]!.id, bash, "the case it had is the same node");
+    const job = set.cases[1]!.id;
+    assert.deepEqual(of(await trials.checks(ORCHESTRATOR_PAGE), quiet.id).cases.map((c) => c.id), [bash], "the other check's cases are its own");
     assert.match((await trials.setCases({ claim: check.id, cases: [{ workflow: "nope", input: {} }] }) as { error: string }).error, /no workflow "nope"/);
 
     const started = ok(await trials.trial({ claim: check.id, n: 2, by: "ada" }));
@@ -182,13 +198,17 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     const samples = of(after, check.id).samples;
     assert.equal(samples.length, 4, "an on_change check judged every sample of its trial");
     assert.ok(samples.every((s) => s.supports && s.trial && s.workflow === ORCHESTRATOR_WORKFLOW), JSON.stringify(samples));
-    assert.deepEqual([...new Set(samples.map((s) => s.case))].sort(), [0, 1]);
+    assert.deepEqual([...new Set(samples.map((s) => s.case))].sort(), [bash, job].sort());
     assert.equal(turns, 4);
-    // The other check judges a trial's run as its own policy says (once per version).
-    assert.equal(judged, 4 + of(after, quiet.id).samples.length);
+    // The case both checks are tested by: each of its runs judged by both, whatever their policy. The other
+    // check judges the rest as its own policy says (once per version).
+    const others = of(after, quiet.id).samples;
+    assert.equal(others.filter((s) => s.case === bash).length, 2, JSON.stringify(others));
+    assert.ok(others.every((s) => s.case !== job), "a case the check is not tested by never names itself on its verdicts");
+    assert.equal(judged, 4 + others.length);
 
     // Each sample is a run marked a trial, and nothing it started left it.
-    const held = samples.find((s) => s.case === 1)!;
+    const held = samples.find((s) => s.case === job)!;
     const opened = (await trials.sample({ workflow: ORCHESTRATOR_WORKFLOW, run: held.run }))!;
     assert.equal(opened.status, "success");
     assert.deepEqual(opened.input, { prompt: "START A JOB for the thing" });
@@ -198,7 +218,8 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.equal(out.runId, "", "no run was started");
     assert.equal(out.held?.brief, "Do the thing, start to end.", "the brief it would have started is what is judged");
     const summary = await store.getRunSummary(ORCHESTRATOR_WORKFLOW, held.run);
-    assert.deepEqual(summary?.trial, { claim: check.id, case: 1 });
+    assert.deepEqual(summary?.trial, { case: job, claims: [check.id] });
+    assert.equal(summary?.job, undefined, "a case that is not a job's runs as no job");
     assert.equal(summary?.actor, "ada");
     assert.ok(!("trial" in ((summary?.input ?? {}) as object)), "never in the input");
     assert.deepEqual(await store.listRuns("job"), [], "no job ran");
@@ -348,5 +369,59 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     assert.equal(old.tried, "change", "on an earlier wording: the page's side is what it was tried against");
     assert.match((await trials.test({ test: old.id, n: 1 }) as { error: string }).error, /neither wording/);
     assert.match((await trials.use({ test: old.id }) as { error: string }).error, /neither wording/);
+  });
+
+  it("a job's case runs as a job of its own, closed once its sample is judged, and what the job held is let go", async () => {
+    // A tool that holds something past its run, as a pod is held, and the step that lets it go.
+    const released: Array<{ job?: string; pod: string }> = [];
+    const hold = defineStep({
+      type: "trialtest/hold",
+      input: z.object({}),
+      output: z.any(),
+      async run(_cfg, ctx: StepContext) {
+        await (ctx.services as { jobs: JobsCapability }).jobs.hold(ctx.job!, { id: "pod", kind: "pod", release: { type: "trialtest/release", input: { pod: `pod-of-${ctx.job}` } } });
+        return { job: ctx.job };
+      },
+    });
+    const release = defineStep({
+      type: "trialtest/release",
+      input: z.object({ pod: z.string() }),
+      output: z.any(),
+      async run(cfg, ctx: StepContext) {
+        released.push({ ...(ctx.job ? { job: ctx.job } : {}), pod: cfg.pod });
+        return {};
+      },
+    });
+    const strut = await boot([hold, release] as AnyStepDef[]);
+    const trials = trialsOf(strut);
+    await backend.nodes.writeMany([{ type: "Concept", data: { name: "Tone", description: "how replies sound", docs: "Be polite." } }]);
+    // A job's workflow, by its name: it reads the page, holds something, and answers.
+    await strut.workspace.publishWorkflowByContent(
+      "job",
+      ["name: job", "steps:", "  - id: page", "    type: context/concept", "    config: { name: Tone, frame: false }", "  - id: hold", "    type: trialtest/hold", "  - id: result", "    type: pack", '    config: { text: "{{ page.text }}" }', ""].join("\n"),
+    );
+    const added = ok(await trials.addCheck({ concept: "Tone", text: POLITE, by: "ada" }));
+    const [setup] = ok(await trials.setCases({ claim: added.id, cases: [{ workflow: "job", input: { prompt: "Set it up so a person can click through." } }] })).cases;
+
+    ok(await trials.trial({ claim: added.id, n: 2 }));
+    const view = await settled(strut, "Tone");
+    const samples = of(view, added.id).samples;
+    assert.deepEqual(samples.map((s) => [s.supports, s.case]), [[true, setup!.id], [true, setup!.id]], JSON.stringify(view.problem));
+    const jobs: string[] = [];
+    for (const s of samples) {
+      const summary = (await store.getRunSummary("job", s.run))!;
+      assert.match(summary.job ?? "", /^trial-/, "each sample is a job of its own");
+      assert.deepEqual(summary.trial, { case: setup!.id, claims: [added.id] });
+      jobs.push(summary.job!);
+      const root = jobRoot(dir, summary.job!);
+      assert.ok(!existsSync(root) && !existsSync(`${root}.json`), "the job is gone once judged");
+    }
+    assert.notEqual(jobs[0], jobs[1]);
+    assert.deepEqual(released.map((r) => r.pod).sort(), jobs.map((j) => `pod-of-${j}`).sort(), "what each job held was let go");
+
+    // Reworded, the claim keeps the cases it is tested by.
+    const reworded = await new ClaimsWriter(backend, strut.claims!).editClaim(added.id, `${POLITE} and kind`);
+    const now = (await trials.checks("Tone"))!;
+    assert.deepEqual(of(now, reworded.id).cases.map((c) => c.id), [setup!.id]);
   });
 });

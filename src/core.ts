@@ -198,10 +198,11 @@ export interface RunAttachment {
  * another strut is held (`TRIAL_HELD`).
  */
 export interface RunTrial {
-  /** The claim whose case this is: its checks judge the run whatever their policy. */
-  claim: string;
-  /** Which of the claim's cases, by position, when it was one of them. */
-  case?: number;
+  /** The `TestCase` replayed, by its id (src/graph/claims.ts `testCaseId`). */
+  case: string;
+  /** The claims it tested when it was launched: their checks judge the run
+   *  whatever their policy, and each verdict names the case. */
+  claims: string[];
 }
 
 /** What a step answers in a trial instead of doing what would leave it. */

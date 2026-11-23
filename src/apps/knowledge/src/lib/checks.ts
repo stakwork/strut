@@ -6,8 +6,10 @@
 import { lineDiff } from "@strut/kit/folds";
 import type { PageClaim } from "./learning";
 
-/** One input a check is tested with: a workflow and its input. */
+/** One input a check is tested with: a workflow and its input. `id`: the
+ *  TestCase it is, which several checks may share (none on a new one). */
 export interface Case {
+  id?: string;
   workflow: string;
   input: Record<string, unknown>;
 }
@@ -20,8 +22,8 @@ export interface Sample {
   /** What the judge saw, in a line. */
   content?: string;
   at?: number;
-  /** A trial's: which of the check's cases it replayed. */
-  case?: number;
+  /** A trial's: the case it replayed, by its id. */
+  case?: string;
   trial?: true;
 }
 

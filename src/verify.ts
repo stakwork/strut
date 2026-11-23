@@ -626,9 +626,9 @@ export function createVerifier(deps: VerifierDeps) {
        *  when the branch was made (`reader.scopeOf`), by name. */
       pages: new Map<string, string | null>(),
       scope: undefined as { branch?: string; since?: number } | undefined,
-      /** The work's root is a TRIAL (`RunTrial`, src/trials.ts): the claim
-       *  it replays a case of judges it whatever its checks' policy, and
-       *  every evidence the work is the source of says so. */
+      /** The work's root is a TRIAL (`RunTrial`, src/trials.ts): every claim
+       *  its case tests judges it whatever its checks' policy, and every
+       *  evidence the work is the source of says so. */
       trial: undefined as RunTrial | undefined,
     };
   }
@@ -925,8 +925,9 @@ export function createVerifier(deps: VerifierDeps) {
       }
     })();
     pass.activeStepHashes ??= await workspace.getActiveStepHashes().catch(() => ({}));
-    // A trial is judged by the claim it replays a case of, every sample (src/trials.ts).
-    const forced = o.subject.kind === "concept" && pass.trial?.claim === claim.id;
+    // A trial is judged by every claim its case tests, every sample (src/trials.ts).
+    const replayed = (pass.trial?.claims ?? []).includes(claim.id);
+    const forced = o.subject.kind === "concept" && replayed;
     const fires = forced || policyFires({
       check,
       evidence: seen.filter((e) => e.evidence_status === "collected"),
@@ -959,7 +960,7 @@ export function createVerifier(deps: VerifierDeps) {
       strength: ran.mapped.supports ? 1 : -1,
       context: {
         ...contextOf(o, pass.result.branch),
-        ...(pass.trial ? { trial: true as const, ...(pass.trial.claim === claim.id && pass.trial.case !== undefined ? { case: pass.trial.case } : {}) } : {}),
+        ...(pass.trial ? { trial: true as const, ...(replayed && typeof pass.trial.case === "string" ? { case: pass.trial.case } : {}) } : {}),
         checkVersion: ran.checkVersion,
         ...(ran.model ? { model: ran.model } : {}),
         ...(ran.checkRun ? { checkRun: ran.checkRun } : {}),

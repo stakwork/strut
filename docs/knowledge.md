@@ -360,11 +360,36 @@ index. A change in this area updates this file, not AGENTS.md.
 - **Trials and tests — how often a rule holds, and whether a change to a
   page makes the difference** (`src/trials.ts`, plans/claim-trials.md; on a
   graph workspace with claims on, `ctx.services.trials`). A CASE is one
-  input to a workflow, `{ workflow, input }`, kept on a claim about a
-  Concept (`<dataDir>/trials/cases/<claim id>.json`, at most 20, replaced
-  whole by `setCases`). A TRIAL runs a claim's cases as fresh runs.
-  `trial` is a LAUNCH-LEVEL FIELD shaped like `branch` (`RunTrial { claim,
-  case? }`, src/core.ts): on `run.start` and the summary, `ctx.trial`, kept
+  input to a workflow, `{ workflow, input }`: a `TestCase` node (a seed
+  type beside `Claim`, src/graph/seed-types.ts: `id`, `name`,
+  `case_workflow`, `case_input` as JSON; Epistemic, never embedded) that
+  `TESTS` the claims it was written for (`TestCase —TESTS→ Claim`, the
+  edge a `Check` uses). Its id is a hash of the workflow and its input,
+  keys in any order (`testCaseId`, src/graph/claims.ts), so the same
+  message under two claims, in a page's file or typed twice, is ONE node
+  with two edges, and writing it again writes nothing. A claim lists its
+  cases first written first (`reader.testCasesFor`), at most 20, replaced
+  whole by `setCases`: one taken away loses this claim's edge alone, and
+  the node, its other claims and every verdict on it stay. A reworded
+  claim's successor gains a `TESTS` edge from each of its cases, as from
+  its checks (claims-writer.ts `editClaim`). `Claim` gains no attribute: a
+  swarm's graph shares that type and strut does not extend it. A TRIAL
+  runs a claim's cases as fresh runs, and EVERY claim a case tests judges
+  each run of it (`reader.claimsOfTestCase`), so a dear run (a job that
+  sets a workspace up) feeds all its claims at once.
+  A case whose workflow is a job's (`JOB_WORKFLOWS`, src/jobs.ts: `job`,
+  `builder`) RUNS AS A JOB OF ITS OWN: each sample a new job id
+  (`trial-<batch>-<hex>`), so a tool that needs a job (a pod's `claim`)
+  has one, and once the sample is judged the job is closed as `DELETE
+  /jobs/:id` closes one (`deleteJob`: its holds released through their
+  steps, then its repositories, directory and record), so a pod a sample
+  held is let go and strut knows nothing about pods (the deps' `jobs: {
+  workflows, close }`). A job that will not close (a hold that will not
+  release) is kept with a warning, and the idle sweep tries again. What
+  the job would start is held like any trial's.
+  `trial` is a LAUNCH-LEVEL FIELD shaped like `branch` (`RunTrial { case,
+  claims }`, src/core.ts: the TestCase's id and the claims it tested at
+  launch): on `run.start` and the summary, `ctx.trial`, kept
   by a resume, inherited by every run the run starts (`trackRun`), never in
   `input` and never taken from a request — the trials capability alone
   launches one, through `strut.run`. A trial starts nothing outside itself:
@@ -375,14 +400,15 @@ index. A change in this area updates this file, not AGENTS.md.
   pending one would, `held: true`), strut/run-workflow, remote/call and
   remote/run-workflow throw `TRIAL_HELD`, nothing is scheduled
   (`bindTrial`, runner.ts), and no wake and no callback follow its end
-  (`launchDetached`). A shell or the web an agent has is NOT held. The
-  claim a trial replays a case of judges it whatever its check's policy
-  (`verifyOne`: forced when the pass's `trial.claim` is the claim's; every
-  other claim keeps its policy), and every evidence a trial is the source
-  of says so (`SourceContext.trial`, and `case` on the replayed claim's). A
-  sample is one run and its verdict; four run at once across everything in
-  flight, and what is in flight is in memory only (a restart forgets the
-  samples not yet started).
+  (`launchDetached`). A shell or the web an agent has is NOT held. Every
+  claim a trial's case tests judges it whatever its check's policy
+  (`verifyOne`: forced when the claim is among the pass's `trial.claims`;
+  every other claim keeps its policy), and every evidence a trial is the
+  source of says so (`SourceContext.trial`, and `case`, the TestCase's id,
+  on the evidence of each claim it tests). A sample is one run and its
+  verdicts; four run at once across everything in flight, and what is in
+  flight is in memory only (a restart forgets the samples not yet
+  started).
   A PAGE'S FILE CARRIES ITS CLAIMS: the front matter's `claims:` block, in
   either form of page file (`parseConceptFile` → `ConceptFile.claims`,
   `readPageClaims`, claims-schemas.ts): each claim its `text`, the
@@ -393,8 +419,8 @@ index. A change in this area updates this file, not AGENTS.md.
   (`trials.seed`, speaker `strut`; `createStrut({ concepts: { claims:
   false } })`, or the same in `STRUT_HOST_CONFIG`, seeds the pages without
   them), by the sentence, so a page's checks match its file: a claim
-  already there is kept and the file's cases are added to what it has
-  (never taken away); a claim `strut` wrote on a sentence the file no
+  already there is kept and the file's cases are linked to it (never
+  taken away; two claims with the same message share its node); a claim `strut` wrote on a sentence the file no
   longer carries (reworded, or the block gone) is retired, while a
   person's or the dream's claim on the page is never touched. Every page
   that is the seed's is handed over, with a block or with none. Not built: a package's pages'
@@ -406,10 +432,11 @@ index. A change in this area updates this file, not AGENTS.md.
   the last sample is judged; `sweep` drops what a restart left. The test
   itself is kept (`<dataDir>/trials/tests/<id>.json`: both texts and their
   versions), so its diff and its verdicts stay whatever the page becomes,
-  and the same two wordings are always the same test. Every check on the
-  page with a case runs `n` samples of each case on the change, and the
-  page is topped up to as many (`test({ test, n })`, again: `n` more on
-  both). VERDICTS ARE COUNTED BY TEXT: a page version names one wording,
+  and the same two wordings are always the same test. Every case a check
+  on the page is tested by runs `n` samples on the change, ONCE however
+  many of the page's checks it tests, and the page is topped up to as many
+  runs of it on its wording (a run counts once, whichever of its claims
+  judged it; `test({ test, n })`, again: `n` more on both). VERDICTS ARE COUNTED BY TEXT: a page version names one wording,
   and a verdict on it counts from a run on main or from a run on one of
   THAT page's own tests (`verdictsOf`; another branch's works never count
   here). Status keeps reading per side (ruling 4); this is the count the
@@ -561,7 +588,7 @@ a WORK (plans/concept-evals.md, rulings 5 and 9): a root run and every run it ca
 
 ### `src/trials.ts`
 
-trials and tests (plans/claim-trials.md; "Trials and tests" above): `createTrials({ dataDir, graph, claims, verifier, store, branches?, sources?, history?, hasWorkflow, run })` → `ctx.services.trials`, set by createStrut wherever the claims layer is on, a host's own winning. `checks(concept)` (the one read), `addCheck` (a person's claim with the standard check), `setCases`, `trial({ claim, n })` and `test({ concept, docs, n } | { test, n })` (both return at once with the batch; the samples run four at a time and each is `run` then `verifier.verifyRun`), `use({ test, proposer })`, `sample({ workflow, run })` (null unless the run's summary carries `trial`), `seed(pages, speaker)` (the claims and cases a seeded page's file carries) and `sweep()` (the test branches a restart left). Pure and exported for the tests: `sampleOf` (an evidence row as a verdict, or null when it is none of a check's) and `orient` (a test as the page reads it now). On disk under `<dataDir>/trials/`: `cases/<claim id>.json`, `tests/<id>.json`. Tested end to end on a graph in src/graph/trials.test.ts (a stand-in model: the seeded page's check and cases, a held job, a test whose branch is dropped, a page from git refused, an ordinary page taking the other wording).
+trials and tests (plans/claim-trials.md; "Trials and tests" above): `createTrials({ dataDir, graph, claims, verifier, store, branches?, sources?, history?, hasWorkflow, run })` → `ctx.services.trials`, set by createStrut wherever the claims layer is on, a host's own winning. `checks(concept)` (the one read), `addCheck` (a person's claim with the standard check), `setCases`, `trial({ claim, n })` and `test({ concept, docs, n } | { test, n })` (both return at once with the batch; the samples run four at a time and each is `run` then `verifier.verifyRun`), `use({ test, proposer })`, `sample({ workflow, run })` (null unless the run's summary carries `trial`), `seed(pages, speaker)` (the claims and cases a seeded page's file carries) and `sweep()` (the test branches a restart left). Pure and exported for the tests: `sampleOf` (an evidence row as a verdict, or null when it is none of a check's) and `orient` (a test as the page reads it now). Cases are `TestCase` nodes (above); on disk under `<dataDir>/trials/`: `tests/<id>.json` (a `cases/` folder an earlier strut wrote is read by nothing). Tested end to end on a graph in src/graph/trials.test.ts (a stand-in model: the seeded page's two checks sharing one case node and both judging its runs, a held job, a test whose branch is dropped, a page from git refused, an ordinary page taking the other wording, a job's case run as a job of its own whose hold is released once judged, a reworded claim keeping its cases).
 
 ### `src/knowledge.ts`
 

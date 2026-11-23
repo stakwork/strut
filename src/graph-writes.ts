@@ -69,7 +69,7 @@ export interface GraphChange {
 
 /** Strut's own bookkeeping, never reported: the projector's run nodes, the
  *  claims layer (its own updates are `evidence` / `verify`) and the ontology. */
-const QUIET_TYPES = new Set(["claim", "check", "evidence", "thing", "schema"]);
+const QUIET_TYPES = new Set(["claim", "check", "evidence", "testcase", "thing", "schema"]);
 export const isQuietType = (t: string | undefined): boolean => !!t && (/^strut/i.test(t) || QUIET_TYPES.has(t.toLowerCase()));
 
 /** What a history snapshot reads of the graph (`wholeFiles`,
