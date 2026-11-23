@@ -10,6 +10,9 @@ import { ACCENT_BUTTON, ACCENT_EDGE, ACCENT_FILL, ACCENT_LINE, ACCENT_TINT, Task
 import { errorText } from "../lib/format";
 import { refusalText, useWorkerWords, type WorkerWords } from "../lib/words";
 import { workerHeading } from "../lib/heading";
+import { shownFields } from "../lib/shown-fields";
+
+export { INTERNAL_KEYS, isInternalKey, shownFields } from "../lib/shown-fields";
 
 // The pieces of a WORKER app (plans/human-steps.md §5): what a task asks,
 // the photos an answer carries, the answer's form, and a whole page that
@@ -36,20 +39,6 @@ export function taskAsk(show: unknown): string | undefined {
   const o = show as Record<string, unknown>;
   for (const k of ["ask", "title"]) if (typeof o[k] === "string" && (o[k] as string).trim()) return (o[k] as string).trim();
   return undefined;
-}
-
-/** The rest of what a task shows, as label and value: `show`'s other plain
- *  fields (text, numbers, yes or no), in order. Nested values are left to an
- *  app's own view. */
-export function shownFields(show: unknown): Array<[string, string]> {
-  if (!show || typeof show !== "object" || Array.isArray(show)) return [];
-  const out: Array<[string, string]> = [];
-  for (const [k, v] of Object.entries(show as Record<string, unknown>)) {
-    if (k === "ask" || k === "title") continue;
-    if (typeof v === "string" && v.trim()) out.push([k, v]);
-    else if (typeof v === "number" || typeof v === "boolean") out.push([k, String(v)]);
-  }
-  return out;
 }
 
 /** A `show` key as a label: `posted_by` → "Posted by". */
@@ -311,11 +300,11 @@ export function WorkerTask({ task, submit, skip, label, className }: WorkerTaskP
         {task.payMsat > 0 && <PayPill msat={task.payMsat} />}
         <h2 className="text-[22px] leading-tight font-semibold tracking-tight text-balance">{ask ?? w.aTask}</h2>
         {fields.length > 0 && (
-          <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-2xl border bg-muted/40 px-4 py-3 text-sm">
+          <dl className="mt-1 w-full max-w-full min-w-0 grid grid-cols-1 gap-y-2.5 sm:grid-cols-[minmax(auto,max-content)_minmax(0,1fr)] sm:gap-x-4 sm:gap-y-2 rounded-2xl border bg-muted/40 px-4 py-3 text-sm">
             {fields.map(([k, v]) => (
-              <div key={k} className="contents">
-                <dt className="text-muted-foreground">{labelOf(k)}</dt>
-                <dd className="m-0 font-medium break-words whitespace-pre-line">{v}</dd>
+              <div key={k} className="min-w-0 sm:contents">
+                <dt className="text-[13px] text-muted-foreground sm:max-w-[12rem] sm:truncate sm:text-sm sm:whitespace-nowrap" title={labelOf(k)}>{labelOf(k)}</dt>
+                <dd className="m-0 min-w-0 font-medium [overflow-wrap:anywhere] break-words whitespace-pre-line">{v}</dd>
               </div>
             ))}
           </dl>
@@ -823,7 +812,7 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
   else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.until(e.releases))}</Badge>;
   else badge = <Badge tone="done">{w.cleared}</Badge>;
   return (
-    <li className={cn("flex items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
+    <li className={cn("flex min-w-0 items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[15px] font-medium">{item.ask ?? typeLabel(item.type, title)}</div>
         <div className="truncate text-xs text-muted-foreground">
@@ -836,7 +825,7 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
         {item.pending && <span className="text-sm font-semibold text-muted-foreground tabular-nums">+{fmt.sats(item.pending.msat)}</span>}
         {badge}
       </div>
-      {item.review?.verdict === "rejected" && item.review.why && <div className="w-full text-sm text-destructive">{w.toFix(item.review.why)}</div>}
+      {item.review?.verdict === "rejected" && item.review.why && <div className="w-full min-w-0 text-sm [overflow-wrap:anywhere] text-destructive">{w.toFix(item.review.why)}</div>}
       {item.reply && <ReplyLine item={item} reply={item.reply} />}
     </li>
   );
@@ -848,12 +837,12 @@ function ReplyLine({ item, reply }: { item: Pick<WorkerHistoryItem, "lease">; re
   const w = useWorkerWords();
   const [open, setOpen] = useState(false);
   const files = reply.files ?? [];
-  const pictures = files.filter((f) => f.mediaType.startsWith("image/")).length;
+  const pictures = files.filter(isPicture).length;
   const said = taskAsk(reply.show) ?? shownFields(reply.show)[0]?.[1];
   const summary = said ?? (pictures ? w.pictures(pictures) : w.files(files.length));
   return (
-    <div className="basis-full">
-      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-1.5 text-left text-[13px] font-medium text-foreground">
+    <div className="w-full max-w-full min-w-0 basis-full">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full max-w-full min-w-0 items-center gap-1.5 text-left text-[13px] font-medium text-foreground">
         <MessageSquare className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">
           <span className="font-semibold">{w.reply}</span>
@@ -879,14 +868,14 @@ export function TaskReplyView({ item, reply, file, className }: { item?: Pick<Wo
   const heading = taskAsk(reply.show);
   const fields = shownFields(reply.show);
   return (
-    <div className={cn("flex flex-col gap-2.5", className)} data-testid="task-reply">
-      {heading && <p className="m-0 text-[15px] leading-snug font-medium">{heading}</p>}
+    <div className={cn("flex w-full max-w-full min-w-0 flex-col gap-2.5", className)} data-testid="task-reply">
+      {heading && <p className="m-0 text-[15px] leading-snug font-medium [overflow-wrap:anywhere]">{heading}</p>}
       {fields.length > 0 && (
-        <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+        <dl className="m-0 w-full max-w-full min-w-0 grid grid-cols-1 gap-y-2.5 sm:grid-cols-[minmax(auto,max-content)_minmax(0,1fr)] sm:gap-x-4 sm:gap-y-2 text-sm">
           {fields.map(([k, v]) => (
-            <div key={k} className="contents">
-              <dt className="text-muted-foreground">{labelOf(k)}</dt>
-              <dd className="m-0 font-medium break-words whitespace-pre-line">{v}</dd>
+            <div key={k} className="min-w-0 sm:contents">
+              <dt className="text-[13px] text-muted-foreground sm:max-w-[12rem] sm:truncate sm:text-sm sm:whitespace-nowrap" title={labelOf(k)}>{labelOf(k)}</dt>
+              <dd className="m-0 min-w-0 font-medium [overflow-wrap:anywhere] break-words whitespace-pre-line">{v}</dd>
             </div>
           ))}
         </dl>
@@ -896,22 +885,26 @@ export function TaskReplyView({ item, reply, file, className }: { item?: Pick<Wo
   );
 }
 
-/** One file of a reply: a picture drawn, anything else (or a picture that
- *  cannot be read here) named. */
+/** A reply's file is a picture by its type, or by its name's ending. */
+const isPicture = (f: TaskReplyFile) => f.mediaType.startsWith("image/") || IMAGE_PATH.test(f.name) || IMAGE_PATH.test(f.path);
+
+/** One file of a reply: a picture drawn as a thumbnail with its name under
+ *  it, anything else (or a picture that cannot be read here) named. */
 function ReplyFile({ item, file }: { item?: Pick<WorkerHistoryItem, "lease">; file: TaskReplyFile }) {
-  const picture = file.mediaType.startsWith("image/");
+  const picture = isPicture(file);
   const read = useTaskFileUrl(item, file.path, { enabled: picture });
   if (picture && !read.error) {
     return (
-      <div className="overflow-hidden rounded-2xl border bg-muted/50">
-        {read.url ? <img src={read.url} alt={file.name} className="max-h-[55vh] w-full object-contain" /> : <div className="aspect-square w-full animate-pulse bg-muted" />}
-      </div>
+      <figure className="m-0 w-full max-w-full min-w-0 overflow-hidden rounded-2xl border bg-muted/50">
+        {read.url ? <img src={read.url} alt={file.name} className="max-h-60 w-full object-contain sm:max-h-80" /> : <div className="aspect-square max-h-60 w-full animate-pulse bg-muted" />}
+        <figcaption className="border-t px-3 py-1.5 text-xs [overflow-wrap:anywhere] text-muted-foreground">{file.name}</figcaption>
+      </figure>
     );
   }
   return (
-    <div className="flex items-center gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-sm">
+    <div className="flex w-full max-w-full min-w-0 items-center gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-sm">
       <FileText className="size-4 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate">{file.name}</span>
+      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{file.name}</span>
     </div>
   );
 }
@@ -1061,11 +1054,11 @@ function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean;
             </div>
           )}
           {rows.length > 0 && (
-            <dl className="flex flex-col gap-2.5 text-sm">
+            <dl className="flex min-w-0 flex-col gap-2.5 text-sm">
               {rows.map(([k, v]) => (
-                <div key={k}>
+                <div key={k} className="min-w-0">
                   <dt className="text-[13px] text-muted-foreground">{k}</dt>
-                  <dd className="m-0 font-medium break-words">{v}</dd>
+                  <dd className="m-0 min-w-0 font-medium [overflow-wrap:anywhere] break-words">{v}</dd>
                 </div>
               ))}
             </dl>
