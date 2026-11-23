@@ -1191,6 +1191,33 @@ describe("mid-stream socket death is resumed, not lost", () => {
     }
   });
 
+  it("with no cwd, works in the run's artifact dir, as exec does", async () => {
+    const s = await serve((call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(call === 1 ? toolUse("toolu_1", "bash", { command: "cat from-a-step && touch made-here" }) : toolUse("toolu_2", "final_answer", { answer: "done" }));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    const artifacts = fileArtifactsCapability(cwd);
+    await artifacts.write("run-a", "from-a-step", "an earlier step's file");
+    const cfg = (agent.input as any).parse({ system: "sys", prompt: "go", model: "claude-sonnet-4-5", finalAnswer: "Report.", toolFilter: ["bash"] });
+    try {
+      const out = await agent.run(cfg, { runId: "run-a", path: "p", scope: {}, input: undefined, emit: async () => {}, services: { artifacts }, registry: {} } as any) as any;
+      assert.equal(out.result, "done");
+      assert.ok((s.bodies[0] ?? "").includes("- from-a-step"), "the model is told what the folder holds");
+      assert.ok((s.bodies[1] ?? "").includes("an earlier step's file"), "bash ran in it");
+      assert.ok(existsSync(join(await artifacts.dir("run-a"), "made-here")), "what it writes stays with the run");
+      // With no artifact dir to default to, it says to set one.
+      await assert.rejects(
+        agent.run(cfg, { runId: "run-b", path: "p", scope: {}, input: undefined, emit: async () => {}, services: {}, registry: {} } as any),
+        /no artifacts capability in ctx.services — set `cwd`/,
+      );
+    } finally {
+      s.close();
+    }
+  });
+
   it("with no model, uses STRUT_DEFAULT_MODEL from the secrets boundary", async () => {
     const s = await serve((_call, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });

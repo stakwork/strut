@@ -42,7 +42,10 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   sink. `browserFromEnv` picks it when the URL is set, else
   `BrowserService.fromEnv`; the URL beside `BROWSER_WS_URL` or
   `BROWSER_CDP_URL`, or without a token, is a boot warning. One MCP session,
-  opened on the first call and again after the server drops it. Each run
+  opened on the first call and again after the server drops it; the call
+  the server answers 404 (it dropped the session: a restart, or its idle
+  limit) runs once more on the new one, since it never reached the
+  browser. Each run
   is a window of its own (`new_page` → its `Tab ID`, closed by `dispose`).
   Refs come from Browser MCP's aria snapshot (`[uid=@eN]` → `[ref=eN]`);
   selectors are `text=`, `role=…[name=…]` or CSS, found in the page;

@@ -72,7 +72,8 @@ interface ToolAnswer {
 }
 
 /** One MCP session with the server, opened on the first call and opened
- *  again after the server went away (a restart drops its sessions). */
+ *  again after the server went away (a restart drops its sessions); a call
+ *  the server answers 404 (the session dropped) runs once more on the new one. */
 class McpConnection {
   private client?: Promise<Client>;
 
@@ -102,15 +103,24 @@ class McpConnection {
   }
 
   async call(name: string, args: Record<string, unknown>, timeoutMs: number): Promise<ToolAnswer> {
-    const { McpError } = await import("@modelcontextprotocol/sdk/types.js");
+    const [{ McpError }, { StreamableHTTPError }] = await Promise.all([
+      import("@modelcontextprotocol/sdk/types.js"),
+      import("@modelcontextprotocol/sdk/client/streamableHttp.js"),
+    ]);
     let result: { content?: unknown; isError?: unknown };
-    try {
-      const client = await this.connect();
-      result = (await client.callTool({ name, arguments: args }, undefined, { timeout: timeoutMs })) as typeof result;
-    } catch (e) {
-      // Not the server's own answer (a refused connection, a session the server no longer knows): the next call connects again.
-      if (!(e instanceof McpError)) await this.close();
-      throw new Error(`the browser's MCP server: ${message(e).replace(this.token, "***")}`);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const client = await this.connect();
+        result = (await client.callTool({ name, arguments: args }, undefined, { timeout: timeoutMs })) as typeof result;
+        break;
+      } catch (e) {
+        // Not the server's own answer (a refused connection, a session the server no longer knows): the next call connects again.
+        if (!(e instanceof McpError)) await this.close();
+        // 404: the server dropped the session (a restart, or idle too long) before the call reached the
+        // browser, so it runs once more on a new session.
+        if (attempt === 1 && e instanceof StreamableHTTPError && e.code === 404) continue;
+        throw new Error(`the browser's MCP server: ${message(e).replace(this.token, "***")}`);
+      }
     }
     const content: any[] = Array.isArray(result?.content) ? result.content : [];
     const text = content.filter((c) => c.type === "text").map((c) => String(c.text ?? "")).join("\n");

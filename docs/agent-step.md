@@ -96,8 +96,9 @@ index. A change in this area updates this file, not AGENTS.md.
 
 - **`agent` core step** (`src/steps/core/agent.ts`). A general
   tool-using agent loop (AI SDK `ToolLoopAgent`) — distinct from the
-  workflow-*builder* chat above. It explores a working dir (`cwd`)
-  with built-in general tools (`repo_overview` — adaptive, token-capped
+  workflow-*builder* chat above. It explores a working dir (`cwd`;
+  without one, the run's artifact dir, as exec's — an error on a host
+  with no artifacts capability) with built-in general tools (`repo_overview` — adaptive, token-capped
   dir tree with build/dep/migration dirs collapsed; `fulltext_search`;
   `bash`; `str_replace_based_edit_tool` — view/create/str_replace/insert
   files, sandboxed to `cwd` (the anthropic provider-defined text-editor
