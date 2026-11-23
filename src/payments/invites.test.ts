@@ -495,7 +495,7 @@ const JOIN_WORD_VALUES = (lang: "en" | "es"): string[] => {
 /** The join page's script in a stand-in browser: what it shows and links. */
 async function runJoin(o: { hash: string; userAgent: string; release?: unknown; noClipboard?: boolean; platform?: string; touch?: number; search?: string; lang?: string; execOk?: boolean; rejectClipboard?: boolean }) {
   const el = (id: string) => ({ id, hidden: true, href: "#", innerHTML: "" });
-  const els = Object.fromEntries(["android", "ios", "elsewhere", "bad", "open", "testflight", "open-ios", "qr", "card"].map((id) => [id, el(id)]));
+  const els = Object.fromEntries(["android", "ios", "elsewhere", "bad", "open", "testflight", "open-ios", "qr", "card", "expired"].map((id) => [id, el(id)]));
   const copyBtn = { id: "copy", textContent: "Copy invite", onclick: undefined as undefined | (() => void), getAttribute: (n: string) => (n === "data-copied" ? "Copied" : null) };
   (els as Record<string, unknown>)["copy"] = copyBtn;
   const execed: string[] = [];
@@ -507,6 +507,7 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown; 
   const href = `https://s.example/public/join${o.hash}`;
   const doc: { cookie: string } = { cookie: "" };
   const replaced: string[] = [];
+  const body = { className: "", appendChild: () => {}, removeChild: () => {} };
   const switchers = ["en", "es"].map((l) => ({ getAttribute: () => l, onclick: undefined as undefined | (() => void) }));
   runInNewContext(JOIN_SCRIPT, {
     // What /public/join/qrcode.js defines, once the page has loaded it.
@@ -515,9 +516,11 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown; 
     navigator: o.noClipboard ? { userAgent: o.userAgent, platform: o.platform, maxTouchPoints: o.touch } : { userAgent: o.userAgent, platform: o.platform, maxTouchPoints: o.touch, clipboard: { writeText: async (t: string) => { if (o.rejectClipboard) throw new Error("no"); copied.push(t); } } },
     setTimeout: (f: () => void) => void timers.push(f),
     URL,
+    URLSearchParams,
+    atob,
     document: {
       documentElement: { lang: o.lang ?? "en" },
-      body: { appendChild: () => {}, removeChild: () => {} },
+      body,
       execCommand: (c: string) => { execed.push(c); return o.execOk ?? true; }, get cookie() { return doc.cookie; }, set cookie(v: string) { doc.cookie = v; }, querySelectorAll: () => switchers, getElementById: (id: string) => els[id], createElement: () => ({ style: {}, select() { execed.push("select"); } }), head: { appendChild: (s: Record<string, unknown>) => appended.push(s) } },
     fetch: async (url: string) => {
       fetched.push(url);
@@ -527,7 +530,7 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown; 
   });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
-  return { els, appended, fetched, drawn, copied, href, doc, replaced, switchers, copyBtn, execed, timers };
+  return { els, appended, fetched, drawn, copied, href, doc, replaced, switchers, copyBtn, execed, timers, body };
 }
 
 describe("the join page's script (§5.8)", () => {
@@ -648,6 +651,29 @@ describe("the join page's script (§5.8)", () => {
     const badIos = await runJoin({ hash: "#x", userAgent: IPHONE });
     assert.equal(badIos.els["bad"]!.hidden, false);
     assert.equal(badIos.els["ios"]!.hidden, true);
+  });
+
+  it("an expired invite: the card stays, no Copy, Open or QR, it says ask for a new one; a live one, a token it cannot read, none at all: as before", async () => {
+    const claims = (exp: unknown) => Buffer.from(JSON.stringify({ c: "code", a: "strut/worker", exp })).toString("base64url");
+    const linkWith = (token: string) => {
+      const appUrl = `https://s.example/?app=strut%2Fworker&solo=1&public=1&input=${encodeURIComponent(`invite=${token}&type=book-scan-page`)}`;
+      return `#action=i&d=${D}&c=BBBB&a=${encodeURIComponent(appUrl)}`;
+    };
+    const past = linkWith(`strut-invite.${claims(Date.now() - 1000)}.sig`);
+    for (const userAgent of [IPHONE, ANDROID, "Mozilla/5.0 (X11; Linux x86_64) Chrome/131.0"]) {
+      const r = await runJoin({ hash: past, userAgent });
+      assert.equal(r.els["expired"]!.hidden, false, userAgent);
+      assert.equal(r.els["card"]!.hidden, true, "the card is shown by its HTML; the script leaves it alone");
+      for (const id of ["ios", "android", "elsewhere", "bad"]) assert.equal(r.els[id]!.hidden, true, `${userAgent} ${id}`);
+      assert.equal(r.body.className, "expired");
+      assert.deepEqual(r.fetched, []);
+      assert.equal(r.appended.length, 0);
+    }
+    for (const token of [`strut-invite.${claims(Date.now() + 86_400_000)}.sig`, "strut-invite.!!.sig", `strut-invite.${claims("soon")}.sig`, "other"]) {
+      const r = await runJoin({ hash: linkWith(token), userAgent: IPHONE });
+      assert.equal(r.els["expired"]!.hidden, true, token);
+      assert.equal(r.els["ios"]!.hidden, false, token);
+    }
   });
 
   it("anywhere else: open it on a phone, a QR code of the page's own URL; no invite: says so and fires nothing", async () => {
