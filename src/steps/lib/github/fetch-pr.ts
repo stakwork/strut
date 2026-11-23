@@ -29,14 +29,16 @@ export default defineStep({
   type: "github/fetch-pr",
   secrets: ["GITHUB_TOKEN"],
   effect: "read",
-  description: `Fetch a GitHub pull request — description, changed files with patches, reviews, comments, commits — and format it as markdown for LLM consumption, with a structured pr summary alongside. Auth: token, else the GITHUB_TOKEN secret.\n\n${EXAMPLE}`,
+  description: `Fetch a GitHub pull request — description, changed files with patches, reviews, inline review comments, comments, commits — and format it as markdown for LLM consumption, with a structured pr summary alongside. ` +
+    `It is for the conversation and a small diff: a large diff is cut (by default 50 files, 500 lines each). For all of a large diff, check the branch out (git/checkout with ref: the head branch) and read it with git diff and rg. ` +
+    `Auth: token, else the GITHUB_TOKEN secret.\n\n${EXAMPLE}`,
   input: z.object({
     owner: z.string().min(1).describe("repository owner (user or org)"),
     repo: z.string().min(1).describe("repository name"),
     pull_number: z.number().int().positive().describe("pull request number"),
     token: z.string().optional().describe("GitHub token; omit to use the GITHUB_TOKEN secret (needed for private repos; raises the rate limit)"),
     limits: limitsSchema.describe(
-      "caps on what goes into the markdown — patch lines per file, files, description/comment characters, comments, reviews; the defaults fit an LLM context",
+      "caps on what goes into the markdown — patch lines per file, files, description/comment characters, comments, reviews. The defaults fit a small PR; a large diff is read from a checkout instead",
     ),
   }),
   output: z.object({
@@ -131,7 +133,7 @@ export default defineStep({
 
 // ── Formatting helpers (adapted from mcp/src/gitree/pr.ts) ─────────────────
 
-function formatPRContent(
+export function formatPRContent(
   prData: Record<string, unknown>,
   files: Record<string, unknown>[],
   reviewComments: Record<string, unknown>[],
@@ -146,8 +148,11 @@ function formatPRContent(
     sections.push(formatDescription(prData.body, limits.maxDescriptionChars));
   }
 
+  // GitHub lists one page of files (100 here); the PR's own count is the total.
+  const total = Math.max(files.length, Number(prData.changed_files ?? 0));
+  const head = (prData.head as { ref?: string } | undefined)?.ref;
   sections.push(
-    formatFilesChanged(files.slice(0, limits.maxFiles), files.length, limits),
+    formatFilesChanged(files.slice(0, limits.maxFiles), total, limits, head),
   );
 
   if (reviewComments.length > 0) {
@@ -222,10 +227,20 @@ function formatFilesChanged(
   files: Record<string, unknown>[],
   total: number,
   limits: Limits,
+  head: string | undefined,
 ): string {
   const sections = [`## Files Changed (showing ${files.length} of ${total} files)`];
   if (files.length < total) {
     sections.push(`\n*Note: ${total - files.length} files omitted for brevity*\n`);
+  }
+  // Not the whole diff: say where the whole of it is — git, not this page.
+  const cut =
+    files.length < total ||
+    files.some((f) => (typeof f.patch === "string" ? f.patch.split("\n").length > limits.maxPatchLines : Number(f.changes ?? 0) > 0));
+  if (cut) {
+    sections.push(
+      `*This is not the whole diff. For all of it, check the branch out (git/checkout with ref: "${head ?? "the head branch"}") and read it with git diff and rg.*\n`,
+    );
   }
   for (const file of files) {
     const filename = (file.filename as string) ?? "unknown";

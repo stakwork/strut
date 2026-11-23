@@ -20,6 +20,11 @@ export interface PrStatusApi {
   repos: {
     getCombinedStatusForRef(p: { owner: string; repo: string; ref: string; per_page: number }): Promise<{ data: { statuses: CommitStatus[] } }>;
   };
+  /** A GitHub Actions job's log, as text (GitHub redirects to it; the SDK
+   *  follows). Only `logs` reads it. */
+  actions?: {
+    downloadJobLogsForWorkflowRun(p: { owner: string; repo: string; job_id: number }): Promise<{ data: unknown }>;
+  };
 }
 
 export interface PullDetail {
@@ -39,11 +44,14 @@ export interface PullDetail {
 }
 
 interface CheckRun {
+  /** For a GitHub Actions check, also its job's id. */
+  id?: number;
   name: string;
   status: string;
   conclusion?: string | null;
   html_url?: string | null;
   details_url?: string | null;
+  app?: { slug?: string } | null;
 }
 
 interface CommitStatus {
@@ -59,7 +67,29 @@ export interface PrCheck {
   name: string;
   status: CheckStatus;
   url?: string;
+  /** With `logs`, a failed GitHub Actions check's job log. */
+  log?: CheckLog;
+  /** With `logs`, why that log could not be had. */
+  logError?: string;
 }
+
+/** A failed job's whole log, written to a file to grep: the cause of a
+ *  failure is often thousands of lines above where the job ends. */
+export interface CheckLog {
+  /** Absolute path of the file: the log, each line's timestamp stripped. */
+  path: string;
+  lines: number;
+  /** The last lines up to the job's first `##[error]` (the failing step's
+   *  end, or the first error a problem matcher marked), else the log's own. */
+  end: string;
+}
+
+/** Writes a log where the run keeps its files; returns the absolute path. */
+export type LogWriter = (relPath: string, text: string) => Promise<string>;
+
+/** Failed jobs whose logs one call reads, at most: a matrix fails wide. */
+export const MAX_LOGS = 5;
+const END_LINES = 40;
 
 export interface PrStatus {
   url: string;
@@ -113,9 +143,49 @@ export function githubError(err: unknown, what: string): Error {
   return new Error(`github_error: could not ${what} (${status ?? "error"}: ${text})`);
 }
 
+const STAMP = /^\uFEFF?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/;
+
+/** A job log as text without its timestamps, and its end: the lines up to
+ *  the first `##[error]`, else the log's last. */
+export function logOf(raw: string): { text: string; lines: number; end: string } {
+  const lines = raw.replace(/\r?\n$/, "").split(/\r?\n/).map((l) => l.replace(STAMP, ""));
+  const err = lines.findIndex((l) => l.includes("##[error]"));
+  const stop = err >= 0 ? err + 1 : lines.length;
+  return { text: lines.join("\n") + "\n", lines: lines.length, end: lines.slice(Math.max(0, stop - END_LINES), stop).join("\n") };
+}
+
+/** A failed Actions check's job log, written where the run keeps its files.
+ *  A log GitHub will not give is said on the check, never thrown: the
+ *  status is still the answer. */
+async function attachLog(api: PrStatusApi, owner: string, repo: string, number: number, check: PrCheck, jobId: number, write: LogWriter): Promise<void> {
+  if (!api.actions) {
+    check.logError = "this client cannot read Actions logs";
+    return;
+  }
+  let raw: string;
+  try {
+    const { data } = await api.actions.downloadJobLogsForWorkflowRun({ owner, repo, job_id: jobId });
+    raw = typeof data === "string" ? data : data instanceof ArrayBuffer || ArrayBuffer.isView(data) ? new TextDecoder().decode(data as ArrayBuffer) : String(data ?? "");
+  } catch (err) {
+    const e = err as { status?: number; message?: string };
+    const why = `GitHub would not give this token the job's log (HTTP ${e.status ?? "error"}: ${(e.message ?? String(err)).split("\n")[0]!.slice(0, 200)})`;
+    check.logError = e.status === 403 ? `${why}: a GitHub App's token needs the App's "Actions: read" permission` : why;
+    return;
+  }
+  const log = logOf(raw);
+  const safe = check.name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "job";
+  try {
+    const path = await write(`ci-logs/${owner}-${repo}-${number}/${safe}-${jobId}.log`, log.text);
+    check.log = { path, lines: log.lines, end: log.end };
+  } catch (err) {
+    check.logError = `could not write the log: ${(err as Error).message}`;
+  }
+}
+
 /** The pull request's state, its checks (check runs and commit statuses, by
- *  name, the newest of each), and what a merge needs. */
-export async function readPullRequest(api: PrStatusApi, owner: string, repo: string, number: number): Promise<PrStatus> {
+ *  name, the newest of each), and what a merge needs. With `logs`, each
+ *  failed Actions check (at most MAX_LOGS) carries its job's log. */
+export async function readPullRequest(api: PrStatusApi, owner: string, repo: string, number: number, opts: { logs?: LogWriter } = {}): Promise<PrStatus> {
   let pr: PullDetail;
   try {
     pr = (await api.pulls.get({ owner, repo, pull_number: number })).data;
@@ -128,16 +198,23 @@ export async function readPullRequest(api: PrStatusApi, owner: string, repo: str
     api.repos.getCombinedStatusForRef({ owner, repo, ref, per_page: 100 }).then((r) => r.data.statuses).catch(() => [] as CommitStatus[]),
   ]);
   const byName = new Map<string, PrCheck>();
+  const actionsJob = new Map<PrCheck, number>();
   for (const c of runs) {
     if (byName.has(c.name)) continue; // the API lists the newest run of a name first
     const url = c.html_url ?? c.details_url ?? undefined;
-    byName.set(c.name, { name: c.name, status: checkRunStatus(c.status, c.conclusion), ...(url ? { url } : {}) });
+    const check: PrCheck = { name: c.name, status: checkRunStatus(c.status, c.conclusion), ...(url ? { url } : {}) };
+    byName.set(c.name, check);
+    if (c.app?.slug === "github-actions" && typeof c.id === "number") actionsJob.set(check, c.id);
   }
   for (const s of statuses) {
     if (byName.has(s.context)) continue;
     byName.set(s.context, { name: s.context, status: commitStatus(s.state), ...(s.target_url ? { url: s.target_url } : {}) });
   }
   const checks = [...byName.values()].sort((a, b) => ORDER[a.status] - ORDER[b.status] || a.name.localeCompare(b.name));
+  if (opts.logs) {
+    const failed = checks.filter((c) => c.status === "failed" && actionsJob.has(c)).slice(0, MAX_LOGS);
+    await Promise.all(failed.map((c) => attachLog(api, owner, repo, number, c, actionsJob.get(c)!, opts.logs!)));
+  }
   const count = (s: CheckStatus) => checks.filter((c) => c.status === s).length;
   return {
     url: pr.html_url,
@@ -168,12 +245,16 @@ export default defineStep({
   effect: "read",
   description:
     `A GitHub pull request as it is now: { url, repo, number, title, state (open | draft | merged | closed), author, head, base, headSha, body, mergeable, checks: [{ name, status (failed | running | passed | skipped), url }], counts }. ` +
-    `Checks are the head commit's check runs and commit statuses, failed first. Auth: token, else the GITHUB_TOKEN secret. ` +
+    `Checks are the head commit's check runs and commit statuses, failed first. ` +
+    `With logs: true, each failed GitHub Actions check (at most ${MAX_LOGS}) also has log: { path, lines, end }: its job's whole log in a file (timestamps stripped) and the lines up to the job's first error. ` +
+    `The cause is often thousands of lines above the end, so search the file (rg in bash). A log GitHub refuses is logError on the check (a GitHub App's token needs "Actions: read"). ` +
+    `Auth: token, else the GITHUB_TOKEN secret. ` +
     `Fails with "github_unauthorized: …", "github_not_found: …" (the token cannot see it), "github_rate_limited: …" or "github_error: …".\n\n${EXAMPLE}`,
   input: z.object({
     repo: z.string().min(1).describe('"owner/repo" or https://github.com/owner/repo'),
     number: z.coerce.number().int().positive().describe("pull request number"),
     token: z.string().optional().describe("GitHub token; omit to use the GITHUB_TOKEN secret"),
+    logs: z.boolean().optional().describe("Also read each failed GitHub Actions job's log into a file to search: why a check failed"),
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
@@ -182,6 +263,14 @@ export default defineStep({
     const { Octokit } = await import("@octokit/rest");
     const auth = cfg.token ?? (await ctx?.services?.secrets?.get("GITHUB_TOKEN"));
     const api = new Octokit(auth ? { auth } : {}) as unknown as PrStatusApi;
-    return readPullRequest(api, owner, repo, cfg.number);
+    // A log goes in the run's files, where `bash` can search it by its path.
+    const artifacts = ctx?.services?.artifacts;
+    const logs: LogWriter | undefined =
+      cfg.logs && ctx?.runId
+        ? artifacts
+          ? (rel, text) => artifacts.write(ctx.runId, rel, text)
+          : async () => Promise.reject(new Error("this run has no place to keep files (no artifacts)"))
+        : undefined;
+    return readPullRequest(api, owner, repo, cfg.number, { logs });
   },
 });
