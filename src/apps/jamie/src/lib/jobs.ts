@@ -1,9 +1,11 @@
 // A job's card, its pure parts — tested by src/apps/jamie.test.ts: how a
-// turn ended in a pill, the live strip's tally (Hive's `JobLiveStrip`), a
-// claim's pill and its open slot (Hive's claims viewer), and a captcha's
-// manifest, taps and answer (strut's src/browser/captcha.ts, the job's
-// `[captcha-answer]` turn).
+// turn ended in a pill, the live strip's tally and its newest picture
+// (Hive's `JobLiveStrip`), a claim's pill and its open slot (Hive's claims
+// viewer), and a captcha's manifest, taps and answer (strut's
+// src/browser/captcha.ts, the job's `[captcha-answer]` turn).
 
+import { parseWalkthrough } from "@strut/kit/folds";
+import { servedFile } from "./artifacts";
 import type { JobView, LastVerify, LedgerClaim } from "./types";
 
 export type Tone = "running" | "ok" | "attention" | "failed" | "muted" | "merged";
@@ -56,6 +58,24 @@ export interface LiveUpdate {
   id?: string;
   title?: string;
   state?: string;
+  /** Small and kind-specific: a status's checklist is `detail.items`. */
+  detail?: Record<string, unknown>;
+}
+
+/** One step of a turn's checklist (`job/status`'s `items`). */
+export interface LiveItem {
+  text: string;
+  state: "todo" | "doing" | "done";
+}
+
+/** A status update's checklist, what is whole of it; none when it has none. */
+function checklist(u: LiveUpdate): LiveItem[] {
+  const items = u.detail?.["items"];
+  if (!Array.isArray(items)) return [];
+  return items.flatMap((i): LiveItem[] => {
+    const { text, state } = (i ?? {}) as { text?: unknown; state?: unknown };
+    return typeof text === "string" && text && (state === "todo" || state === "doing" || state === "done") ? [{ text, state }] : [];
+  });
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -67,13 +87,21 @@ const VERDICTS: Array<[state: string, word: string]> = [
 ];
 
 /** What the live strip says under a running job: its own line of what it
- *  is doing (`status`, the newest), and how many of each other thing —
- *  recordings, shots, what it holds, the checks' verdicts — never a list.
- *  Only updates of the run in flight (`runId`) when it is known. */
-export function liveStrip(updates: readonly LiveUpdate[], runId?: string): { status?: string; tally: string[]; shot?: LiveUpdate } {
+ *  is doing and its checklist (`status`, the newest, and its `items`), and
+ *  how many of each other thing — recordings, shots, what it holds, the
+ *  checks' verdicts — never a list of them. Only updates of the run in
+ *  flight (`runId`) when it is known. */
+export function liveStrip(updates: readonly LiveUpdate[], runId?: string): { status?: string; items: LiveItem[]; tally: string[]; shot?: LiveUpdate } {
   const mine = runId ? updates.filter((u) => !u.runId || u.runId === runId) : updates;
   let status: string | undefined;
-  for (let i = mine.length - 1; i >= 0; i--) if (mine[i]!.kind === "status" && mine[i]!.title) { status = mine[i]!.title; break; }
+  let items: LiveItem[] = [];
+  for (let i = mine.length - 1; i >= 0; i--) {
+    if (mine[i]!.kind === "status" && mine[i]!.title) {
+      status = mine[i]!.title;
+      items = checklist(mine[i]!);
+      break;
+    }
+  }
   const things = mine.filter((u) => u.kind !== "status" && u.kind !== "graph" && u.kind !== "verify" && u.kind !== "proposal");
   const tally: string[] = [];
   const recordings = things.filter((u) => u.kind === "walkthrough");
@@ -98,7 +126,33 @@ export function liveStrip(updates: readonly LiveUpdate[], runId?: string): { sta
   // The newest picture it took (the store keeps the newest last).
   const visuals = things.filter((u) => (u.kind === "image" || u.kind === "walkthrough") && u.url);
   const shot = visuals[visuals.length - 1];
-  return { ...(status ? { status } : {}), tally, ...(shot ? { shot } : {}) };
+  return { ...(status ? { status } : {}), items, tally, ...(shot ? { shot } : {}) };
+}
+
+/** The live strip's tile for `liveStrip`'s `shot`, from the job's own
+ *  files only. A shot is its own picture. A recording's picture is its
+ *  newest frame, named in its manifest (`manifest`, read again at each of
+ *  its updates, since it grows frame by frame). `open` is what a click
+ *  opens beside the chat: the shot, or the recording to scrub. Paths are
+ *  relative to the job's directory, as `run/files` reads them. */
+export function livePicture(
+  shot: LiveUpdate,
+  job: string,
+  manifest?: string | null,
+): { open: string; manifest?: string; picture?: string; caption?: string } | null {
+  const url = (shot.url ?? "").split(/[?#]/, 1)[0]!;
+  const served = servedFile(url);
+  if (!served || !("job" in served) || served.job !== job) return null;
+  if (shot.kind !== "walkthrough") return { open: url, picture: served.rel };
+  const frames = manifest ? (parseWalkthrough(manifest, url)?.frames ?? []) : [];
+  const frame = frames[frames.length - 1];
+  const at = frame ? servedFile(frame.path) : null;
+  return {
+    open: url,
+    manifest: served.rel,
+    ...(at && "job" in at && at.job === job ? { picture: at.rel } : {}),
+    ...(frame?.caption ? { caption: frame.caption } : {}),
+  };
 }
 
 /** A claim's pill: its status, or that it waits on a person's look. */

@@ -28,7 +28,7 @@ import type { JobsCapability } from "../jobs.js";
 import type { Conversations } from "../conversations.js";
 import { BUSY_NOTICE, NOT_SHARED_NOTICE, NOT_YOURS_NOTICE, readRefusal, detectSlash, groupByDay, hostPlace, insertSlash, isOwn, mayContinue, modelChoices, modelParams, newConversationId, ownerLabel, readsAsAdmin, sendRefusal, sentModel, silentReply, timeLine, turnContext, withoutAsk } from "./jamie/src/lib/chat.js";
 import { appKey, openable, placeArtifact, servedFile, turnDeliverables } from "./jamie/src/lib/artifacts.js";
-import { answeredSince, askedSecret, captchaPrompt, claimPill, holdLinks, jobLook, jobRunWorkflow, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
+import { answeredSince, askedSecret, captchaPrompt, claimPill, holdLinks, jobLook, jobRunWorkflow, livePicture, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
 import { canMerge, checksLine, fixPrompt, prKey, prLive, prOf, prPill } from "./jamie/src/lib/pr.js";
 import { acceptLook, waitingFor } from "./jamie/src/lib/proposals.js";
@@ -275,8 +275,46 @@ describe("strut/jamie — the pure parts", () => {
       "r1",
     );
     assert.equal(strip.status, "Reading the repo");
+    assert.deepEqual(strip.items, [], "a line with no checklist");
     assert.deepEqual(strip.tally, ["1 recording, 1 stopped", "2 shots", "pod held", "2 checks: 1 supported, 1 waiting on a look"]);
     assert.equal(strip.shot?.url, "/jobs/j/files/w/walkthrough.json");
+  });
+
+  it("the live strip's checklist: the newest status's items, what is whole of them; an older status's never", () => {
+    const at = "2026-11-04T10:00:00Z";
+    const first = { kind: "status", at, runId: "r1", title: "Reading the repo", detail: { items: [{ text: "Read the repo", state: "doing" }, { text: "Write the fix", state: "todo" }] } };
+    assert.deepEqual(liveStrip([first], "r1").items, [{ text: "Read the repo", state: "doing" }, { text: "Write the fix", state: "todo" }]);
+    // The feed keeps one status per run, the newest: its list is the list.
+    const next = {
+      kind: "status",
+      at,
+      runId: "r1",
+      title: "Writing the fix",
+      detail: { round: 2, items: [{ text: "Read the repo", state: "done" }, { text: "Write the fix", state: "doing" }, { text: "", state: "todo" }, { text: "Ship it", state: "later" }, null] },
+    };
+    const strip = liveStrip([{ kind: "status", at, runId: "r0", title: "an older turn's", detail: { items: [{ text: "x", state: "done" }] } }, next], "r1");
+    assert.equal(strip.status, "Writing the fix");
+    assert.deepEqual(strip.items, [{ text: "Read the repo", state: "done" }, { text: "Write the fix", state: "doing" }], "an empty step or an unknown state is dropped");
+    assert.deepEqual(liveStrip([{ kind: "status", at, runId: "r1", title: "x", detail: { items: "not a list" } }], "r1").items, []);
+  });
+
+  it("the live strip's tile: a shot is its own picture, a recording its newest frame; only the job's own files", () => {
+    const at = "2026-11-04T10:00:00Z";
+    assert.deepEqual(livePicture({ kind: "image", at, url: "/jobs/j/files/shots/002.png" }, "j"), { open: "/jobs/j/files/shots/002.png", picture: "shots/002.png" });
+    const rec = { kind: "walkthrough", at, url: "/jobs/j/files/walkthroughs/001/walkthrough.json", state: "recording" };
+    // Until its manifest is read, a recording has no picture yet.
+    assert.deepEqual(livePicture(rec, "j"), { open: rec.url, manifest: "walkthroughs/001/walkthrough.json" });
+    const manifest = JSON.stringify({ status: "recording", frames: [{ file: "01.png", caption: "Sign-in page" }, { file: "02.png", caption: "Signed in" }] });
+    assert.deepEqual(livePicture(rec, "j", manifest), {
+      open: rec.url,
+      manifest: "walkthroughs/001/walkthrough.json",
+      picture: "walkthroughs/001/02.png",
+      caption: "Signed in",
+    });
+    assert.deepEqual(livePicture(rec, "j", "not json"), { open: rec.url, manifest: "walkthroughs/001/walkthrough.json" });
+    assert.equal(livePicture({ kind: "image", at, url: "/jobs/other/files/shots/001.png" }, "j"), null, "another job's file");
+    assert.equal(livePicture({ kind: "image", at, url: "/artifacts/r1/shots/001.png" }, "j"), null, "a run's own artifacts");
+    assert.equal(livePicture({ kind: "image", at }, "j"), null);
   });
 
   it("a claim waiting on a person's look comes first, with its slot", () => {
