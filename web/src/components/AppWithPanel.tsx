@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../api";
-import { appToolInput, namesApp, panelTarget, type PanelTarget } from "../app-links";
+import { appToolInput, frameableHold, namesApp, panelTarget, type PanelTarget } from "../app-links";
 import { STATE_LABEL, appVersionRows, isHeld, isSeeded, liveRelease, modeChange, panelChip, panelKey, rowChange, when, type LiveChange } from "../app-versions";
 import { errorMessage } from "../helpers";
 import { CloseIcon } from "../icons";
@@ -24,8 +24,11 @@ import { WidthResizer } from "./FlyoutResizer";
 // app through the app host, in a frame of its own. A new link replaces what
 // the panel shows (an app's new input goes to it in place); ✕ closes it; its
 // left edge resizes it (`--app-panel-width` on the split, kept in
-// localStorage); in a narrow container it lies over the app. Everything
-// else — a link to the app on screen, a workflow, a run, a job — goes to the
+// localStorage); in a narrow container it lies over the app. A third thing
+// it opens is what a job holds at an address (`?job=<id>&hold=<kind>`, a
+// pod's app): the panel reads the address from the job (`GET
+// /jobs/:id/urls`), never from the link, and frames it with a tab beside.
+// Everything else — a link to the app on screen, a workflow, a run, a job — goes to the
 // caller's `onNavigate` as before. The panel's own app links the same way:
 // a file or a third app replaces it, a link to the page beside it is that
 // page's. Used by the canvas area's host (../app.tsx) and the page alone
@@ -70,6 +73,8 @@ export function AppWithPanel(props: AppHostProps) {
           />
           {"artifact" in panel
             ? <ArtifactViewer path={panel.artifact} solo onClose={() => setPanel(null)} />
+            : "hold" in panel
+            ? <PanelHold key={`${panel.job}/${panel.hold}`} job={panel.job} hold={panel.hold} onClose={() => setPanel(null)} />
             : <PanelApp
                 target={panel}
                 beside={props.app}
@@ -80,6 +85,46 @@ export function AppWithPanel(props: AppHostProps) {
               />}
         </aside>
       )}
+    </div>
+  );
+}
+
+/** The frame's sandbox: the page's own scripts, forms, storage and popups
+ *  (a sign-in that opens a window), and no navigating this page away. */
+const HOLD_SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-storage-access-by-user-activation";
+
+/** What a job holds at an address, in the panel: read from the job, framed
+ *  under a bar with its host, Open in a tab and ✕. The address is on
+ *  another site (a pod's), so a sign-in that needs its cookies may not hold
+ *  in the frame — the tab always works. */
+function PanelHold(props: { job: string; hold: string; onClose: () => void }) {
+  /** Undefined while the job is read; null when it holds no such address. */
+  const [url, setUrl] = useState<string | null | undefined>(undefined);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let on = true;
+    api.getJobUrls(props.job).then(
+      (r) => on && setUrl(frameableHold(r.urls[props.hold], location.origin)),
+      (err) => on && setError(errorMessage(err)),
+    );
+    return () => {
+      on = false;
+    };
+  }, [props.job, props.hold]);
+  const title = props.hold.charAt(0).toUpperCase() + props.hold.slice(1);
+  return (
+    <div class="app-panel-app">
+      <div class="app-panel-head">
+        <span class="app-panel-title">{title}</span>
+        <span class="app-panel-sub">{url ? new URL(url).host : props.job}</span>
+        {url && <a class="btn btn-sm" href={url} target="_blank" rel="noopener noreferrer">Open in a tab</a>}
+        <button class="copy-btn" onClick={props.onClose} aria-label="Close" title="Close"><CloseIcon /></button>
+      </div>
+      <div class="app-panel-body">
+        {url
+          ? <iframe class="app-panel-frame" src={url} title={title} sandbox={HOLD_SANDBOX} referrerpolicy="no-referrer" allow="clipboard-read; clipboard-write; fullscreen" />
+          : <div class="empty">{error || (url === null ? `This job holds no ${props.hold} with an address now.` : "Reading the job…")}</div>}
+      </div>
     </div>
   );
 }

@@ -1827,9 +1827,10 @@ describe("the API key gate", () => {
       "GET /artifacts/x/x",
       "GET /jobs/x/files",
       "GET /jobs/x/files/x",
+      "GET /jobs/x/urls",
     ];
     for (const r of allowed) assert.ok(routes.includes(r), r);
-    assert.equal(routes.filter((r) => allowed.includes(r)).length, 15);
+    assert.equal(routes.filter((r) => allowed.includes(r)).length, 16);
     assert.ok(routes.length > 100, `swept ${routes.length} routes`);
     assert.ok(routes.includes("GET /host/mounted") && routes.includes("POST /host/mounted"));
     for (const route of routes) {
