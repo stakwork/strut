@@ -1348,6 +1348,17 @@ export async function createStrut<TServices = unknown>(
    *  run it has just launched is never refused. A dead run is judged by its
    *  log. */
   const peerLaunched = new WeakSet<RunController>();
+  /** The `on:` mark of each run a package's `on:` started, and of the job
+   *  runs those start (src/packages/on.ts): what holds their writes to the
+   *  chain. A nested run takes its parent's (`onWriteMarkOf`). */
+  const onWriteMarks = new WeakMap<RunController, OnWriteMark>();
+  const onWriteMarkOf = (c: RunController | undefined): OnWriteMark | undefined => {
+    for (let at = c; at; at = at.parent) {
+      const mark = onWriteMarks.get(at);
+      if (mark) return mark;
+    }
+    return undefined;
+  };
   /** The runs that never spend credit this strut BOUGHT (plans/paid-runs.md
    *  §10, decision 16 — no ask is for this strut's own agents): a stranger's
    *  public run, a run a peer launched with no person's credential, and a
@@ -8350,6 +8361,10 @@ export async function createStrut<TServices = unknown>(
     if (extra?.origin === "public" || (extra?.origin === "peer" && !extra.peerPerson) || (launcher && treeSpendsNot(launcher))) {
       noRemoteSpend.add(controller);
     }
+    // A run a package's `on:` started, and the job runs it starts, carry its
+    // mark (src/packages/on.ts): their writes are its work.
+    const onWrite = extra?.onWrite ?? (launcher ? onWriteMarkOf(launcher) : undefined);
+    if (onWrite) onWriteMarks.set(controller, onWrite);
     launchedAs.set(controller, {
       ...(extra?.app ? { app: extra.app } : {}),
       ...(extra?.actor ? { actor: extra.actor } : {}),
@@ -8440,7 +8455,7 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.origin === "host" && extra.host ? { host: extra.host } : {}),
         ...(extra?.continues ? { continues: extra.continues } : {}),
         ...(extra?.automation ? { automation: extra.automation } : {}),
-        ...(extra?.onWrite ? { onWrite: extra.onWrite } : {}),
+        ...(onWrite ? { onWrite } : {}),
         ...(extra?.app ? { app: extra.app } : {}),
         ...(extra?.actor ? { actor: extra.actor } : {}),
         ...(principal ? { principal } : {}),
@@ -9410,7 +9425,9 @@ export async function createStrut<TServices = unknown>(
   const onWrites: OnWrites = {
     fire(writes, by) {
       if (!packageTriggers.length) return;
-      const { launches, stopped } = matches(packageTriggers, writes, by);
+      // A nested run's writes are its parent's work: its mark, when it has one.
+      const mark = by.mark ?? onWriteMarkOf(controllersByRunId.get(by.runId));
+      const { launches, stopped } = matches(packageTriggers, writes, { ...by, ...(mark ? { mark } : {}) });
       for (const { trigger, write } of stopped) {
         console.warn(`[on] run ${by.runId}: ${write.op} ${write.type} ${write.ref_id} would start ${trigger.workflow}, but its chain of on: runs holds ${ON_CHAIN_MAX} already — nothing started`);
       }

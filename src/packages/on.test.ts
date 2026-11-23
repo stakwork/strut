@@ -190,6 +190,7 @@ describe("on: on a strut with a graph (ladybug)", { skip: lb.skip }, () => {
   let graph: LadybugBackend;
   let strut: Strut;
   let store: MemoryRunStore;
+  let ws: WorkspaceManager;
   const saved: Record<string, string | undefined> = {};
   before(async () => {
     for (const k of ["STRUT_SECRET_KEY", "STRUT_PACKAGE_INDEXES"]) saved[k] = process.env[k];
@@ -209,8 +210,9 @@ describe("on: on a strut with a graph (ladybug)", { skip: lb.skip }, () => {
     await lb.clear(graph);
     store = new MemoryRunStore();
     const dir = join(root, "box");
+    ws = new WorkspaceManager(dir);
     strut = await createStrut({
-      workspace: new WorkspaceManager(dir),
+      workspace: ws,
       dataDir: dir,
       graph,
       store,
@@ -303,5 +305,25 @@ describe("on: on a strut with a graph (ladybug)", { skip: lb.skip }, () => {
     await strut.packages.uninstall(PKG);
     await strut.run(make, { name: "two" }, { actor: "bob" });
     assert.equal((await settled(SETUP)).length, 2, "uninstalled: its entries are gone");
+  });
+
+  it("a job its workflow starts carries its mark: the job's writes are its work, and start nothing of its own", async () => {
+    // The box's job workflow: it marks the node its prompt names.
+    await ws.publishWorkflow("job", "v1", `name: job\nsteps:\n  - { id: mark, type: graph/edit-node, config: { ref_id: "{{ input.prompt }}", node_data: { description: "baked" } } }\n`);
+    await strut.packages.install(
+      `file:${await writeTree({
+        ...DEVBOX,
+        "workflows/setup.yaml": `name: ${SETUP}\nsteps:\n  - { id: start, type: job/start, config: { prompt: "{{ input.ref_id }}", title: "Set up {{ input.ref_id }}" } }\n`,
+      })}`,
+      { actor: "alice" },
+    );
+    const made = await strut.run(make, { name: "three" }, { actor: "bob" });
+    assert.equal(made.status, "success", JSON.stringify(made.error));
+    const [setup, ...more] = await settled(SETUP);
+    const [job, ...jobs] = await settled("job");
+    assert.deepEqual([more.length, jobs.length], [0, 0], "the job's update of the node started no second setup");
+    const mark = (await startOf(SETUP, setup!)).onWrite;
+    assert.equal((await store.getRunSummary("job", job!))!.status, "success");
+    assert.deepEqual((await startOf("job", job!)).onWrite, mark, "the job run carries the mark of the run that started it");
   });
 });

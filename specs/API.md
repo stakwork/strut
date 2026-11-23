@@ -3457,11 +3457,14 @@ its `effect` — else the install is `400 bad_package: strut.yaml: job.tools:
 <why>`; a glob that matches none of its steps, a helper or another
 package's step refuses the package, `plans/followed-repos.md` §3, stadeum
 `plans/software.md` §5 item 16, `provides?: {
-secrets?, git? }` — the secrets its steps manage, "Secrets a package
+secrets?, git?: [{ host, secret, repositories?, pull_request? }] }` — the secrets its steps manage, "Secrets a package
 provides" below, and the hosts a token it holds serves, "Git credentials
 by host" below; `requires.git: true` — its steps read the run's token for a
 repository's host themselves, the same section — `schedules?: [{ workflow, name?, trigger, input? }]` — workflows of
 the package strut runs on its own, "Schedules a package ships" below;
+`on?: [{ created|updated|deleted: <Type>, workflow }]` — workflows of the
+package strut runs when a node of a type is written, "Workflows on graph
+writes" below;
 `bundle?: [<git+ ref>, …]` — a BUNDLE, which lists other packages and holds
 nothing of its own, "Bundles" below) and
 the folders `workflows/`,
@@ -3524,7 +3527,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | POST   | `/index/requests/:id/refuse` | `{ reason }` → the refusal: the request dropped, and a re-send from that key for that name answered with `reason` for 30 days, without a fetch. Full scope; 404 `listing_unknown` |
 | GET    | `/index/catalog[?digest=]` | The INDEX card as served (RFC 8785 bytes, sealed under `strut-index\n` by the index key; `ETag`, `If-None-Match` → 304; `cache-control: public`): `{ v, key, seq, publishers, urls?, sig }`. **Open to anyone.** A reader checks it with `readCard(bytes, { key, kind: "index" })`; 404 before the first row |
 | GET    | `/index/packages?q=&limit=` | `{ packages: IndexHit[] }` — every listed publisher's public packages, each at its newest release not yanked: `{ package, publisher, key, urls, version, digest, description?, license?, requires?, detail?, source?, commit?, bundle?, installs: { total, recent } }` (`source`/`commit`: a package the row keeps in git, its ref and the commit last read; `bundle`: its packages' refs; `installs`: every install counted, and the last 30 days'); `q` as the sidebar's matcher (every word in the name, description or publisher), at most `limit` (100; ≤ 500). `detail` is the release's archive as the index READ it at the crawl (`src/packages/detail.ts`, below): `{ apps: [{ name, title, description?, icon?, screenshots?, can }], workflows, steps, concepts (counts), secrets, job?: { tools, approve }, can: { spends, acts, code }, readme }` — absent until the archive has been fetched. **Open to anyone**; derived and unsigned — an install re-verifies against the publisher |
-| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError?, source?, commit?, bundle?, installs }` — a package kept in git has one release (the branch's commit, `readAt` when its repository was read) and no channels; `installs`: `{ total, boxes, recent: { days: 30, installs, boxes, daily: [per UTC day, oldest first, today last] } }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, screenshots?: [{ path, caption? }], grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, schedules?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, job?: { tools, approve, strut?: [{ name, effect?, secrets?, description? }] }, can, files, bytes }` (names inside the package; `job` the steps `strut.yaml`'s `job:` gives the job agent and, among them, the ones that ask first (plans/followed-repos.md §3), strut's own by their type and each in `strut` with what the index's strut says of it (stadeum plans/software.md §5 item 16); a workflow's `schedules` when strut runs it on its own, each schedule `strut.yaml`'s `schedules:` ships on it as a sentence (`"Every 15 minutes"`, the zone said only when the schedule names one: else it is the installing server's); `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). `?docs=0` leaves each Concept page's `docs` out (the store's read: a page's text is `/index/concepts/:name`'s). **Open to anyone**; 404 when no listed publisher's catalog has it |
+| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError?, source?, commit?, bundle?, installs }` — a package kept in git has one release (the branch's commit, `readAt` when its repository was read) and no channels; `installs`: `{ total, boxes, recent: { days: 30, installs, boxes, daily: [per UTC day, oldest first, today last] } }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, screenshots?: [{ path, caption? }], grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, schedules?, on?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, job?: { tools, approve, strut?: [{ name, effect?, secrets?, description? }] }, can, files, bytes }` (names inside the package; `job` the steps `strut.yaml`'s `job:` gives the job agent and, among them, the ones that ask first (plans/followed-repos.md §3), strut's own by their type and each in `strut` with what the index's strut says of it (stadeum plans/software.md §5 item 16); a workflow's `schedules` when strut runs it on its own, each schedule `strut.yaml`'s `schedules:` ships on it as a sentence (`"Every 15 minutes"`, the zone said only when the schedule names one: else it is the installing server's); `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). `?docs=0` leaves each Concept page's `docs` out (the store's read: a page's text is `/index/concepts/:name`'s). **Open to anyone**; 404 when no listed publisher's catalog has it |
 | GET    | `/index/packages/:publisher/:name/screenshot?path=&digest=` | One of the package's app screenshots (app.yaml `screenshots`, `src/apps/manifest.ts`): `path` one an app of the current release lists in `detail` (`apps/<app>/public/shot.png`), read from the index's cache of the archive, `content-type` by extension (png, jpeg, webp, gif), `x-content-type-options: nosniff`, `content-security-policy: sandbox`, an `ETag`. With `digest` (the store's links carry it) only that release's, `cache-control: public, max-age=31536000, immutable`; without, the current one, `no-cache`. 404 for any path the page does not list, or a `digest` that is no longer the current release. **Open to anyone** |
 | GET    | `/index/concepts?q=` | `{ concepts: IndexConcept[] }` — every Concept page across the crawled packages AND the live rows' public trees, one per name: `{ name, description?, parent?, packages: [{ package, version }], live?: [{ publisher, url }] }` (the first package by name gives the description and parent, then a live tree's; a page only a live view holds has `packages: []`, and its docs are read from `<url>/public/concepts/<name>`; `q` over names and descriptions). **Open to anyone** |
 | GET    | `/index/concepts/:name` | `IndexConceptPage`: the entry plus `docs?` (the first package's text), `children: [{ name, description? }]` (the pages naming this one as parent) and `parents` (nearest first). **Open to anyone**; 404 when no listed package carries it |
@@ -3929,7 +3932,33 @@ provides:
 
 A host is served by one secret: an install that would serve one with a
 second — github.com's included — is `409 package_conflict: … a host is
-served by one secret`; naming the same secret again is fine. The map is
+served by one secret`; naming the same secret again is fine.
+
+An entry also names the host's FORGE STEPS (`plans/package-seams.md` §4):
+`repositories`, what the token reaches, and `pull_request`, opening one —
+the package's own step by `<name>`, else strut's by its type, never another
+package's:
+
+```yaml
+provides:
+  git:
+    - host: gitlab.com
+      secret: GITLAB_TOKEN
+      repositories: repositories   # steps/repositories.ts: { host } → { repositories: [{ url, name, private?, pushed?, description? }] }
+      pull_request: open-mr        # steps/open-mr.ts: { url, head, base, title, body? } → { url, number?, created? }
+```
+
+The install records them by their full types (`GET /packages`'s
+`provides.git`) and refuses one that is neither on this strut nor in the
+package (`400 bad_package: strut.yaml: provides.git: <host>'s <field> names
+the step …`) and one a host's other holder names differently (`409
+package_conflict: … a host has one`) — strut's own `github.com` entry names
+`pull_request: github/create-pr`. Strut's `git/repositories { host? }` asks
+each host's `repositories` step as the run's person (`{ repositories, hosts:
+[{ host, problem? }] }`: a host with no token for the person, or no such
+step, says so in `problem`), and `git/pull-request { url, head, base, title,
+body? }` calls the url's host's `pull_request` step, so a caller names no
+forge. The map is
 made again after every install, update, uninstall and sync, from the
 packages that still hold their own items. A run's token for a repository
 is that secret's value read as the run reads any secret — its person's
@@ -4041,6 +4070,42 @@ schedule drops the automation. On or off is the admin's (`PATCH … {
 enabled }`), and a release keeps it; an edit of anything else, and a
 delete, is refused (§8). The store's detail lists each as a sentence on its
 workflow (`PackageDetail.workflows[].schedules`, as `GET /index/packages/:publisher/:name` serves it).
+
+**Workflows on graph writes** (`src/packages/on.ts`, `plans/package-seams.md`
+§2). A package names workflows of its own that strut runs when a node of a
+graph type is created, updated or deleted:
+
+```yaml
+on:
+  - created: Workspace   # one op — created, updated or deleted — and its type
+    workflow: setup      # workflows/setup.yaml
+  - deleted: Workspace
+    workflow: drop-images
+```
+
+`readPackage` refuses (`bad_package: strut.yaml: on[i]…`) a workflow the
+package does not carry, an entry with no op or two, a type that is not one
+(`graph/<Type>.yaml`'s grammar), the same entry twice, and a key it does not
+know (`event:` is not built); a bundle has none. Strut reads them at boot and
+after every package write, from the packages that still hold their own
+items, so an uninstall drops them.
+
+A write strut hears fires them: a run's writes through `services.graph`, a
+step's through `ctx.registry`, a proposal's apply (`docs/graph.md`, the live
+feeds' writes) — never raw Cypher, another process's writes, a write on a
+Concept branch or one in a trial. A run's writes are matched at each send of
+its reporter (a second after its last write, and at its end), one op per
+node: created then updated is `created`, created then deleted nothing. Each
+match is launched detached, as the person of the run that wrote (its actor,
+else its principal — so on their tokens and their bill), with input `{
+ref_id, type, op, by }` (`by` the writing run's id, or `proposal:<id>`);
+with no person, nothing runs. Its `run.start` carries `onWrite: { package,
+op, type, ref_id, by, depth }`. A run `on:` started — and a job it starts,
+and a run nested in it — never fires its own package's entries, and a chain
+across packages stops at three runs (a warning in the server's log). A
+failure shows on the run, and nothing retries. The store's detail says each
+on its workflow (`PackageDetail.workflows[].on`: `"when a Workspace is
+created, as the person whose run did it"`).
 
 A scheduled run of a package's workflow acts as the workflow's OWNER —
 whoever installed the package through a person's door — and reads secrets

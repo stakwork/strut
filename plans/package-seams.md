@@ -194,6 +194,11 @@ on:
   ref_id, by, depth }` on its `run.start`, kept by a resume. That is what
   says it was started by `on: created Workspace` and by which run, and what
   holds its own writes to the guards.
+- **The mark follows the work.** A job the run starts (`job/start`) is
+  launched with the same mark, and a nested run takes its parent's. Without
+  that, an `updated:` entry whose workflow starts a job that updates the
+  node would start itself forever (a test shows it). A detached
+  `run/launch` from such a run carries none yet.
 - **The chain's stop** is a warning in the server's log naming the writing
   run, not a line in that run's log: a run's log has no free-form line.
 - **Deleted, then restored, in one send** folds to `updated`: the node was
