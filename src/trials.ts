@@ -187,9 +187,10 @@ export interface TrialsCapability {
   /** A trial run's message and reply; null when the run was no trial. */
   sample(input: { workflow: string; run: string }): Promise<{ status: string; input: unknown; output?: unknown; error?: string } | null>;
   /** The claims and cases a seeded page's file carries, recorded, so the page's checks match its file: a sentence
-   *  the file no longer carries is retired, when `speaker` wrote it (never a person's or the dream's); cases are
-   *  only added. */
-  seed(pages: ReadonlyArray<{ name: string; claims: PageClaim[] }>, speaker: string): Promise<void>;
+   *  the file no longer carries is retired, when `speaker` wrote it (never a person's or the dream's); a new one is
+   *  written with the checks it names, or the standard check; cases are only added. `speaker` is strut for its own
+   *  pages, a package's name for its. What was not recorded, a line each. */
+  seed(pages: ReadonlyArray<{ name: string; claims: PageClaim[] }>, speaker: string): Promise<string[]>;
   /** Boot: the test branches a restart left, dropped. */
   sweep(): Promise<void>;
 }
@@ -639,6 +640,11 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
     },
 
     async seed(pages, speaker) {
+      const problems: string[] = [];
+      const said = (line: string) => {
+        problems.push(line);
+        console.warn(`[trials] ${line}`);
+      };
       for (const page of pages) {
         try {
           const have = await claimsOn(page.name);
@@ -647,15 +653,17 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
           for (const old of have) {
             if (old.speaker !== speaker || texts.has(old.text.trim())) continue;
             const gone = await claims.retireClaim(old.id, { publisher: speaker, scoped: false, concepts: true });
-            if (!("ok" in gone)) console.warn(`[trials] ${page.name}: a claim its file no longer carries was not retired: ${gone.error}`);
+            if (!("ok" in gone)) said(`${page.name}: a claim its file no longer carries was not retired: ${gone.error}`);
           }
           for (const c of page.claims) {
             if (!c.text || c.text.includes("{{")) continue;
             let id = have.find((x) => x.text.trim() === c.text)?.id;
             if (!id) {
-              const made = await claims.addClaim({ subjects: [{ kind: "concept", name: page.name }], text: c.text, checks: [conceptCheckSpec(c.text)] }, { publisher: speaker, scoped: false, concepts: true });
+              // The checks the file names (a workflow's claims block takes the same), else a model reading the work.
+              const checks = c.checks?.length ? c.checks : [conceptCheckSpec(c.text)];
+              const made = await claims.addClaim({ subjects: [{ kind: "concept", name: page.name }], text: c.text, checks }, { publisher: speaker, scoped: false, concepts: true });
               if (!("ok" in made)) {
-                console.warn(`[trials] ${page.name}: its claim was not recorded: ${made.error}`);
+                said(`${page.name}: its claim "${c.text.slice(0, 80)}" was not recorded: ${made.error}`);
                 continue;
               }
               id = made.id;
@@ -666,9 +674,10 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
             if (added.length) await link(id, added.slice(0, Math.max(0, CASES_MAX - linked.size)));
           }
         } catch (err) {
-          console.warn(`[trials] ${page.name}: its claims were not recorded: ${errorText(err)}`);
+          said(`${page.name}: its claims were not recorded: ${errorText(err)}`);
         }
       }
+      return problems;
     },
 
     async sweep() {

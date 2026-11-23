@@ -186,7 +186,7 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import { BranchError, branchNameProblem, createBranches, type BranchesCapability } from "./branches.js";
-import { createTrials, SEED_SPEAKER } from "./trials.js";
+import { createTrials, SEED_SPEAKER, type TrialsCapability } from "./trials.js";
 import type { PageClaim } from "./claims-schemas.js";
 import { MergeConflict, MergeRefused } from "./branch-merge.js";
 import { createConceptSources, DEV_CONCEPTS_ENV, devConcepts, type ConceptSources } from "./concept-sources.js";
@@ -5512,6 +5512,11 @@ export async function createStrut<TServices = unknown>(
     ...(graph ? { graph } : {}),
     claims: claimsAuthoring,
     ...(verifier ? { verifyPublish: (subject) => verifier.verifyPublish(subject) } : {}),
+    // A package's pages' claims and cases, by the package (src/trials.ts), where the claims layer is on.
+    pageClaims: async (pages, speaker) => {
+      const trials = (services as Record<string, unknown>)["trials"] as TrialsCapability | undefined;
+      return trials ? trials.seed(pages, speaker) : pages.some((p) => p.claims.length) ? [`the claims of ${speaker}'s pages were not recorded: this workspace keeps no claims (a graph-backed one does)`] : [];
+    },
     ...(secretsCap ? { secrets: secretsCap } : {}),
     gitSecret,
     gitLocal,
