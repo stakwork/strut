@@ -314,7 +314,7 @@ function isMainModule(): boolean {
     }
   };
   const self = canonical(fileURLToPath(import.meta.url));
-  return [process.argv[1], process.env["pm_exec_path"]].some((entry) => !!entry && canonical(entry) === self);
+  return [process.argv[1], bootEnv()["pm_exec_path"]].some((entry) => !!entry && canonical(entry) === self);
 }
 
 if (isMainModule()) {
