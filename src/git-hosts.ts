@@ -17,19 +17,36 @@
  * over a wire anyone between can read. Git itself is held to it too: the
  * credential helper strut hands git answers only for the host it was given
  * (src/steps/lib/git/_shared.ts), so a redirect elsewhere gets nothing.
+ *
+ * An entry also names the FORGE'S STEPS for its host (plans/package-seams.md
+ * §4): `repositories` and `pull_request`, which strut's `git/repositories`
+ * and `git/pull-request` pick by host, so a caller names no forge.
+ * github.com's own entry opens a pull request with strut's `github/create-pr`.
  */
 
-/** A host a token serves, and the secret that holds it (`provides.git`). */
+/** A host a token serves, and the secret that holds it (`provides.git`) —
+ *  and the FORGE'S STEPS for that host (plans/package-seams.md §4), each a
+ *  full step type: `repositories`, what the token reaches, for
+ *  `git/repositories`; `pull_request`, opening one, for `git/pull-request`.
+ *  Each takes strut's input and answers strut's output, written on those
+ *  two steps' descriptions. */
 export interface GitHost {
   /** Lowercase hostname, with `:port` when it is not the scheme's default. */
   host: string;
   secret: string;
+  repositories?: string;
+  pull_request?: string;
 }
 
+/** The forge steps an entry may name. */
+export const FORGE_STEPS = ["repositories", "pull_request"] as const;
+export type ForgeStep = (typeof FORGE_STEPS)[number];
+
 /** Strut's own entry: what its git steps and `git+` sources have always
- *  read for GitHub. A package that declares the same is welcome; one that
- *  names another secret for github.com is refused. */
-export const STRUT_GIT_HOSTS: readonly GitHost[] = Object.freeze([{ host: "github.com", secret: "GITHUB_TOKEN" }]);
+ *  read for GitHub, and strut's own step that opens a pull request there.
+ *  A package that declares the same is welcome; one that names another
+ *  secret, or another step, for github.com is refused. */
+export const STRUT_GIT_HOSTS: readonly GitHost[] = Object.freeze([{ host: "github.com", secret: "GITHUB_TOKEN", pull_request: "github/create-pr" }]);
 
 /** A host as `provides.git` names it: a lowercase hostname, an optional port. */
 export const GIT_HOST_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*(?::[1-9][0-9]{0,4})?$/;
@@ -74,17 +91,47 @@ export function boxGitHosts(packages: ReadonlyArray<{ package: string; provides?
   return out;
 }
 
-/** Each host two holders name with different secrets, said for a refusal:
- *  `holders` in order, strut's own first. */
+/** Each host two holders name with different secrets, or with different
+ *  steps for one of its forge's steps, said for a refusal: `holders` in
+ *  order, strut's own first. */
 export function gitHostProblems(holders: ReadonlyArray<{ by: string; git?: readonly GitHost[] }>): string[] {
   const first = new Map<string, { by: string; secret: string }>();
+  const steps = new Map<string, { by: string; step: string }>();
   const problems: string[] = [];
   for (const { by, git } of holders) {
-    for (const { host, secret } of git ?? []) {
-      const had = first.get(host);
-      if (!had) first.set(host, { by, secret });
-      else if (had.secret !== secret) problems.push(`${by} provides git for ${host} with ${secret}, which ${had.by} serves with ${had.secret}: a host is served by one secret`);
+    for (const h of git ?? []) {
+      const had = first.get(h.host);
+      if (!had) first.set(h.host, { by, secret: h.secret });
+      else if (had.secret !== h.secret) problems.push(`${by} provides git for ${h.host} with ${h.secret}, which ${had.by} serves with ${had.secret}: a host is served by one secret`);
+      for (const field of FORGE_STEPS) {
+        const step = h[field];
+        if (!step) continue;
+        const named = steps.get(`${h.host} ${field}`);
+        if (!named) steps.set(`${h.host} ${field}`, { by, step });
+        else if (named.step !== step) problems.push(`${by} names ${step} as ${h.host}'s ${field} step, which ${named.by} names ${named.step}: a host has one`);
+      }
     }
   }
   return problems;
+}
+
+/** A host's forge steps on the box: each the first holder's that names
+ *  one (`hosts` in order, strut's own first; two that differ were refused
+ *  at install). */
+export function forgeStepsOf(hosts: readonly GitHost[], host: string): Partial<Record<ForgeStep, string>> {
+  const out: Partial<Record<ForgeStep, string>> = {};
+  for (const h of hosts) {
+    if (h.host !== host) continue;
+    for (const field of FORGE_STEPS) if (h[field] && !out[field]) out[field] = h[field];
+  }
+  return out;
+}
+
+/** The hosts on the box, each once, in order. */
+export const gitHostNames = (hosts: readonly GitHost[]): string[] => [...new Set(hosts.map((h) => h.host))];
+
+/** The box's git hosts as a step reads them (`ctx.services.gitHosts`): the
+ *  map createStrut keeps after every package write. */
+export interface GitHostsCapability {
+  hosts(): readonly GitHost[];
 }

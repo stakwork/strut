@@ -38,6 +38,14 @@
  * any host the box serves (`secrets.git`); without it they never see one,
  * though strut's git steps they call still use it (src/packages/fence.ts).
  *
+ * An entry may also name the FORGE'S STEPS for its host
+ * (plans/package-seams.md §4): `repositories`, what the token reaches, and
+ * `pull_request`, opening one — each the package's own step by its name
+ * inside the package first, else strut's by its type (`github/create-pr`),
+ * never another package's. `readPackage` resolves them to full types
+ * (`gitHosts`); the install checks each exists; strut's `git/repositories`
+ * and `git/pull-request` pick them by host.
+ *
  * Its `schedules:` names workflows of the package strut runs on a schedule,
  * each an automation's draft (`name?`, `trigger`, `input?`) with the
  * `workflow` it runs, by its name inside the package. `readPackage`
@@ -92,7 +100,7 @@ import { z } from "zod";
 import { validateAppName } from "../apps/files.js";
 import { checkInputTemplates, triggerSchema, type TriggerDraft } from "../automations.js";
 import { globToRegExp } from "../closure.js";
-import { GIT_HOST_RE } from "../git-hosts.js";
+import { FORGE_STEPS, GIT_HOST_RE, type GitHost } from "../git-hosts.js";
 import { parseConceptFile } from "../concept-seed.js";
 import { packagePrefixOf } from "../package-lookup.js";
 import { hashTree } from "../version.js";
@@ -203,6 +211,10 @@ const manifestSchema = z
               .object({
                 host: z.string().regex(GIT_HOST_RE, "a host is a lowercase hostname, with :port when it is not the default (github.com, git.acme.com:3000)"),
                 secret: z.string().min(1),
+                // The forge's steps for this host (plans/package-seams.md §4):
+                // the package's own by <name>, else strut's by its type.
+                repositories: z.string().min(1).optional(),
+                pull_request: z.string().min(1).optional(),
               })
               .strict(),
           )
@@ -279,6 +291,9 @@ export interface PackageInfo {
   schedules?: PackageSchedule[];
   /** The manifest's `on:`, each on a workflow of the package. */
   on?: PackageTrigger[];
+  /** The manifest's `provides.git`, each forge step resolved to its full
+   *  type: the package's own (`<package>/<name>`) or strut's. */
+  gitHosts?: GitHost[];
 }
 
 /** A workflow of the package strut runs when a node of `type` is `op`
@@ -440,11 +455,30 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
     if (!readable.includes(name)) problems.push(`${MANIFEST_FILE}: provides.secrets: ${name} is not in requires.secrets or requires.optional — a package's steps manage only secrets they may read`);
   }
   const hosts = new Set<string>();
-  for (const { host, secret } of manifest.provides?.git ?? []) {
+  const ownSteps = new Set(items.filter((i) => i.kind === "step" && !i.helper).map((i) => i.name));
+  const gitHosts = (manifest.provides?.git ?? []).map((entry, i): GitHost => {
+    const { host, secret } = entry;
     if (!readable.includes(secret)) problems.push(`${MANIFEST_FILE}: provides.git: ${secret} (for ${host}) is not in requires.secrets or requires.optional — a package provides only a token its steps may read`);
     if (hosts.has(host)) problems.push(`${MANIFEST_FILE}: provides.git names ${host} twice — a host is served by one secret`);
     hosts.add(host);
-  }
+    const out: GitHost = { host, secret };
+    for (const field of FORGE_STEPS) {
+      const name = entry[field];
+      if (!name) continue;
+      const own = `${pkg}/${name}`;
+      if (ownSteps.has(own)) out[field] = own;
+      else if (packagePrefixOf(name)) problems.push(`${MANIFEST_FILE}: provides.git[${i}].${field}: ${JSON.stringify(name)} is another package's step, or this one's by its full type — name the package's own step by <name> (steps/<name>.ts) or strut's by its type (github/create-pr)`);
+      else {
+        try {
+          validateStepName(name);
+          out[field] = name;
+        } catch (err) {
+          problems.push(`${MANIFEST_FILE}: provides.git[${i}].${field}: ${JSON.stringify(name)} is not a step's name — ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    return out;
+  });
   const schedules = manifest.schedules ? resolveSchedules(pkg, manifest.schedules, items, problems) : undefined;
   const on = manifest.on ? resolveOn(pkg, manifest.on, items, problems) : undefined;
   if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);
@@ -456,6 +490,7 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
     ...(job ? { job } : {}),
     ...(schedules ? { schedules } : {}),
     ...(on ? { on } : {}),
+    ...(gitHosts.length ? { gitHosts } : {}),
   };
 }
 

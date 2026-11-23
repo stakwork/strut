@@ -179,7 +179,7 @@ import {
   type UninstallResult,
 } from "./packages/install.js";
 import { holdsItsOwn, listInstalledPackages, withMissingSecrets } from "./packages/installed.js";
-import { boxGitHosts, gitSecretOf, STRUT_GIT_HOSTS, type GitSecretOf } from "./git-hosts.js";
+import { boxGitHosts, gitSecretOf, STRUT_GIT_HOSTS, type GitHost, type GitHostsCapability, type GitSecretOf } from "./git-hosts.js";
 import { createInstallTracker, type InstallTracker } from "./packages/progress.js";
 import { checkBootPackages, installBootPackages, parseBootPackagesEnv, type BootPackage, type BootPackageOutcome } from "./packages/boot.js";
 import { createServe, lucideIconSvg, SERVE_FILE, SERVE_IMAGE_PATH, SERVE_POLL_MINUTES, serveRefOf, servedHtml, type ServeRef, type ServeService } from "./packages/serve.js";
@@ -1636,6 +1636,9 @@ export async function createStrut<TServices = unknown>(
   // read go through.
   let boxGitSecret: GitSecretOf = gitSecretOf(STRUT_GIT_HOSTS);
   const gitSecret: GitSecretOf = (url) => boxGitSecret(url);
+  // The box's map itself, with each host's forge steps (plans/package-seams.md
+  // §4): what `git/repositories` and `git/pull-request` pick by host.
+  let boxHosts: readonly GitHost[] = STRUT_GIT_HOSTS;
   // A person's own machine: with no token, git keeps its own credentials.
   const gitLocal = opts.git?.local ?? bootEnv()["STRUT_GIT_LOCAL"] === "1";
   // A job's pull request fails its checks (src/pr-checks.ts,
@@ -1726,6 +1729,9 @@ export async function createStrut<TServices = unknown>(
     // step to its caller's list (src/graph/scope.ts).
     ...(graph ? { graph: graphView({ ...graph, close: async () => undefined }, opts.graphReaders) } : {}),
     ...(graphChanges ? { graphChanges } : {}),
+    // The box's git hosts and their forge steps (src/git-hosts.ts), as the
+    // last package write left them.
+    gitHosts: { hosts: () => boxHosts } satisfies GitHostsCapability,
     // Files on a node: strut's own folder here; a package's step gets its
     // package's through its fence, and each run's writes name it (runner.ts).
     nodeFiles: nodeFilesCapability(nodeFiles),
@@ -2393,7 +2399,8 @@ export async function createStrut<TServices = unknown>(
   const syncGitHosts = async (): Promise<void> => {
     try {
       const packages = (await listInstalledPackages({ workspace, cache: packageStore, ...(graph ? { graph } : {}) })).filter(holdsItsOwn);
-      boxGitSecret = gitSecretOf(boxGitHosts(packages));
+      boxHosts = boxGitHosts(packages);
+      boxGitSecret = gitSecretOf(boxHosts);
     } catch (err) {
       console.warn(`[git] could not read the installed packages' git hosts:`, err instanceof Error ? err.message : err);
     }

@@ -40,7 +40,7 @@ import {
 import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js";
 import { bootEnv, hiddenFromSteps } from "./env.js";
 import { isValidSecretName } from "./secret-store.js";
-import { strutGitSecret, type GitSecretOf } from "./git-hosts.js";
+import { strutGitSecret, type GitHostsCapability, type GitSecretOf } from "./git-hosts.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { SphinxCapability } from "./payments/sphinx-dm.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
@@ -742,6 +742,11 @@ export interface StrutCapabilities {
    *  each write recorded with its run. Set by the standard server under
    *  `<dataDir>/nodes`. */
   nodeFiles?: NodeFilesCapability;
+  /** The box's GIT HOSTS (src/git-hosts.ts): strut's own entry and each
+   *  installed package's `provides.git`, with the forge steps each names —
+   *  what `git/repositories` and `git/pull-request` pick by host. Set by the
+   *  standard server; without it those steps read strut's own entry. */
+  gitHosts?: GitHostsCapability;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local

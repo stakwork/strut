@@ -1,4 +1,5 @@
 import { withLock } from "./lock.js";
+import type { GitHost } from "./git-hosts.js";
 import { readFile, writeFile, readdir, mkdir, stat, unlink, rmdir, rm, rename } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import yaml from "js-yaml";
@@ -274,7 +275,7 @@ export interface Upstream {
    *  ones the package's steps manage — their fence's second list
    *  (src/packages/fence.ts); `git`, the hosts a token it holds serves
    *  (src/git-hosts.ts). Absent when the package provides nothing. */
-  provides?: { secrets?: string[]; git?: Array<{ host: string; secret: string }> };
+  provides?: { secrets?: string[]; git?: GitHost[] };
   /** When a package's door wrote this version or, a known one, stamped it
    *  the release's again (ISO; one time for the whole release): what the
    *  installed fold reads to tell which release is here once a fork is

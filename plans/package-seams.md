@@ -1,10 +1,12 @@
 # Package seams: a package adds to strut without changing it
 
-> **Status (2026-11-23): items 1–3 being built on strut#851; item 4
-> (panels) waits on its open question.** Item 1, files on a node, is
-> BUILT (`src/node-files.ts`, `node/files`, `node/write-files`;
-> docs/graph.md). Item 2, `on:`, is BUILT (`src/packages/on.ts`, the
-> reporter's send in `src/graph-writes.ts`; docs/packages.md). What the build decided where this plan was silent is
+> **Status (2026-11-23): items 1–3 BUILT on strut#851; item 4 (panels)
+> waits on its open question.** Item 1, files on a node: `src/node-files.ts`,
+> `node/files`, `node/write-files` (docs/graph.md). Item 2, `on:`:
+> `src/packages/on.ts` and the reporter's send in `src/graph-writes.ts`
+> (docs/packages.md). Item 3, a forge's steps by host: `provides.git`'s
+> `repositories` and `pull_request`, `git/repositories`, `git/pull-request`
+> (docs/packages.md, docs/steps.md). What the build decided where this plan was silent is
 > marked *Built:* in each section. The owner asked,
 > about the code and pods packages: *"how can we make this generic so
 > other people could build similar packages that add functionality to
@@ -70,7 +72,7 @@ every way, uses the same four.
 | 2 | Files a package keeps | **On a node:** a folder for each package on any node, versioned at each write, gone with the node (§1) | built |
 | 3 | How a package acts on another's write | **`on:` in `strut.yaml`:** a workflow run when a node of a type is created, updated or deleted, as the person whose run wrote it (§2) | built |
 | 4 | How a package shows its part | **Panels** (§3; stadeum `plans/software.md` §5, item 14) | proposed there |
-| 5 | A forge's steps | **Named on its `provides.git` entry.** Strut's `git/repositories` and `git/pull-request` pick them by host (§4) | proposed |
+| 5 | A forge's steps | **Named on its `provides.git` entry.** Strut's `git/repositories` and `git/pull-request` pick them by host (§4) | built |
 
 ## 1. Files on a node
 
@@ -260,6 +262,23 @@ strut.
 GitHub, GitLab and Forgejo packages each fill it, and Code names none of
 them. The `Code Change` page says `git_pull_request`, not
 `github_create_pr`.
+
+*Built (2026-11-23):* as above. Where the plan was silent:
+
+- **A name** is the package's own step by `<name>` first, else strut's by
+  its type, never another package's: the rule `job:` grants follow. The
+  install records the full types.
+- **One step per host and field.** Two holders that name different steps
+  for one host's `repositories` or `pull_request` are refused at install,
+  as two secrets for one host are. Strut's own github.com entry counts, so
+  a package that serves github.com names `github/create-pr` or no
+  `pull_request` at all.
+- **`body` is optional** in `git/pull-request`, as in `github/create-pr`,
+  which now also takes the repository as `url`.
+- **The box's map** is on the bag as `gitHosts.hosts()`, made again after
+  every package write with the secrets' map.
+- Both steps are strut's lib steps with an `effect`, so a package's `job:`
+  may grant them to the job agent.
 
 ## 5. What strut never gets
 

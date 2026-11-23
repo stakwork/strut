@@ -104,11 +104,13 @@ export default defineStep({
   effect: "write",
   description:
     `Open a GitHub pull request from head to base, or return the open one that already exists for head (so a re-run lands on the same PR). ` +
+    `github.com's pull_request step: git/pull-request calls it for a github.com URL. ` +
     `Auth: token, else the GITHUB_TOKEN secret — the PR is authored by the token's owner. ` +
     `Fails with "pr_create_failed: <status> <message>" when GitHub refuses, or "no_push_permission: …" on 401/403. ` +
     `Output: { url, number, headSha, base, head, created } — created is false when the PR already existed.\n\n${EXAMPLE}`,
   input: z.object({
-    repo: z.string().min(1).describe('"owner/repo" or https://github.com/owner/repo'),
+    repo: z.string().min(1).optional().describe('"owner/repo" or https://github.com/owner/repo; this or url'),
+    url: z.string().min(1).optional().describe("the repository's URL, https://github.com/owner/repo — what git/pull-request passes; this or repo"),
     head: z.string().min(1).describe("the branch with the change (a git/push step's `branch`)"),
     base: z.string().min(1).describe("the branch to merge into"),
     title: z.string().min(1).describe("pull request title"),
@@ -125,7 +127,9 @@ export default defineStep({
     created: z.boolean(),
   }),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
-    const { owner, repo } = parseGithubRepo(cfg.repo);
+    const ref = cfg.repo ?? cfg.url;
+    if (!ref) throw new Error('github/create-pr: name the repository — repo ("owner/repo") or url (https://github.com/owner/repo)');
+    const { owner, repo } = parseGithubRepo(ref);
     // Lazy-load the SDK inside run() — see AGENTS.md "Lib step dependency
     // convention". Credentials via the secrets capability (scrubbed); explicit
     // config wins — "Lib step credentials".

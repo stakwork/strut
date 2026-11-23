@@ -16,6 +16,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { GraphBackend } from "../graph/backend.js";
+import type { GitHost } from "../git-hosts.js";
 import { conceptEdited, declaredAttributes, parseConceptFile } from "../concept-seed.js";
 import { loadYaml } from "../yaml.js";
 import {
@@ -71,7 +72,7 @@ export interface InstalledPackage {
    *  its steps manage — a person's own value, and on an admin's call from
    *  its own `admin: true` app the deployment's (src/packages/fence.ts);
    *  `git`, the hosts a token it holds serves (src/git-hosts.ts). */
-  provides?: { secrets?: string[]; git?: Array<{ host: string; secret: string }> };
+  provides?: { secrets?: string[]; git?: GitHost[] };
   /** `GET /packages`'s (`withMissingSecrets`): the secrets it requires
    *  (`secrets` less `optional`) that the deployment has no value for, read
    *  as an install's `missing` and a subscription's gate read them — the
