@@ -327,4 +327,56 @@ describe("on: on a strut with a graph (ladybug)", { skip: lb.skip }, () => {
     assert.equal((await store.getRunSummary("job", job!))!.status, "success");
     assert.deepEqual((await startOf("job", job!)).onWrite, mark, "the job run carries the mark of the run that started it");
   });
+
+  it("a chat its workflow starts (conversation/start) carries its mark to the chat's job: the job's writes start nothing of its own", async () => {
+    // The box with its orchestrator (no wake: no model here).
+    await strut.close();
+    strut = await createStrut({
+      workspace: ws,
+      dataDir: join(root, "box"),
+      graph,
+      store,
+      serveUi: false,
+      scheduler: false,
+      enableChat: false,
+      systemWorkflows: false,
+      browserWorkflows: false,
+      privacyWorkflows: false,
+      mediaWorkflows: false,
+      job: false,
+      orchestrator: { wake: false },
+      builder: false,
+      views: false,
+      concepts: false,
+      stt: false,
+      subscriptionPoll: false,
+    });
+    await ws.publishWorkflow("job", "v1", `name: job\nsteps:\n  - { id: mark, type: graph/edit-node, config: { ref_id: "{{ input.prompt }}", node_data: { description: "baked" } } }\n`);
+    await strut.packages.install(
+      `file:${await writeTree({
+        ...DEVBOX,
+        "workflows/setup.yaml": `name: ${SETUP}\nsteps:\n  - { id: chat, type: conversation/start, config: { message: "Set up {{ input.ref_id }}", job: { title: "Set up", brief: "{{ input.ref_id }}" }, about: "{{ input.ref_id }}" } }\n`,
+      })}`,
+      { actor: "alice" },
+    );
+    const made = await strut.run(make, { name: "four" }, { actor: "bob" });
+    assert.equal(made.status, "success", JSON.stringify(made.error));
+    // Bounded: without the mark, each job's write starts another setup, and
+    // the runs never settle.
+    for (let i = 0; !(await store.listRuns("job")).length || !(await store.getRunSummary("job", (await store.listRuns("job"))[0]!)); i++) {
+      if (i > 800) assert.fail("the chat's job never ran");
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    await new Promise((r) => setTimeout(r, 800));
+    const [setup, ...more] = await store.listRuns(SETUP);
+    const [job, ...jobs] = await store.listRuns("job");
+    const [turn, ...turns] = await store.listRuns("orchestrator");
+    assert.deepEqual([more.length, jobs.length, turns.length], [0, 0, 0], "the chat's job updated the node, and started no second setup");
+    assert.equal((await store.getRunSummary(SETUP, setup!))!.status, "success");
+    const mark = (await startOf(SETUP, setup!)).onWrite;
+    const turnStart = await startOf("orchestrator", turn!);
+    assert.deepEqual([turnStart.actor, turnStart.onWrite], ["bob", mark], "the chat is the writer's, its turn carrying the mark");
+    assert.equal((await store.getRunSummary("job", job!))!.status, "success");
+    assert.deepEqual((await startOf("job", job!)).onWrite, mark, "and its job");
+  });
 });

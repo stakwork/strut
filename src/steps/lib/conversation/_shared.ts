@@ -6,7 +6,10 @@
  *
  * Refused from an app's page (`ctx.app`): a page is code a model wrote, and
  * a person's conversations are theirs. A FIRST-PARTY page (strut's own app,
- * plans/jamie-app.md §3) reads them as its viewer's person token does.
+ * plans/jamie-app.md §3) reads them as its viewer's person token does. Any
+ * page its manifest grants it may ask `conversation/list { about }`: its
+ * viewer's chats about one node (plans/package-seams.md §7), how an app finds
+ * "the chat about this" one it started (`conversation/start`).
  *
  * `everyone` (`conversation/list`, `get`, `fork`; plans/jamie-app.md §2.3)
  * reads every person's conversations, as `knowledge/cycles` reads what the
@@ -31,12 +34,14 @@ export function adminPageCall(ctx: { app?: AppRef; path?: string; workflow?: str
 
 export function requireConversations(
   ctx: { services?: unknown; app?: AppRef; actor?: string; path?: string; workflow?: string },
-  ask: { type?: string; everyone?: boolean } = {},
+  ask: { type?: string; everyone?: boolean; about?: boolean } = {},
 ): {
   conversations: ConversationsCapability;
   viewer: ConversationViewer;
 } {
-  if (ctx.app && !isFirstParty(ctx.app)) throw new Error("conversation/* steps are not available to an app's page (strut's own app gets them: plans/jamie-app.md §3)");
+  if (ctx.app && !isFirstParty(ctx.app) && !(ask.about && ctx.actor)) {
+    throw new Error("conversation/* steps are not available to an app's page (strut's own app gets them: plans/jamie-app.md §3); a page may ask conversation/list { about } for its viewer's chats about a node");
+  }
   const conversations = (ctx.services as { conversations?: ConversationsCapability } | undefined)?.conversations;
   if (!conversations) {
     throw new Error("conversation/* steps need the conversation index (ctx.services.conversations). The standard strut server provides it.");

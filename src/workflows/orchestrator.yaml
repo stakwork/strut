@@ -50,8 +50,21 @@ input:
   session: { type: string, required: false, description: "The conversation's thread (a session id), the same every turn. None for a one-shot (an automation)" }
   context: { type: json, required: false, description: "What the host knows about this turn: { line, where?, timeZone? }. `line` is put before the prompt (\"Thu 16 Oct 14:02, Europe/London. \"): the time, the person's time zone, the device, where this conversation is read. `where` is that last part alone (\"In a Sphinx tribe: your reply is all they read.\") and `timeZone` the person's IANA zone, read by strut's WAKE only: a wake's line is the time now in `timeZone`, then `where` (src/wake.ts)" }
 steps:
+  # A PREPARED turn (plans/package-seams.md §7): `conversation/start` — a
+  # package's workflow, or an app's page, starting work for a person — puts
+  # the job to start in `$prepared`, a launch-level field strut alone sets,
+  # never in `input`: no host's launch has one. That turn calls no model:
+  # every step up to `turn` is skipped, job/start below starts the job, and
+  # the reply is strut's fixed words. Every other turn: `$prepared` is
+  # undefined and the turn is the model's.
+  - id: model
+    type: if
+    config:
+      cond: "{{ !$prepared }}"
   - id: dir
     type: job/dir
+    depends: model
+    when: true
   # The RULES: how the assistant talks with a person and hands work to jobs
   # — the `Orchestrator` Concept's docs, as they are (`frame: false`: the
   # page is this agent's own rules, shipped by strut, not notes beside them).
@@ -212,7 +225,8 @@ steps:
             properties:
               message: { type: string }
   # The job the reply asked to start (`start`), started after the turn so a
-  # turn is ONE model call. job/start is the same step the agent's tool is:
+  # turn is ONE model call — or a prepared turn's (`$prepared`), with no
+  # model at all. job/start is the same step the agent's tool is:
   # detached, and the job inherits this run's `jobCallback` (specs/CALLBACKS.md
   # §5), so its end reaches whoever launched the turn. A start job/start
   # refuses (a file from an earlier message, a job busy) never fails the turn:
@@ -220,25 +234,25 @@ steps:
   # did not start, and `startError` says why.
   - id: wantsJob
     type: if
-    depends: turn
+    depends: [model, turn]
     config:
-      cond: "{{ !!turn.object.start?.brief }}"
+      cond: "{{ !!($prepared?.brief || turn?.object?.start?.brief) }}"
   - id: started
     type: job/start
     depends: wantsJob
     when: true
     config:
-      prompt: "{{ turn.object.start.brief }}"
-      title: "{{ turn.object.start.title }}"
-      workflow: "{{ turn.object.start.workflow }}"
+      prompt: "{{ $prepared ? $prepared.brief : turn.object.start.brief }}"
+      title: "{{ $prepared ? $prepared.title : turn.object.start.title }}"
+      workflow: "{{ $prepared ? undefined : turn.object.start.workflow }}"
       # job/start refuses `kind` on a builder job (it reads its own page).
-      kind: "{{ turn.object.start.workflow === 'builder' ? undefined : turn.object.start.kind }}"
-      peer: "{{ turn.object.start.peer }}"
-      repos: "{{ turn.object.start.repos }}"
+      kind: "{{ $prepared ? $prepared.kind : turn.object.start.workflow === 'builder' ? undefined : turn.object.start.kind }}"
+      peer: "{{ $prepared ? undefined : turn.object.start.peer }}"
+      repos: "{{ $prepared ? $prepared.repos : turn.object.start.repos }}"
       # This turn's files only: a DAG step sees the files its run was
       # launched with, never an earlier turn's (the agent hands those to its
       # tools alone), so a file from an earlier message goes by job/start.
-      attachments: "{{ turn.object.start.attachments }}"
+      attachments: "{{ $prepared ? undefined : turn.object.start.attachments }}"
     options:
       onError:
         id: notStarted
@@ -246,21 +260,22 @@ steps:
         config: { error: "{{ $error.message }}" }
   - id: result
     type: pack
-    depends: [turn, started]
+    depends: [model, turn, started]
     config:
-      # Both arms are evaluated (src/expr.ts never short-circuits): `?.` in each.
-      text: "{{ started?.error ? turn.object.text + ' (The job did not start: ' + started?.error + ')' : turn.object.text }}"
+      # A prepared turn's reply is strut's fixed words: the job's card under
+      # it says what started.
+      text: "{{ ($prepared ? 'On it.' : turn.object.text) + (started?.error ? ' (The job did not start: ' + started?.error + ')' : '') }}"
       startError: "{{ started?.error }}"
-      artifacts: "{{ turn.object.artifacts }}"
-      ask: "{{ turn.object.ask }}"
+      artifacts: "{{ turn?.object?.artifacts }}"
+      ask: "{{ turn?.object?.ask }}"
       # The job the reply started: { job, runId, callback, workflow }; undefined when none.
       job: "{{ started?.job }}"
       runId: "{{ started?.runId }}"
       # A TRIAL only (src/trials.ts): the job this reply would have started,
       # which was held — its brief is part of what the turn is judged on.
-      held: "{{ started?.held ? turn.object.start : undefined }}"
-      cost: "{{ turn.cost }}"
-      session: "{{ turn.session }}"
+      held: "{{ started?.held ? turn?.object?.start : undefined }}"
+      cost: "{{ turn?.cost }}"
+      session: "{{ $prepared ? input.session : turn.session }}"
 params:
   model: claude-sonnet-5-5
   reasoning: medium

@@ -51,7 +51,7 @@ import { randomBytes } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ArtifactRef } from "./artifact-refs.js";
-import type { Flow, RunAttachment, RunEvent, RunSummary, WakeMark } from "./core.js";
+import type { Flow, PreparedJob, RunAttachment, RunEvent, RunSummary, WakeMark } from "./core.js";
 import { jobRoot, readJobRecord, withLock, type JobRun } from "./jobs.js";
 import { briefOf, listProposals, proposalsRoot, type Proposal, type ProposalBrief } from "./proposals.js";
 import { APP_NAMESPACE, PEER_NAMESPACE, PUBLIC_NAMESPACE, encodeId, hostOfSession, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
@@ -190,6 +190,13 @@ export interface ConversationRecord {
    *  continued again moves to the end). Absent on a record from before
    *  they were kept: filled in when it is next listed. */
   jobs?: string[];
+  /** The graph node it is about (a ref_id), when `conversation/start`
+   *  started it about one (plans/package-seams.md §7): what
+   *  `list { about }` finds. */
+  about?: string;
+  /** The package whose workflow or page started it (`conversation/start`):
+   *  shown as "from <package>". */
+  from?: string;
 }
 
 /** One person's row for a conversation: the record's facts and their own
@@ -212,6 +219,9 @@ export interface ConversationEntry {
   /** Who took its first turn. In an admin's Everyone, for a row from before
    *  it was kept, the actor its id is under. */
   startedBy?: string;
+  /** The record's `about` and `from`. */
+  about?: string;
+  from?: string;
 }
 
 /** A row of `conversation/list`. */
@@ -366,6 +376,9 @@ export interface ConversationListQuery {
   limit?: number;
   /** The `next` of the page before. */
   before?: string;
+  /** Only the ones about this graph node (`ConversationRecord.about`),
+   *  archived or not: a lookup of "the chat about this", not the inbox. */
+  about?: string;
 }
 
 export interface ConversationGetQuery {
@@ -391,7 +404,29 @@ export interface ConversationUpdate {
   shared?: boolean;
 }
 
+/** `conversation/start` (plans/package-seams.md §7): work a package starts
+ *  for a person, as a new conversation of theirs. */
+export interface ConversationStart {
+  /** Whose: the conversation is `<person>/<12 hex>`, its first turn theirs. */
+  person: string;
+  /** The person's words: the first turn's prompt. */
+  message: string;
+  /** The job its first turn starts, with no model (`$prepared`). */
+  job: PreparedJob;
+  /** The graph node it is about (a ref_id): on its record. */
+  about?: string;
+  /** The package that started it: on its record. */
+  from?: string;
+  /** The run that asks: its `on:` mark (src/packages/on.ts) goes on to the
+   *  job, so the job's writes stay held to the chain. */
+  runId: string;
+}
+
 export interface ConversationsCapability {
+  /** A new conversation whose first turn is a PREPARED one: the person's
+   *  message, strut's fixed reply, the job started — awaited, so the job's
+   *  id comes back. The strut server's own bag has it. */
+  start?(q: ConversationStart): Promise<{ session: string; job: string }>;
   list(q: ConversationListQuery, by: ConversationViewer): Promise<{ conversations: ConversationListItem[]; next?: string }>;
   /** `null`: no such conversation, or not the viewer's to read. */
   get(q: ConversationGetQuery, by: ConversationViewer): Promise<ConversationView | null>;
@@ -409,7 +444,21 @@ export interface ConversationsCapability {
 
 export interface Conversations extends ConversationsCapability {
   /** A turn launched on `id` (createStrut's launcher). */
-  launched(id: string, turn: { runId: string; workflow: string; actor?: string; principal?: string; wake?: boolean; prompt?: unknown }): Promise<void>;
+  launched(
+    id: string,
+    turn: {
+      runId: string;
+      workflow: string;
+      actor?: string;
+      principal?: string;
+      wake?: boolean;
+      prompt?: unknown;
+      /** A NEW conversation's (`conversation/start`): its title, the node it
+       *  is about and the package that started it. Ignored on one that has
+       *  a record. */
+      opens?: { title?: string; about?: string; from?: string };
+    },
+  ): Promise<void>;
   /** …and ended. */
   ended(id: string, runId: string, status: string): Promise<void>;
   /** The record on file, or null: never built here, so a session that is
@@ -479,6 +528,8 @@ function factsOf(rec: ConversationRecord): Facts {
     ...(rec.forkedFrom ? { forkedFrom: rec.forkedFrom } : {}),
     ...(rec.jobs ? { jobs: rec.jobs } : {}),
     ...(rec.turns[0]?.by ? { startedBy: rec.turns[0].by } : {}),
+    ...(rec.about ? { about: rec.about } : {}),
+    ...(rec.from ? { from: rec.from } : {}),
   };
 }
 
@@ -881,7 +932,19 @@ export function createConversations(deps: ConversationsDeps): Conversations {
           if (rec?.turns.some((r) => r.runId === t.runId)) return false; // a resume
           const now = new Date().toISOString();
           const owner = ownerOf(id);
-          const next: ConversationRecord = rec ?? { id, title: "", createdAt: now, updatedAt: now, rev: 0, viewers: owner ? [owner] : [], turns: [], jobs: [] };
+          const opens = rec ? undefined : t.opens;
+          const next: ConversationRecord = rec ?? {
+            id,
+            title: opens?.title ? titleOf(opens.title) : "",
+            createdAt: now,
+            updatedAt: now,
+            rev: 0,
+            viewers: owner ? [owner] : [],
+            turns: [],
+            jobs: [],
+            ...(opens?.about ? { about: opens.about } : {}),
+            ...(opens?.from ? { from: opens.from } : {}),
+          };
           next.turns.push({ runId: t.runId, workflow: t.workflow, at: now, ...(by ? { by } : {}), ...(t.wake ? { wake: true as const } : {}) });
           next.updatedAt = now;
           if (!next.title && !next.renamed && !t.wake) next.title = titleOf(t.prompt);
@@ -941,16 +1004,17 @@ export function createConversations(deps: ConversationsDeps): Conversations {
         // or not; the words may also name who started it, or its host.
         found = (await everyRow()).filter((e) => {
           const text = `${e.title} ${e.startedBy ?? ownerOf(e.id) ?? ""} ${hostOfSession(e.id) ?? ""}`.toLowerCase();
-          return words.every((w) => text.includes(w));
+          return words.every((w) => text.includes(w)) && (!q.about || e.about === q.about);
         });
       } else {
         const idx = await readJson<{ conversations: Record<string, ConversationEntry> }>(viewerFile(keyOf(by)));
         // The shared ones that are not the viewer's yet: listed for everyone.
         const mine = idx?.conversations ?? {};
-        const team: ConversationEntry[] = q.archived ? [] : Object.values(await readShared()).filter((e) => !mine[e.id]);
+        const team: ConversationEntry[] = q.archived && !q.about ? [] : Object.values(await readShared()).filter((e) => !mine[e.id]);
         isTeam = new Set(team.map((e) => e.id));
         found = [...Object.values(mine), ...team]
-          .filter((e) => (q.archived ? e.archived : !e.archived))
+          // The ones about a node, archived or not: a lookup, not the inbox.
+          .filter((e) => (q.about ? e.about === q.about : q.archived ? e.archived : !e.archived))
           .filter((e) => words.every((w) => e.title.toLowerCase().includes(w)));
       }
       const rows = found.sort((a, b) => cursor(b).localeCompare(cursor(a))).filter((e) => !q.before || cursor(e) < q.before);
