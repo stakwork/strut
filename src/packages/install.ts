@@ -81,6 +81,7 @@ import { checkPackageTypes, registerPackageTypes, type CheckedTypes } from "./gr
 import {
   conceptHash,
   conceptPrefix,
+  hasValue,
   holdsItsOwn,
   listInstalledPackages,
   packageConcepts,
@@ -1133,8 +1134,8 @@ async function takeBack(deps: PackageDeps, wrote: Wrote[], concepts: Map<string,
   await deps.getRegistry().catch(() => undefined);
 }
 
-/** `requires` the deployment does not meet: secrets it cannot resolve (the
- *  installer's own included), binaries not on PATH, runtimes (none can be
+/** `requires` the deployment does not meet: secrets it cannot resolve to a
+ *  value, an empty one counting as none (the installer's own included), binaries not on PATH, runtimes (none can be
  *  configured yet, §11.1). */
 async function missingFor(deps: PackageDeps, members: Member[], actor: string | undefined): Promise<InstallResult["missing"]> {
   const secrets = new Set<string>();
@@ -1143,7 +1144,7 @@ async function missingFor(deps: PackageDeps, members: Member[], actor: string | 
   const view = actor && deps.secrets?.forPrincipal ? deps.secrets.forPrincipal(actor) : deps.secrets;
   for (const m of members) {
     const req = m.info.manifest.requires ?? {};
-    for (const name of req.secrets ?? []) if ((await view?.get(name).catch(() => undefined)) === undefined) secrets.add(name);
+    for (const name of req.secrets ?? []) if (!hasValue(await view?.get(name).catch(() => undefined))) secrets.add(name);
     for (const bin of req.binaries ?? []) if (!(await onPath(bin, deps.path))) binaries.add(bin);
     for (const r of req.runtimes ?? []) runtimes.add(r.name);
   }

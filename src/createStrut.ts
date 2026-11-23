@@ -176,7 +176,7 @@ import {
   type PackageDoor,
   type UninstallResult,
 } from "./packages/install.js";
-import { holdsItsOwn, listInstalledPackages } from "./packages/installed.js";
+import { holdsItsOwn, listInstalledPackages, withMissingSecrets } from "./packages/installed.js";
 import { boxGitHosts, gitSecretOf, STRUT_GIT_HOSTS, type GitSecretOf } from "./git-hosts.js";
 import { createInstallTracker, type InstallTracker } from "./packages/progress.js";
 import { checkBootPackages, installBootPackages, parseBootPackagesEnv, type BootPackage, type BootPackageOutcome } from "./packages/boot.js";
@@ -5677,7 +5677,13 @@ export async function createStrut<TServices = unknown>(
           : 500;
     return c.json({ error: message }, status);
   };
-  app.get("/packages", async (c) => c.json({ packages: await listInstalledPackages(packageDeps) }));
+  // Each package with the secrets it requires that the deployment has no
+  // value for, read as the gate reads them (its store, then the environment):
+  // what a host offers an admin to set (stadeum plans/software.md).
+  app.get("/packages", async (c) => {
+    const secrets = packageDeps.secrets;
+    return c.json({ packages: await withMissingSecrets(await listInstalledPackages(packageDeps), secrets && ((name) => secrets.get(name))) });
+  });
   app.post("/packages/install", async (c) => {
     if (registryWasInjected) return c.json({ error: "Installing is disabled when the registry is provided at construction time" }, 409);
     type Body = { ref?: unknown; digest?: unknown; url?: unknown; tokenSecret?: unknown; index?: unknown; wait?: unknown };
