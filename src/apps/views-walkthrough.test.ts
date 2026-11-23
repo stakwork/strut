@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { artifactRel, parseWalkthrough } from "@strut/kit/folds";
 import {
-  STEP_MS, frameIndex, keyStep, pickFrame, playBeat, playFrom, servedPath, statusText, stepSegments, stripScroll,
+  STEP_MS, frameIndex, keyStep, pickFrame, playBeat, playFrom, recordingHost, servedPath, statusText, stepSegments, stripScroll,
 } from "./views/src/lib/walkthrough-player.js";
 import { createFixtureClient } from "./views/src/fixtures/client.js";
 
@@ -110,5 +110,14 @@ describe("ZoomImage's steps", async () => {
     assert.equal(zoomStep(1, -1), 0.75);
     assert.equal(zoomStep(4, 1), 4);
     assert.equal(zoomStep(0.25, -1), 0.25);
+  });
+});
+
+describe("strut/views — WalkthroughPlayer: the header's address", () => {
+  it("is the host alone, never a sign-in link's token", () => {
+    assert.equal(recordingHost("https://p1-3000.pods.stakwork.ai/_pods/open/p1.3000.179.tok/"), "p1-3000.pods.stakwork.ai");
+    assert.equal(recordingHost("http://localhost:3000/settings?x=1"), "localhost:3000");
+    assert.equal(recordingHost(undefined), "");
+    assert.equal(recordingHost("not a url"), "");
   });
 });

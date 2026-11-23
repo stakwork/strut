@@ -76,3 +76,15 @@ export function stripScroll(left: number, width: number, scroll: number, view: n
   if (left + width > scroll + view) return Math.min(left, left + width - view);
   return scroll;
 }
+
+/** What the header says of the address a recording opened: its host alone.
+ *  The address may be a sign-in link whose path is a token (a pod's
+ *  `/_pods/open/<token>`), which no page shows. "" for no address. */
+export function recordingHost(url: string | undefined): string {
+  if (!url) return "";
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}

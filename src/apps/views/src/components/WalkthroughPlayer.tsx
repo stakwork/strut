@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { errorText } from "../lib/format";
 import { dataUrl, relPath, useRunFile, type RunFile } from "../lib/run-file";
 import {
-  RECORDING_POLL_MS, STEP_MS, frameIndex, keyStep, pickFrame, playBeat, playFrom, servedPath, statusText, stepSegments, stripScroll,
+  RECORDING_POLL_MS, STEP_MS, frameIndex, keyStep, pickFrame, playBeat, playFrom, recordingHost, servedPath, statusText, stepSegments, stripScroll,
 } from "../lib/walkthrough-player";
 
 export type WalkthroughMode = "full" | "compact" | "thumb";
@@ -90,6 +90,7 @@ const srcOf = (f: RunFile | null | undefined) => (f && !f.truncated ? dataUrl(f)
 function Player({ workflow, runId, w, compact, className }: { workflow: string; runId: string; w: Walkthrough; compact: boolean; className?: string }) {
   const count = w.frames.length;
   const recording = w.status === "recording";
+  const host = recordingHost(w.url);
   // null: following the newest frame while it records, until the reader picks one; a finished one opens on frame 1.
   const [at, setAt] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -157,7 +158,7 @@ function Player({ workflow, runId, w, compact, className }: { workflow: string; 
       {!compact && (
         <div className="flex items-baseline gap-2 text-xs">
           <span className="min-w-0 truncate font-medium">{w.title ?? "Walkthrough"}</span>
-          {w.url && <span className="min-w-0 truncate text-muted-foreground" title={w.url}>{w.url}</span>}
+          {host && <span className="min-w-0 truncate text-muted-foreground">{host}</span>}
           {w.status && (
             <span data-testid="walkthrough-status" className={cn("ml-auto shrink-0 text-muted-foreground", w.status === "stopped" && "text-destructive")}>
               {statusText(w.status)}
