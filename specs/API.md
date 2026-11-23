@@ -3970,6 +3970,7 @@ refused), `remote_not_found:`, `remote_unreachable:` or `remote_empty:`
   "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
   "source": { "ref": "file:/srv/packages/acme-linear" }, "secrets": ["LINEAR_API_KEY", "NOTION_KEY"],  // what its steps may read: requires.secrets and requires.optional
   // "optional": ["NOTION_KEY"],      // requires.optional: read when set, never asked for (absent when none, and on a release installed before 2026-11-21)
+  "missing": { "secrets": [] },       // the required ones (secrets less optional) the deployment has no value for: its store, then strut's environment, an empty value counting as none — read as the gate and an install's `missing` read them; what a host offers an admin to set (absent for a package that reads no secret)
   // "provides": { "secrets": ["LINEAR_API_KEY"] },  // its strut.yaml's provides, when it has one (`git` too)
   // "git": true,                     // requires.git: its steps read the run's token for a repository's host
   // "commit": "8f2c…",               // a git+ ref: the commit its newest installed version was read at

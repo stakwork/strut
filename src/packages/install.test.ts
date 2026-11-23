@@ -192,7 +192,7 @@ describe("installing a package on a filesystem workspace", () => {
     assert.deepEqual(run.output, { greeting: "hello", LINEAR_API_KEY: "lin_123" });
 
     const [listed] = await api.list();
-    assert.deepEqual({ ...listed, items: undefined }, { package: "acme/linear", version: "1.4.0", digest, source: { ref: `file:${dir}` }, secrets: ["LINEAR_API_KEY"], door: "install", items: undefined });
+    assert.deepEqual({ ...listed, items: undefined }, { package: "acme/linear", version: "1.4.0", digest, source: { ref: `file:${dir}` }, secrets: ["LINEAR_API_KEY"], missing: { secrets: [] }, door: "install", items: undefined });
     assert.deepEqual(listed!.items, [
       { kind: "workflow", name: "acme/linear/sync", installed: "v1", active: "v1", modified: false },
       { kind: "step", name: "acme/linear/_shared", helper: true, installed: "v1", active: "v1", modified: false },
@@ -246,6 +246,33 @@ describe("installing a package on a filesystem workspace", () => {
     assert.deepEqual((await strut.run("acme/linear/sync", { secret: "NOTION_KEY" })).output, { greeting: "hello", NOTION_KEY: null });
     const fenced = await strut.run("acme/linear/sync", { secret: "OPENAI_API_KEY" });
     assert.match(fenced.error!.message, /secret_fenced: .* declares only LINEAR_API_KEY, GITHUB_TOKEN, NOTION_KEY — it may not read OPENAI_API_KEY/);
+  });
+
+  it("GET /packages names the required secrets with no value: the store's and the environment's count, an empty one does not", async () => {
+    // Compose hands strut an unset setting as "" (`PODS_URL: ${PODS_URL:-}`).
+    const saved = { FROM_ENV: process.env["ACME_FROM_ENV"], EMPTY: process.env["ACME_EMPTY"] };
+    process.env["ACME_FROM_ENV"] = "env_789";
+    process.env["ACME_EMPTY"] = "";
+    try {
+      const r = await api.install(
+        `file:${await writeTree({
+          ...PACKAGE,
+          "strut.yaml": "package: acme/linear\nversion: '1'\nrequires:\n  secrets: [LINEAR_API_KEY, ACME_FROM_ENV, ACME_EMPTY, ACME_UNSET]\n  optional: [NOTION_KEY]\n",
+          "steps/create-issue.ts": STEP("acme/linear/create-issue", "hello"),
+        })}`,
+      );
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      assert.deepEqual(r.body.missing.secrets, ["ACME_EMPTY", "ACME_UNSET"], "the install's missing reads them alike");
+      const [listed] = await api.list();
+      assert.deepEqual(listed!.missing, { secrets: ["ACME_EMPTY", "ACME_UNSET"] }, "LINEAR_API_KEY is stored, ACME_FROM_ENV is in the environment, NOTION_KEY is optional");
+      assert.equal((await api.secret("ACME_UNSET", "now_set")).status, 200);
+      assert.deepEqual((await api.list())[0]!.missing, { secrets: ["ACME_EMPTY"] }, "stored now: no longer missing");
+    } finally {
+      for (const [k, v] of [["ACME_FROM_ENV", saved.FROM_ENV], ["ACME_EMPTY", saved.EMPTY]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   });
 
   it("refuses the whole install, writing nothing, over a local item under the prefix or a file it cannot install", async () => {

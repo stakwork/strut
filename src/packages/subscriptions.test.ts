@@ -561,6 +561,16 @@ for (const tb of testBackends()) {
       assert.deepEqual([s.waiting, s.applied?.commit, s.applied?.packages, s.packages], [{ secrets: ["PODS_KEY"] }, c1, [], []]);
       assert.equal((await strut.subscriptions.sync("pods")).status, "waiting");
 
+      // Empty in strut's environment, as compose hands an unset setting: still no value.
+      process.env["PODS_KEY"] = "";
+      try {
+        out = await strut.subscriptions.sync("pods");
+        assert.deepEqual([out.status, out.waiting], ["waiting", { secrets: ["PODS_KEY"] }], out.error);
+        assert.deepEqual(await here(), { step: false, workflow: false, page: false });
+      } finally {
+        delete process.env["PODS_KEY"];
+      }
+
       // Set: the next sync installs it, at the same commit.
       assert.equal((await setSecret(strut, "PODS_KEY", "pk_1")).status, 200);
       out = await strut.subscriptions.sync("pods");
