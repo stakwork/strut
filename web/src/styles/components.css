@@ -5663,11 +5663,12 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .store-line:hover .store-line-go { color: var(--accent-strong); transform: translateX(3px); }
 .store-key { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
 .store-secret { font-size: 11px; color: var(--text-muted); padding: 0 6px; border: 1px dashed var(--border-strong); border-radius: 5px; }
-/* What a thing reaches. */
+/* What a thing reaches. Category hues from the store's own gradient, never
+   the status colors: red read as an error, amber as a warning. */
 .store-can { flex: none; display: inline-flex; gap: 4px; }
-.store .store-can-spends { color: var(--warning); border-color: rgba(251, 191, 36, 0.3); background: rgba(251, 191, 36, 0.1); }
-.store .store-can-acts { color: var(--danger); border-color: rgba(248, 113, 113, 0.3); background: rgba(248, 113, 113, 0.1); }
-.store .store-can-code { color: var(--mint); border-color: rgba(45, 212, 191, 0.3); background: rgba(45, 212, 191, 0.1); }
+.store .store-can-spends { color: #c4b5fd; border-color: rgba(196, 181, 253, 0.3); background: rgba(196, 181, 253, 0.1); }
+.store .store-can-acts { color: var(--accent); border-color: rgba(var(--glow), 0.3); background: rgba(var(--glow), 0.1); }
+.store .store-can-code { color: var(--mint); border-color: rgba(94, 234, 212, 0.3); background: rgba(94, 234, 212, 0.1); }
 /* A workflow's row, opened: its inputs and the steps it runs. */
 .store-acc > summary { list-style: none; }
 .store-acc > summary::-webkit-details-marker { display: none; }
