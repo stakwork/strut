@@ -193,9 +193,11 @@ describe("on: on a strut with a graph (ladybug)", { skip: lb.skip }, () => {
   let ws: WorkspaceManager;
   const saved: Record<string, string | undefined> = {};
   before(async () => {
-    for (const k of ["STRUT_SECRET_KEY", "STRUT_PACKAGE_INDEXES"]) saved[k] = process.env[k];
+    for (const k of ["STRUT_SECRET_KEY", "STRUT_PACKAGE_INDEXES", "ANTHROPIC_API_KEY"]) saved[k] = process.env[k];
     process.env["STRUT_SECRET_KEY"] = "on-secret";
     process.env["STRUT_PACKAGE_INDEXES"] = "[]";
+    // A prepared turn resolves the model it scripts its answer under, and calls none.
+    process.env["ANTHROPIC_API_KEY"] = "on-test-key";
     graph = (await lb.open()) as LadybugBackend;
     await createNodeSchema(graph, graph.schemas, { type: "Workspace", attributes: { description: "?string" }, role: "entity" });
   });

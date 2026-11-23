@@ -405,10 +405,17 @@ this section is proposed.
   it is on the turn's `run.start` and kept by a resume, and the workflow
   reads it as `$prepared`. It is never in `input`, so a host's launch that
   puts `prepared` there is a model's turn as ever (a test shows it).
-- **The orchestrator's gate.** A first step, `model` (`!$prepared`), skips
-  every step through `turn`; the one `started` job/start step takes its
-  fields from `$prepared` or from the reply's `start`; `result`'s text is
-  "On it.", plus the usual "(The job did not start: …)" when it did not.
+- **A scripted turn.** The prepared turn runs as any turn does (the rules,
+  the lists, the peers), but its `turn` agent is given its answer instead of
+  calling a model (`reply`, a new `agent` config): `{ text: "On it.", start:
+  <the job>, artifacts: [] }` from a `scripted` step only a prepared turn
+  runs. The agent commits it to the session as the model's `final_answer`,
+  under the system prompt the turn rendered and the route it resolved, so
+  the session's first turn is that exchange: Jamie's next turn (the wake,
+  or what the person types while the job runs) reads the person's message
+  and the job it started. `started` and `result` are unchanged: they read
+  `start` and `text` as from any reply. A box with no model connected starts
+  no chat, since the turn resolves the model it answers under.
 - **The record's field is `from`, not `startedBy`.** A list row's
   `startedBy` is already the person who took the first turn (an admin's
   Everyone searches it), so the package goes on `from`. The chat's title is
@@ -430,14 +437,6 @@ this section is proposed.
   `GET /conversations?about=` is the same for a host (specs/API.md §9.1).
 - **Open question 5** stays open: the reply is "On it.", and the job's card
   under it names the job.
-- **Not built: Jamie's memory of the first turn.** The prepared turn calls
-  no model, so it writes nothing to the agent session: Jamie's session
-  starts at the chat's first model turn. The usual next turn is the wake,
-  whose prompt names the job and carries its reply. A message the person
-  types while the job runs reaches a Jamie that does not know the job or
-  their note. A follow-up could put the prepared turn's exchange at the
-  head of the session's first model turn's prompt (append-only safe: it is
-  the session's first message).
 - "from stadeum/pods" is on the record and its rows; no UI shows it yet.
 
 **The example.** Code's Set Up writes the `Workspace` with the person's

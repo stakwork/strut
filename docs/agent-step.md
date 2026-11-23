@@ -134,6 +134,13 @@ index. A change in this area updates this file, not AGENTS.md.
   With no steps left, the forced final-answer turn answers. (2026-11-21: one
   orchestrator step held the real answer, refused for malformed JSON, and a
   second call `{ text: "x" }`, which ran: a person was sent "x".)
+  A SCRIPTED turn (`reply`, with `schema`) calls no model: the object is
+  the answer, committed to the `session` as a `final_answer` call and its
+  result after `prompt` (the thread's first turn freezes this step's
+  `system`; the line records the resolved provider, model and route, so
+  the next turn replays it as any other), and returned as `object` with no
+  usage. strut's prepared turns (`conversation/start`,
+  plans/package-seams.md §7) answer "On it." this way.
   Provider-direct via aieo
   (anthropic|openai|google|openrouter|xai — inferred from the model
   name, which may be an alias like `sonnet`/`grok` or slash format like

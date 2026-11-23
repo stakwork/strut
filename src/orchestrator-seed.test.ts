@@ -27,14 +27,14 @@ const promptOf = (text: string) => `${paramsOf(text).rulesText}\n\n${paramsOf(te
 const quiet = () => ({ serveUi: false, enableChat: false, scheduler: false as const, stt: false as const, store: new MemoryRunStore() });
 
 describe("the orchestrator workflow strut ships", () => {
-  it("the template is a valid workflow over strut's own registry: the model gate (a prepared turn has none) → job/dir → context/concept four times (the rules, a page; the kinds of job, the kinds of build, no docs; the person's own pages) → strut/list-peers → agent (session, no built-ins) → pack, every grant a strut step", async () => {
+  it("the template is a valid workflow over strut's own registry: job/dir → context/concept four times (the rules, a page; the kinds of job, the kinds of build, no docs; the person's own pages) → strut/list-peers → (a prepared turn's scripted reply) → agent (session, no built-ins) → pack, every grant a strut step", async () => {
     const text = await orchestratorWorkflowYaml();
     const registry = await createRegistry([]);
     const v = validateWorkflowYaml(text, { registry });
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
 
     const flow = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["if", "job/dir", "context/concept", "context/concept", "context/concept", "context/concept", "strut/list-peers", "proposal/standing", "agent", "if", "job/start", "pack"]);
+    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "context/concept", "context/concept", "strut/list-peers", "proposal/standing", "if", "pack", "agent", "if", "job/start", "pack"]);
     // The rules are a Concept page (plans/claim-trials.md §1): read as it
     // is, so the turn opens it and its claims judge the turn; the seed
     // carries the page's shipped text for a workspace with no graph.
@@ -152,8 +152,7 @@ describe("the orchestrator workflow strut ships", () => {
     // files of the thread's earlier turns.
     assert.deepEqual(Object.keys((reply.properties["start"] as any).properties), ["brief", "title", "kind", "workflow", "peer", "repos", "attachments"]);
     const started = flow.steps.find((st) => st.id === "started")!.config as Record<string, unknown>;
-    for (const k of ["peer", "attachments"]) assert.equal(started[k], `{{ $prepared ? undefined : turn.object.start.${k} }}`);
-    assert.equal(started["repos"], "{{ $prepared ? $prepared.repos : turn.object.start.repos }}", "a prepared turn's job names its own");
+    for (const k of ["peer", "repos", "attachments"]) assert.equal(started[k], `{{ turn.object.start.${k} }}`);
     assert.ok(
       String(p["system"]).replace(/\s+/g, " ").includes("or to hand the job a file from an earlier message: `start` carries only this message's files."),
     );

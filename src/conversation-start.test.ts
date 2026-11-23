@@ -175,7 +175,7 @@ describe("conversation/start: a package starts a chat with the assistant", () =>
     assert.equal(start.wakeAsked, true, "it asked for the wake");
     assert.deepEqual(start.input, { prompt: "Set up stakwork\n\nwith the seed data", session }, "prepared is never in the input");
     const turnEvents = await events(ORCHESTRATOR_WORKFLOW, first.runId);
-    assert.ok(turnEvents.some((e) => e.type === "step.skipped" && e.path.endsWith("/turn")), "the model's step was skipped");
+    assert.ok(turnEvents.some((e) => e.type === "step.end" && e.path.endsWith("/scripted")), "the reply was strut's, scripted");
     assert.ok(requests.every((b) => lastUser(b).includes("<<<job reply")), "the only model call is the wake's");
 
     // The job ran as the person, its kind and title the package's, and its end woke the chat.
@@ -185,6 +185,19 @@ describe("conversation/start: a package starts a chat with the assistant", () =>
     assert.deepEqual(wake.wake, { job, runId: jobRun });
     assert.equal(wake.text, "Summary.");
     assert.equal(requests.length, 1);
+
+    // The session holds the prepared exchange as its first turn, so the
+    // model's first call — the wake — reads the person's message and the
+    // answer it "gave", the job in `start`, under the turn's system prompt.
+    const [wakeCall] = requests;
+    const [said, answered] = wakeCall.messages as any[];
+    assert.deepEqual(said, { role: "user", content: [{ type: "text", text: "Set up stakwork\n\nwith the seed data" }] });
+    const call = answered.content.find((c: any) => c.type === "tool_use");
+    assert.equal(call.name, "final_answer");
+    assert.equal(call.input.text, "On it.");
+    assert.deepEqual(call.input.start, { brief: "Bake a pod for stakwork: with the seed data", title: "Set up stakwork", kind: "Pod Setup" });
+    assert.ok(JSON.stringify(wakeCall.messages[2]).includes("tool_result"), "its result, as a model's call has");
+    assert.match(JSON.stringify(wakeCall.system), /person's assistant/, "the system prompt the prepared turn froze is the orchestrator's own");
   });
 
   it("the chat is about its node and from its package: conversation/list { about } finds it, newest first, from a page as well", async () => {
@@ -237,7 +250,7 @@ describe("conversation/start: a package starts a chat with the assistant", () =>
     await idle();
     const evs = await events(ORCHESTRATOR_WORKFLOW, r.body.runId);
     assert.equal(evs.find((e) => e.type === "run.start")!.prepared, undefined);
-    assert.ok(!evs.some((e) => e.type === "step.skipped" && e.path.endsWith("/turn")), "the model's step ran");
+    assert.ok(evs.some((e) => e.type === "step.skipped" && e.path.endsWith("/scripted")), "no scripted reply");
     const end = evs.find((e) => e.type === "run.end")!;
     assert.equal((end as any).output?.text, "Hello.", "the model's reply");
     assert.equal((end as any).output?.job, undefined, "no job started");
