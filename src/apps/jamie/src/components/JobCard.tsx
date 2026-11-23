@@ -9,12 +9,12 @@
 import { useContext, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bot, ChevronRight, ExternalLink, Monitor } from "lucide-react";
-import { useHost, useJobUpdates, useRun, useStrutClient } from "@strut/kit";
+import { useHost, useJobUpdates, useRun, useRunFile, useRunFileUrl, useStrutClient } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
-import { answeredSince, askedSecret, holdLinks, jobLook, jobRunWorkflow, liveStrip, type HoldLink } from "../lib/jobs";
+import { answeredSince, askedSecret, holdLinks, jobLook, jobRunWorkflow, livePicture, liveStrip, type HoldLink, type LiveUpdate } from "../lib/jobs";
 import { inFlight } from "../lib/chat";
-import { openable } from "../lib/artifacts";
+import { artifactLink, openable } from "../lib/artifacts";
 import type { ArtifactRef, JobView } from "../lib/types";
 import { ArtifactCard, type TurnRuns } from "./ArtifactCard";
 import { ClaimsPanel } from "./ClaimsPanel";
@@ -106,7 +106,7 @@ function JobRunCard({ job, runId, workflow, conversation }: JobCardProps) {
         {workflow === "builder" && <span className="shrink-0 text-xs text-muted-foreground">build</span>}
         <Pill tone={look.tone} spin={running}>{look.label}</Pill>
       </button>
-      {running && <LiveStrip job={job} runId={runId} />}
+      {running && <LiveStrip job={job} runId={runId} {...(workflow ? { workflow } : {})} />}
       {holds.map((h) => <HoldRow key={h.kind} link={h} />)}
       {!open && ask && <p className="border-t px-3 py-2 text-sm"><span className="font-medium">Asks: </span>{ask}</p>}
       {!open && secretBox && <div className="px-3 pb-2">{secretBox}</div>}
@@ -151,14 +151,48 @@ function HoldRow({ link }: { link: HoldLink }) {
 }
 
 /** What the job is doing while its turn runs: its own line, the newest shot, the rest counted. */
-function LiveStrip({ job, runId }: { job: string; runId: string }) {
+function LiveStrip({ job, runId, workflow }: { job: string; runId: string; workflow?: string }) {
   const { updates } = useJobUpdates(job);
-  const { status, tally } = liveStrip(updates, runId);
+  const { status, tally, shot } = liveStrip(updates, runId);
   if (!status && tally.length === 0) return null;
   return (
     <div className="space-y-1 border-t px-3 py-2" data-testid="job-live">
       {status && <div className="truncate text-xs text-foreground/80" title={status}>{status}</div>}
+      {shot && workflow && <LiveShot shot={shot} job={job} workflow={workflow} runId={runId} />}
       {tally.length > 0 && <div className="truncate text-xs text-muted-foreground">{tally.join(" · ")}</div>}
     </div>
+  );
+}
+
+/** The newest picture the job took, small: a shot, or a recording's newest
+ *  frame. Read through the turn's run: a job run's files are the job's
+ *  directory. A click opens it beside the chat. */
+function LiveShot({ shot, job, workflow, runId }: { shot: LiveUpdate; job: string; workflow: string; runId: string }) {
+  const host = useHost();
+  const first = livePicture(shot, job);
+  // A recording's manifest grows frame by frame: read again at each of its updates.
+  const manifest = useRunFile(workflow, runId, first?.manifest);
+  const { refetch } = manifest;
+  const read = useRef(shot.at);
+  useEffect(() => {
+    if (read.current === shot.at) return;
+    read.current = shot.at;
+    if (first?.manifest) void refetch();
+  }, [shot.at, first?.manifest]);
+  const where = first?.manifest ? livePicture(shot, job, manifest.data?.text) : first;
+  const image = useRunFileUrl(workflow, runId, where?.picture);
+  if (!where || !image.url) return null;
+  const caption = where.caption;
+  return (
+    <button
+      type="button"
+      onClick={() => void host.openLink(artifactLink(where.open))}
+      title="Open beside the chat"
+      className="block cursor-pointer rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      data-testid="job-live-shot"
+    >
+      <img src={image.url} alt={caption ?? "The newest screenshot"} className="max-h-32 max-w-full rounded-md border bg-muted/40 object-contain" />
+      {caption && <span className="mt-0.5 block truncate text-left text-xs text-muted-foreground">{caption}</span>}
+    </button>
   );
 }

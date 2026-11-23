@@ -1,9 +1,11 @@
 // A job's card, its pure parts — tested by src/apps/jamie.test.ts: how a
-// turn ended in a pill, the live strip's tally (Hive's `JobLiveStrip`), a
-// claim's pill and its open slot (Hive's claims viewer), and a captcha's
-// manifest, taps and answer (strut's src/browser/captcha.ts, the job's
-// `[captcha-answer]` turn).
+// turn ended in a pill, the live strip's tally and its newest picture
+// (Hive's `JobLiveStrip`), a claim's pill and its open slot (Hive's claims
+// viewer), and a captcha's manifest, taps and answer (strut's
+// src/browser/captcha.ts, the job's `[captcha-answer]` turn).
 
+import { parseWalkthrough } from "@strut/kit/folds";
+import { servedFile } from "./artifacts";
 import type { JobView, LastVerify, LedgerClaim } from "./types";
 
 export type Tone = "running" | "ok" | "attention" | "failed" | "muted" | "merged";
@@ -99,6 +101,32 @@ export function liveStrip(updates: readonly LiveUpdate[], runId?: string): { sta
   const visuals = things.filter((u) => (u.kind === "image" || u.kind === "walkthrough") && u.url);
   const shot = visuals[visuals.length - 1];
   return { ...(status ? { status } : {}), tally, ...(shot ? { shot } : {}) };
+}
+
+/** The live strip's tile for `liveStrip`'s `shot`, from the job's own
+ *  files only. A shot is its own picture. A recording's picture is its
+ *  newest frame, named in its manifest (`manifest`, read again at each of
+ *  its updates, since it grows frame by frame). `open` is what a click
+ *  opens beside the chat: the shot, or the recording to scrub. Paths are
+ *  relative to the job's directory, as `run/files` reads them. */
+export function livePicture(
+  shot: LiveUpdate,
+  job: string,
+  manifest?: string | null,
+): { open: string; manifest?: string; picture?: string; caption?: string } | null {
+  const url = (shot.url ?? "").split(/[?#]/, 1)[0]!;
+  const served = servedFile(url);
+  if (!served || !("job" in served) || served.job !== job) return null;
+  if (shot.kind !== "walkthrough") return { open: url, picture: served.rel };
+  const frames = manifest ? (parseWalkthrough(manifest, url)?.frames ?? []) : [];
+  const frame = frames[frames.length - 1];
+  const at = frame ? servedFile(frame.path) : null;
+  return {
+    open: url,
+    manifest: served.rel,
+    ...(at && "job" in at && at.job === job ? { picture: at.rel } : {}),
+    ...(frame?.caption ? { caption: frame.caption } : {}),
+  };
 }
 
 /** A claim's pill: its status, or that it waits on a person's look. */
