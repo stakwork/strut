@@ -33,7 +33,7 @@ export interface JobCheckSubject {
   artifacts: JobArtifact[];
   /** id, kind, note, since, url? */
   holds: JobHold[];
-  /** The first hold of each kind that has a url: `{ pod: "https://…" }`. */
+  /** The first hold of each kind that has a url, then holds' named links: `{ pod: "https://…", admin: "https://…" }`. */
   urls: Record<string, string>;
   /** The turn's output as packed. */
   output?: unknown;

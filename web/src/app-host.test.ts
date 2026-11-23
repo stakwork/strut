@@ -136,6 +136,16 @@ describe("the app host", () => {
     assert.equal(holdNavigation("/x", "not a url"), null, "no hold, nowhere");
   });
 
+  it("the job's other addresses (a pod's other frontend) load in the frame too; the rest still opens in a tab", () => {
+    const admin = "https://p1a2b3-5173.pods.stakwork.ai/_pods/open/tok5n";
+    const also = [hold, admin, "not a url"];
+    assert.deepEqual(holdNavigation("p1a2b3-5173.pods.stakwork.ai/users", hold, also), { frame: "https://p1a2b3-5173.pods.stakwork.ai/users" });
+    assert.deepEqual(holdNavigation(admin, hold, also), { frame: admin });
+    assert.deepEqual(holdNavigation("/settings", hold, also), { frame: `${pod}/settings` }, "a path is still the hold's own");
+    assert.deepEqual(holdNavigation("https://p1a2b3-8000.pods.stakwork.ai/", hold, also), { tab: "https://p1a2b3-8000.pods.stakwork.ai/" }, "a port the job holds no address for");
+    assert.equal(holdNavigation("javascript:alert(1)", hold, also), null);
+  });
+
   it("a link to the app on screen is told apart from one to another app", () => {
     const bench = { name: "bench", version: "v3" };
     assert.equal(namesApp("bench", bench), true);

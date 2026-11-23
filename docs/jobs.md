@@ -80,7 +80,11 @@ index. A change in this area updates this file, not AGENTS.md.
   from the idle sweep, which lets holds go before it removes repositories
   (a hold that fails stays for the next sweep; a bare run with no registry
   leaves jobs with holds alone). Strut knows nothing about pods: a hold is
-  an id, a kind and a way to be released. A trial's sample of a job's case
+  an id, a kind and a way to be released. One with an address carries
+  `url`, the job's `urls.<kind>`, and may carry `links`, more addresses on
+  it by name (a pod's second frontend), each the job's `urls.<name>` and a
+  row of its own on Jamie's job card (`holdUrls`, job-index.ts: kinds
+  first, so a name never takes a kind's place). A trial's sample of a job's case
   is a job of its own, `trial-<batch>-<hex>`, closed the same way once the
   sample is judged (src/trials.ts, docs/knowledge.md "Trials and tests").
   **The index** (plans/job-index.md; `src/job-index.ts`): a job you can

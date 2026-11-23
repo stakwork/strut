@@ -98,8 +98,9 @@ export interface JobArtifact extends ArtifactRef {
 export interface JobView extends Omit<JobListing, "runs" | "holds"> {
   holds: JobHold[];
   /** The address of what the job holds, by kind: the first hold of each
-   *  kind that has a `url` (`{ pod: "https://…" }`). A job with two pods
-   *  names them by id in `holds`. */
+   *  kind that has a `url` (`{ pod: "https://…" }`), then each hold's named
+   *  `links` by name (`{ pod, admin }`). A job with two pods names them by
+   *  id in `holds`. */
   urls: Record<string, string>;
   /** The repositories checked out into the directory, relative to it. */
   repos: string[];
@@ -195,10 +196,14 @@ export function headTail(s: string, max: number): { text: string; truncated?: tr
 }
 
 /** `urls` (plans/job-claims.md §3): a fold over the holds by kind, the
- *  first with a url winning. */
+ *  first with a url winning, then each hold's named `links` by name. A name
+ *  never takes a kind's place: `urls.pod` stays the pod's own address. */
 export function holdUrls(holds: readonly JobHold[]): Record<string, string> {
   const urls: Record<string, string> = {};
   for (const h of holds) if (h.url && !(h.kind in urls)) urls[h.kind] = h.url;
+  for (const h of holds) {
+    for (const [name, url] of Object.entries(h.links ?? {})) if (name && typeof url === "string" && url && !(name in urls)) urls[name] = url;
+  }
   return urls;
 }
 

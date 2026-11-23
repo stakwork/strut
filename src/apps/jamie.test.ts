@@ -284,6 +284,12 @@ describe("strut/jamie — the pure parts", () => {
     const pod = "https://p1a2b3-3000.stakwork.bot/_pods/open/tok";
     assert.deepEqual(holdLinks("j 1", { pod }), [{ kind: "pod", label: "Open pod", url: pod, beside: "?job=j%201&hold=pod" }]);
     assert.deepEqual(holdLinks("j", undefined), []);
+    const admin = "https://p-5173.example/_pods/open/t";
+    assert.deepEqual(
+      holdLinks("j", { pod, admin }).map((l) => [l.label, l.beside]),
+      [["Open pod", "?job=j&hold=pod"], ["Open admin", "?job=j&hold=admin"]],
+      "a pod's named frontend is a row of its own",
+    );
     assert.deepEqual(holdLinks("j", {}), [], "no hold has an address: no row");
     assert.deepEqual(holdLinks("j", { pod: "javascript:alert(1)", box: "/relative" }), [], "only an http(s) address");
   });
