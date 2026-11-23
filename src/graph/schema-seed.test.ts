@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Bolt } from "./bolt.js";
 import { seedStrutDomain, flattenSchema, STRUT_MIGRATION_ID, DOMAIN_VECTOR_INDEX, DOMAIN_FULLTEXT_INDEX_V2, GLOBAL_VECTOR_INDEX, SEARCH_TEXT_INDEX } from "./schema-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
+import { TESTCASE_TYPE } from "./claims.js";
 import { SEED_EDGES, SEED_TYPES } from "./seed-types.js";
 import { seedJarvisOntology } from "./__fixtures__/jarvis-seed.js";
 import { THING_SCHEMA, STRUT_EDGES, STRUT_SCHEMAS, assertLibraryWellFormed, searchableAttributes, vectorIndexName } from "./strut-schemas.js";
@@ -65,7 +66,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     // but CHILD_OF's: on Neo4j the type tree's own CHILD_OF links (Concept to
     // Thing) already allow it, through the ancestor walk.
     const seedRows = SEED_EDGES.filter((e) => e.edge !== "CHILD_OF").map((e) => `${e.source}-[${e.edge}]->${e.target}`);
-    assert.equal(seedRows.length, 17);
+    assert.equal(seedRows.length, 18);
     assert.deepEqual(r1.createdEdgeSchemas, [...STRUT_EDGES.filter((e) => !e.ladybugOnly && e.target !== "Person").map((e) => `${e.source}-[${e.edge}]->${e.target}`), ...seedRows]);
     assert.ok(!r1.createdEdgeSchemas.includes("StrutRun-[ACCESSED]->Thing"));
 
@@ -78,7 +79,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.equal(thing[0]!.properties["node_key"], "thing-name");
     assert.ok(typeof thing[0]!.properties["ref_id"] === "string");
     const schemas = snap1.nodes.filter((n) => n.labels.includes("Schema"));
-    assert.equal(schemas.length, 19);
+    assert.equal(schemas.length, 20);
     for (const s of schemas) {
       assert.deepEqual(s.labels, ["Schema"], "Schema nodes carry no other label");
       assert.equal(s.properties["attributes"], undefined);
@@ -98,7 +99,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.equal(concept.properties["node_key"], "concept-name");
     assert.equal(concept.properties["domain"], "General");
     const childOf = snap1.rels.filter((r) => r.type === "CHILD_OF");
-    assert.equal(childOf.length, 18);
+    assert.equal(childOf.length, 19);
     for (const r of childOf) {
       assert.equal((r.to as { type: string }).type, "Thing");
       assert.ok(typeof r.properties["ref_id"] === "string");
@@ -229,19 +230,21 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     // A swarm: jarvis's library, and its About node (its migrations make one).
     await seedJarvisOntology(bolt);
     await bolt.run(`CREATE (:About {hidden_domains: []})`);
-    const touching = (snap: Awaited<ReturnType<typeof graphSnapshot>>) => {
-      const seed = new Set(SEED_TYPES.map((t) => t.type));
-      return {
-        nodes: snap.nodes.filter((n) => n.labels.includes("Schema") && seed.has(String(n.properties["type"]))),
-        rels: snap.rels.filter((r) => seed.has(String((r.from as { type?: string }).type)) || seed.has(String((r.to as { type?: string }).type))),
-      };
-    };
+    // jarvis's own: every seed type but TestCase, which is strut's and which a swarm lacks.
+    const jarvis = new Set(SEED_TYPES.map((t) => t.type).filter((t) => t !== TESTCASE_TYPE));
+    const typeOf = (end: unknown) => String((end as { type?: string }).type);
+    const touching = (snap: Awaited<ReturnType<typeof graphSnapshot>>) => ({
+      nodes: snap.nodes.filter((n) => n.labels.includes("Schema") && jarvis.has(String(n.properties["type"]))),
+      rels: snap.rels.filter((r) => (jarvis.has(typeOf(r.from)) || jarvis.has(typeOf(r.to))) && typeOf(r.from) !== TESTCASE_TYPE && typeOf(r.to) !== TESTCASE_TYPE),
+    });
     const before = touching(await graphSnapshot(bolt));
-    assert.equal(before.nodes.length, SEED_TYPES.length);
+    assert.equal(before.nodes.length, jarvis.size);
     const r = await seedStrutDomain(bolt);
-    for (const t of SEED_TYPES) assert.ok(!r.createdSchemas.includes(t.type), t.type);
-    const seedRows = new Set(SEED_EDGES.map((e) => `${e.source}-[${e.edge}]->${e.target}`));
-    assert.deepEqual(r.createdEdgeSchemas.filter((e) => seedRows.has(e)), [], "jarvis's rules already allow every seed edge");
+    for (const t of jarvis) assert.ok(!r.createdSchemas.includes(t), t);
+    assert.ok(r.createdSchemas.includes(TESTCASE_TYPE), "strut's own type, which a swarm lacks, is made");
+    const seedRows = new Set(SEED_EDGES.filter((e) => e.source !== TESTCASE_TYPE).map((e) => `${e.source}-[${e.edge}]->${e.target}`));
+    assert.deepEqual(r.createdEdgeSchemas.filter((e) => seedRows.has(e)), [], "jarvis's rules already allow every seed edge between its types");
+    assert.ok(!r.createdEdgeSchemas.includes(`${TESTCASE_TYPE}-[TESTS]->Claim`), "TESTS is on jarvis's allowlist: a test case needs no rule of its own there");
     assert.deepEqual(touching(await graphSnapshot(bolt)), before);
     assert.ok(!(await schemaObjectNames(bolt)).indexes.includes(SEARCH_TEXT_INDEX), "jarvis's per-domain keyword indexes stay the ones read");
   });

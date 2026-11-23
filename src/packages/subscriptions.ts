@@ -100,7 +100,7 @@ import { strutGitSecret, type GitSecretOf } from "../git-hosts.js";
 import { readCard, releaseFor, z32Decode, type Catalog, type CatalogRelease } from "./card.js";
 import type { PackageManifest } from "./format.js";
 import type { InstallResult, PackageDoor } from "./install.js";
-import type { InstalledPackage } from "./installed.js";
+import { hasValue, type InstalledPackage } from "./installed.js";
 import { CHANNEL_NAME } from "./publisher.js";
 
 /** The encrypted file subscriptions are kept in, beside `secrets.json`. */
@@ -490,7 +490,8 @@ export function createSubscriptions(deps: SubscriptionsDeps): Subscriptions {
         continue;
       }
       for (const name of t.requires?.secrets ?? []) {
-        if ((await deps.secret?.(name, actor).catch(() => undefined)) !== undefined) continue;
+        // An empty value is none: compose hands strut an unset setting as "".
+        if (hasValue(await deps.secret?.(name, actor).catch(() => undefined))) continue;
         secrets.add(name);
         out.add(t.package);
       }

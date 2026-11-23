@@ -7,6 +7,7 @@
  *
  *   Claim    —ABOUT→        StrutStep | StrutWorkflow | StrutJob | Concept   (stable identity)
  *   Check    —TESTS→        Claim
+ *   TestCase —TESTS→        Claim                            (a case several claims may share)
  *   Claim    —EVIDENCED_BY {strength ±1}→ Evidence
  *   Evidence —PRODUCED_BY→  Check                            (absent: no check produced it)
  *   Evidence —ABOUT→        StrutStepVersion | StrutWorkflowVersion | StrutRun (a job's TURN) | Concept
@@ -61,6 +62,9 @@ const BRANCH_NAMESPACE_PREFIX = "branch-";
 export const CLAIM_TYPE = "Claim";
 export const CHECK_TYPE = "Check";
 export const EVIDENCE_TYPE = "Evidence";
+/** One input to a workflow that tests the claims it `TESTS` (src/trials.ts):
+ *  a trial replays it, and every claim it tests judges the one run. */
+export const TESTCASE_TYPE = "TestCase";
 
 export const CLAIM_EDGES = {
   ABOUT: "ABOUT",
@@ -119,6 +123,27 @@ export function isEpistemicId(id: unknown): id is string {
  */
 export function evidenceId(checkId: string, runId: string, path: string): string {
   return createHash("sha256").update(`${checkId}|${runId}|${path}`, "utf8").digest("hex").slice(0, 32);
+}
+
+/** JSON with every object's keys sorted: one value, one text. */
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o)
+      .filter((k) => o[k] !== undefined)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
+}
+
+/** `TestCase.id`: a hash of the workflow and its input, keys in any order.
+ *  The same case is ONE node however many claims it tests, and writing it
+ *  again writes nothing. Lowercase hex, as a node key needs. */
+export function testCaseId(workflow: string, input: unknown): string {
+  return createHash("sha256").update(`${workflow}\n${canonical(input)}`, "utf8").digest("hex").slice(0, 24);
 }
 
 // ── Subjects ────────────────────────────────────────────────────────────────
@@ -263,10 +288,10 @@ export interface SourceContext {
    *  evidence a run on a branch is the source of carries it. */
   branch?: string;
   /** The source run was a TRIAL (`RunTrial`, src/trials.ts): a replay of a
-   *  claim's case, not a person's work. `case`: which of that claim's cases,
-   *  on the evidence of the claim it replayed. */
+   *  `TestCase`, not a person's work. `case`: that TestCase's id, on the
+   *  evidence of each claim it tests. */
   trial?: true;
-  case?: number;
+  case?: string;
   /** A job subject's evidence (plans/job-claims.md §2): the turn observed —
    *  the run id the `ABOUT` edge points at, for readers that do not follow
    *  the edge. */
@@ -297,6 +322,18 @@ export interface ClaimRow {
   belief_valid_from?: number;
   /** Set = retired or superseded. ACTIVE = unset. */
   belief_valid_to?: number;
+}
+
+/** A `TestCase` as read: its workflow, that workflow's input, and when it
+ *  was first written (epoch ms), which is the order a claim lists them in. */
+export interface TestCaseRow {
+  ref_id: string;
+  /** The `TESTS` edge to the claim it was read for. */
+  edge_ref_id: string;
+  id: string;
+  workflow: string;
+  input: Record<string, unknown>;
+  created_at: number;
 }
 
 export interface CheckRow {
@@ -567,6 +604,7 @@ const CHECK_FIELDS = [
   "ref_id", "id", "name", "description", "step_type", "step_config", "run_when", "policy", "freshness_days",
   "sample_rate", "publisher", "created_at", "retired_at",
 ] as const;
+const TESTCASE_FIELDS = ["ref_id", "id", "case_workflow", "case_input", "created_at"] as const;
 const EVIDENCE_FIELDS = [
   "ref_id", "id", "name", "description", "content", "evidence_mode", "evidence_status", "observed_at", "created_at",
 ] as const;
@@ -789,6 +827,42 @@ export class ClaimsReader {
     return rows
       .map((r) => checkRow(r["chk"] as Record<string, unknown>))
       .sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+  }
+
+  /** The `TestCase`s that `TEST` a claim, first written first (src/trials.ts). */
+  async testCasesFor(claimId: string): Promise<TestCaseRow[]> {
+    const d = this.d;
+    const rows = await this.graph.query(
+      `MATCH ${d.node("t", TESTCASE_TYPE)}-[r:\`${CLAIM_EDGES.TESTS}\`]->${d.node("c", CLAIM_TYPE, { namespace: "$ns", id: "$id" })}
+       WHERE ${d.edgeLive("r")} AND ${d.live("t")}
+       RETURN ${d.project("t", TESTCASE_FIELDS)} AS tc, r.ref_id AS edge`,
+      { ns: this.ns, id: claimId },
+    );
+    const out: TestCaseRow[] = [];
+    for (const r of rows) {
+      const t = compact<Record<string, unknown>>(r["tc"] as Record<string, unknown>);
+      let input: unknown;
+      try {
+        input = JSON.parse(String(t["case_input"] ?? ""));
+      } catch {
+        continue;
+      }
+      if (typeof t["case_workflow"] !== "string" || !input || typeof input !== "object" || Array.isArray(input)) continue;
+      out.push({ ref_id: String(t["ref_id"]), edge_ref_id: String(r["edge"]), id: String(t["id"]), workflow: t["case_workflow"], input: input as Record<string, unknown>, created_at: typeof t["created_at"] === "number" ? t["created_at"] : 0 });
+    }
+    return out.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+  }
+
+  /** The ACTIVE claims a `TestCase` tests, by id: what one replay of it is judged by. */
+  async claimsOfTestCase(caseId: string): Promise<string[]> {
+    const d = this.d;
+    const rows = await this.graph.query(
+      `MATCH ${d.node("t", TESTCASE_TYPE, { namespace: "$ns", id: "$id" })}-[r:\`${CLAIM_EDGES.TESTS}\`]->${d.node("c", CLAIM_TYPE)}
+       WHERE ${d.edgeLive("r")} AND ${d.live("c")} AND c.belief_valid_to IS NULL
+       RETURN DISTINCT c.id AS id`,
+      { ns: this.ns, id: caseId },
+    );
+    return rows.map((r) => r["id"]).filter((v): v is string => typeof v === "string" && !!v).sort();
   }
 
   /**

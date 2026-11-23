@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appVersionRows, draftCount, followNote, holdNote, isSeeded, liveRelease, makeLiveNote, when, type AppVersionsData, panelChip, panelKey } from "./app-versions";
+import { appVersionRows, draftCount, followNote, holdNote, isSeeded, liveRelease, makeLiveNote, modeChange, rowChange, when, type AppVersionsData, panelChip, panelKey } from "./app-versions";
 
 const at = (day: number) => `2026-11-0${day}T12:00:00.000Z`;
 
@@ -77,6 +77,37 @@ test("the confirm notes say what everyone gets", () => {
   assert.match(followNote(held), /^Everyone gets v11, the newest publish, now/);
   assert.equal(followNote({ ...held, active: "v11" }), "Every later publish goes live as soon as it is published.");
   assert.equal(holdNote("v8"), "The app stays at v8. Later publishes wait as drafts until you make one live.");
+});
+
+test("rowChange: Restore a version that was live, Make live any other, nothing on the live one", () => {
+  const rows = new Map(appVersionRows(held).map((r) => [r.version, r]));
+  assert.equal(rowChange(rows.get("v8")!, held.live), null);
+  assert.deepEqual(rowChange(rows.get("v2")!, held.live), {
+    label: "Restore",
+    note: "Everyone who opens the app gets v2 again.",
+    confirmLabel: "Restore v2",
+    target: { release: "r3" },
+    restores: "v2",
+  }, "its newest release");
+  assert.deepEqual(rowChange(rows.get("v11")!, held.live), {
+    label: "Make live",
+    note: "Everyone who opens the app gets v11 now.",
+    confirmLabel: "Make v11 live",
+    target: { version: "v11" },
+  });
+});
+
+test("modeChange: hold at the live version while following, follow latest while held", () => {
+  assert.deepEqual(modeChange(held).target, { version: "latest" });
+  assert.equal(modeChange(held).label, "Follow latest");
+  assert.equal(modeChange(held).note, followNote(held));
+  const following = { ...held, live: "latest" };
+  assert.deepEqual(modeChange(following), {
+    label: "Hold at v8",
+    note: holdNote("v8"),
+    confirmLabel: "Hold at v8",
+    target: { version: "v8" },
+  });
 });
 
 test("when: relative within a day, then the date", () => {

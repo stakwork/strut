@@ -136,7 +136,10 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `payMsat`, `standing` and `waiting` — how many wait that they could take —
   `holding`, the task in their hand, and `balance` — `{ heldMsat,
   withdrawableMsat, totalMsat, nextReleaseAt? }`, what the worker is owed
-  here, `WorkerBalance`; `useWorker({ all: true })` lists every app's types
+  here, `WorkerBalance`, and `rate` — `{ perBtc, at, source }`, the server's
+  exchange rate by currency code, absent when none can be read: sats are what
+  is paid, `fiatOfMsat(msat, rate, "EUR")` what to show beside them;
+  `useWorker({ all: true })` lists every app's types
   the viewer can open here, each with its `app`), `useTaskHistory()`
   (`task/history`, `{ all }` likewise: their own
   newest tasks here, each with its `ask`, how it ended and what it earned,

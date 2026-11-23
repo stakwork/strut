@@ -36,7 +36,8 @@
  */
 import { randomBytes } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
-import { mintDelegation } from "../src/test-util/mint-delegation.js";
+// stakgraph's gateway reads macaroon v1 only (src/mothership-v1.ts).
+import { mintDelegationV1 as mintDelegation } from "../src/test-util/mint-delegation.js";
 
 if (process.env["STRUT_TEST_GATEWAY"] !== "1") {
   console.log("gateway smoke skipped (set STRUT_TEST_GATEWAY=1; see docker-compose.gateway.yml)");

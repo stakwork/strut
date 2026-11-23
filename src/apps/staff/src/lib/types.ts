@@ -42,6 +42,9 @@ export interface TaskType {
   /** 5a: absent when unpaid. `holdHours` is there on a server that pays. */
   paySats?: number;
   holdHours?: number;
+  /** When an answer earns: absent, as it is handed in; `ok`, only once it
+   *  is marked OK (by staff, or the workflow's own `task/reply` verdict). */
+  payOn?: "ok";
   /** The most it pays in all, and the most tasks one worker takes a day. */
   limits?: { budgetSats?: number; perWorkerDay?: number };
   tests?: TestRules;
@@ -206,13 +209,16 @@ export interface Earning {
 export type Verdict = "ok" | "rejected";
 
 /** A verdict on one answer (plans/human-steps.md §9.6): `until` is when it
- *  can no longer change, `final` whether that has passed. */
+ *  can no longer change — absent while nothing was paid for it on a type
+ *  that pays once marked OK, so it can always change — and `final` whether
+ *  that has passed. `by` is a person, or `workflow:<name>` for a run's own
+ *  verdict (`task/reply`). */
 export interface Review {
   verdict: Verdict;
   why?: string;
   by?: string;
   at: number;
-  until: number;
+  until?: number;
   final: boolean;
 }
 
@@ -408,6 +414,8 @@ export interface Invite {
   expiresAt?: string;
   /** The admin who made it (an actor), when it was noted. */
   by?: string;
+  /** The worker who redeemed it through Tasks (an existing account: the daemon never says `used`), when `status` is `used`. */
+  takenBy?: string;
 }
 
 export interface InvitesAnswer {

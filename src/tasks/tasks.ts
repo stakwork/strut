@@ -94,7 +94,9 @@ import {
   TASK_LIST_MAX,
   STATS_WINDOWS,
   VERDICTS,
+  PAY_ON,
   answersOf,
+  earnsNow,
   payMsatOf,
   settledOf,
   type CopiesDecision,
@@ -111,6 +113,7 @@ import {
   type CheckRule,
   type StandingRule,
   type Verdict,
+  type PayOn,
   type TaskGroup,
   type TaskListQuery,
   type TaskRecord,
@@ -135,11 +138,11 @@ import { liveGrants, MemoryWorkerStore, noStatuses, WORKER_STATUSES, type Grant,
 
 export type { AnswerSchema } from "./answer-schema.js";
 export type { LimitRule, LeaseTotals } from "./task-store.js";
-export type { CopiesRule, GradeResult, GradeRule, Lease, ReviewRecord, StatsWindow, TaskGroup, TaskRecord, TaskReply, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
+export type { CopiesRule, GradeResult, GradeRule, Lease, PayOn, ReviewRecord, StatsWindow, TaskGroup, TaskRecord, TaskReply, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
 export type { PayeeBalance } from "../payments/ledger.js";
 export type { AttachmentRule } from "./answer-files.js";
 export type { Standing } from "./task-tests.js";
-export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, GROUP_MAX, TASK_STATUSES, VERDICTS } from "./task-store.js";
+export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, GROUP_MAX, PAY_ON, TASK_STATUSES, VERDICTS } from "./task-store.js";
 export { COPIES_MAX, DEFAULT_COPIES_RULE } from "./task-copies.js";
 export type { Grant, WorkerRecord, WorkerStatus } from "./worker-store.js";
 export { OPEN_GRANT_BY } from "./worker-store.js";
@@ -363,6 +366,11 @@ export interface TaskTypeInput {
   /** How long an earning waits before it can be withdrawn: hours from 0 to
    *  720, 0 (none) by default. */
   holdHours?: number;
+  /** When a paid answer earns (`PAY_ON`): `"ok"`, only once a verdict says
+   *  ok (staff's, or the asking run's `task/reply { verdict }`), so a
+   *  rejected answer earns nothing; `"answer"`, absent or null: as it is
+   *  answered. */
+  payOn?: PayOn | null;
   /** Its budget and per-worker daily cap (`LimitRule`), checked whenever a
    *  task of it is handed out; absent or null: none. */
   limits?: LimitRule | null;
@@ -440,6 +448,9 @@ export interface WorkerTask {
   /** What an answer earns, msat: the type's pay when the lease was taken,
    *  locked (§8.1). 0: unpaid. */
   payMsat: number;
+  /** `ok`: the answer earns `payMsat` only once a verdict says ok (the
+   *  type's `payOn`), as it is told when sent. Absent: as it is answered. */
+  payOn?: "ok";
   /** The files an answer carries (§5.6): how many, and of what types.
    *  Absent: the type takes none. */
   attachments?: AttachmentRule;
@@ -462,6 +473,10 @@ export interface WorkerView {
   /** What they are owed here (§8.1): zeros with nothing earned. A payout
    *  on its way is no longer in it (§8.2). */
   balance: PayeeBalance;
+  /** What their answers on types that pay on ok will earn once a verdict
+   *  says ok, msat: not in `balance`, which holds only what was earned.
+   *  Absent when nothing waits. */
+  pendingMsat?: number;
   /** Whether they may withdraw now, and how much (§8.2): strut's own
    *  store's (the `task/me` step says `not_here` for a store without it). */
   payout?: PayoutView;
@@ -498,6 +513,10 @@ export interface WorkerHistoryItem {
   closed?: number;
   status: LeaseStatus;
   earned?: { msat: number; releases: number; takenBack?: true };
+  /** On a type that pays on ok (`TaskType.payOn`), what an answer earns
+   *  once a verdict says ok, while none has: never with `earned`, and gone
+   *  once rejected. */
+  pending?: { msat: number };
   /** What the run told them after their answer (`task/reply`): on an
    *  answer of theirs alone, never a skipped or run-out lease. Its files
    *  are read through `task/file` with this lease. */
@@ -513,9 +532,10 @@ export interface WorkerHistoryItem {
 export type LeaseEarning = Pick<Earning, "msat" | "at" | "releases" | "takenBack" | "takenBackWhy" | "takenBackBy">;
 /** A verdict as staff read it, on its answer's lease (§9.6): `until` is when
  *  it can no longer change — the answer's earning's hold end, or for an
- *  unpaid answer the type's hold from when it was answered — and `final`
- *  whether that has passed. */
-export type LeaseReview = Omit<ReviewRecord, "task" | "worker"> & { until: number; final: boolean };
+ *  unpaid answer the type's hold from when it was answered; absent while a
+ *  type that pays on ok has booked nothing for it (no money moved, so it
+ *  can always change) — and `final` whether that has passed. */
+export type LeaseReview = Omit<ReviewRecord, "task" | "worker"> & { until?: number; final: boolean };
 export type LeaseView = Lease & { earning?: LeaseEarning; review?: LeaseReview };
 export type TaskView = TaskRecord & { leases: LeaseView[] };
 /** A worker as staff read them: with what they are owed here (§8.1), and
@@ -827,6 +847,10 @@ export interface TasksCapability {
 }
 
 export interface TasksService {
+  /** The actors holding a grant made by `by` (`invite:<code>`), first
+   *  first; none when the store was never opened. The invites list's "who
+   *  took it", read without the staff worker view's cost. Never on a bag. */
+  grantedBy(by: string): Promise<string[]>;
   /** Frozen: the whole store — the staff routes' (`src/tasks/routes.ts`),
    *  which hold it. Never on a services bag (plans/human-steps.md §9.2). */
   capability: TasksCapability;
@@ -921,7 +945,15 @@ export interface ReplyInput {
   files?: RunAttachment[];
   /** The group the task is part of (`TaskRecord.group`): kept when absent. */
   group?: string;
+  /** The run's verdict on the answer the task settled with (§9.6, as staff
+   *  give one: `review`, by `workflow:<name>`): what a type that pays on ok
+   *  pays by. A rejection says `why`, which the worker reads. */
+  verdict?: Verdict;
+  why?: string;
 }
+
+/** Who a run's verdict (`task/reply`'s `verdict`) is by: its workflow. */
+export const RUN_REVIEWER_PREFIX = "workflow:";
 
 export interface TasksDeps {
   /** The stores, opened on first use. */
@@ -990,8 +1022,11 @@ export interface TasksDeps {
    *  worker app it opens and the task types it gives (left out: every
    *  invite-only type of that app); `live` asks the daemon whether that
    *  invite may still let someone in (not cancelled, not failed). Left out:
-   *  an invite gives no task type. */
-  invite?: { read(token: string): { code: string; app: string; types?: string[] } | undefined; live(code: string): Promise<boolean> };
+   *  an invite gives no task type. `spent` is told once the invite has made
+   *  its grant, so the host can mark it used and, when an existing account
+   *  (not a new signup) redeemed it, send its sats back. It runs after the
+   *  grant, not waited for, and never undoes it: a failure is only logged. */
+  invite?: { read(token: string): { code: string; app: string; types?: string[] } | undefined; live(code: string): Promise<boolean>; spent?(code: string): Promise<void> };
   /** §7.2's draws, and the tie between least-served tests: [0, 1). */
   random?(): number;
   gradeTimeoutMs?: number;
@@ -1314,6 +1349,10 @@ export function createTasks(deps: TasksDeps): TasksService {
         const ready = want > 0 ? await s.tasks.readyTests(k.name) : 0;
         after = note(await s.workers.grant(w.actor, k.name, by, now(), ready >= want ? want : 0));
       }
+      // Not waited for: the host's cancel can take the daemon's 20 s, and this is the worker's
+      // first look at Tasks. The grant is written, so a second ask finds it (`grantedBy`), and
+      // a failed cancel never undoes it.
+      void deps.invite!.spent?.(inv.code).catch((err) => console.warn(`invite ${inv.code}: spent failed:`, err));
       return after;
     });
     redeeming.set(inv.code, turn.catch(() => undefined));
@@ -1356,6 +1395,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       expires: l.expires,
       answer: kind?.answer ?? ({ type: "object", properties: {} } as AnswerSchema),
       payMsat: l.payMsat ?? 0,
+      ...(l.payMsat && kind?.payOn === "ok" ? { payOn: "ok" as const } : {}),
       ...(kind?.attachments ? { attachments: kind.attachments } : {}),
     };
   };
@@ -1379,12 +1419,14 @@ export function createTasks(deps: TasksDeps): TasksService {
   // ── review (§9.6) ─────────────────────────────────────────────────────
   /** When a verdict on answer `l` can no longer change: its earning's hold
    *  end, or for an answer with none booked the type's hold from when it
-   *  was answered (as booking would set it). */
-  const holdEnd = (l: Lease, kind: TaskType | undefined, earning: Pick<Earning, "releases"> | undefined): number =>
-    earning?.releases ?? (l.closed ?? l.taken) + Math.round((kind?.holdHours ?? DEFAULT_HOLD_HOURS) * HOUR_MS);
-  const leaseReview = (r: ReviewRecord, until: number, at: number): LeaseReview => {
+   *  was answered (as booking would set it). Never (undefined) for a paid
+   *  answer a type that pays on ok has not booked: nothing was paid, so
+   *  nothing can be lost by changing it. */
+  const holdEnd = (l: Lease, kind: TaskType | undefined, earning: Pick<Earning, "releases"> | undefined): number | undefined =>
+    earning?.releases ?? (kind?.payOn === "ok" && l.payMsat ? undefined : (l.closed ?? l.taken) + Math.round((kind?.holdHours ?? DEFAULT_HOLD_HOURS) * HOUR_MS));
+  const leaseReview = (r: ReviewRecord, until: number | undefined, at: number): LeaseReview => {
     const { task: _t, worker: _w, ...rest } = r;
-    return { ...rest, until, final: at >= until };
+    return { ...rest, ...(until === undefined ? {} : { until }), final: until !== undefined && at >= until };
   };
   /** Each answer's verdict on its lease, where one was given: its earning
    *  read for its hold where the lease does not carry it yet. */
@@ -1413,7 +1455,15 @@ export function createTasks(deps: TasksDeps): TasksService {
     const l = await s.tasks.lease(leaseId);
     if (!l || l.status !== "submitted" || !l.payMsat || l.bookedAt !== undefined || !deps.ledger) return false;
     const [t, kind] = await Promise.all([s.tasks.task(l.task), s.tasks.type(l.type)]);
-    const at = l.closed ?? now();
+    // A type that pays on ok books an answer once it earns (`earnsNow`):
+    // its ok, or a test's grade. Until then it is owed nothing.
+    if (kind?.payOn === "ok") {
+      const verdict = (await s.tasks.reviewsOf([l.task])).find((r) => r.worker === l.worker)?.verdict;
+      if (!earnsNow(kind, verdict, t?.grade)) return false;
+    }
+    // Earned when answered, or for a type that pays on ok when that came:
+    // its hold runs from then.
+    const at = kind?.payOn === "ok" ? now() : (l.closed ?? now());
     const ledger = await deps.ledger();
     await ledger.pay({
       lease: l.id,
@@ -1653,7 +1703,10 @@ export function createTasks(deps: TasksDeps): TasksService {
         if (f.size > TEST_FILE_MAX_BYTES) throw new TaskError("bad_request", `files: ${f.path} is ${f.size} bytes; a worker's page reads at most ${TEST_FILE_MAX_BYTES} a file`);
       }
       const group = input.group === undefined ? undefined : groupOf(input.group);
-      if (show === undefined && !files.length && group === undefined) throw new TaskError("bad_request", "a reply has show, files or a group");
+      const verdict = input.verdict;
+      if (verdict !== undefined && !VERDICTS.includes(verdict)) throw new TaskError("bad_request", `verdict is ${VERDICTS.join(" or ")}`);
+      if (input.why !== undefined && verdict === undefined) throw new TaskError("bad_request", "why goes with a verdict");
+      if (show === undefined && !files.length && group === undefined && verdict === undefined) throw new TaskError("bad_request", "a reply has show, files, a group or a verdict");
       // The task's run is the CALLING run, read off its control — never an
       // input — so no other run, page or step names another run's task.
       const run = runLineage(o?.control)[0];
@@ -1665,7 +1718,14 @@ export function createTasks(deps: TasksDeps): TasksService {
       // A group alone names the group and leaves the reply as it was.
       const reply: TaskReply | undefined =
         show !== undefined || files.length ? { ...(show !== undefined ? { show } : {}), ...(files.length ? { files: files.map((f) => ({ name: f.name, mediaType: f.mediaType, size: f.size, path: f.path })) } : {}), at } : undefined;
-      if (!(await s!.tasks.reply(id, { ...(reply ? { reply } : {}), ...(group !== undefined ? { group } : {}) }))) throw new TaskError("not_answered", `task ${id} is no longer answered`);
+      if ((reply || group !== undefined) && !(await s!.tasks.reply(id, { ...(reply ? { reply } : {}), ...(group !== undefined ? { group } : {}) }))) {
+        throw new TaskError("not_answered", `task ${id} is no longer answered`);
+      }
+      // The run judges the answer it asked for, as staff would: the one the
+      // task settled with (a copies task's agreed answer), by its workflow.
+      if (verdict !== undefined) {
+        await review({ task: id, ...(t.by ? { worker: t.by } : {}), verdict, ...(input.why !== undefined ? { why: input.why } : {}), by: `${RUN_REVIEWER_PREFIX}${t.workflow}` });
+      }
       return { task: id, at };
     },
 
@@ -1858,8 +1918,9 @@ export function createTasks(deps: TasksDeps): TasksService {
       // still sees what they are owed, and may withdraw what passed its
       // hold (§8.2).
       const balance = await balanceOf(w.actor);
+      const pendingMsat = await s.tasks.pendingPay(w.actor);
       const payout = deps.payouts ? await deps.payouts.view(w.actor, { balance, ...(o.address ? { address: o.address } : {}) }) : undefined;
-      return { actor: w.actor, status: w.status, types, ...(holding ? { holding } : {}), balance, ...(payout ? { payout } : {}) };
+      return { actor: w.actor, status: w.status, types, ...(holding ? { holding } : {}), balance, ...(pendingMsat > 0 ? { pendingMsat } : {}), ...(payout ? { payout } : {}) };
     },
 
     async history(actor, o = {}) {
@@ -1890,10 +1951,16 @@ export function createTasks(deps: TasksDeps): TasksService {
       return {
         items: leases.map((l): WorkerHistoryItem => {
           const e = earned.get(l.id);
-          // An answer not booked yet is booked by the next sweep: its hold
-          // runs from when it was answered, as booking will set it.
-          const pay = l.status === "submitted" && l.payMsat ? { msat: e?.msat ?? l.payMsat, releases: holdEnd(l, kinds.get(l.type), e), ...(e?.takenBack !== undefined ? { takenBack: true as const } : {}) } : undefined;
           const t = byId.get(l.task);
+          // An answer not booked yet is booked by the next sweep: its hold
+          // runs from when it was answered, as booking will set it. One a
+          // type that pays on ok has not booked waits for its ok, and a
+          // rejected one (or a test graded fail) earns nothing.
+          const waits = !e && kinds.get(l.type)?.payOn === "ok";
+          const until = holdEnd(l, kinds.get(l.type), e);
+          const pay = l.status === "submitted" && l.payMsat && !waits && until !== undefined ? { msat: e?.msat ?? l.payMsat, releases: until, ...(e?.takenBack !== undefined ? { takenBack: true as const } : {}) } : undefined;
+          const pending =
+            l.status === "submitted" && l.payMsat && waits && verdicts.get(l.task)?.verdict !== "rejected" && t?.grade !== "fail" ? { msat: l.payMsat } : undefined;
           const ask = askOf(t?.show);
           // The run's reply reaches those who answered, never a skip or a lease run out.
           const reply = l.status === "submitted" ? t?.reply : undefined;
@@ -1907,6 +1974,7 @@ export function createTasks(deps: TasksDeps): TasksService {
             ...(l.closed !== undefined ? { closed: l.closed } : {}),
             status: l.status,
             ...(pay ? { earned: pay } : {}),
+            ...(pending ? { pending } : {}),
             ...(reply ? { reply } : {}),
             ...(t?.group !== undefined && l.status === "submitted" ? { group: t.group } : {}),
             ...(review ? { review } : {}),
@@ -1938,6 +2006,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const open = input.open ?? true;
       const paySats = payOk(input.paySats);
       const holdHours = holdOk(input.holdHours);
+      const payOn = payOnOk(input.payOn);
       const limits = limitsOk(input.limits);
       const title = titleOk(input.title);
       const tests = ruled(() => testRulesOf(input.tests, graderProblem));
@@ -1963,6 +2032,7 @@ export function createTasks(deps: TasksDeps): TasksService {
         open,
         ...(paySats ? { paySats } : {}),
         holdHours,
+        ...(payOn === "ok" ? { payOn } : {}),
         ...(limits ? { limits } : {}),
         ...(tests ? { tests } : {}),
         ...(copies ? { copies } : {}),
@@ -2244,24 +2314,27 @@ export function createTasks(deps: TasksDeps): TasksService {
     if (answers.length > 1) throw new TaskError("bad_request", `task ${t.id} has ${answers.length} answers: say whose (worker)`);
     const l = answers[0]!;
     const at = now();
+    const kind = await s.tasks.type(l.type);
+    // A type that pays on ok books an answer when its ok comes (below);
+    // until then nothing is owed, so nothing is booked here.
+    const onOk = kind?.payOn === "ok";
     // A paid answer not booked yet is booked first, so its hold is the
     // ledger's (as a take-back does).
     let earning: Earning | undefined;
     if (l.payMsat && deps.ledger) {
-      await book(s, l.id);
+      if (!onOk) await book(s, l.id);
       earning = await (await deps.ledger()).payOf(l.id);
     }
-    const kind = await s.tasks.type(l.type);
-    const until = holdEnd(l, kind, earning);
+    let until = holdEnd(l, kind, earning);
     const before = (await s.tasks.reviewsOf([t.id])).find((r) => r.worker === l.worker);
-    if (before && at >= until) {
+    if (before && until !== undefined && at >= until) {
       throw new TaskError("final", `final: the hold on ${l.worker}'s answer to task ${t.id} ended at ${new Date(until).toISOString()}, so its verdict (${before.verdict}) can no longer change`);
     }
     // The money (§9.6, ruled 2026-11-13: option A): inside the hold a
     // rejection takes the earning back, and `ok` undoes a take-back a
     // rejection made (its why begins `REVIEW_TAKE_BACK`), never a staff or a
     // grading one. Past the hold nothing moves: paid money never moves back.
-    if (earning && at < until && deps.ledger) {
+    if (earning && until !== undefined && at < until && deps.ledger) {
       const ledger = await deps.ledger();
       if (o.verdict === "rejected") {
         earning = (await ledger.takeBack({ lease: l.id, why: `${REVIEW_TAKE_BACK}${why}`, ...(o.by ? { by: o.by } : {}), at })).earning ?? earning;
@@ -2270,6 +2343,16 @@ export function createTasks(deps: TasksDeps): TasksService {
       }
     }
     const row = await s.tasks.putReview({ task: t.id, worker: l.worker, verdict: o.verdict, ...(why ? { why } : {}), ...(o.by ? { by: o.by } : {}), at });
+    // Paid on ok: the ok just written is what it earns by, booked now (its
+    // hold from now). A booking that fails is the sweep's, never the worker's.
+    if (onOk && o.verdict === "ok" && !earning && l.payMsat && deps.ledger) {
+      try {
+        if (await book(s, l.id)) earning = await (await deps.ledger()).payOf(l.id);
+      } catch (err) {
+        console.error(`[tasks] booking lease ${l.id}'s earning on its ok failed; the next sweep books it:`, err);
+      }
+      until = holdEnd(l, kind, earning);
+    }
     // §7.5: a rejection counts against standing as a failed test does, so
     // the check runs as after a grade; `ok` takes it out of the window.
     if (o.verdict === "rejected" && kind?.tests) await standingCheck(s, l.worker, kind);
@@ -2508,11 +2591,17 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (n === GRADE_ERRORS_LOGGED) console.warn(`[tasks] the last ${n} grades of task type ${t.type}'s tests were errors (they count for nothing); the last: ${v.note}`);
     } else errorsInARow.delete(t.type);
     // §7.9: a `fail` inside the hold takes back what the answer earned; an
-    // `error` does nothing.
+    // `error` does nothing. On a type that pays on ok a test's answer earns
+    // by its grade (`earnsNow`), as a real one does by its verdict, so a
+    // page cannot tell them apart: a `fail` booked nothing, and a `pass` or
+    // an `error` is booked now.
     if (v.result === "fail") {
       await takeBack({ task: id, worker, why: "the answer to a test was graded fail", by: GRADING_ACTOR }).catch((err) =>
         console.error(`[tasks] taking back the earning of failed test answer ${id}:`, err),
       );
+    } else if (kind?.payOn === "ok" && deps.ledger) {
+      const answered = (await s.tasks.leasesOf([id])).find((l) => l.worker === worker && l.status === "submitted");
+      if (answered?.payMsat) await book(s, answered.id).catch((err) => console.error(`[tasks] booking lease ${answered.id}'s earning on its grade failed; the next sweep books it:`, err));
     }
     // §7.5: standing read after each grade; under the threshold, the grant goes.
     if (v.result !== "error" && kind?.tests) await standingCheck(s, worker, kind);
@@ -2744,6 +2833,10 @@ export function createTasks(deps: TasksDeps): TasksService {
     return deps.payouts.pay(actor, o);
   };
   return {
+    grantedBy: async (by) => {
+      const s = await storesIfAny();
+      return s ? s.workers.grantedBy(by) : [];
+    },
     capability: frozen,
     human: Object.freeze({ ensure: frozen.ensure, reply: frozen.reply }),
     worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me, history: frozen.history, withdraw }),
@@ -2870,6 +2963,15 @@ function titleOk(v: unknown): string | undefined {
   const t = v.trim().replace(/\s+/g, " ");
   if (t.length > TYPE_TITLE_MAX) throw new TaskError("bad_request", `title is at most ${TYPE_TITLE_MAX} characters`);
   return t || undefined;
+}
+
+/** When a type's paid answer earns (`PAY_ON`): `answer` when left out. */
+function payOnOk(v: unknown): PayOn {
+  if (v === undefined || v === null) return "answer";
+  if (typeof v !== "string" || !(PAY_ON as readonly string[]).includes(v)) {
+    throw new TaskError("bad_request", `payOn is ${PAY_ON.map((p) => JSON.stringify(p)).join(" or ")}: an answer earns as it is answered, or only once a verdict says ok`);
+  }
+  return v as PayOn;
 }
 
 /** A type's hold: hours from `HOLD_HOURS_MIN` to `HOLD_HOURS_MAX` (0: none). */

@@ -155,7 +155,7 @@ function TypeCard(props: { type: TaskType; row?: TypeStats | undefined; shown: S
           <Fact
             label="Pay"
             value={t.paySats ? `${t.paySats.toLocaleString("en-US")} sats an answer` : "Unpaid"}
-            note={t.paySats ? [t.holdHours ? `held ${t.holdHours} h before it can be withdrawn` : "no hold", t.limits?.budgetSats !== undefined ? `budget ${t.limits.budgetSats.toLocaleString("en-US")} sats` : ""].filter(Boolean).join(" · ") : undefined}
+            note={t.paySats ? [t.payOn === "ok" ? "paid once marked OK" : "", t.holdHours ? `held ${t.holdHours} h before it can be withdrawn` : "no hold", t.limits?.budgetSats !== undefined ? `budget ${t.limits.budgetSats.toLocaleString("en-US")} sats` : ""].filter(Boolean).join(" · ") : undefined}
           />
         )}
         <Fact label="Checking" value={checks[0] ?? (shown.review ? "Reviewed by hand" : "No check")} note={[...checks.slice(1), review].filter(Boolean).join(" · ") || undefined} />
@@ -399,6 +399,16 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
             </Field>
             <Field label="Hold, hours" htmlFor="type-hold" hint="How long an earning waits before it can be withdrawn: 0 (none, at once) to 720. A failed test or a take-back inside it loses the earning.">
               <Input id="type-hold" type="number" min={0} max={720} value={d.holdHours} onChange={(e) => set({ holdHours: e.target.value })} />
+            </Field>
+            <Field
+              label="Paid when"
+              htmlFor="type-pay-on"
+              hint="Once marked OK: an answer earns nothing until you, or the workflow itself, mark it OK, and one marked rejected (a retake, a duplicate) is never paid. The hold runs from the OK."
+            >
+              <NativeSelect id="type-pay-on" value={d.payOnOk ? "ok" : "answer"} onChange={(e) => set({ payOnOk: e.target.value === "ok" })}>
+                <NativeSelectOption value="answer">Handed in</NativeSelectOption>
+                <NativeSelectOption value="ok">Marked OK</NativeSelectOption>
+              </NativeSelect>
             </Field>
             <Field label="Budget, sats" htmlFor="type-budget" hint="The most this task pays in all. Once it is spent, no more is handed out. Empty: no budget beyond the wallet.">
               <Input id="type-budget" type="number" min={0} step="any" value={d.budgetSats} onChange={(e) => set({ budgetSats: e.target.value })} placeholder="no budget" />

@@ -1,13 +1,17 @@
 import { z } from "zod";
 import { defineStep, workflowOf, type StepContext } from "../../../core.js";
-import { proposalsOf, proposalUrl } from "../../../proposals.js";
+import { decides, pageSees, proposalsOf, proposalUrl } from "../../../proposals.js";
 import { RUN_STEP_FLOW } from "../../../run-step.js";
 
 /** One proposal, whole: its step and input, who proposed it, the decision
  *  and the result (plans/proposals.md §2). A page's own call (an app's
- *  `step_run`) also gets `viewer: { admin }` — whether its viewer is an admin
- *  here (`AppRef.admin`), so a card says "an admin must approve this" in
- *  place of an Accept the decision would refuse (`approver: admin`). */
+ *  `step_run`) also gets `viewer: { admin, decides }` — whether its viewer
+ *  is an admin here (`AppRef.admin`), so a card says "an admin must approve
+ *  this" in place of an Accept the decision would refuse (`approver:
+ *  admin`); and whether they decide it at all (`decides`: theirs, an admin
+ *  on a card only an admin accepts, or one no conversation made), so a card
+ *  someone else's ask made in a shared conversation shows who it waits for
+ *  in place of buttons `proposal/decide` would refuse. */
 export default defineStep({
   type: "proposal/get",
   description:
@@ -22,6 +26,8 @@ export default defineStep({
     if (!p) throw new Error(`No proposal "${cfg.id}"`);
     // A page's own call: whether its viewer may accept what only an admin does.
     const page = ctx.app && workflowOf(ctx) === RUN_STEP_FLOW;
-    return { ...p, url: proposalUrl(p.id), ...(page ? { viewer: { admin: ctx.app!.admin === true } } : {}) };
+    const admin = ctx.app?.admin === true;
+    const viewer = { admin, decides: decides(p, { ...(ctx.actor ? { actor: ctx.actor } : {}), admin }) || pageSees(p, { admin }) };
+    return { ...p, url: proposalUrl(p.id), ...(page ? { viewer } : {}) };
   },
 });

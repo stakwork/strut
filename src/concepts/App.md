@@ -375,6 +375,10 @@ tool (`step_run`) the host relays to the strut server:
 | `useAccountWidget()` → `{ available, setPlacement({ corner?, collapsed? }) }` | on a public page, strut's own account widget (see "Signed-in visitors"): move it to another corner or collapse / expand it — e.g. a game collapses it during play and expands it in menus. It can never be hidden |
 | `useCamera()` → `{ available, capture({ facing?, maxSide?, title?, review? }) }` | a photo the person takes in strut's camera sheet, as a JPEG `File` (null when they cancel); needs `camera` in `permissions:` — see "The camera" |
 | `useVisitor()` → `{ available, actor, signIn(), signOut() }` | on a public page, who is playing: a visitor may SIGN IN, and then the page's calls are theirs — their own `useAppState`, channels, rows (see "Signed-in visitors"). `signIn({ silent: true })` as the page loads signs in only when nobody has to say yes (in Peel, a page Peel already lets sign them in), drawing nothing; keep a Sign in button for the rest |
+| `useWords({ en, es })`, `useLocale()`, `useFormats()` | the page's LANGUAGE: `useWords` hands back the screen's words in it — an object per language, the same keys in each, English when the page's language has none (strut speaks `en` and `es`; any other, `pt-BR` too, is English) — `useLocale()` the locale itself (`es-MX`: the link's `lang=`, else the browser's), `useFormats()` numbers, sats and times written its way (`number`, `sats(msat)`, `ago`, `until`, `day`). A page for people who may not read English (workers) writes every word through `useWords` |
+| `useNames(actors)` → `{ data: { [actor]: name } }` | `people/names` (grant it): the names of the people behind actor ids, to SHOW — `data[actor] ?? <what you showed before>`, the actor stays the person; a visitor's page gets the visitor's own name alone |
+| `useJobUpdates(job)` → `{ updates, latest(kind) }` | `job/updates` (grant it): what one of the app's jobs reports as it happens — shots, frames, holds, verdicts, status lines; `latest("status")` is its current line |
+| `useGraphChanges(types)` → `{ rev, changes }` | `graph/changes` (grant it): the graph writes of those node types from now on, whoever made them; put `rev` in the dependencies of the reads that show those types, so they read again — never a poll |
 
 **Deep links.** The page is opened with whatever its link carries
 (`?app=<name>&input=…`), as `useToolInput()`. The starter template's router
@@ -636,6 +640,19 @@ and `useTaskHistory()` again, so a balance on the page moves as the answer
 goes in. `useTaskHistory()` (grant `task/history`) is what they did here,
 newest first: each task's `ask`, how it ended, what it earned and when it
 clears.
+
+Money is SATS: what a task pays and what a worker earns is in sats, and
+every amount the page shows is sats first. A worker may want to see what
+that is worth in their own money, beside it, never instead of it:
+`useWorker().data.rate` is the server's exchange rate (`{ perBtc, at,
+source }`, units of each currency per bitcoin by its three-letter code —
+USD, EUR, GBP, CAD, CHF, AUD, JPY today), absent when none could be read,
+and `fiatOfMsat(msat, rate, "EUR")` from `@strut/kit` turns msat into that
+currency (undefined when the rate has no figure for it: show sats alone).
+Which currency is the person's to say when they ask for the app; write it
+the worker's way with `Intl.NumberFormat(useLocale(), { style: "currency",
+currency })`, and sats with `useFormats().sats(msat)`. Rates move, so say
+"≈": `2,100 sats ≈ 1,20 €`.
 Pay is the task type's, an admin's: no step sets it. `useTask("pet-match")` asks
 for one type alone. `useTaskFileUrl(task, path)` is one of `task.files`
 as a `blob:` URL for an `<img>`; nothing off that list opens. A type whose
@@ -684,7 +701,7 @@ const take = async () => {
 <TaskForm task={task} onSubmit={(answer) => submit(answer, photos).then(() => setPhotos([]))} onSkip={() => skip()} />
 ```
 
-A worker app with a withdraw section also grants `task/withdraw`.
+A worker app with a withdraw section also grants `task/withdraw` (granting `task/me` grants it too, for the account widget's Withdraw).
 `useWorker().data.payout` says whether the viewer may withdraw now — `on`,
 else `why` (`no_address`: they must sign in with Peel, which sends their
 account's address; say "Withdraw in Peel") — with `minMsat`, `maxMsat` (the

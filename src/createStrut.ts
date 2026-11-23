@@ -64,7 +64,7 @@ import { EARNINGS_ROUTES, inProcessDoor, STAFF_ROUTES, type AdminDoor } from "./
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createPayouts, walletBalanceMsat } from "./payments/payouts.js";
 import { createInvites, fileInviteNotes, GRANT_LINK_PREFIX } from "./payments/invites.js";
-import { WORKER_ADDRESS, WORKER_APPS, type WorkerApps } from "./steps/lib/task/_shared.js";
+import { WORKER_ADDRESS, WORKER_APPS, WORKER_RATE, type WorkerApps } from "./steps/lib/task/_shared.js";
 import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
 import { guardedHttp as strangerHttp } from "./guarded-http.js";
@@ -177,7 +177,7 @@ import {
   type PackageDoor,
   type UninstallResult,
 } from "./packages/install.js";
-import { holdsItsOwn, listInstalledPackages } from "./packages/installed.js";
+import { holdsItsOwn, listInstalledPackages, withMissingSecrets } from "./packages/installed.js";
 import { boxGitHosts, gitSecretOf, STRUT_GIT_HOSTS, type GitSecretOf } from "./git-hosts.js";
 import { createInstallTracker, type InstallTracker } from "./packages/progress.js";
 import { checkBootPackages, installBootPackages, parseBootPackagesEnv, type BootPackage, type BootPackageOutcome } from "./packages/boot.js";
@@ -187,7 +187,7 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import { BranchError, branchNameProblem, createBranches, type BranchesCapability } from "./branches.js";
-import { createTrials, SEED_SPEAKER } from "./trials.js";
+import { createTrials, SEED_SPEAKER, type TrialsCapability } from "./trials.js";
 import type { PageClaim } from "./claims-schemas.js";
 import { MergeConflict, MergeRefused } from "./branch-merge.js";
 import { createConceptSources, DEV_CONCEPTS_ENV, devConcepts, type ConceptSources } from "./concept-sources.js";
@@ -227,8 +227,9 @@ import { PROPOSAL_FEED_READ_MAX, createProposalFeed } from "./proposal-feed.js";
 import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, PROPOSAL_LIST_DEFAULT, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
-import { createJobIndex } from "./job-index.js";
+import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobHolder, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
+import { createPrChecks } from "./pr-checks.js";
+import { createJobIndex, holdUrls } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { ARCHIVE_LOCAL_WINDOW, createRetention, fleetRetentionFromEnv, formatRetention, type Retainer } from "./retention.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
@@ -1623,6 +1624,41 @@ export async function createStrut<TServices = unknown>(
   const gitSecret: GitSecretOf = (url) => boxGitSecret(url);
   // A person's own machine: with no token, git keeps its own credentials.
   const gitLocal = opts.git?.local ?? bootEnv()["STRUT_GIT_LOCAL"] === "1";
+  // A job's pull request fails its checks (src/pr-checks.ts,
+  // plans/pr-checks.md): one turn to fix it, as the person whose turn
+  // delivered it, naming that turn's conversation so its end wakes it — the
+  // PR card's Fix, made by the server. `job/pr-checks` says when.
+  const prChecks = createPrChecks({
+    dataDir,
+    artifacts: async (job) => (await jobIndex.get(job, { threads: false }))?.artifacts ?? [],
+    reporter: async (rec, runId) => {
+      const line = rec.runs?.find((r) => r.runId === runId);
+      if (!line) return undefined;
+      const start = (await store.getRunEvents(line.workflow, runId).catch(() => [])).find((e) => e.type === "run.start");
+      if (!start) return undefined;
+      const conversation = start.startedBy?.session ?? start.conversation;
+      const model = start.params?.["model"];
+      return {
+        ...(conversation ? { conversation } : {}),
+        ...(start.actor ? { actor: start.actor } : {}),
+        ...(start.principal ? { principal: start.principal } : {}),
+        ...(typeof model === "string" ? { model } : {}),
+      };
+    },
+    token: async (principal, url) => {
+      const secrets = (services as { secrets?: SecretsCapability }).secrets;
+      return (principal && secrets?.forPrincipal ? secrets.forPrincipal(principal) : secrets)?.git?.(url);
+    },
+    busy: (job) => jobHolder(jobRoot(dataDir, job)) !== undefined,
+    launch: async (o) => {
+      await assertWorkflowEnabled(workspace, o.workflow);
+      return launchDetached(
+        await workspace.getWorkflow(o.workflow),
+        { input: { prompt: o.prompt }, job: o.job, conversation: o.conversation, wake: true, ...(o.model ? { params: { model: o.model } } : {}) },
+        { ...(o.actor ? { actor: o.actor } : {}), ...(o.principal ? { principal: o.principal } : {}) },
+      );
+    },
+  });
   const services = {
     ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir, gitSecret, gitLocal }) as unknown as Record<
       string,
@@ -1647,6 +1683,8 @@ export async function createStrut<TServices = unknown>(
       // job's top-level run in flight (its turn), when there is one.
       runOf: (job) => [...controllers.values()].find((c) => c.job?.id === job && !c.parent)?.runId,
     }),
+    // What `job/pr-checks` runs: `check` alone, which names no person.
+    prChecks: { check: (o?: { url?: string }) => prChecks.check(o) },
     peers: peersCap,
     // Proposals (plans/proposals.md): the record a gated tool call writes
     // and the proposal/* steps read; a job's host hears each as a
@@ -1824,6 +1862,34 @@ export async function createStrut<TServices = unknown>(
         const inv = (await payer.invites()).find((i) => i.code === code);
         return !!inv && (inv.status === "sending" || inv.status === "ready" || inv.status === "used");
       },
+      // Invites are for NEW accounts. An account Peel already had ignores the
+      // invite and opens Tasks, so its sats stay at the LSP and the daemon
+      // never says "used": cancel any invite still "ready" at its first
+      // grant. A new account's sign-up redeems it as it registers, but the
+      // daemon says "used" only once that account adds the server's, which
+      // can come after Tasks' first ask: that cancel finds nothing at the LSP
+      // and ends `cancel_unconfirmed`, harmless. The daemon (stakwork/sphinx
+      // wasm/daemon/src/wallet.ts, cancelInvite → cancelReady) cancels only a
+      // `ready` invite (sending/failed/used: 409 not_cancellable). It asks the
+      // LSP for the invite's sats back and marks it `cancelled` only once the
+      // account balance rises by at most the invite's sats; if no rise comes
+      // in time it stays `ready` with a reason starting `cancel_unconfirmed`
+      // (it may have been used, or the sats may still arrive). Cancelling
+      // revokes no grant: `live` is only asked before a grant, and the
+      // one-worker check runs first.
+      spent: async (code) => {
+        if (code.startsWith(GRANT_LINK_PREFIX)) return;
+        const payer = await payments.payer();
+        if (!payer?.invites || !payer.cancelInvite) return;
+        const inv = (await payer.invites()).find((i) => i.code === code);
+        if (inv?.status !== "ready") return;
+        try {
+          await payer.cancelInvite({ code });
+        } catch (err) {
+          // A 409 not_cancellable (used meanwhile) or cancel_unconfirmed is fine: the grant stands.
+          console.warn(`invite ${code}: cancel not done:`, err instanceof Error ? err.message : err);
+        }
+      },
     },
     // Standing types (plans/human-steps.md §5.7): a pick-up is read off the
     // type's workflow — on, with someone to bill, its first step the type's
@@ -1894,7 +1960,9 @@ export async function createStrut<TServices = unknown>(
    *  { all }`) — the public view's for a visitor; left out on a member's
    *  door, which opens every app. */
   const workerServicesOf = (address: string | undefined, apps?: WorkerApps) =>
-    workerTasks ? { workerServices: { tasks: workerTasks, ...(address ? { [WORKER_ADDRESS]: address } : {}), ...(apps ? { [WORKER_APPS]: apps } : {}) } } : {};
+    workerTasks
+      ? { workerServices: { tasks: workerTasks, [WORKER_RATE]: () => payments.rate.read(), ...(address ? { [WORKER_ADDRESS]: address } : {}), ...(apps ? { [WORKER_APPS]: apps } : {}) } }
+      : {};
   /** The Sphinx address a visitor's session carries (plans/human-steps.md
    *  §8.2): kept by `POST /visitors/session` in the session's signed claims
    *  when it is the signing key's own. With none, `task/withdraw` answers
@@ -2597,6 +2665,14 @@ export async function createStrut<TServices = unknown>(
       ...(history ? { history } : {}),
       hasWorkflow: async (name) => !!(await workspace.getWorkflow(name).catch(() => null)),
       run: (workflow, input, o) => run(workflow, input, o),
+      // A job's case runs as a job of its own, closed as `DELETE /jobs/:id` closes one once it is judged.
+      jobs: {
+        workflows: JOB_WORKFLOWS,
+        close: async (id) => {
+          const shell = ((services as Record<string, unknown>)["shell"] as ShellCapability | undefined) ?? shellCapability();
+          await deleteJob(shell, jobRoot(dataDir, id), id, releaseWith(registry, services));
+        },
+      },
     });
     (services as Record<string, unknown>)["trials"] = trials;
     // The pages strut ships carry their claims and cases; a test branch a restart left goes.
@@ -2808,9 +2884,9 @@ export async function createStrut<TServices = unknown>(
   const CONVERSATION_POSTS = new Set(["/conversations/update", "/conversations/fork"]);
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
   /** What a member's session may call: the page of one app, its calls, its
-   *  channels, and a file it hands the side panel. `GET /brand` is the
-   *  style the app is shown in; `GET /rate` what a stranger's invoice is
-   *  priced at in dollars (specs/API.md §17.9); `GET` and `DELETE /mcp` answer 405 (the
+   *  channels, and a file or a job's hold address it hands the side panel.
+   *  `GET /brand` is the style the app is shown in; `GET /rate` what a
+   *  stranger's invoice is priced at in dollars (specs/API.md §17.9); `GET` and `DELETE /mcp` answer 405 (the
    *  page's MCP client asks for a stream once). */
   const MEMBER_ROUTES: Array<[method: string, path: RegExp]> = [
     ["GET", /^\/auth\/session$/],
@@ -2825,6 +2901,7 @@ export async function createStrut<TServices = unknown>(
     ["POST", /^\/apps\/[^/]+\/channel-ticket$/],
     ["GET", /^\/artifacts\/[^/]+(?:\/.+)?$/],
     ["GET", /^\/jobs\/[^/]+\/files(?:\/.+)?$/],
+    ["GET", /^\/jobs\/[^/]+\/urls$/],
   ];
   const memberMay = (method: string, path: string) =>
     MEMBER_ROUTES.some(([m, re]) => (m === method || (m === "GET" && method === "HEAD")) && re.test(path));
@@ -4470,6 +4547,7 @@ export async function createStrut<TServices = unknown>(
     fileHeaders: (path) => artifactHeaders(path),
     documentHeaders: (path) => artifactHeaders(path, true),
     serverName,
+    brandStyles: async () => brandStyles(await readBrand(dataDir)),
     liveStatus,
     apps: {
       info: publicAppInfo,
@@ -4709,6 +4787,8 @@ export async function createStrut<TServices = unknown>(
   app.get("/apps", async (c) => {
     const listed = await apps.list();
     const full = (await scopeOf(c)) === "full";
+    // No Cache-Control: the UI reads the list again right after a publish,
+    // set-live or pin, and a cached copy would hide the change.
     return c.json({ apps: full ? listed : listed.filter((a) => !a.admin) });
   });
   const adminAppRefusal = async (c: Context, name: string, version?: string): Promise<Response | null> => {
@@ -5476,6 +5556,11 @@ export async function createStrut<TServices = unknown>(
     ...(graph ? { graph } : {}),
     claims: claimsAuthoring,
     ...(verifier ? { verifyPublish: (subject) => verifier.verifyPublish(subject) } : {}),
+    // A package's pages' claims and cases, by the package (src/trials.ts), where the claims layer is on.
+    pageClaims: async (pages, speaker) => {
+      const trials = (services as Record<string, unknown>)["trials"] as TrialsCapability | undefined;
+      return trials ? trials.seed(pages, speaker) : pages.some((p) => p.claims.length) ? [`the claims of ${speaker}'s pages were not recorded: this workspace keeps no claims (a graph-backed one does)`] : [];
+    },
     ...(secretsCap ? { secrets: secretsCap } : {}),
     gitSecret,
     gitLocal,
@@ -5649,7 +5734,13 @@ export async function createStrut<TServices = unknown>(
           : 500;
     return c.json({ error: message }, status);
   };
-  app.get("/packages", async (c) => c.json({ packages: await listInstalledPackages(packageDeps) }));
+  // Each package with the secrets it requires that the deployment has no
+  // value for, read as the gate reads them (its store, then the environment):
+  // what a host offers an admin to set (stadeum plans/software.md).
+  app.get("/packages", async (c) => {
+    const secrets = packageDeps.secrets;
+    return c.json({ packages: await withMissingSecrets(await listInstalledPackages(packageDeps), secrets && ((name) => secrets.get(name))) });
+  });
   app.post("/packages/install", async (c) => {
     if (registryWasInjected) return c.json({ error: "Installing is disabled when the registry is provided at construction time" }, 409);
     type Body = { ref?: unknown; digest?: unknown; url?: unknown; tokenSecret?: unknown; index?: unknown; wait?: unknown };
@@ -6782,6 +6873,17 @@ export async function createStrut<TServices = unknown>(
     );
   });
 
+  // What a job holds at an address, by kind — `urls` as `GET /jobs/:id`
+  // folds it (`holdUrls`), alone: what the side panel beside an app frames
+  // (a pod's app, plans/jamie-app.md §4), read here and never taken from
+  // the app's link. A member's session reads it, as it reads the files.
+  app.get("/jobs/:id/urls", async (c) => {
+    const at = jobRoute(c);
+    if (at instanceof Response) return at;
+    const rec = await readJobRecord(at.root);
+    return c.json({ job: at.id, urls: holdUrls(rec?.holds ?? []) });
+  });
+
   app.get("/jobs/:id/files", async (c) => {
     const refused = badToken(c);
     if (refused) return refused;
@@ -7157,7 +7259,7 @@ export async function createStrut<TServices = unknown>(
   app.get("/rate", async (c) => {
     try {
       const r = await payments.rate.read();
-      return c.json({ usdPerBtc: r.usdPerBtc, at: r.at, source: r.source }, 200, { "cache-control": "private, max-age=60" });
+      return c.json({ usdPerBtc: r.usdPerBtc, perBtc: r.perBtc ?? { USD: r.usdPerBtc }, at: r.at, source: r.source }, 200, { "cache-control": "private, max-age=60" });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 503);
     }
@@ -7256,6 +7358,7 @@ export async function createStrut<TServices = unknown>(
       inviteSats: async () => (await payouts.settings()).inviteSats,
       publicApps: async () => (await publicSurface.get()).apps.map((a) => a.name),
       typeApp: async (name) => (await (hostTasks ?? tasks.capability).types()).find((t) => t.name === name)?.app,
+      takenBy: async (code) => (await tasks.grantedBy(`invite:${code}`))[0],
       ...(store instanceof MemoryRunStore ? {} : { notes: fileInviteNotes(join(dataDir, "tasks", "invites.json")) }),
     }),
     // Tasks online (§5.8): the one app a staff page puts in the public view

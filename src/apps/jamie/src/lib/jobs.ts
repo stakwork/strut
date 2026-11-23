@@ -258,3 +258,31 @@ export function secretAlreadySet(message: string): boolean {
 export function answeredSince(runs: Array<{ runId: string; parentRunId?: string }> | undefined, runId: string): boolean {
   return !!runs?.some((r) => !r.parentRunId && r.runId !== runId && Number(r.runId) > Number(runId));
 }
+
+// ── What the job holds, at its address (plans/job-claims.md §3) ──────────
+// `job/get`'s `urls`: the first hold of each kind that has an address — a
+// pod's app, `{ pod: "https://…" }`, the 12-hour link the pods package keeps
+// on the hold once the agent asks for one. A row on the card for each, from
+// the job's state rather than the agent's reply: beside the chat (the host's
+// panel, which reads the address from the job itself) or in a tab. The row
+// goes when the hold does.
+
+export interface HoldLink {
+  kind: string;
+  /** "Open pod". */
+  label: string;
+  /** The address itself, for a tab. */
+  url: string;
+  /** The strut link the host opens beside the chat: the job and the hold's kind, never the address. */
+  beside: string;
+}
+
+/** The link that opens a job's hold beside the app (the host's side panel). */
+export const holdLink = (job: string, kind: string) => `?job=${encodeURIComponent(job)}&hold=${encodeURIComponent(kind)}`;
+
+/** A row for each hold the job has an http(s) address for. */
+export function holdLinks(job: string, urls: Record<string, string> | undefined): HoldLink[] {
+  return Object.entries(urls ?? {})
+    .filter(([kind, url]) => kind && /^https?:\/\//i.test(url))
+    .map(([kind, url]) => ({ kind, label: `Open ${kind}`, url, beside: holdLink(job, kind) }));
+}

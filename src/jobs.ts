@@ -84,6 +84,16 @@ export interface JobRecord {
    *  session on the server. A record from before it was kept is filled in
    *  once, by the job index's one pass over the session store. */
   sessions?: string[];
+  /** The one automatic fix strut sent for a pull request the job delivered
+   *  whose checks failed (plans/pr-checks.md), by the pull request's URL:
+   *  taken before the turn launches, `runId` once it has. Absent until one. */
+  prFixes?: Record<string, PrFix>;
+}
+
+/** One automatic fix (`JobRecord.prFixes`). */
+export interface PrFix {
+  at: string;
+  runId?: string;
 }
 
 /** One run of a job, as the runner records it at `run.start`. A child run
@@ -221,6 +231,25 @@ async function updateJobRecord(root: string, name: string, edit: (rec: JobRecord
     await writeJobRecord(root, rec);
     await indexJob(root, rec, was);
     return rec;
+  });
+}
+
+/**
+ * Change a job's `prFixes` under its record's lock (plans/pr-checks.md):
+ * `edit` changes the map in place, and what it returns comes back. Not a
+ * use (`usedAt` stays), and no index changes. Undefined, and nothing
+ * written, for a job with no record.
+ */
+export async function editPrFixes<T>(root: string, edit: (fixes: Record<string, PrFix>) => T): Promise<T | undefined> {
+  return withLock(`${root}.json`, async () => {
+    const rec = await readJobRecord(root);
+    if (!rec) return undefined;
+    const fixes = { ...rec.prFixes };
+    const out = edit(fixes);
+    if (Object.keys(fixes).length) rec.prFixes = fixes;
+    else delete rec.prFixes;
+    await writeJobRecord(root, rec);
+    return out;
   });
 }
 

@@ -140,12 +140,36 @@ index. A change in this area updates this file, not AGENTS.md.
   stays. Inside the hold a rejection TAKES BACK the answer's earning (its
   `why` begins `review: `) and `ok` RESTORES that take-back — the ledger's
   `restore`, the take-back it cleared kept in `pay_restores` — never a
-  staff or grading take-back; past the hold no money moves.
+  staff or grading take-back; past the hold no money moves. The run that
+  asked gives a verdict too, `task/reply { verdict, why }`, by
+  `workflow:<name>` (`RUN_REVIEWER_PREFIX`), on the answer the task settled
+  with: the same `review`, so it moves money and standing as staff's does,
+  and staff can change it until it is final ("Pay on OK" next).
   `GET /tasks?review=none` is the review queue, and `GET /tasks/stats`
   counts it: each type's `toReview` is its real tasks' answers with no
   verdict, of any age (`QueueCounts.unreviewed`, one count a type in both
   stores) — what the staff app's Answers tab and its Overview say is left
   to review.
+- **Pay on OK** (`payOn: "ok"` on the type, `PAY_ON`, `earnsNow` in
+  task-store.ts, `src/tasks/pay-on-ok.test.ts`; asked 2026-11-22: a
+  book-scanner worker was paid for a refused photo AND its retake). By
+  default an answer earns as it is answered. A type saved `payOn: "ok"`
+  pays only accepted work: `book` books a paid answer once it EARNS
+  (`earnsNow`: a verdict `ok` — staff's, a group's, or the asking run's
+  `task/reply { verdict }` — or a test graded `pass` or `error`), never a
+  rejected one or a test graded `fail`. So `submit` books nothing, `review`
+  books on `ok` (the earning's `at` is the ok, its hold from then) and books
+  nothing on a rejection before any ok, grading books a pass, and both
+  stores' `unbooked` (the sweep's) apply the same rule and never return a
+  rejected answer (which also keeps a type turned back to paying as
+  answered from paying what was rejected). No ledger change: an answer not
+  yet OK'd simply has no `pay` row. Its verdict has no `until` and is never
+  final (`holdEnd` undefined: nothing was paid), so a run's rejection can
+  become staff's `ok` at any time. The worker sees it waiting: `task/me`'s
+  `pendingMsat` (the store's `pendingPay`), `task/history`'s `pending`,
+  `task/next`'s `payOn`, and WorkerPage's "Waiting for OK" figure, badge
+  and sent screen. Staff set it in the type editor ("Paid when"), and
+  `task/set-type` takes it (its card says "for each one marked OK").
 - **Groups of tasks** (`task/reply`'s `group`; `group` on the task,
   `tasks.group_key` in the store with its partial index `tasks_group`,
   `groups` and `reviewGroup` on the service, `src/tasks/task-groups.test.ts`).
@@ -308,7 +332,9 @@ index. A change in this area updates this file, not AGENTS.md.
   (docs/apps.md, `src/apps/staff/`). A standing type
   works the same: its run launches under the task's run id. Opt-in: a
   workflow that never calls it shows the worker nothing new. The worker page
-  draws it (docs/apps.md, "The worker app"). KNOWN LIMIT, for the owner to
+  draws it (docs/apps.md, "The worker app"). Its `verdict` and `why` are
+  the run's review of the answer ("The review verdict", "Pay on OK"); a
+  reply may be a verdict alone. KNOWN LIMIT, for the owner to
   rule on: a test instance has no run, so it never gets a reply; on a type
   whose workflow always replies, a worker can tell afterwards which of their
   answers were tests (the ones with no reply), which §7.2's "a page cannot
@@ -368,13 +394,18 @@ index. A change in this area updates this file, not AGENTS.md.
   copies `sphinx.chat://?…` to the clipboard: a Peel opened with no account
   and no invite reads it there (peel-android's onboarding), and a worker new
   to Peel goes from the download to Tasks without coming back to the link.
+  On an iPhone or iPad the page shows "Get Peel" (TestFlight,
+  `PEEL_IOS_TESTFLIGHT`; Apple's TestFlight app first) and "Open in Peel"
+  (`peel://join?<same query>`; not `sphinx.chat://`, which the Sphinx iOS
+  app also registers); both taps copy the same `sphinx.chat://?…` text, for
+  Peel iOS to read on first launch (stakwork/peel#588).
   ONE STEP for invite-only work: `a=` carries `input=invite=<token>&type=…`
   (payments/invites.ts `invitedAppUrl`, auth.ts `inviteToken` / `inviteOf`:
   the daemon's code, the app it opens, the types it gives — `t`, `[]` for
   open work alone — signed, 90 days from the invite's creation, so a listing
   shows the link sent), the page's tool input; the kit's `useTask` /
   `useWorker` send it as `invite` on `task/next` / `task/me`, and the
-  service's `enterInvite` (deps `invite: { read, live }`, createStrut's:
+  service's `enterInvite` (deps `invite: { read, live, spent? }`, createStrut's:
   `inviteOf`, and the daemon listing the invite `sending` / `ready` /
   `used`) gives that worker the invite-only, enabled types the token names
   that they hold no row of — whichever app draws them — by `invite:<code>`
@@ -382,6 +413,23 @@ index. A change in this area updates this file, not AGENTS.md.
   included; two first asks with one link taken one after the other), never
   a revoked type, never a suspended or banned worker; a token that does not
   hold or opens another app is ignored (invite-grants.test.ts, both stores).
+  An invite that made its grant is SPENT: the service tells the host
+  (`spent`), not waited for (a cancel can take the daemon's 20 s, and this
+  is the worker's first look at Tasks), and a failure is only logged, never
+  undoing the grant. createStrut's cancels the Sphinx invite while the
+  daemon still lists it `ready`, so its starting sats come back: an account
+  Peel already had ignores the invite and opens `a=`, leaving the sats at
+  the LSP. A new account's sign-up redeems the invite as it registers, and
+  the daemon says `used` only once that account adds the server's (its
+  first key exchange), which can come after Tasks' first ask; that cancel
+  finds nothing to return and ends `cancel_unconfirmed`, harmless (the
+  daemon's `cancelReady` counts an invite `cancelled` only once its balance
+  rises by at most the invite's sats). The staff's list (`GET
+  /tasks/invites`; `createInvites`' `takenBy`, the task store's
+  `grantedBy("invite:<code>")`, the first) shows an invite that made a grant
+  as `used`, with `takenBy`, whatever the daemon says (`ready`, `sending`,
+  `cancelled`), and Cancel is not offered for it; Taken by names the worker
+  from their grant, else from `takenBy` (`acceptedBy`, strut/staff).
   A token with no `t` (made before) gives every invite-only type of the app
   it opens, as it did. The daemon keeps the invites (code, sats, status);
   strut notes only each one's work (`InviteNotes`,
@@ -521,7 +569,7 @@ SUPPORT's tools (plans/people-and-hosts.md §5; "Support" above): `receive` (the
 
 ### `src/steps/lib/task/`
 
-the WORKER's door to the task store (plans/human-steps.md §5.1), thin over `ctx.services.tasks` — on their OWN call's bag, the worker's calls alone (`TasksService.worker`, which the app door's `dispatch` adds for a `worker: true` step on `POST /mcp` and `POST /public/mcp`, `workerServices`; the shared bag carries `ensure` and `reply` alone, plans/human-steps.md §9.2): task/next { type?, wait? } (the oldest open task of a type the worker holds — an OPEN type of the app they never held is entered first, plans/human-steps.md ruling 9 — that the CALLING app draws — `wrong_app` for another app's — or `{ none: true }`; `wait` ≤ 25 s holds for one), task/submit { lease, answer, attachments? } (the files a type's `attachments` rule takes, plans/human-steps.md §5.6, saved in the task's run), task/skip { lease, reason?, all? } (`all`: a lease of a type any app the caller can open draws, the worker's own — the dashboard's Let go of `holding.lease`), task/file { lease, path } (one of the task's `files`, as `run/files` answers; through a lease they answered, one of the reply's files), task/withdraw { msat } (plans/human-steps.md §8.2: what passed its hold, keysent to the Sphinx address the viewer's SESSION carries — the door puts it on the call's bag as `WORKER_ADDRESS`, `workerCall` reads it there and nowhere else; the input is `msat` alone, `.strict()`, so a page that names an address is refused; `not_here` on a host's own store; a refusal `code: sentence`), task/me (status, the types held in this app and then its open types they may enter, each with what an answer earns, whether the worker is `qualifying` for it — a flag, no score, plans/human-steps.md §7.5 — whether it is `standing` and how many of its tasks are `waiting` that they could take (the store's `waitingFor`: take's guard without "holds nothing"), `holding` — the task in their hand, with its `lease` for the dashboard's Let go — and the worker's `balance` — held, withdrawable, total, plans/human-steps.md §8.1; a first call writes the viewer `new`), `{ all: true }` on task/me and task/history reads the types of every app the caller can open instead of the calling app's (`appsOf` in `_shared.ts`, over `WORKER_APPS` — the door's list on the call's bag: the public view's apps on the public door, none on a member's, meaning every app; the service's `apps` filter), task/history (history.ts: their own newest 50 tasks of this app's types — `ask` from the task's `show`, how each ended, what a paid answer earned and when it clears, `takenBack`, and on an answer the workflow replied to its `reply` — never the run, a test or a reason; the dashboard's list, `TasksService.history` on `recentLeases` + the ledger's `payFor`; optional on a host's store, `{ items: [] }` without it). A type with tests may serve a test instance through task/next, task/submit, task/skip and task/file exactly as a task (§7.2). Each is `worker: true` (`StepDef.worker`: it decides from its own caller): the worker is `ctx.actor` in `ctx.app`, never an input; refused without either, and refused as anything but an app page's own call (a one-step run, never a workflow's step or an agent's tool, `_shared.ts` `workerCall`). On the app door a worker's step is never kept as a run (`keptFromApp`, no claims read); a signed-in visitor's page reaches one its app grants (`signedInRefusal`'s `worker` rule), an anonymous one is refused; not a visitor's daily write; the app monitor counts their `volume` per viewer. Three steps here are NOT a worker's. reply.ts, `task/reply { task, show?, files? }` (`effect: "write"`): a run's reply to the workers who answered a task it asked ("A run's reply" above) — a step of that run alone, never a page's call or an agent's tool. And two the builder uses (plans/human-steps.md §9.8; specs/API.md §22, "Asking for a task type"): set-type.ts, `task/set-type` — `effect: "write"`, `approver: "admin"`, its input `typeChangeInput` and its card `typeCard` (src/tasks/set-type.ts); it runs only as a proposal an admin accepted (`ctx.proposal`; a direct call, a workflow's step, meta/run-step and a subflow are refused) and saves through `ctx.services.taskTypes.save`, which checks the record on disk — and types.ts, `task/types` (`effect: "read"`, `{ types }` from `taskTypes.list()`: each type with `open`, and `openTasks`, `workers`, `answeredWeek`, `readyTests`). Only the `builder` seed grants them; a worker app granting `task/*` hands its page `task/types` (a member's page reads it, a visitor's is refused as any private read) and a `task/set-type` that refuses
+the WORKER's door to the task store (plans/human-steps.md §5.1), thin over `ctx.services.tasks` — on their OWN call's bag, the worker's calls alone (`TasksService.worker`, which the app door's `dispatch` adds for a `worker: true` step on `POST /mcp` and `POST /public/mcp`, `workerServices`; the shared bag carries `ensure` and `reply` alone, plans/human-steps.md §9.2): task/next { type?, wait? } (the oldest open task of a type the worker holds — an OPEN type of the app they never held is entered first, plans/human-steps.md ruling 9 — that the CALLING app draws — `wrong_app` for another app's — or `{ none: true }`; `wait` ≤ 25 s holds for one), task/submit { lease, answer, attachments? } (the files a type's `attachments` rule takes, plans/human-steps.md §5.6, saved in the task's run), task/skip { lease, reason?, all? } (`all`: a lease of a type any app the caller can open draws, the worker's own — the dashboard's Let go of `holding.lease`), task/file { lease, path } (one of the task's `files`, as `run/files` answers; through a lease they answered, one of the reply's files), task/withdraw { msat } (a page that grants `task/me` grants it too, for the account widget's Withdraw — `grantRefusal`, the page's list only, never a host's; plans/human-steps.md §8.2: what passed its hold, keysent to the Sphinx address the viewer's SESSION carries — the door puts it on the call's bag as `WORKER_ADDRESS`, `workerCall` reads it there and nowhere else; the input is `msat` alone, `.strict()`, so a page that names an address is refused; `not_here` on a host's own store; a refusal `code: sentence`), task/me (status, the types held in this app and then its open types they may enter, each with what an answer earns, whether the worker is `qualifying` for it — a flag, no score, plans/human-steps.md §7.5 — whether it is `standing` and how many of its tasks are `waiting` that they could take (the store's `waitingFor`: take's guard without "holds nothing"), `holding` — the task in their hand, with its `lease` for the dashboard's Let go — and the worker's `balance` — held, withdrawable, total, plans/human-steps.md §8.1; a first call writes the viewer `new`), `{ all: true }` on task/me and task/history reads the types of every app the caller can open instead of the calling app's (`appsOf` in `_shared.ts`, over `WORKER_APPS` — the door's list on the call's bag: the public view's apps on the public door, none on a member's, meaning every app; the service's `apps` filter), task/history (history.ts: their own newest 50 tasks of this app's types — `ask` from the task's `show`, how each ended, what a paid answer earned and when it clears, `takenBack`, and on an answer the workflow replied to its `reply` — never the run, a test or a reason; the dashboard's list, `TasksService.history` on `recentLeases` + the ledger's `payFor`; optional on a host's store, `{ items: [] }` without it). A type with tests may serve a test instance through task/next, task/submit, task/skip and task/file exactly as a task (§7.2). Each is `worker: true` (`StepDef.worker`: it decides from its own caller): the worker is `ctx.actor` in `ctx.app`, never an input; refused without either, and refused as anything but an app page's own call (a one-step run, never a workflow's step or an agent's tool, `_shared.ts` `workerCall`). On the app door a worker's step is never kept as a run (`keptFromApp`, no claims read); a signed-in visitor's page reaches one its app grants (`signedInRefusal`'s `worker` rule), an anonymous one is refused; not a visitor's daily write; the app monitor counts their `volume` per viewer. Three steps here are NOT a worker's. reply.ts, `task/reply { task, show?, files? }` (`effect: "write"`): a run's reply to the workers who answered a task it asked ("A run's reply" above) — a step of that run alone, never a page's call or an agent's tool. And two the builder uses (plans/human-steps.md §9.8; specs/API.md §22, "Asking for a task type"): set-type.ts, `task/set-type` — `effect: "write"`, `approver: "admin"`, its input `typeChangeInput` and its card `typeCard` (src/tasks/set-type.ts); it runs only as a proposal an admin accepted (`ctx.proposal`; a direct call, a workflow's step, meta/run-step and a subflow are refused) and saves through `ctx.services.taskTypes.save`, which checks the record on disk — and types.ts, `task/types` (`effect: "read"`, `{ types }` from `taskTypes.list()`: each type with `open`, and `openTasks`, `workers`, `answeredWeek`, `readyTests`). Only the `builder` seed grants them; a worker app granting `task/*` hands its page `task/types` (a member's page reads it, a visitor's is refused as any private read) and a `task/set-type` that refuses
 
 ### `src/steps/lib/staff/`
 

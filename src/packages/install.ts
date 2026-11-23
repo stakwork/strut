@@ -56,6 +56,7 @@ import { buildApp, type BuildDeps as AppBuildDeps } from "../apps/build.js";
 import { copyAppDir, FIRST_PARTY_PREFIX, isFirstPartyName } from "../apps/files.js";
 import { readManifest } from "../apps/manifest.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
+import type { PageClaim } from "../claims-schemas.js";
 import { walkSteps } from "../closure.js";
 import { declaredAttributes, findConcepts, parseConceptFile, retireConcepts, seedConcepts, type ConceptFile } from "../concept-seed.js";
 import type { SecretsCapability, ShellCapability } from "../capabilities.js";
@@ -81,6 +82,7 @@ import { checkPackageTypes, registerPackageTypes, type CheckedTypes } from "./gr
 import {
   conceptHash,
   conceptPrefix,
+  hasValue,
   holdsItsOwn,
   listInstalledPackages,
   packageConcepts,
@@ -105,6 +107,10 @@ export interface PackageDeps extends InstalledDeps {
   claims?: ClaimsAuthoring | null;
   /** Fires `run_when: publish` checks, as any publish does. */
   verifyPublish?(subject: SubjectRef): Promise<unknown>;
+  /** Records the claims and cases a package's pages carry, by the package
+   *  (`trials.seed`, src/trials.ts): what was not recorded, a line each.
+   *  Without it a page's claims are skipped, said. */
+  pageClaims?(pages: ReadonlyArray<{ name: string; claims: PageClaim[] }>, speaker: string): Promise<string[]>;
   /** The deployment's secrets, to report what `requires.secrets` lacks. */
   secrets?: SecretsCapability;
   /** PATH as the server's children see it, for `requires.binaries`. */
@@ -310,6 +316,7 @@ async function installSet(
   const reports = new Map(members.map((m) => [m.info.manifest.package, [] as PackageInstallReport["items"]]));
   const wrote: Wrote[] = [];
   const conceptsWritten = new Map<string, Array<{ name: string; file: string }>>(); // package → the pages it wrote
+  const pagesClaims = new Map<string, Array<{ name: string; claims: PageClaim[] }>>(); // package → its pages' claims blocks
   const { warnings } = checked;
   /** What a publish of an item records, and how it is written. */
   const options = (m: Member, plan: ItemPlan) => ({
@@ -450,6 +457,8 @@ async function installSet(
             });
         const written: Array<{ name: string; file: string }> = [];
         conceptsWritten.set(pkg, written);
+        // Each page the seed wrote or kept carries its file's claims, a block or none.
+        pagesClaims.set(pkg, outcomes.flatMap((o) => (o.action === "error" || o.action === "skip" ? [] : [{ name: o.name, claims: o.claims ?? [] }])));
         for (const o of outcomes) {
           // Taken back by retiring: a page this call made, never one an update rewrote.
           if (o.action === "create" || (o.action === "update" && !update)) written.push({ name: o.name, file: o.file });
@@ -539,6 +548,18 @@ async function installSet(
       const ref: SubjectRef = c.subject.kind === "step" ? { kind: "step", type: c.subject.name } : { kind: "workflow", name: c.subject.name };
       await deps.verifyPublish?.(ref).catch(() => undefined);
     }
+  }
+
+  // A page's claims, by its package, once its pages and the steps their
+  // checks name are in: a sentence the file no longer carries is retired.
+  for (const [pkg, pages] of pagesClaims) {
+    if (!pages.length) continue;
+    if (!deps.pageClaims) {
+      if (pages.some((p) => p.claims.length)) warnings.push(`the claims of ${pkg}'s pages were not recorded: this workspace keeps no claims (a graph-backed one does)`);
+      continue;
+    }
+    if (pages.some((p) => p.claims.length)) tell({ phase: "claims", package: pkg });
+    warnings.push(...(await deps.pageClaims(pages, pkg)));
   }
 
   const root = members.at(-1)!;
@@ -1133,8 +1154,8 @@ async function takeBack(deps: PackageDeps, wrote: Wrote[], concepts: Map<string,
   await deps.getRegistry().catch(() => undefined);
 }
 
-/** `requires` the deployment does not meet: secrets it cannot resolve (the
- *  installer's own included), binaries not on PATH, runtimes (none can be
+/** `requires` the deployment does not meet: secrets it cannot resolve to a
+ *  value, an empty one counting as none (the installer's own included), binaries not on PATH, runtimes (none can be
  *  configured yet, §11.1). */
 async function missingFor(deps: PackageDeps, members: Member[], actor: string | undefined): Promise<InstallResult["missing"]> {
   const secrets = new Set<string>();
@@ -1143,7 +1164,7 @@ async function missingFor(deps: PackageDeps, members: Member[], actor: string | 
   const view = actor && deps.secrets?.forPrincipal ? deps.secrets.forPrincipal(actor) : deps.secrets;
   for (const m of members) {
     const req = m.info.manifest.requires ?? {};
-    for (const name of req.secrets ?? []) if ((await view?.get(name).catch(() => undefined)) === undefined) secrets.add(name);
+    for (const name of req.secrets ?? []) if (!hasValue(await view?.get(name).catch(() => undefined))) secrets.add(name);
     for (const bin of req.binaries ?? []) if (!(await onPath(bin, deps.path))) binaries.add(bin);
     for (const r of req.runtimes ?? []) runtimes.add(r.name);
   }

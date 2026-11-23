@@ -410,12 +410,20 @@ export function answerFiles(t: Pick<Task, "by" | "leases">): SentFile[] {
   return t.leases.find((l) => l.worker === t.by && l.status === "submitted")?.attachments ?? [];
 }
 
+/** Who gave a verdict, in words: a person as named, a run's own
+ *  (`workflow:<name>`, task/reply's `verdict`) as its workflow. */
+export function reviewerName(by: string): string {
+  return by.startsWith("workflow:") ? `the workflow ${by.slice("workflow:".length)}` : by;
+}
+
 /** A verdict in words (§9.6): `rejected: blurry box · by ada, 14:02 ·
- *  changeable until Nov 16, 14:00`, or `· final`. */
+ *  changeable until Nov 16, 14:00`, `· changeable` (nothing paid yet on a
+ *  type that pays once marked OK), or `· final`. */
 export function reviewText(r: NonNullable<Lease["review"]>, now = Date.now()): string {
   const head = r.verdict === "rejected" ? `rejected${r.why ? `: ${r.why}` : ""}` : `ok${r.why ? `: ${r.why}` : ""}`;
-  const who = ` · ${r.by ? `by ${r.by}, ` : ""}${fmtWhen(r.at, now)}`;
-  return `${head}${who} · ${r.final || r.until <= now ? "final" : `changeable until ${fmtWhen(r.until, now)}`}`;
+  const who = ` · ${r.by ? `by ${reviewerName(r.by)}, ` : ""}${fmtWhen(r.at, now)}`;
+  const when = r.final || (r.until !== undefined && r.until <= now) ? "final" : r.until === undefined ? "changeable" : `changeable until ${fmtWhen(r.until, now)}`;
+  return `${head}${who} · ${when}`;
 }
 
 /** A group's tasks read at once: the routes' page at its largest. */
@@ -632,13 +640,14 @@ export function sortInvites<T extends Pick<Invite, "createdAt">>(invites: T[]): 
 }
 
 /** The worker who took an invite, and when: the grant it made (`by: invite:<code>`).
- *  None for an invite for open work (no grant) or one not yet used. */
-export function acceptedBy(invite: Pick<Invite, "code">, workers: Array<Pick<Worker, "actor" | "name" | "grants">> | undefined): { who: string; at: number } | null {
+ *  None for an invite for open work (no grant) or one not yet used; else the server's `takenBy`. */
+export function acceptedBy(invite: Pick<Invite, "code" | "takenBy">, workers: Array<Pick<Worker, "actor" | "name" | "grants">> | undefined): { who: string; at?: number } | null {
   for (const w of workers ?? []) {
     const g = w.grants.find((g) => g.by === `invite:${invite.code}`);
     if (g) return { who: w.name || shortActor(w.actor), at: g.at };
   }
-  return null;
+  // No worker row (not loaded, or a host's own store): the server's own word on who took it, no time.
+  return invite.takenBy ? { who: shortActor(invite.takenBy) } : null;
 }
 
 /** Days an invite's link works; mirrors INVITE_TOKEN_DAYS (src/payments/invites.ts). */
@@ -686,7 +695,7 @@ export function inviteWhyText(why: NonNullable<InvitesAnswer["why"]>): string {
 
 /** The words a worker is sent with the link. */
 export function inviteMessage(link: string): string {
-  return `You're invited to work with us. Open this on your Android phone to sign up with Peel: ${link}`;
+  return `You're invited to work with us. Open this on your phone to sign up with Peel: ${link}`;
 }
 
 /** The message as a WhatsApp share link (an https link a host opens). */

@@ -97,6 +97,9 @@ export interface PublicRouteDeps {
   documentHeaders?: (path: string) => Record<string, string>;
   /** The server's name (its brand's, src/brand.ts), for the invite page. */
   serverName?: () => Promise<string | undefined>;
+  /** The brand's look (src/brand.ts `brandStyles`), for a visitor's page:
+   *  `GET /public/brand`. */
+  brandStyles?: () => Promise<unknown>;
   /** What anyone may run, and for how much (plans/paid-runs.md §2,
    *  `listRunnable`): `GET /public`'s `runnable`. */
   runnable?: () => Promise<ListedRunnable[]>;
@@ -408,6 +411,13 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     const lang = joinLang(c.req.query("lang"), c.req.header("accept-language"), c.req.header("cookie"));
     return c.body(joinPage(await deps.serverName?.().catch(() => undefined), lang), 200, { ...JOIN_HEADERS });
   });
+  // The brand's LOOK (src/brand.ts): the style variables strut's host hands
+  // a visitor's page and draws its own frame around it in, so a worker sees
+  // one look from the loading screen on. A color, a radius, a font — what
+  // every visitor sees anyway; the name already rides in each document.
+  app.get("/public/brand", async (c) =>
+    c.json({ styles: (await deps.brandStyles?.().catch(() => null)) ?? null }, 200, { "cache-control": "public, max-age=60" }),
+  );
   app.get("/public/join/qrcode.js", async (c) =>
     c.body(await joinQrScript(), 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" }),
   );

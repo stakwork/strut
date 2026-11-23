@@ -67,6 +67,13 @@ describe("concept files (pure)", () => {
     // A block that is not one is left out, and the page is still a page: cases with no workflow to run them, a list of strings.
     assert.equal(parseConceptFile("Rules.md", "---\nclaims:\n  - text: x\n    cases:\n      - prompt: y\n---\nd", "p/").claims, undefined);
     assert.equal(parseConceptFile("Rules.md", "---\nclaims: [a, b]\n---\nd", "p/").docs, "d");
+    // A claim names its checks as a workflow's claims block does; one that names none gets the standard check later.
+    const checked = parseConceptFile("Rules.md", "---\nclaims:\n  - text: It bakes.\n    checks:\n      - { type: acme/pods/baked, policy: always }\n  - text: It is brief.\n---\nd", "p/");
+    assert.deepEqual(checked.claims, [
+      { text: "It bakes.", cases: [], checks: [{ type: "acme/pods/baked", policy: "always" }] },
+      { text: "It is brief.", cases: [] },
+    ]);
+    assert.equal(parseConceptFile("Rules.md", "---\nclaims:\n  - text: x\n    checks: []\n---\nd", "p/").claims, undefined, "an empty list of checks is no block");
     // Writing the page's text back keeps the block byte for byte (a change of its docs is a diff of its docs).
     assert.ok(!renderConceptPage({ ...now, docs: "Be kinder." }).includes("claims"), "a page rendered anew carries no block");
   });
@@ -192,7 +199,7 @@ describe("concept files (pure)", () => {
     assert.deepEqual(STRUT_CONCEPTS.legacyPrefixes, ["lab/builder/concepts/", "lab/job/concepts/"]);
   });
 
-  it("ships Plan under Job: what the plan file holds, and one claim with its cases in place of a rule per failure", async () => {
+  it("ships Plan under Job: what the plan file holds, and claims with their cases in place of a rule per failure", async () => {
     const plan = parseConceptFile("Plan.md", await readFile(join(STRUT_CONCEPTS.dir, "Plan.md"), "utf-8"), STRUT_CONCEPTS.prefix);
     // A kind of job work: the orchestrator lists it by its description and
     // passes it as `kind`, and the job opens it every turn.
@@ -216,12 +223,38 @@ describe("concept files (pure)", () => {
     assert.equal(plan.docs!.match(/repositor/g)?.length, 2);
     assert.match(plan.docs!, /Work in\s+a repository goes on one branch there for the whole plan, and ends as\s+one pull request\./);
     assert.match(plan.docs!, /its repositories if it has any/);
-    assert.equal(plan.claims?.length, 1);
+    // The person may never have built software, or may be a developer (2026-11-22): the questions are about
+    // what gets built, in words the person can answer; how it is built the job decides and records, where a
+    // developer reads it. And a plan always looks for a smaller one.
+    assert.match(plan.docs!, /someone\s+who\s+has\s+never\s+built\s+software\s+can\s+answer\s+it,\s+unless\s+the\s+request\s+shows\s+the\s+person\s+builds\s+software\s+themselves/);
+    // Few questions, whatever the brief lists: the orchestrator's real briefs ("Consider: … unit conversion, stock
+    // tracking, saving past days, scaling") drew 6 to 8 questions, a bakery owner's whole conversation 7 and 8
+    // (2026-11-22). The number is how many there often are, never a cap: a plan can be a dozen lines or a thousand,
+    // and a large one can have ten real questions. The smaller plan is planned and its cuts named, not each asked.
+    assert.match(plan.docs!, /the few whose answer would\s+change the plan, often three or four\./);
+    assert.doesNotMatch(plan.docs!, /at most|\bmust\b|never more/, "no hard cap on the questions");
+    assert.match(plan.docs!, /Every other\s+choice is yours, how it is built above all, even when the request\s+raises it/);
+    assert.match(plan.docs!, /First look for a smaller plan[^]*plan that one, and say what it leaves out/);
+    // The questions are the reply's `ask`, named beside `text`, and tied to the job's own rule for one ("if you
+    // cannot go on without a decision"): with defaults on every question, the real briefs left them in the text
+    // 4 times of 6 on main's page; with the reason, 13 of 15 cases sent `ask` (2026-11-22).
+    assert.match(plan.docs!, /a short overview as\s+your `text`, and the questions as your `ask`, since you cannot go on\s+without their go/);
+    assert.match(plan.docs!, /The detail is in `plan\.md`\s+for whoever wants it/);
+    // The review reads the item's work (its job, what it published), not the reply that hands it back: told
+    // "finished and verified", the plan's job only edited its file (2026-11-22, a whole conversation).
+    assert.match(plan.docs!, /Check what it made against\s+the plan, from its job's work rather than the report/);
+    assert.equal(plan.claims?.length, 2);
     assert.deepEqual(
-      plan.claims![0]!.cases.map((c) => [c.workflow, (c.input as { kind?: string }).kind]),
+      plan.claims!.map((claim) => claim.cases.map((c) => [c.workflow, (c.input as { kind?: string }).kind])),
       [
-        ["job", "Plan"],
-        ["job", "Plan"],
+        [
+          ["job", "Plan"],
+          ["job", "Plan"],
+        ],
+        [
+          ["job", "Plan"],
+          ["job", "Plan"],
+        ],
       ],
       "each case is a plan job",
     );
@@ -244,6 +277,10 @@ describe("concept files (pure)", () => {
     // The page such a lesson goes on may not exist yet (made later in the run, or waiting on a person): its claim is
     // written now, on the page the new one will sit under (a real model held it back otherwise).
     assert.match(dream.docs!, /does not exist yet, write the claim on the page the new one\s+will sit under/);
+    // A page from git is put back on every start, so where a change to one is skipped (a deployed strut), the
+    // lesson goes on a page under it, the workspace's own (2026-11-22): otherwise a box never learns about a page
+    // strut ships, such as Plan.
+    assert.match(dream.docs!, /comes from git, and a change to it is skipped[^]*Make the change on a page under it instead/);
     // The first source: the conversations dream/turns hands over.
     const convs = await read("Assistant Conversations.md");
     assert.deepEqual(convs.parents, ["Dream"]);

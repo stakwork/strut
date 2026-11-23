@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../api";
-import { appToolInput, namesApp, panelTarget, type PanelTarget } from "../app-links";
-import { STATE_LABEL, appVersionRows, panelChip, panelKey, when, type AppVersionRow } from "../app-versions";
+import { appToolInput, frameableHold, namesApp, panelTarget, type PanelTarget } from "../app-links";
+import { STATE_LABEL, appVersionRows, isHeld, isSeeded, liveRelease, modeChange, panelChip, panelKey, rowChange, when, type LiveChange } from "../app-versions";
 import { errorMessage } from "../helpers";
 import { CloseIcon } from "../icons";
 import { useListedApp } from "../use-listed-app";
@@ -24,8 +24,11 @@ import { WidthResizer } from "./FlyoutResizer";
 // app through the app host, in a frame of its own. A new link replaces what
 // the panel shows (an app's new input goes to it in place); ✕ closes it; its
 // left edge resizes it (`--app-panel-width` on the split, kept in
-// localStorage); in a narrow container it lies over the app. Everything
-// else — a link to the app on screen, a workflow, a run, a job — goes to the
+// localStorage); in a narrow container it lies over the app. A third thing
+// it opens is what a job holds at an address (`?job=<id>&hold=<kind>`, a
+// pod's app): the panel reads the address from the job (`GET
+// /jobs/:id/urls`), never from the link, and frames it with a tab beside.
+// Everything else — a link to the app on screen, a workflow, a run, a job — goes to the
 // caller's `onNavigate` as before. The panel's own app links the same way:
 // a file or a third app replaces it, a link to the page beside it is that
 // page's. Used by the canvas area's host (../app.tsx) and the page alone
@@ -70,6 +73,8 @@ export function AppWithPanel(props: AppHostProps) {
           />
           {"artifact" in panel
             ? <ArtifactViewer path={panel.artifact} solo onClose={() => setPanel(null)} />
+            : "hold" in panel
+            ? <PanelHold key={`${panel.job}/${panel.hold}`} job={panel.job} hold={panel.hold} onClose={() => setPanel(null)} />
             : <PanelApp
                 target={panel}
                 beside={props.app}
@@ -80,6 +85,46 @@ export function AppWithPanel(props: AppHostProps) {
               />}
         </aside>
       )}
+    </div>
+  );
+}
+
+/** The frame's sandbox: the page's own scripts, forms, storage and popups
+ *  (a sign-in that opens a window), and no navigating this page away. */
+const HOLD_SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-storage-access-by-user-activation";
+
+/** What a job holds at an address, in the panel: read from the job, framed
+ *  under a bar with its host, Open in a tab and ✕. The address is on
+ *  another site (a pod's), so a sign-in that needs its cookies may not hold
+ *  in the frame — the tab always works. */
+function PanelHold(props: { job: string; hold: string; onClose: () => void }) {
+  /** Undefined while the job is read; null when it holds no such address. */
+  const [url, setUrl] = useState<string | null | undefined>(undefined);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let on = true;
+    api.getJobUrls(props.job).then(
+      (r) => on && setUrl(frameableHold(r.urls[props.hold], location.origin)),
+      (err) => on && setError(errorMessage(err)),
+    );
+    return () => {
+      on = false;
+    };
+  }, [props.job, props.hold]);
+  const title = props.hold.charAt(0).toUpperCase() + props.hold.slice(1);
+  return (
+    <div class="app-panel-app">
+      <div class="app-panel-head">
+        <span class="app-panel-title">{title}</span>
+        <span class="app-panel-sub">{url ? new URL(url).host : props.job}</span>
+        {url && <a class="btn btn-sm" href={url} target="_blank" rel="noopener noreferrer">Open in a tab</a>}
+        <button class="copy-btn" onClick={props.onClose} aria-label="Close" title="Close"><CloseIcon /></button>
+      </div>
+      <div class="app-panel-body">
+        {url
+          ? <iframe class="app-panel-frame" src={url} title={title} sandbox={HOLD_SANDBOX} referrerpolicy="no-referrer" allow="clipboard-read; clipboard-write; fullscreen" />
+          : <div class="empty">{error || (url === null ? `This job holds no ${props.hold} with an address now.` : "Reading the job…")}</div>}
+      </div>
     </div>
   );
 }
@@ -97,7 +142,10 @@ function PanelApp(props: {
   onNavigate?: (params: Record<string, string>) => boolean | void;
   onClose: () => void;
 }) {
-  const { app, entry } = useListedApp(props.target.app);
+  // Read again after a change to what is live: the chip and the version shown follow.
+  const [again, setAgain] = useState(0);
+  const { app, entry } = useListedApp(props.target.app, again);
+  const mayRelease = useMayRelease();
   const toolInput = appToolInput(props.target.input);
   const onNavigate = (params: Record<string, string>) => {
     const next = panelTarget(params, app ? [app, props.beside] : [props.beside]);
@@ -114,9 +162,9 @@ function PanelApp(props: {
     return props.onNavigate ? props.onNavigate(params) : false;
   };
   const title = entry?.title || app?.name || props.target.app;
-  // A local app's versions, to look at — never to make live: whoever opens
-  // a panel may not be the one who decides what everyone gets
-  // (plans/jamie-app.md §5.2). That is the Versions flyout's, in the full UI.
+  // A local app's versions, to look at, and — for anyone but a member — to
+  // make live (plans/jamie-app.md §5.2): a host's ticket names the role, and
+  // strut refuses a member's session `PUT /apps/:name/active` anyway.
   const chip = app && entry && !app.peer ? panelChip(app.version, entry) : null;
   const [versionsOpen, setVersionsOpen] = useState(false);
   useEffect(() => setVersionsOpen(false), [props.target.app]);
@@ -145,9 +193,17 @@ function PanelApp(props: {
         <PanelVersions
           name={app.name}
           shown={app.version}
+          mayRelease={mayRelease}
           onView={(version) => {
             setVersionsOpen(false);
             props.onTarget({ app: panelKey(app.name, version, entry.activeVersion) });
+          }}
+          onChanged={() => {
+            // What everyone opens changed: show it, as the full UI's frame
+            // does, under the chip that now says so.
+            setVersionsOpen(false);
+            setAgain((n) => n + 1);
+            props.onTarget({ app: app.name });
           }}
         />
       )}
@@ -166,40 +222,140 @@ function PanelApp(props: {
   );
 }
 
+/** Whether this page may change what people open: anyone but a member (a
+ *  host's ticket names the role). Unknown until the session answers, and
+ *  no controls till then. */
+function useMayRelease(): boolean {
+  const [may, setMay] = useState(false);
+  useEffect(() => {
+    let on = true;
+    void api.pageSession.then((s) => on && setMay(s?.role !== "member"));
+    return () => {
+      on = false;
+    };
+  }, []);
+  return may;
+}
+
 /** A local app's versions under the panel's bar, newest first, each in its
- *  state: a click shows that version here. Viewing only — making one live
- *  is the full UI's Versions flyout (or a host's admin page). */
-function PanelVersions(props: { name: string; shown: string; onView: (version: string) => void }) {
-  const [rows, setRows] = useState<AppVersionRow[] | null>(null);
+ *  state: a click shows that version here. For anyone who may
+ *  (`mayRelease`), the app's mode and each row's Make live or Restore, as
+ *  the full UI's Versions flyout has them; each asks first, in the list. */
+function PanelVersions(props: {
+  name: string;
+  shown: string;
+  mayRelease: boolean;
+  onView: (version: string) => void;
+  /** What is live changed: the panel closes this list and shows it. */
+  onChanged: () => void;
+}) {
+  const [data, setData] = useState<api.AppVersionsResponse | null>(null);
   const [error, setError] = useState("");
+  /** The change asking to be confirmed: a row's version, or "mode". */
+  const [asking, setAsking] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  /** A refusal, and — for a Restore the server refused — the version to make live instead. */
+  const [failed, setFailed] = useState<{ message: string; instead?: string } | null>(null);
   useEffect(() => {
     let on = true;
     api.getAppVersions(props.name)
-      .then((data) => on && setRows(appVersionRows(data)))
+      .then((d) => on && setData(d))
       .catch((err) => on && setError(errorMessage(err)));
     return () => {
       on = false;
     };
   }, [props.name]);
+
+  const change = async (target: LiveChange["target"], instead?: string) => {
+    setBusy(true);
+    setFailed(null);
+    setAsking(null);
+    try {
+      await api.setAppLive(props.name, target);
+      props.onChanged();
+    } catch (err) {
+      setFailed({ message: errorMessage(err), ...(instead ? { instead } : {}) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rows = data ? appVersionRows(data) : null;
+  const may = props.mayRelease && !!data && !isSeeded(data);
+  const mode = data && may ? modeChange(data) : null;
+  const release = data ? liveRelease(data) : undefined;
+  /** The trigger, and under it while asking, the note and the confirm. */
+  const ask = (key: string, c: LiveChange) => (
+    <>
+      <button
+        type="button"
+        class={`btn btn-sm app-panel-change${asking === key ? " is-active" : ""}`}
+        aria-expanded={asking === key}
+        disabled={busy}
+        onClick={() => setAsking((a) => (a === key ? null : key))}
+      >{c.label}</button>
+      {asking === key && (
+        <div class="app-panel-ask">
+          <span class="confirm-note">{c.note}</span>
+          <button type="button" class="btn btn-sm" onClick={() => setAsking(null)}>Cancel</button>
+          <button type="button" class="btn btn-sm btn-primary" onClick={() => void change(c.target, c.restores)}>{c.confirmLabel}</button>
+        </div>
+      )}
+    </>
+  );
   return (
-    <div class="app-panel-versions" role="menu" aria-label="Versions">
+    <div class="app-panel-versions" aria-label="Versions">
       {error && <div class="auto-error">{error}</div>}
       {!rows && !error && <div class="empty">Loading…</div>}
-      {rows?.map((r) => (
-        <button
-          key={r.version}
-          type="button"
-          role="menuitem"
-          class={`app-panel-version${r.version === props.shown ? " is-current" : ""}`}
-          onClick={() => props.onView(r.version)}
-        >
-          <span class="app-panel-version-name">{r.version}</span>
-          {r.state && <span class={`app-version-state is-${r.state}`}>{STATE_LABEL[r.state]}</span>}
-          {r.summary && <span class="app-panel-version-summary" title={r.summary}>{r.summary}</span>}
-          <span class="app-panel-version-when">{when(r.createdAt)}</span>
-        </button>
-      ))}
-      {rows && <div class="app-panel-versions-note">Viewing only. Making a version live is done where the apps are managed.</div>}
+      {data && mode && (
+        <div class="app-panel-version-row app-panel-mode">
+          <span class="app-panel-mode-now">
+            {isHeld(data.live)
+              ? `Held at ${data.active}${release ? ` since ${when(release.createdAt)}` : ""}`
+              : "Every publish goes live"}
+          </span>
+          {ask("mode", mode)}
+        </div>
+      )}
+      {failed && (
+        <div class="auto-error">
+          {failed.message}
+          {failed.instead && (
+            <div class="app-versions-instead">
+              <button type="button" class="btn btn-sm" disabled={busy} onClick={() => void change({ version: failed.instead! })}>
+                Make {failed.instead} live as it is now
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {rows?.map((r) => {
+        const c = may ? rowChange(r, data!.live) : null;
+        return (
+          <div key={r.version} class="app-panel-version-row">
+            <button
+              type="button"
+              class={`app-panel-version${r.version === props.shown ? " is-current" : ""}`}
+              aria-current={r.version === props.shown || undefined}
+              title={r.version === props.shown ? "Shown here" : `Show ${r.version} here`}
+              onClick={() => props.onView(r.version)}
+            >
+              <span class="app-panel-version-name">{r.version}</span>
+              {r.state && <span class={`app-version-state is-${r.state}`}>{STATE_LABEL[r.state]}</span>}
+              {r.summary && <span class="app-panel-version-summary" title={r.summary}>{r.summary}</span>}
+              <span class="app-panel-version-when">{when(r.createdAt)}</span>
+            </button>
+            {c && ask(r.version, c)}
+          </div>
+        );
+      })}
+      {rows && !may && (
+        <div class="app-panel-versions-note">
+          {data && isSeeded(data)
+            ? "Seeded by strut: every start makes its committed version live."
+            : "Viewing only. Making a version live is done where the apps are managed."}
+        </div>
+      )}
     </div>
   );
 }

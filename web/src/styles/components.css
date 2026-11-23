@@ -4828,11 +4828,34 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 /* An app's page alone (`?app=…&solo=1`): the whole window, nothing of
    strut's UI around it — what a native host opens in a web view of its own
    (plans/apps.md §7.4). */
+/* Drawn in the APP's look, not strut's (components/SoloApp.tsx): the kit's
+   neutral surface and muted text (kit/src/styles/base.css's defaults), and
+   the brand's font and color, set on this element as the MCP Apps variables
+   the app itself is handed — so the loading screen, the Back bar and the
+   app read as one page. */
 .app-solo {
+  --solo-bg: #0a0a0a;
+  --solo-fg: #fafafa;
+  --solo-muted: #a1a1a1;
+  --solo-border: rgb(255 255 255 / 10%);
   display: flex;
   width: 100%;
   height: 100vh;
-  background: var(--surface);
+  height: 100dvh;
+  background: var(--solo-bg);
+  color: var(--solo-fg);
+  font-family: var(--font-sans);
+}
+html.solo-light .app-solo {
+  --solo-bg: #ffffff;
+  --solo-fg: #0a0a0a;
+  --solo-muted: #737373;
+  --solo-border: #e5e5e5;
+}
+.app-solo > .empty,
+.app-solo .app-host-overlay:not(.is-error) {
+  color: var(--solo-muted);
+  font-size: 14px;
 }
 .app-solo > .empty {
   flex: 1;
@@ -4840,6 +4863,8 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   align-items: center;
   justify-content: center;
 }
+.app-solo .app-host,
+.app-solo .app-host-overlay { background: var(--solo-bg); }
 /* A visitor's page opened from another app of the public view (`&back=`,
    components/SoloApp.tsx): a slim Back bar over the app, the app under it. */
 .app-solo.has-back {
@@ -4859,9 +4884,9 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   padding: var(--sp-2) var(--sp-4);
   padding-top: max(var(--sp-2), env(safe-area-inset-top));
   border: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
+  border-bottom: 1px solid var(--solo-border);
+  background: var(--solo-bg);
+  color: var(--solo-fg);
   font: inherit;
   font-size: 14px;
   font-weight: 500;
@@ -4929,7 +4954,9 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   text-overflow: ellipsis;
 }
 /* The versions of the app in the panel, under its bar: a click views one
-   there. Viewing only (components/AppWithPanel.tsx `PanelVersions`). */
+   there; for anyone but a member, the mode and each row's Make live or
+   Restore, confirmed under the row (components/AppWithPanel.tsx
+   `PanelVersions`). */
 .app-panel-versions {
   display: flex;
   flex-direction: column;
@@ -4939,7 +4966,15 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
 }
+.app-panel-version-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+}
 .app-panel-version {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -4960,12 +4995,31 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .app-panel-version-summary { order: 1; flex: 0 0 100%; min-width: 0; margin: 0 0 4px; font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; line-height: 1.35; color: var(--text-dim); }
 .app-panel-version-when { margin-left: auto; font-size: 11px; color: var(--text-dim); white-space: nowrap; }
 .app-panel-versions-note { padding: var(--sp-1) var(--sp-1) var(--sp-2); font-size: 11px; color: var(--text-dim); }
+.app-panel-change { padding: 2px 8px; font-size: 11px; }
+.app-panel-change.is-active { border-color: var(--accent); color: var(--accent); }
+.app-panel-ask {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-1) var(--sp-2);
+}
+.app-panel-mode {
+  min-height: 34px;
+  padding: var(--sp-1) var(--sp-1);
+  margin-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--border);
+}
+.app-panel-mode-now { flex: 1; min-width: 0; font-size: 12px; color: var(--text-muted); }
 .app-panel-body {
   flex: 1;
   min-height: 0;
   display: flex;
 }
 .app-panel-body > .empty { flex: 1; display: flex; align-items: center; justify-content: center; }
+/* A job's hold at its address (a pod's app): another site's page, on its own background. */
+.app-panel-frame { flex: 1; width: 100%; min-width: 0; border: 0; background: #fff; }
 @container (max-width: 760px) {
   .app-panel {
     position: absolute;
@@ -4986,6 +5040,7 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   flex-direction: column;
   width: 100%;
   height: 100vh;
+  height: 100dvh;
   background: var(--surface);
 }
 .artifact-solo .artifact-dialog-body {
@@ -5615,11 +5670,12 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .store-line:hover .store-line-go { color: var(--accent-strong); transform: translateX(3px); }
 .store-key { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
 .store-secret { font-size: 11px; color: var(--text-muted); padding: 0 6px; border: 1px dashed var(--border-strong); border-radius: 5px; }
-/* What a thing reaches. */
+/* What a thing reaches. Category hues from the store's own gradient, never
+   the status colors: red read as an error, amber as a warning. */
 .store-can { flex: none; display: inline-flex; gap: 4px; }
-.store .store-can-spends { color: var(--warning); border-color: rgba(251, 191, 36, 0.3); background: rgba(251, 191, 36, 0.1); }
-.store .store-can-acts { color: var(--danger); border-color: rgba(248, 113, 113, 0.3); background: rgba(248, 113, 113, 0.1); }
-.store .store-can-code { color: var(--mint); border-color: rgba(45, 212, 191, 0.3); background: rgba(45, 212, 191, 0.1); }
+.store .store-can-spends { color: #c4b5fd; border-color: rgba(196, 181, 253, 0.3); background: rgba(196, 181, 253, 0.1); }
+.store .store-can-acts { color: var(--accent); border-color: rgba(var(--glow), 0.3); background: rgba(var(--glow), 0.1); }
+.store .store-can-code { color: var(--mint); border-color: rgba(94, 234, 212, 0.3); background: rgba(94, 234, 212, 0.1); }
 /* A workflow's row, opened: its inputs and the steps it runs. */
 .store-acc > summary { list-style: none; }
 .store-acc > summary::-webkit-details-marker { display: none; }

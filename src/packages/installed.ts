@@ -72,6 +72,14 @@ export interface InstalledPackage {
    *  its own `admin: true` app the deployment's (src/packages/fence.ts);
    *  `git`, the hosts a token it holds serves (src/git-hosts.ts). */
   provides?: { secrets?: string[]; git?: Array<{ host: string; secret: string }> };
+  /** `GET /packages`'s (`withMissingSecrets`): the secrets it requires
+   *  (`secrets` less `optional`) that the deployment has no value for, read
+   *  as an install's `missing` and a subscription's gate read them — the
+   *  deployment's store, then strut's environment. What a host offers an
+   *  admin to set; a value strut takes from its environment is never asked
+   *  for. Absent when strut keeps no secrets capability, and for a package
+   *  that reads none (`secrets` absent). */
+  missing?: { secrets: string[] };
   /** Which door wrote it: a person's install, or the distro, whose package
    *  only the distro updates or removes (plans/marketplace.md §12). Absent
    *  for a package of Concepts alone, which records no door. */
@@ -127,6 +135,35 @@ function installedVersion(versions: Record<string, VersionRecord>, active: strin
   let last: string | undefined;
   for (const l of labels) if (byPackage(versions[l]) && (!last || doorAt(versions[l]!) >= doorAt(versions[last]!))) last = l;
   return last ?? labels.find((l) => versions[l]!.upstream);
+}
+
+/** A secret has a value: not unset and not empty. Compose hands strut an
+ *  unset setting as `""` (`PODS_URL: ${PODS_URL:-}`), which is no value. */
+export const hasValue = (v: string | undefined): v is string => v !== undefined && v !== "";
+
+/** Each package with its `missing`: the secrets it requires that `get`
+ *  (the deployment's secrets capability: its store, then strut's
+ *  environment) has no value for. Unchanged without a `get`. */
+export async function withMissingSecrets(packages: InstalledPackage[], get: ((name: string) => Promise<string | undefined>) | undefined): Promise<InstalledPackage[]> {
+  if (!get) return packages;
+  const known = new Map<string, boolean>();
+  const set = async (name: string) => {
+    if (!known.has(name)) known.set(name, hasValue(await get(name).catch(() => undefined)));
+    return known.get(name)!;
+  };
+  const out: InstalledPackage[] = [];
+  for (const p of packages) {
+    // A package of Concepts alone reads no secret: nothing to report.
+    if (!p.secrets) {
+      out.push(p);
+      continue;
+    }
+    const required = p.secrets.filter((s) => !p.optional?.includes(s));
+    const missing: string[] = [];
+    for (const name of required) if (!(await set(name))) missing.push(name);
+    out.push({ ...p, missing: { secrets: missing } });
+  }
+  return out;
 }
 
 /** Every installed package, sorted by name, its items by kind then name. */

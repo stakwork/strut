@@ -2,11 +2,19 @@
  * Trials and tests: how often a rule holds, and whether a change to a page
  * makes the difference (plans/claim-trials.md).
  *
- * A CASE is one input to a workflow, kept on a claim about a Concept. A
- * TRIAL runs a claim's cases as fresh runs (`RunTrial`, src/core.ts: nothing
- * a trial starts leaves it), and the claim's check judges each one whatever
- * its policy (src/verify.ts). Each verdict is ordinary evidence, on the
- * version of the page the run read.
+ * A CASE is one input to a workflow, a `TestCase` node in the graph that
+ * `TESTS` one or more claims about Concepts (src/graph/claims.ts). Its id is
+ * a hash of the two, so the same case is one node however many claims it
+ * tests. A TRIAL runs a claim's cases as fresh runs (`RunTrial`, src/core.ts:
+ * nothing a trial starts leaves it), and EVERY claim a case tests judges each
+ * run of it whatever its checks' policy (src/verify.ts): one run, however
+ * dear, feeds every claim it was written for. Each verdict is ordinary
+ * evidence, on the version of the page the run read, naming the case.
+ *
+ * A case whose workflow is a job's (`JOB_WORKFLOWS`, src/jobs.ts) runs as a
+ * JOB OF ITS OWN: a new id for each sample, so a tool that needs a job (a
+ * pod) has one, and the job is closed once the sample is judged, which lets
+ * go whatever it held (`deleteJob`). Strut knows nothing of what was held.
  *
  * A TEST is two wordings of one page run against the same checks: the page
  * as it is, and the page with a change. The other wording is read by its
@@ -22,9 +30,9 @@
  * from a run on one of that page's own tests. Status keeps reading per side
  * (plans/concept-evals.md ruling 4); this is the count beside it.
  *
- * On disk, under `<dataDir>/trials/`: `cases/<claim id>.json` and
- * `tests/<id>.json`. What is running is in memory only: a restart forgets
- * the samples not yet started, and `sweep` drops the branch they left.
+ * On disk, under `<dataDir>/trials/`: `tests/<id>.json`. What is running is
+ * in memory only: a restart forgets the samples not yet started, and
+ * `sweep` drops the branch they left.
  */
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
@@ -36,7 +44,7 @@ import { renderConceptPage } from "./concept-seed.js";
 import type { ConceptSources, ProposedCheckout } from "./concept-sources.js";
 import type { RunResult, RunTrial } from "./core.js";
 import type { GraphBackend } from "./graph/backend.js";
-import type { EvidenceRow } from "./graph/claims.js";
+import { CLAIM_EDGES, TESTCASE_TYPE, testCaseId, type EvidenceRow } from "./graph/claims.js";
 import { conceptVersionOf } from "./graph/concept-version.js";
 import { claimOf, conceptCheckSpec, type KnowledgeClaim } from "./knowledge.js";
 import type { Proposal } from "./proposals.js";
@@ -47,7 +55,7 @@ const PARENT_OF = "PARENT_OF";
 
 /** The most samples of one case one call starts. */
 export const TRIAL_N_MAX = 20;
-/** The most cases a claim keeps. */
+/** The most cases one claim is tested by. */
 export const CASES_MAX = 20;
 /** Trial runs in flight at once, across every batch. */
 const CONCURRENCY = 4;
@@ -66,16 +74,21 @@ export interface Sample {
   content?: string;
   /** When, epoch seconds. */
   at?: number;
-  /** A trial's: which of the claim's cases it replayed. Absent on a person's own work. */
-  case?: number;
+  /** A trial's: the `TestCase` it replayed, by id. Absent on a person's own work. */
+  case?: string;
   trial?: true;
+}
+
+/** A case as a claim lists it: the `TestCase`'s id, the workflow and its input. */
+export interface TestCase extends Case {
+  id: string;
 }
 
 /** A claim on the page as its keeper reads it (its status, who wrote it:
  *  a seeder — `strut` — `ai`, a person; the newest evidence), with its
  *  cases, and its verdicts on the page's wording now. */
 export interface CheckView extends KnowledgeClaim {
-  cases: Case[];
+  cases: TestCase[];
   samples: Sample[];
 }
 
@@ -147,13 +160,21 @@ interface TestRecord {
 
 type Fail = { error: string };
 
+/** One sample to run: the case, the claims that judge it, and the branch it reads the page on. */
+interface Sampled {
+  c: TestCase;
+  claims: string[];
+  branch?: string;
+}
+
 export interface TrialsCapability {
   /** A page's checks, their verdicts and its tests; null when there is no such page. */
   checks(concept: string): Promise<ChecksView | null>;
   /** A claim on a page, by a person: the standard check judges it. */
   addCheck(input: { concept: string; text: string; by?: string }): Promise<{ ok: true; id: string; existing?: true } | Fail>;
-  /** A claim's cases, replaced whole. */
-  setCases(input: { claim: string; cases: Case[] }): Promise<{ ok: true; cases: Case[] } | Fail>;
+  /** The cases a claim is tested by, replaced whole: a case already written is the same
+   *  node, linked; one taken away is unlinked from this claim alone. */
+  setCases(input: { claim: string; cases: Case[] }): Promise<{ ok: true; cases: TestCase[] } | Fail>;
   /** Run a claim's cases `n` times each on the page as it is. Returns at once. */
   trial(input: { claim: string; n: number; by?: string }): Promise<{ ok: true; batch: Batch } | Fail>;
   /** Test a change: every check on the page, `n` samples a case on the
@@ -166,9 +187,10 @@ export interface TrialsCapability {
   /** A trial run's message and reply; null when the run was no trial. */
   sample(input: { workflow: string; run: string }): Promise<{ status: string; input: unknown; output?: unknown; error?: string } | null>;
   /** The claims and cases a seeded page's file carries, recorded, so the page's checks match its file: a sentence
-   *  the file no longer carries is retired, when `speaker` wrote it (never a person's or the dream's); cases are
-   *  only added. */
-  seed(pages: ReadonlyArray<{ name: string; claims: PageClaim[] }>, speaker: string): Promise<void>;
+   *  the file no longer carries is retired, when `speaker` wrote it (never a person's or the dream's); a new one is
+   *  written with the checks it names, or the standard check; cases are only added. `speaker` is strut for its own
+   *  pages, a package's name for its. What was not recorded, a line each. */
+  seed(pages: ReadonlyArray<{ name: string; claims: PageClaim[] }>, speaker: string): Promise<string[]>;
   /** Boot: the test branches a restart left, dropped. */
   sweep(): Promise<void>;
 }
@@ -185,14 +207,22 @@ export interface TrialsDeps {
   history?: { touch(t: { cause: string; actor?: string }): void };
   /** Whether a workflow of that name is published here. */
   hasWorkflow(name: string): Promise<boolean>;
-  /** Run a workflow to its end, as a trial. */
-  run(workflow: string, input: unknown, o: { actor?: string; branch?: string; trial: RunTrial }): Promise<RunResult>;
+  /** Run a workflow to its end, as a trial; `job`: as that job's turn. */
+  run(workflow: string, input: unknown, o: { actor?: string; branch?: string; trial: RunTrial; job?: string }): Promise<RunResult>;
+  /** A case whose workflow is one of `workflows` IS a job: each sample runs as a job of its own, and
+   *  `close` lets the job go once the sample is judged (what it held, its directory, its record). */
+  jobs?: { workflows: readonly string[]; close(id: string): Promise<void> };
   now?: () => Date;
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
-const sameCase = (a: Case, b: Case) => a.workflow === b.workflow && JSON.stringify(a.input) === JSON.stringify(b.input);
+/** A case in a line, for the node's name: its one string, else its input as JSON. */
+const labelOf = (c: Case): string => {
+  const strings = Object.values(c.input).filter((v): v is string => typeof v === "string" && !!v.trim());
+  const line = (strings.length === 1 ? strings[0]! : JSON.stringify(c.input)).replace(/\s+/g, " ").trim();
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+};
 
 /** Pure: an evidence row as a sample, or null when it is no verdict of a check. */
 export function sampleOf(e: EvidenceRow): (Sample & { version?: string; branch?: string }) | null {
@@ -204,7 +234,7 @@ export function sampleOf(e: EvidenceRow): (Sample & { version?: string; branch?:
     supports: e.strength > 0,
     ...(e.content ? { content: e.content } : {}),
     ...(typeof e.observed_at === "number" ? { at: e.observed_at } : {}),
-    ...(typeof c.case === "number" ? { case: c.case } : {}),
+    ...(typeof c.case === "string" && c.case ? { case: c.case } : {}),
     ...(c.trial === true ? { trial: true as const } : {}),
     ...(typeof c.version === "string" ? { version: c.version } : {}),
     ...(typeof c.branch === "string" && c.branch ? { branch: c.branch } : {}),
@@ -236,7 +266,6 @@ function pool(n: number) {
 export function createTrials(deps: TrialsDeps): TrialsCapability {
   const { graph, claims } = deps;
   const reader = claims.reader;
-  const casesDir = join(deps.dataDir, "trials", "cases");
   const testsDir = join(deps.dataDir, "trials", "tests");
   const limit = pool(CONCURRENCY);
   const batches = new Map<string, Batch>();
@@ -256,19 +285,29 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
     await writeFile(`${path}.tmp`, JSON.stringify(value, null, 2) + "\n", "utf-8");
     await rename(`${path}.tmp`, path);
   };
-  /** A claim id is a file name here: only what `newEpistemicId` makes. */
+  /** A test id is a file name here: only what `newId` makes. */
   const fileOf = (id: string) => (/^[A-Za-z0-9_-]{1,80}$/.test(id) ? `${id}.json` : null);
 
-  const casesOf = async (claim: string): Promise<Case[]> => {
-    const file = fileOf(claim);
-    const kept = file ? await readJson<{ cases?: unknown }>(join(casesDir, file)) : null;
-    const parsed = caseSchema.array().safeParse(kept?.cases);
-    return parsed.success ? parsed.data : [];
+  /** The cases a claim is tested by, first written first, with their `TESTS` edges. */
+  const linkedTo = (claim: string) => reader.testCasesFor(claim);
+  const casesOf = async (claim: string): Promise<TestCase[]> => (await linkedTo(claim)).map(({ id, workflow, input }) => ({ id, workflow, input }));
+  /** Each case written (the same one again is the node it was) and linked to the claim; none unlinked. */
+  const link = async (claim: string, cases: readonly Case[]) => {
+    const row = await reader.getClaim(claim);
+    if (!row) throw new Error(`no claim "${claim}"`);
+    const have = new Set((await linkedTo(claim)).map((t) => t.id));
+    const added = cases.filter((c) => !have.has(testCaseId(c.workflow, c.input)));
+    if (!added.length) return;
+    const written = await graph.nodes.writeMany(
+      added.map((c) => ({ type: TESTCASE_TYPE, data: { id: testCaseId(c.workflow, c.input), name: labelOf(c), case_workflow: c.workflow, case_input: JSON.stringify(c.input) } })),
+      "create",
+    );
+    await graph.edges.writeMany(written.map((w) => ({ edge: CLAIM_EDGES.TESTS, source_ref_id: w.ref_id, target_ref_id: row.ref_id })));
   };
-  const writeCases = async (claim: string, cases: Case[]) => {
-    const file = fileOf(claim);
-    if (!file) throw new Error(`claim "${claim}" is not a claim id`);
-    await writeJson(casesDir, file, { cases });
+  /** The claims a case tests, the one asked for among them. */
+  const claimsOfCase = async (id: string, claim?: string): Promise<string[]> => {
+    const all = await reader.claimsOfTestCase(id);
+    return claim && !all.includes(claim) ? [...all, claim] : all;
   };
 
   const readTest = async (id: string): Promise<TestRecord | null> => {
@@ -345,30 +384,34 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
 
   /** Who started each batch: whose run each sample is. Never on what a page is shown. */
   const actors = new Map<string, string>();
-  /** Each batch's samples as they ran: the claim and the run, to see which were judged. */
-  const ran = new Map<string, Array<{ claim: string; run: string }>>();
+  /** Each batch's samples as they ran: the claims judging it and the run, to see which were judged. */
+  const ran = new Map<string, Array<{ claims: string[]; run: string }>>();
   /** What the last batch on a page left unjudged, in a line (`ChecksView.problem`). */
   const problems = new Map<string, string>();
 
-  /** One sample: the case run as a trial, then judged. */
-  const sampleRun = async (batch: Batch, s: { claim: string; k: number; c: Case; branch?: string }) => {
+  /** One sample: the case run as a trial (a job's case as a job of its own), judged, then its job closed. */
+  const sampleRun = async (batch: Batch, s: Sampled) => {
+    const job = deps.jobs?.workflows.includes(s.c.workflow) ? `trial-${batch.id}-${randomBytes(4).toString("hex")}` : undefined;
     try {
       const res = await deps.run(s.c.workflow, s.c.input, {
         ...(actors.get(batch.id) ? { actor: actors.get(batch.id)! } : {}),
         ...(s.branch ? { branch: s.branch } : {}),
-        trial: { claim: s.claim, case: s.k },
+        trial: { case: s.c.id, claims: s.claims },
+        ...(job ? { job } : {}),
       });
-      ran.get(batch.id)?.push({ claim: s.claim, run: res.runId });
+      ran.get(batch.id)?.push({ claims: s.claims, run: res.runId });
       if (res.status !== "success") batch.errors.push(res.error?.message ?? `the run ended ${res.status}`);
       await deps.verifier.verifyRun(s.c.workflow, res.runId);
     } catch (err) {
       batch.errors.push(errorText(err));
     } finally {
+      // A job that will not close (a hold that will not let go) is kept, and the idle sweep tries again.
+      if (job) await deps.jobs!.close(job).catch((err) => console.warn(`[trials] ${batch.id}: the sample's job ${job} was not closed: ${errorText(err)}`));
       batch.done++;
     }
   };
   /** Start a batch's samples; `after` runs when the last one is judged. */
-  const start = (batch: Batch, by: string | undefined, samples: Array<{ claim: string; k: number; c: Case; branch?: string }>, after?: () => Promise<void>) => {
+  const start = (batch: Batch, by: string | undefined, samples: Sampled[], after?: () => Promise<void>) => {
     batch.total = samples.length;
     batches.set(batch.id, batch);
     ran.set(batch.id, []);
@@ -389,7 +432,7 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
   const unjudged = async (batch: Batch) => {
     const runs = ran.get(batch.id) ?? [];
     const judged = new Set<string>();
-    for (const claim of new Set(runs.map((r) => r.claim))) {
+    for (const claim of new Set(runs.flatMap((r) => r.claims))) {
       for (const e of await reader.evidenceFor(claim, { kind: "concept", name: batch.concept })) if (e.source?.run_id) judged.add(e.source.run_id);
     }
     const missing = batch.total - runs.filter((r) => judged.has(r.run)).length;
@@ -412,7 +455,7 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
       const [list, tests, source] = await Promise.all([claimsOn(concept), testsOf(concept), deps.sources?.fromGit([concept]).then((m) => m.get(concept))]);
       const branches = new Set(tests.map((t) => branchOf(t.id)));
       const verdicts = new Map<string, Map<string, Sample[]>>();
-      const cases = new Map<string, Case[]>();
+      const cases = new Map<string, TestCase[]>();
       await Promise.all(
         list.map(async (c) => {
           const [v, k] = await Promise.all([verdictsOf(c.id, concept, branches), casesOf(c.id)]);
@@ -461,11 +504,14 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
       if (!(await conceptOf(claim))) return { error: `claim "${claim}" is not about a Concept: cases test a claim on a page` };
       const parsed = caseSchema.array().safeParse(cases);
       if (!parsed.success) return { error: "cases is a list of { workflow, input }" };
-      const kept = parsed.data.filter((c, i, all) => all.findIndex((x) => sameCase(x, c)) === i);
+      const kept = parsed.data.filter((c, i, all) => all.findIndex((x) => testCaseId(x.workflow, x.input) === testCaseId(c.workflow, c.input)) === i);
       const problem = await validCases(kept);
       if (problem) return { error: problem };
-      await writeCases(claim, kept);
-      return { ok: true, cases: kept };
+      // Taken away: this claim's edge alone. The case, its other claims and every verdict on it stay.
+      const wanted = new Set(kept.map((c) => testCaseId(c.workflow, c.input)));
+      for (const t of await linkedTo(claim)) if (!wanted.has(t.id)) await graph.edges.delete({ ref_id: t.edge_ref_id, edge: CLAIM_EDGES.TESTS });
+      await link(claim, kept);
+      return { ok: true, cases: await casesOf(claim) };
     },
 
     async trial({ claim, n, by }) {
@@ -476,11 +522,12 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
       const cases = await casesOf(claim);
       if (!cases.length) return { error: "this check has no case yet: add a message that tests it" };
       const batch: Batch = { id: newId(), concept, claim, total: 0, done: 0, errors: [] };
-      start(
-        batch,
-        by,
-        cases.flatMap((c, k) => Array.from({ length: each }, () => ({ claim, k, c }))),
-      );
+      const samples: Sampled[] = [];
+      for (const c of cases) {
+        const judges = await claimsOfCase(c.id, claim);
+        for (let i = 0; i < each; i++) samples.push({ c, claims: judges });
+      }
+      start(batch, by, samples);
       return { ok: true, batch };
     },
 
@@ -522,8 +569,10 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
       if (!o.live) return { error: "neither wording of this test is the page now: test the change again against the page as it is" };
       const change = rec.sides[o.page === 0 ? 1 : 0];
       const list = await claimsOn(concept);
-      const withCases = (await Promise.all(list.map(async (c) => ({ claim: c.id, cases: await casesOf(c.id) })))).filter((c) => c.cases.length);
-      if (!withCases.length) return { error: "no check on this page has a case yet: add a message to one first" };
+      // Every case a check on the page is tested by, once, with every claim it tests.
+      const cases = new Map<string, TestCase>();
+      for (const c of list) for (const t of await casesOf(c.id)) if (!cases.has(t.id)) cases.set(t.id, t);
+      if (!cases.size) return { error: "no check on this page has a case yet: add a message to one first" };
 
       const branch = branchOf(rec.id);
       // What a restart, or a run cut off, left under the name.
@@ -538,23 +587,23 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
         return { error: `the change could not be set up to run: ${errorText(err)}` };
       }
 
-      // The page is topped up to `each` a case (again: `each` more), so the two rows are measured alike.
-      const have = new Map<string, Map<number, number>>();
+      // The page is topped up to `each` runs a case (again: `each` more), so the two rows are measured
+      // alike: a run of a case on the page's wording counts once, whichever of its claims judged it.
+      const have = new Map<string, Set<string>>();
       if (!both) {
         const mine = new Set((await testsOf(concept)).map((t) => branchOf(t.id)));
-        for (const c of withCases) {
-          const counts = new Map<number, number>();
-          for (const s of (await verdictsOf(c.claim, concept, mine)).get(page.version) ?? []) if (s.case !== undefined) counts.set(s.case, (counts.get(s.case) ?? 0) + 1);
-          have.set(c.claim, counts);
+        for (const c of list) {
+          for (const s of (await verdictsOf(c.id, concept, mine)).get(page.version) ?? []) {
+            if (s.case) have.set(s.case, (have.get(s.case) ?? new Set()).add(s.run));
+          }
         }
       }
-      const samples: Array<{ claim: string; k: number; c: Case; branch?: string }> = [];
-      for (const { claim, cases } of withCases) {
-        cases.forEach((c, k) => {
-          const missing = both ? each : Math.max(0, each - (have.get(claim)?.get(k) ?? 0));
-          for (let i = 0; i < missing; i++) samples.push({ claim, k, c });
-          for (let i = 0; i < each; i++) samples.push({ claim, k, c, branch });
-        });
+      const samples: Sampled[] = [];
+      for (const c of cases.values()) {
+        const judges = await claimsOfCase(c.id);
+        const missing = both ? each : Math.max(0, each - (have.get(c.id)?.size ?? 0));
+        for (let i = 0; i < missing; i++) samples.push({ c, claims: judges });
+        for (let i = 0; i < each; i++) samples.push({ c, claims: judges, branch });
       }
       const batch: Batch = { id: newId(), concept, test: rec.id, total: 0, done: 0, errors: [] };
       start(batch, input.by, samples, () => dropBranch(branch));
@@ -591,6 +640,11 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
     },
 
     async seed(pages, speaker) {
+      const problems: string[] = [];
+      const said = (line: string) => {
+        problems.push(line);
+        console.warn(`[trials] ${line}`);
+      };
       for (const page of pages) {
         try {
           const have = await claimsOn(page.name);
@@ -599,28 +653,31 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
           for (const old of have) {
             if (old.speaker !== speaker || texts.has(old.text.trim())) continue;
             const gone = await claims.retireClaim(old.id, { publisher: speaker, scoped: false, concepts: true });
-            if (!("ok" in gone)) console.warn(`[trials] ${page.name}: a claim its file no longer carries was not retired: ${gone.error}`);
+            if (!("ok" in gone)) said(`${page.name}: a claim its file no longer carries was not retired: ${gone.error}`);
           }
           for (const c of page.claims) {
             if (!c.text || c.text.includes("{{")) continue;
             let id = have.find((x) => x.text.trim() === c.text)?.id;
             if (!id) {
-              const made = await claims.addClaim({ subjects: [{ kind: "concept", name: page.name }], text: c.text, checks: [conceptCheckSpec(c.text)] }, { publisher: speaker, scoped: false, concepts: true });
+              // The checks the file names (a workflow's claims block takes the same), else a model reading the work.
+              const checks = c.checks?.length ? c.checks : [conceptCheckSpec(c.text)];
+              const made = await claims.addClaim({ subjects: [{ kind: "concept", name: page.name }], text: c.text, checks }, { publisher: speaker, scoped: false, concepts: true });
               if (!("ok" in made)) {
-                console.warn(`[trials] ${page.name}: its claim was not recorded: ${made.error}`);
+                said(`${page.name}: its claim "${c.text.slice(0, 80)}" was not recorded: ${made.error}`);
                 continue;
               }
               id = made.id;
             }
             // The file's cases are added to whatever the claim has; none is taken away.
-            const kept = await casesOf(id);
-            const added = c.cases.filter((x) => !kept.some((k) => sameCase(k, x)));
-            if (added.length) await writeCases(id, [...kept, ...added].slice(0, CASES_MAX));
+            const linked = new Set((await linkedTo(id)).map((t) => t.id));
+            const added = c.cases.filter((x) => !linked.has(testCaseId(x.workflow, x.input)));
+            if (added.length) await link(id, added.slice(0, Math.max(0, CASES_MAX - linked.size)));
           }
         } catch (err) {
-          console.warn(`[trials] ${page.name}: its claims were not recorded: ${errorText(err)}`);
+          said(`${page.name}: its claims were not recorded: ${errorText(err)}`);
         }
       }
+      return problems;
     },
 
     async sweep() {

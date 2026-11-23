@@ -8,8 +8,9 @@ import { isServedFilePath } from "@strut/kit/folds";
 
 /** The deep-link params a strut link may carry (./embed). `input` rides
  *  beside `app`: what the app is opened with. `artifact` is a served file,
- *  which the app host opens in its side panel (`panelTarget`). */
-const STRUT_PARAMS = new Set(["wf", "run", "v", "job", "app", "input", "chat", "artifact"]);
+ *  and `hold` beside `job` what the job holds at an address, which the app
+ *  host opens in its side panel (`panelTarget`). */
+const STRUT_PARAMS = new Set(["wf", "run", "v", "job", "hold", "app", "input", "chat", "artifact"]);
 
 /** Where `ui/open-link` leads: the SPA's own navigation for a link to THIS
  *  strut (the same origin and mount, carrying strut's deep-link params —
@@ -71,25 +72,47 @@ export function peerAppLink(params: Record<string, string>, peer: string): Recor
 }
 
 /** What a hosted app's link shows in the side panel beside it
- *  (plans/jamie-app.md §4): a served file, through the artifact viewer, or
- *  another app — a peer's too — with what it is opened with. */
-export type PanelTarget = { artifact: string } | { app: string; input?: string };
+ *  (plans/jamie-app.md §4): a served file, through the artifact viewer;
+ *  another app — a peer's too — with what it is opened with; or what a job
+ *  holds at an address (a pod's app), by the job and the hold's kind. */
+export type PanelTarget = { artifact: string } | { app: string; input?: string } | { job: string; hold: string };
 
 /** Which of a hosted app's strut links open in the side panel, and with
  *  what: `?artifact=<path>` when the path is a served file
  *  (`isServedFilePath`: a job's files or a run's artifacts, here or behind
- *  `/peers/<id>` hops), else `?app=<key>` for an app not on screen. Null
- *  for everything else, which the host follows as it did before the panel:
- *  a link to an app `onScreen` (the page itself — and, from the panel, the
- *  panel's own app — whose input goes to it in place), a workflow, a run, a
- *  job, a path strut does not serve. `params` as `strutLink` reads them, a
- *  peer's page's mapped first (`peerAppLink`). */
+ *  `/peers/<id>` hops), `?job=<id>&hold=<kind>` for what a job holds at an
+ *  address — the host reads the address from the job, never from the link
+ *  — else `?app=<key>` for an app not on screen. Null for everything else,
+ *  which the host follows as it did before the panel: a link to an app
+ *  `onScreen` (the page itself — and, from the panel, the panel's own app —
+ *  whose input goes to it in place), a workflow, a run, a job alone, a path
+ *  strut does not serve. `params` as `strutLink` reads them, a peer's
+ *  page's mapped first (`peerAppLink`, which keeps no job). */
 export function panelTarget(params: Record<string, string>, onScreen: { name: string; version: string; peer?: string }[]): PanelTarget | null {
   const artifact = params["artifact"];
   if (artifact && isServedFilePath(artifact)) return { artifact };
+  const job = params["job"];
+  const hold = params["hold"];
+  if (job && hold) return { job, hold };
   const app = params["app"];
   if (!app || !parseAppKey(app) || onScreen.some((a) => namesApp(app, a))) return null;
   return { app, ...(params["input"] ? { input: params["input"] } : {}) };
+}
+
+/** The address of a job's hold as the side panel frames it: http(s), and
+ *  never this page's own origin — the frame keeps its scripts and its own
+ *  origin (its cookies), which on this origin would be this page's. Null
+ *  for anything else, and for no address (the hold is gone). */
+export function frameableHold(url: string | undefined, origin: string): string | null {
+  if (!url) return null;
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  return u.origin === origin ? null : u.href;
 }
 
 /** Where a link to ANOTHER app of this server's public view goes from a

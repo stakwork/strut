@@ -169,6 +169,18 @@ describe("the /brand routes", () => {
     await strut.close();
   });
 
+  it("the look on GET /public/brand, which answers a visitor's page without a key; never the name", async () => {
+    const strut = await boot();
+    const pub = async () => (await strut.app.request("/public/brand")).json();
+    assert.deepEqual(await pub(), { styles: null });
+    await strut.app.request("/brand", { method: "PUT", headers: auth, body: JSON.stringify({ name: "Acme", color: "#0f766e", font: "Georgia, serif" }) });
+    const { styles } = (await pub()) as { styles: { dark: { variables: Record<string, string> } } };
+    assert.equal(styles.dark.variables["--color-background-inverse"], "#0f766e");
+    assert.equal(styles.dark.variables["--font-sans"], "Georgia, serif");
+    assert.ok(!JSON.stringify(styles).includes("Acme"));
+    await strut.close();
+  });
+
   it("the name: on the invite page, which answers without a key, escaped; none, \"You're invited\"", async () => {
     const strut = await boot();
     const join = async () => (await strut.app.request("/public/join")).text();

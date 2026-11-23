@@ -23,7 +23,7 @@ import { INVITE_PRICE_SATS, startFakeSphinxDaemon, type FakeSphinxDaemon } from 
 import inviteStep from "../steps/lib/staff/invite.js";
 import invitesStep from "../steps/lib/staff/invites.js";
 import cancelInviteStep from "../steps/lib/staff/cancel-invite.js";
-import { JOIN_HEADERS, JOIN_PAGE, JOIN_SCRIPT, joinLang, joinPage, PEEL_ANDROID_RELEASES } from "../public-join.js";
+import { JOIN_HEADERS, JOIN_PAGE, JOIN_SCRIPT, joinLang, joinPage, PEEL_ANDROID_RELEASES, PEEL_IOS_TESTFLIGHT } from "../public-join.js";
 import { LightningError } from "./lightning.js";
 import { NO_INVITES, SphinxDaemonPayer, type Payer, type WalletInvite } from "./payer.js";
 import { createInvites, fileInviteNotes, GRANT_LINK_PREFIX, INVITE_TOKEN_DAYS, InviteError, joinLink, memoryInviteNotes } from "./invites.js";
@@ -177,6 +177,28 @@ describe("createInvites (§5.8)", () => {
     assert.deepEqual(await invites.cancel(first.code), { code: first.code, status: "cancelled" });
     await assert.rejects(invites.cancel("e".repeat(64)), refused("unknown_invite", 404));
     await assert.rejects(invites.cancel("../balance"), refused("bad_request", 400));
+  });
+
+  it("the list: an invite that made a grant is used, takenBy its worker, whatever the daemon says (ready, sending, cancelled); used, failed and the untaken keep theirs", async () => {
+    const { payer, made } = invitePayer();
+    const taken: Record<string, string> = {};
+    const invites = createInvites({ ...deps(), payer: async () => payer, takenBy: async (code) => taken[code] });
+    const a = await invites.create({ base: BASE });
+    const b = await invites.create({ base: BASE });
+    const c = await invites.create({ base: BASE });
+    for (const [code, status] of [["u", "used"], ["f", "failed"], ["x", "cancelled"], ["s", "sending"]] as const) {
+      made.push({ code: code.repeat(64), link: `${INVITE}${code}`, sats: 100, status, createdAt: "2026-11-01T00:00:00.000Z" });
+    }
+    await invites.cancel(c.code);
+    Object.assign(taken, { [a.code]: "secp:ann", [c.code]: "secp:cy", ["x".repeat(64)]: "secp:xi", ["s".repeat(64)]: "secp:si", ["u".repeat(64)]: "secp:no", ["f".repeat(64)]: "secp:no" });
+    const by = Object.fromEntries((await invites.list({ base: BASE })).invites.map((i) => [i.code, [i.status, i.takenBy]]));
+    assert.deepEqual(by[a.code], ["used", "secp:ann"]);
+    assert.deepEqual(by[b.code], ["ready", undefined], "no taker: as the daemon says");
+    assert.deepEqual(by[c.code], ["used", "secp:cy"], "cancelled by strut after the grant");
+    assert.deepEqual(by["x".repeat(64)], ["used", "secp:xi"]);
+    assert.deepEqual(by["s".repeat(64)], ["used", "secp:si"]);
+    assert.deepEqual(by["u".repeat(64)], ["used", undefined], "the daemon's used is left alone");
+    assert.deepEqual(by["f".repeat(64)], ["failed", undefined]);
   });
 
   it("who made an invite and when its link stops: noted at create, listed; older invites show nothing", async () => {
@@ -471,9 +493,13 @@ const JOIN_WORD_VALUES = (lang: "en" | "es"): string[] => {
 };
 
 /** The join page's script in a stand-in browser: what it shows and links. */
-async function runJoin(o: { hash: string; userAgent: string; release?: unknown; noClipboard?: boolean; search?: string }) {
+async function runJoin(o: { hash: string; userAgent: string; release?: unknown; noClipboard?: boolean; platform?: string; touch?: number; search?: string; lang?: string; execOk?: boolean; rejectClipboard?: boolean }) {
   const el = (id: string) => ({ id, hidden: true, href: "#", innerHTML: "" });
-  const els = Object.fromEntries(["android", "elsewhere", "bad", "open", "qr", "card"].map((id) => [id, el(id)]));
+  const els = Object.fromEntries(["android", "ios", "elsewhere", "bad", "open", "testflight", "open-ios", "qr", "card"].map((id) => [id, el(id)]));
+  const copyBtn = { id: "copy", textContent: "Copy invite", onclick: undefined as undefined | (() => void), getAttribute: (n: string) => (n === "data-copied" ? "Copied" : null) };
+  (els as Record<string, unknown>)["copy"] = copyBtn;
+  const execed: string[] = [];
+  const timers: Array<() => void> = [];
   const appended: Array<Record<string, unknown>> = [];
   const fetched: string[] = [];
   const drawn: string[] = [];
@@ -486,8 +512,13 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown; 
     // What /public/join/qrcode.js defines, once the page has loaded it.
     qrcode: () => ({ addData: (t: string) => drawn.push(t), make: () => {}, createSvgTag: () => "<svg>qr</svg>" }),
     location: { hash: o.hash, href, pathname: "/public/join", search: o.search ?? "", replace: (u: string) => replaced.push(u) },
-    navigator: o.noClipboard ? { userAgent: o.userAgent } : { userAgent: o.userAgent, clipboard: { writeText: async (t: string) => void copied.push(t) } },
-    document: { get cookie() { return doc.cookie; }, set cookie(v: string) { doc.cookie = v; }, querySelectorAll: () => switchers, getElementById: (id: string) => els[id], createElement: () => ({}), head: { appendChild: (s: Record<string, unknown>) => appended.push(s) } },
+    navigator: o.noClipboard ? { userAgent: o.userAgent, platform: o.platform, maxTouchPoints: o.touch } : { userAgent: o.userAgent, platform: o.platform, maxTouchPoints: o.touch, clipboard: { writeText: async (t: string) => { if (o.rejectClipboard) throw new Error("no"); copied.push(t); } } },
+    setTimeout: (f: () => void) => void timers.push(f),
+    URL,
+    document: {
+      documentElement: { lang: o.lang ?? "en" },
+      body: { appendChild: () => {}, removeChild: () => {} },
+      execCommand: (c: string) => { execed.push(c); return o.execOk ?? true; }, get cookie() { return doc.cookie; }, set cookie(v: string) { doc.cookie = v; }, querySelectorAll: () => switchers, getElementById: (id: string) => els[id], createElement: () => ({ style: {}, select() { execed.push("select"); } }), head: { appendChild: (s: Record<string, unknown>) => appended.push(s) } },
     fetch: async (url: string) => {
       fetched.push(url);
       return { ok: o.release !== undefined, json: async () => o.release };
@@ -496,7 +527,7 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown; 
   });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
-  return { els, appended, fetched, drawn, copied, href, doc, replaced, switchers };
+  return { els, appended, fetched, drawn, copied, href, doc, replaced, switchers, copyBtn, execed, timers };
 }
 
 describe("the join page's script (§5.8)", () => {
@@ -535,6 +566,47 @@ describe("the join page's script (§5.8)", () => {
     assert.equal(none.els["open"]!.href, intent(PEEL_ANDROID_RELEASES));
   });
 
+  it("the Copy invite button: writes the invite, says Copied for a moment; no clipboard or a refusal: the hidden input and execCommand; a bad invite throws nothing", async () => {
+    const r = await runJoin({ hash, userAgent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/131.0" });
+    r.copyBtn.onclick!();
+    await new Promise((x) => setImmediate(x));
+    assert.deepEqual(r.copied, [`sphinx.chat://?action=i&d=${D}&c=BBBB&a=${app}`]);
+    assert.equal(r.copyBtn.textContent, "Copied");
+    r.timers[0]!();
+    assert.equal(r.copyBtn.textContent, "Copy invite");
+    const none = await runJoin({ hash, userAgent: ANDROID, noClipboard: true });
+    none.copyBtn.onclick!();
+    assert.deepEqual(none.execed, ["select", "copy"]);
+    assert.equal(none.copyBtn.textContent, "Copied");
+    const no = await runJoin({ hash, userAgent: ANDROID, rejectClipboard: true });
+    no.copyBtn.onclick!();
+    await new Promise((x) => setImmediate(x));
+    assert.deepEqual(no.execed, ["select", "copy"]);
+    await assert.doesNotReject(runJoin({ hash: "#nope", userAgent: ANDROID }));
+    assert.match(joinPage("Acme", "es"), /id="copy" class="copy" data-copied="Copiada">Copiar invitación</);
+  });
+
+  it("a Spanish page puts lang=es into the worker app's URL (Android, iPhone, copied text); English, a lang already there, no or two a= leave it alone", async () => {
+    const withLang = encodeURIComponent("https://s.example/?app=workers&solo=1&public=1&lang=es");
+    const q = `action=i&d=${D}&c=BBBB&a=${withLang}`;
+    const es = await runJoin({ hash, userAgent: ANDROID, lang: "es" });
+    assert.match(es.els["open"]!.href, new RegExp(`^intent://\\?${q.replace(/[?.]/g, "\\$&")}#Intent`));
+    es.copyBtn.onclick!();
+    await new Promise((x) => setImmediate(x));
+    assert.deepEqual(es.copied, [`sphinx.chat://?${q}`]);
+    const ios = await runJoin({ hash, userAgent: IPHONE, lang: "es" });
+    assert.equal(ios.els["open-ios"]!.href, `peel://join?${q}`);
+    const keep = await runJoin({ hash: `#${q}`, userAgent: IPHONE, lang: "es" });
+    assert.equal(keep.els["open-ios"]!.href, `peel://join?${q}`);
+    assert.equal((await runJoin({ hash, userAgent: IPHONE })).els["open-ios"]!.href, `peel://join?action=i&d=${D}&c=BBBB&a=${app}`);
+    const two = `#action=i&d=${D}&a=${app}&a=${app}`;
+    assert.equal((await runJoin({ hash: two, userAgent: IPHONE, lang: "es" })).els["open-ios"]!.href, `peel://join?${two.slice(1)}`);
+    const none = `#action=i&d=${D}&c=BBBB`;
+    assert.equal((await runJoin({ hash: none, userAgent: IPHONE, lang: "es" })).els["open-ios"]!.href, `peel://join?${none.slice(1)}`);
+    const junk = `#action=i&d=${D}&a=%E0%A4%A`;
+    assert.equal((await runJoin({ hash: junk, userAgent: IPHONE, lang: "es" })).els["open-ios"]!.href, `peel://join?${junk.slice(1)}`);
+  });
+
   it("the switcher: sets the cookie, then replaces the page with ?lang= (others kept, an old lang replaced) and the same hash; only en or es", async () => {
     const r = await runJoin({ hash, userAgent: IPHONE, search: "?x=1&lang=en&y=2" });
     r.switchers[1]!.onclick!();
@@ -552,10 +624,37 @@ describe("the join page's script (§5.8)", () => {
     assert.deepEqual(b.replaced, ["/public/join?lang=en"]);
   });
 
-  it("anywhere else: open it on an Android phone, a QR code of the page's own URL; no invite: says so and fires nothing", async () => {
-    const r = await runJoin({ hash, userAgent: IPHONE });
+  it("on an iPhone: the iOS block, TestFlight and peel://join links, both taps copy the invite; an iPad as a Mac with touch too", async () => {
+    const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15";
+    const q = `action=i&d=${D}&c=BBBB&a=${app}`;
+    for (const o of [{ userAgent: IPHONE }, { userAgent: MAC, platform: "MacIntel", touch: 5 }]) {
+      const r = await runJoin({ hash, ...o });
+      assert.equal(r.els["ios"]!.hidden, false);
+      assert.equal(r.els["android"]!.hidden, true);
+      assert.equal(r.els["elsewhere"]!.hidden, true);
+      assert.deepEqual(r.fetched, []);
+      assert.equal(r.els["testflight"]!.href, PEEL_IOS_TESTFLIGHT);
+      assert.equal(r.els["open-ios"]!.href, `peel://join?${q}`);
+      assert.deepEqual(r.copied, []);
+      for (const id of ["testflight", "open-ios"]) (r.els[id] as unknown as { onclick: () => void }).onclick();
+      assert.deepEqual(r.copied, [`sphinx.chat://?${q}`, `sphinx.chat://?${q}`]);
+      const none = await runJoin({ hash, ...o, noClipboard: true });
+      assert.doesNotThrow(() => (none.els["open-ios"] as unknown as { onclick: () => void }).onclick());
+    }
+    // A desktop Mac (no touch) gets the QR code.
+    const desk = await runJoin({ hash, userAgent: MAC, platform: "MacIntel", touch: 0 });
+    assert.equal(desk.els["elsewhere"]!.hidden, false);
+    assert.equal(desk.els["ios"]!.hidden, true);
+    const badIos = await runJoin({ hash: "#x", userAgent: IPHONE });
+    assert.equal(badIos.els["bad"]!.hidden, false);
+    assert.equal(badIos.els["ios"]!.hidden, true);
+  });
+
+  it("anywhere else: open it on a phone, a QR code of the page's own URL; no invite: says so and fires nothing", async () => {
+    const r = await runJoin({ hash, userAgent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/131.0" });
     assert.equal(r.els["elsewhere"]!.hidden, false);
     assert.equal(r.els["android"]!.hidden, true);
+    assert.equal(r.els["ios"]!.hidden, true);
     assert.deepEqual(r.fetched, []);
     assert.equal(r.appended.length, 1);
     assert.equal(r.appended[0]!["src"], "join/qrcode.js");

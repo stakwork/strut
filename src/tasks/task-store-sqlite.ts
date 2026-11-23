@@ -146,7 +146,8 @@ create table if not exists task_types (
   round_rule text,
   title text,
   limits text,
-  check_rule text
+  check_rule text,
+  pay_on text
 ) strict;
 ${TASKS_TABLE("tasks")}
 
@@ -219,6 +220,7 @@ const ADDED: Array<[table: string, column: string, type: string]> = [
   ["task_types", "title", "text"],
   ["task_types", "limits", "text"],
   ["task_types", "check_rule", "text"],
+  ["task_types", "pay_on", "text"],
 ];
 
 /** Every index, made once its table and columns are there (a rebuilt
@@ -291,12 +293,13 @@ export class SqliteTaskStore implements TaskStore {
       types: p("select * from task_types order by name"),
       type: p("select * from task_types where name = ?"),
       putType: p(
-        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only, attachments, standing, round_rule, title, limits, check_rule)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only, attachments, standing, round_rule, title, limits, check_rule, pay_on)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict (name) do update set app = excluded.app, answer = excluded.answer, lease_seconds = excluded.lease_seconds,
            within_hours = excluded.within_hours, enabled = excluded.enabled, changed_at = excluded.changed_at, changed_by = excluded.changed_by,
            pay_msat = excluded.pay_msat, hold_hours = excluded.hold_hours, tests = excluded.tests, copies = excluded.copies,
-           invite_only = excluded.invite_only, attachments = excluded.attachments, standing = excluded.standing, round_rule = excluded.round_rule, title = excluded.title, limits = excluded.limits, check_rule = excluded.check_rule`,
+           invite_only = excluded.invite_only, attachments = excluded.attachments, standing = excluded.standing, round_rule = excluded.round_rule, title = excluded.title, limits = excluded.limits, check_rule = excluded.check_rule,
+           pay_on = excluded.pay_on`,
       ),
       deleteType: p("delete from task_types where name = ?"),
       openOfType: p("select 1 from tasks where type = ? and status = 'open' limit 1"),
@@ -417,7 +420,25 @@ export class SqliteTaskStore implements TaskStore {
           where l.type = ?1 and l.status = 'submitted' and l.closed >= ?2 order by l.closed desc limit ?3`,
       ),
       booked: p("update leases set booked_at = ? where id = ? and booked_at is null"),
-      unbooked: p("select * from leases where status = 'submitted' and pay_msat is not null and booked_at is null order by closed limit ?"),
+      // What earns now (`earnsNow`, the memory store's one rule): never a
+      // rejected answer; on a type that pays on ok, an answer with an ok, or
+      // a test's graded pass or error.
+      unbooked: p(
+        `select l.* from leases l
+          where l.status = 'submitted' and l.pay_msat is not null and l.booked_at is null
+            and not exists (select 1 from reviews r where r.task = l.task and r.worker = l.worker and r.verdict = 'rejected')
+            and (not exists (select 1 from task_types k where k.name = l.type and k.pay_on = 'ok')
+              or exists (select 1 from reviews r where r.task = l.task and r.worker = l.worker and r.verdict = 'ok')
+              or exists (select 1 from tasks t where t.id = l.task and t.grade in ('pass', 'error')))
+          order by l.closed limit ?`,
+      ),
+      pendingPay: p(
+        `select coalesce(sum(l.pay_msat), 0) msat from leases l
+          join task_types k on k.name = l.type and k.pay_on = 'ok'
+          where l.worker = ? and l.status = 'submitted' and l.pay_msat is not null and l.booked_at is null
+            and not exists (select 1 from reviews r where r.task = l.task and r.worker = l.worker and r.verdict = 'rejected')
+            and not exists (select 1 from tasks t where t.id = l.task and t.grade = 'fail')`,
+      ),
       // An open instance (§7.1) or standing task (§5.7) whose lease is no
       // longer live closes.
       deadInstances: p(
@@ -551,6 +572,7 @@ export class SqliteTaskStore implements TaskStore {
         t.title ?? null,
         t.limits ? JSON.stringify(t.limits) : null,
         t.check ? JSON.stringify(t.check) : null,
+        t.payOn ?? null,
       );
       return typeOf(this.s.type.get(t.name) as Row);
     });
@@ -847,6 +869,10 @@ export class SqliteTaskStore implements TaskStore {
     return (this.s.unbooked.all(Math.max(0, Math.floor(limit))) as Row[]).map(leaseOf);
   }
 
+  async pendingPay(worker: string): Promise<number> {
+    return Number((this.s.pendingPay.get(worker) as Row).msat);
+  }
+
   // ── tests (§7) ────────────────────────────────────────────────────────
 
   async peek(o: { worker: string; types: string[]; now: number }): Promise<string | undefined> {
@@ -1130,6 +1156,7 @@ function typeOf(r: Row): TaskType {
   if (round !== undefined) t.round = JSON.parse(round) as RoundRule;
   const check = opt<string>(r.check_rule);
   if (check !== undefined) t.check = JSON.parse(check) as CheckRule;
+  if (opt<string>(r.pay_on) === "ok") t.payOn = "ok";
   const title = opt<string>(r.title);
   if (title !== undefined) t.title = title;
   const limits = opt<string>(r.limits);

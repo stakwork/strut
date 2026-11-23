@@ -118,7 +118,7 @@ describe("strut/staff: the answer's shape in the type editor", () => {
 
 describe("strut/staff: the type editor's draft", () => {
   const type: TaskType = {
-    name: "pets", app: "workers", answer: MATCH as never, leaseSeconds: 900, withinHours: 48, enabled: false, open: false, paySats: 20, holdHours: 24,
+    name: "pets", app: "workers", answer: MATCH as never, leaseSeconds: 900, withinHours: 48, enabled: false, open: false, paySats: 20, holdHours: 24, payOn: "ok",
     tests: { rate: 0.1, newRate: 0.3, newTasks: 40, qualify: 5, window: 10, minGraded: 5, threshold: 0.7, grade: { step: "grade/judge", config: { rubric: "same pet" } }, gradeCapUsd: 0.02 },
     copies: { max: 3, agree: 2, compare: "equal", onDisagree: "fail" }, changedAt: 0,
   };
@@ -136,7 +136,10 @@ describe("strut/staff: the type editor's draft", () => {
   it("a part the page does not show is sent back as it was, never dropped by the whole-type PUT", () => {
     const out = saveOf(draftOf(type), { pay: false, tests: false, copies: false }, type);
     assert.ok("input" in out);
-    assert.deepEqual([out.input["paySats"], out.input["holdHours"], out.input["tests"], out.input["copies"], out.input["open"]], [20, 24, type.tests, type.copies, false]);
+    assert.deepEqual([out.input["paySats"], out.input["holdHours"], out.input["payOn"], out.input["tests"], out.input["copies"], out.input["open"]], [20, 24, "ok", type.tests, type.copies, false]);
+    // Paid as handed in: nothing sent, the store's default.
+    const { payOn: _p, ...asAnswered } = type;
+    assert.equal("payOn" in (saveOf(draftOf(asAnswered), all, asAnswered) as { input: Record<string, unknown> }).input, false);
     // A server from before open types: no choice shown, and nothing sent, so its own default holds.
     const { open: _o, ...older } = type;
     assert.equal("open" in (saveOf(draftOf(older), { pay: true, tests: true, copies: true }, older) as { input: Record<string, unknown> }).input, false);

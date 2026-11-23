@@ -583,7 +583,7 @@ for (const tb of testBackends()) {
 
     it("ontology: listSchemas and getSchema mirror jarvis's shapes", { skip: neoOnly("the Schema meta-graph with Thing") }, async () => {
       const { schemas, edges } = await reader.listSchemas();
-      assert.equal(schemas.length, 19, "the Strut domain, Thing, and the seed types (Claim, Check, Evidence, Concept)");
+      assert.equal(schemas.length, 20, "the Strut domain, Thing, and the seed types (Claim, Check, Evidence, TestCase, Concept)");
       const run = schemas.find((s) => s.type === "StrutRun")!;
       assert.equal(run["domain"], "Strut");
       assert.equal(run["parent"], "Thing");
@@ -616,9 +616,9 @@ for (const tb of testBackends()) {
       assert.equal(await reader.getSchema("Nope"), null);
     });
 
-    it("ontology: the registry's nineteen types and twenty-two edges, in jarvis's shapes", { skip: neo && "ladybug only" }, async () => {
+    it("ontology: the registry's twenty types and twenty-two edges, in jarvis's shapes", { skip: neo && "ladybug only" }, async () => {
       const { schemas, edges } = await reader.listSchemas();
-      assert.deepEqual(schemas.map((s) => s.type).sort(), ["Check", "Claim", "Concept", "EdgeText", "Evidence", "Lingo", "Merge", "Mishearing", "Person", "StrutApp", "StrutAppVersion", "StrutArtifact", "StrutJob", "StrutProposal", "StrutRun", "StrutStep", "StrutStepVersion", "StrutWorkflow", "StrutWorkflowVersion"]);
+      assert.deepEqual(schemas.map((s) => s.type).sort(), ["Check", "Claim", "Concept", "EdgeText", "Evidence", "Lingo", "Merge", "Mishearing", "Person", "StrutApp", "StrutAppVersion", "StrutArtifact", "StrutJob", "StrutProposal", "StrutRun", "StrutStep", "StrutStepVersion", "StrutWorkflow", "StrutWorkflowVersion", "TestCase"]);
       const run = schemas.find((s) => s.type === "StrutRun")!;
       assert.equal(run["domain"], "Strut");
       assert.equal(run["parent"], "Thing");

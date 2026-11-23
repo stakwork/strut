@@ -199,6 +199,11 @@ export interface TaskType {
   paySats?: number;
   /** How long an earning waits before it can be withdrawn, in hours. */
   holdHours: number;
+  /** When an answer earns (`PAY_ON`): `"ok"`, only once a verdict says
+   *  `ok` — staff's review, or the run that asked (`task/reply`'s
+   *  `verdict`); a test's answer once graded `pass` or `error` — and a
+   *  rejected answer earns nothing. Absent: as it is answered. */
+  payOn?: "ok";
   /** Its budget and per-worker daily cap (`LimitRule`); absent: none. */
   limits?: LimitRule;
   /** Its test rules (§7); absent: off, and the type works as without. */
@@ -503,6 +508,23 @@ export interface TestInstance {
 export const VERDICTS = ["ok", "rejected"] as const;
 export type Verdict = (typeof VERDICTS)[number];
 
+/** When a paid answer earns (`TaskType.payOn`): `answer`, as it is answered
+ *  (the default, never stored), or `ok`, once a verdict says ok. */
+export const PAY_ON = ["answer", "ok"] as const;
+export type PayOn = (typeof PAY_ON)[number];
+
+/** Whether a submitted, paid answer earns now, so may be booked: never once
+ *  rejected (a type that paid as answered books before it rejects, so this
+ *  holds back only what a type that paid on `ok` left unbooked); on a type
+ *  that pays on `ok`, once a verdict says ok, or a test's answer graded
+ *  `pass` or `error` (a grader that could not run is not the worker's
+ *  fault). Both stores' `unbooked` and the service's `book` read it. */
+export function earnsNow(kind: Pick<TaskType, "payOn"> | undefined, verdict: Verdict | undefined, grade: GradeResult | undefined): boolean {
+  if (verdict === "rejected") return false;
+  if (kind?.payOn !== "ok") return true;
+  return verdict === "ok" || grade === "pass" || grade === "error";
+}
+
 /** The verdict on one ANSWER: the task and the worker who gave it, so a
  *  copies task's answers are reviewed apart (§9.6, built per answer). A
  *  mark: it changes nothing in the run. */
@@ -646,9 +668,14 @@ export interface TaskStore {
   sweep(now: number): Promise<{ leases: number; expired: TaskSettled[] }>;
   /** §8.1: a submitted lease's earning was booked in the ledger. Once. */
   booked(lease: string, at: number): Promise<void>;
-  /** Submitted leases with pay whose earning is not booked yet, oldest
-   *  answer first, at most `limit`: what the sweep books. */
+  /** Submitted leases with pay whose earning is not booked yet and that
+   *  earn now (`earnsNow`), oldest answer first, at most `limit`: what the
+   *  sweep books. */
   unbooked(limit: number): Promise<Lease[]>;
+  /** What `worker`'s answers on types that pay on ok wait for an ok to
+   *  earn, msat: submitted, paid and not booked, neither rejected nor a
+   *  test graded fail. */
+  pendingPay(worker: string): Promise<number>;
 
   // ── tests (§7) ────────────────────────────────────────────────────────
   /** The type of the task `take` would hand `worker` now, without taking
@@ -1107,10 +1134,27 @@ export class MemoryTaskStore implements TaskStore {
 
   async unbooked(limit: number): Promise<Lease[]> {
     return [...this.leases.values()]
-      .filter((l) => l.status === "submitted" && l.payMsat !== undefined && l.bookedAt === undefined)
+      .filter(
+        (l) =>
+          l.status === "submitted" &&
+          l.payMsat !== undefined &&
+          l.bookedAt === undefined &&
+          earnsNow(this.kinds.get(l.type), this.reviewRows.get(reviewKey(l.task, l.worker))?.verdict, this.tasks.get(l.task)?.grade),
+      )
       .sort((a, b) => (a.closed ?? 0) - (b.closed ?? 0))
       .slice(0, Math.max(0, limit))
       .map(clone);
+  }
+
+  async pendingPay(worker: string): Promise<number> {
+    let msat = 0;
+    for (const l of this.leases.values()) {
+      if (l.worker !== worker || l.status !== "submitted" || l.payMsat === undefined || l.bookedAt !== undefined) continue;
+      if (this.kinds.get(l.type)?.payOn !== "ok") continue;
+      if (this.reviewRows.get(reviewKey(l.task, l.worker))?.verdict === "rejected" || this.tasks.get(l.task)?.grade === "fail") continue;
+      msat += l.payMsat;
+    }
+    return msat;
   }
 
   // ── tests ───────────────────────────────────────────────────────────

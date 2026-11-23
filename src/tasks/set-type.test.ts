@@ -85,7 +85,7 @@ describe("task/set-type: its input, the merge and the card", () => {
     const gated = gatedSchema(typeChangeInput);
     assert.ok(gated instanceof z.ZodObject);
     const json = zodSchema(gated).jsonSchema as { properties: Record<string, unknown>; required: string[] };
-    assert.deepEqual(Object.keys(json.properties), ["name", "title", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "limits", "tests", "copies", "attachments", "standing", "round", "check", "rationale"]);
+    assert.deepEqual(Object.keys(json.properties), ["name", "title", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "payOn", "limits", "tests", "copies", "attachments", "standing", "round", "check", "rationale"]);
     assert.deepEqual(json.required, ["name", "app"]);
     // The answer is said to be an object, so the model sends one; the rules too.
     for (const k of ["answer", "tests", "copies", "attachments", "standing", "round", "check"]) assert.match(JSON.stringify(json.properties[k]), /"object"/, k);
@@ -279,6 +279,22 @@ describe("task/set-type: its input, the merge and the card", () => {
       askOver(waiting, { name: "visit", attachments: { max: 2 }, tests: null, standing: { workflow: "other" } } as TypeChange),
       { ...waiting, attachments: { max: 2, min: 4, types: ["image/*"] }, tests: null, standing: { workflow: "other" } },
     );
+  });
+
+  it("when a paid answer earns (payOn): taken whole, kept when left out, null back to as answered; the card says pay waits for an OK", () => {
+    assert.ok(typeChangeInput.safeParse({ name: "pages", app: "workers", payOn: "ok" }).success);
+    assert.equal(typeChangeInput.safeParse({ name: "pages", app: "workers", payOn: "later" }).success, false);
+    const was = row({ paySats: 4, payOn: "ok" });
+    assert.equal(mergeType("pages", was, { app: "workers" }).payOn, "ok", "kept when left out");
+    assert.equal(mergeType("pages", was, { payOn: null }).payOn, null);
+    const card = typeCard({ name: "pages", app: "workers", paySats: 4, payOn: "ok" });
+    assert.deepEqual(field(card, "Pay"), {
+      label: "Pay",
+      value: "4 sats for each one marked OK — by you, or by the workflow itself — from this server's wallet; one marked rejected is never paid. Workers can withdraw it once it is OK'd.",
+      danger: true,
+    });
+    assert.equal(field(card, "Checked when handed in")!.value, "No: every answer that fits is accepted the moment it is handed in.");
+    assert.equal(field(typeCard({ name: "pages", app: "workers", payOn: "ok" }, { existing: row({ paySats: 4 }) }), "What changes")!.value, "paid: as handed in → once marked OK");
   });
 
   it("the card for a change: what changes in the person's words, the pay rise a danger with the last week's cost, the app's problem a danger; a cut in pay is none", () => {

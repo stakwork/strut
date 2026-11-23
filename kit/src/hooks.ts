@@ -902,6 +902,10 @@ export interface WorkerTask {
    *  when this task was taken, locked — a later change of pay never reaches
    *  it. 0: unpaid. */
   payMsat: number;
+  /** `ok`: the answer earns `payMsat` only once it is marked OK (by staff,
+   *  or by the workflow that asked); one sent back earns nothing. Absent:
+   *  it earns as it is sent. */
+  payOn?: "ok";
   /** The files an answer carries (a photo of a document): how many, and
    *  of what media types (`image/*` a family) — `submit(answer, files)`.
    *  Absent: the task type takes none. */
@@ -993,6 +997,10 @@ export interface WorkerHistoryItem {
   /** A paid answer: what it earned, when its hold ends (then it can be
    *  withdrawn), and whether it was taken back. */
   earned?: { msat: number; releases: number; takenBack?: true };
+  /** On a task type that pays only once an answer is marked OK: what this
+   *  one earns then, while it waits (never with `earned`; gone once it is
+   *  rejected). */
+  pending?: { msat: number };
   /** What the workflow told them after their answer (its `task/reply`
    *  step), on an answer of theirs alone: open its files with
    *  `useTaskFile(item, file.path)`. Absent: it told them nothing (yet). */
@@ -1050,8 +1058,22 @@ export interface WorkerInfo {
   holding?: { type: string; expires: number; lease?: string };
   /** What they are owed here: zeros with nothing earned. */
   balance: WorkerBalance;
+  /** What their answers will earn once marked OK, msat, on task types that
+   *  pay only then (not in `balance` yet). Absent when nothing waits. */
+  pendingMsat?: number;
   /** Withdrawing what passed its hold (`useWithdraw`). Absent on a server without it. */
   payout?: WorkerPayout;
+  /** The exchange rate this server trusts, to show fiat beside sats (sats are
+   *  what is paid): units of each currency per bitcoin by ISO 4217 code
+   *  (`perBtc.USD`, `perBtc.EUR`, …; `fiatOfMsat`). Absent when none can be read. */
+  rate?: { perBtc: Record<string, number>; at: string; source: string };
+}
+
+/** What `msat` is worth in `currency` at a `useWorker()` rate, or undefined
+ *  when the rate has no figure for it. */
+export function fiatOfMsat(msat: number, rate: { perBtc: Record<string, number> } | undefined, currency = "USD"): number | undefined {
+  const perBtc = rate?.perBtc[currency.toUpperCase()];
+  return perBtc ? (msat / 1000 / 100_000_000) * perBtc : undefined;
 }
 
 /** The refusal code a task call's error begins with (`not_active`,

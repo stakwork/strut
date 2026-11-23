@@ -10,9 +10,9 @@
  *     (`belief_valid_to` / `retired_at`). A superseded claim's evidence
  *     stays on the old node and the successor starts `unknown`; a retired
  *     check's evidence stays in the graph and never counts again;
- *   - a successor claim carries its `ABOUT` attachments AND its active
- *     checks across — each check gains a `TESTS` edge to the successor (an
- *     instrument is not a statement, so it is never cloned). A successor
+ *   - a successor claim carries its `ABOUT` attachments, its active
+ *     checks AND its test cases across — each gains a `TESTS` edge to the
+ *     successor (an instrument is not a statement, so it is never cloned). A successor
  *     check takes over the `TESTS` edge(s) to the active claim;
  *   - nothing is ever deleted: retiring sets a timestamp, detaching mutes
  *     the `ABOUT` edge (jarvis's soft delete).
@@ -171,7 +171,7 @@ export class ClaimsWriter {
     const next = text.trim();
     if (!next) throw new ClaimsError("INVALID", "claim text is empty");
     if (next === old.claim_text) return { id, unchanged: true };
-    const [subjects, checks] = await Promise.all([this.reader.subjectsOf(id), this.reader.checksFor(id)]);
+    const [subjects, checks, cases] = await Promise.all([this.reader.subjectsOf(id), this.reader.checksFor(id), this.reader.testCasesFor(id)]);
     const at = nowSeconds();
     const successor = newEpistemicId();
     const node = await this.graph.nodes.write(
@@ -181,6 +181,8 @@ export class ClaimsWriter {
     await this.graph.edges.writeMany([
       { edge: CLAIM_EDGES.SUPERSEDES, source_ref_id: node.ref_id, target_ref_id: old.ref_id },
       ...checks.map((k) => ({ edge: CLAIM_EDGES.TESTS, source_ref_id: k.ref_id, target_ref_id: node.ref_id })),
+      // Its test cases test the reworded claim too (src/trials.ts).
+      ...cases.map((t) => ({ edge: CLAIM_EDGES.TESTS, source_ref_id: t.ref_id, target_ref_id: node.ref_id })),
       ...subjects.map((s) => ({ edge: CLAIM_EDGES.ABOUT, source_ref_id: node.ref_id, target_ref_id: s.ref_id })),
     ]);
     // Closed last: until then the old claim is still the active one.

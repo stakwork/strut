@@ -28,10 +28,10 @@ import type { JobsCapability } from "../jobs.js";
 import type { Conversations } from "../conversations.js";
 import { BUSY_NOTICE, NOT_SHARED_NOTICE, NOT_YOURS_NOTICE, readRefusal, detectSlash, groupByDay, hostPlace, insertSlash, isOwn, mayContinue, modelChoices, modelParams, newConversationId, ownerLabel, readsAsAdmin, sendRefusal, sentModel, silentReply, timeLine, turnContext, withoutAsk } from "./jamie/src/lib/chat.js";
 import { appKey, openable, placeArtifact, servedFile, turnDeliverables } from "./jamie/src/lib/artifacts.js";
-import { answeredSince, askedSecret, captchaPrompt, claimPill, jobLook, jobRunWorkflow, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
+import { answeredSince, askedSecret, captchaPrompt, claimPill, holdLinks, jobLook, jobRunWorkflow, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
 import { canMerge, checksLine, fixPrompt, prKey, prLive, prOf, prPill } from "./jamie/src/lib/pr.js";
-import { acceptLook } from "./jamie/src/lib/proposals.js";
+import { acceptLook, waitingFor } from "./jamie/src/lib/proposals.js";
 import { attachmentShow } from "./jamie/src/lib/attachments.js";
 
 /**
@@ -246,6 +246,14 @@ describe("strut/jamie — the pure parts", () => {
     assert.equal(answeredSince(undefined, "1793900000000"), false);
   });
 
+  it("a job's card: a row for each hold with an address, opened beside the chat by the job and kind — never the address", () => {
+    const pod = "https://p1a2b3-3000.stakwork.bot/_pods/open/tok";
+    assert.deepEqual(holdLinks("j 1", { pod }), [{ kind: "pod", label: "Open pod", url: pod, beside: "?job=j%201&hold=pod" }]);
+    assert.deepEqual(holdLinks("j", undefined), []);
+    assert.deepEqual(holdLinks("j", {}), [], "no hold has an address: no row");
+    assert.deepEqual(holdLinks("j", { pod: "javascript:alert(1)", box: "/relative" }), [], "only an http(s) address");
+  });
+
   it("a job's card: its pill, and the live strip's line and tally for the run in flight", () => {
     assert.deepEqual(jobLook("success", "Which repo?"), { label: "Needs an answer", tone: "attention" });
     assert.deepEqual(jobLook("success"), { label: "Done", tone: "ok" });
@@ -329,6 +337,9 @@ describe("strut/jamie — the pure parts", () => {
     assert.equal(acceptLook("admin", { admin: true }), "accept");
     assert.equal(acceptLook("admin", { admin: false }), "admin");
     assert.equal(acceptLook("admin", undefined), "unknown");
+    // Someone else's card in a shared conversation: whose ask it was, by name.
+    assert.equal(waitingFor("evanfeenstra-cd06a17ecfb5779b4a71"), "Waiting for evanfeenstra to decide: it was their ask.");
+    assert.equal(waitingFor(undefined), "Waiting for the person who asked to decide.");
   });
 
   it("an attached file: an image a thumbnail, text to read, the rest a chip; nothing without a path", () => {

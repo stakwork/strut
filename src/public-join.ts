@@ -20,7 +20,15 @@
  *   sent it by tapping the same button again. It is a link the person taps:
  *   Chrome opens an app from a page only on a gesture, and writes the
  *   clipboard only on one.
- * - **Anywhere else** it says to open the link on an Android phone and draws
+ * - **On an iPhone or iPad** (iPadOS reports as a Mac with touch points) it
+ *   shows two links in the dock: "Get Peel" (Peel iOS is on TestFlight only,
+ *   `PEEL_IOS_TESTFLIGHT`, with a hint that Apple's TestFlight app comes
+ *   first) and "Open in Peel" (`peel://join?<q>`, the same query as Android's
+ *   `sphinx.chat://?<q>`; Peel iOS does not use `sphinx.chat://` because the
+ *   Sphinx iOS app registers it too). Both taps copy `sphinx.chat://?<q>`,
+ *   exactly as Android's does, for a Peel with no account to read on first
+ *   launch. Neither navigation is prevented.
+ * - **Anywhere else** it says to open the link on a phone and draws
  *   a QR code of its own URL, invite included, with qrcode-generator's
  *   browser build served beside it (`/public/join/qrcode.js`).
  * - **In the worker's language** (plans/i18n.md): English or Spanish, the
@@ -33,7 +41,7 @@
  *   it in every language.
  * - **An invitation card**: the employer's initial (the server name's), "Invite",
  *   "‹name› invites you", and on Android a dock pinned to the bottom with
- *   "Open in Peel"; elsewhere the QR code in
+ *   "Open in Peel" (on an iPhone, "Get Peel" and "Open in Peel"); elsewhere the QR code in
  *   the card.
  *
  * Chrome's `intent://` form (developer.chrome.com, "Android Intents with
@@ -56,11 +64,15 @@ export const PEEL_ANDROID_RELEASES = "https://github.com/stakwork/peel-android/r
 /** The newest release's assets, read by the page (GitHub's API answers any origin). */
 export const PEEL_ANDROID_LATEST_API = "https://api.github.com/repos/stakwork/peel-android/releases/latest";
 
+/** Peel iPhone's public TestFlight link (needs Apple's TestFlight app first). */
+export const PEEL_IOS_TESTFLIGHT = "https://testflight.apple.com/join/mFsg7Gkb";
+
 /** The page's script: plain JS, run as it is in the browser (and in
  *  public-join.test.ts against a stand-in `document`). */
 export const JOIN_SCRIPT = `(function () {
   var PKG = ${JSON.stringify(PEEL_ANDROID_PACKAGE)};
   var RELEASES = ${JSON.stringify(PEEL_ANDROID_RELEASES)};
+  var TESTFLIGHT = ${JSON.stringify(PEEL_IOS_TESTFLIGHT)};
   var LATEST = ${JSON.stringify(PEEL_ANDROID_LATEST_API)};
   var show = function (id) { document.getElementById(id).hidden = false; };
   // The language switcher: remember the choice, then reload with it, the hash kept.
@@ -76,22 +88,73 @@ export const JOIN_SCRIPT = `(function () {
     };
   };
   for (var k = 0; k < langs.length; k++) pick(langs[k]);
-  // The invite, as Peel takes it after "sphinx.chat://?".
+  // The invite, as the app takes it after "sphinx.chat://?".
   var q = location.hash.slice(1).replace(/^sphinx\\.chat:\\/\\/\\?/i, "");
   if (!/^action=i&/.test(q) || !/(^|&)d=[^&]+/.test(q) || /[#\\s]/.test(q)) { document.getElementById("card").hidden = true; show("bad"); return; }
+  // The page's language rides along into the worker app's link: the invite's single a= section is
+  // that app's URL, whose locale is ?lang= else the browser's. A page in en leaves it to auto-detect.
+  var lang = document.documentElement && document.documentElement.lang;
+  if (lang && lang !== "en") {
+    try {
+      var parts = q.split("&");
+      var at = -1, n = 0;
+      for (var j = 0; j < parts.length; j++) if (/^a=/.test(parts[j])) { n++; at = j; }
+      if (n === 1) {
+        var app = decodeURIComponent(parts[at].slice(2));
+        var u = new URL(app);
+        if (!u.searchParams.has("lang")) {
+          u.searchParams.append("lang", lang);
+          parts[at] = "a=" + encodeURIComponent(u.toString());
+          q = parts.join("&");
+        }
+      }
+    } catch (e) {}
+  }
+  // A tap that gets or opens the app also hands it the invite, through the clipboard.
+  var copy = function () {
+    try { navigator.clipboard.writeText("sphinx.chat://?" + q).catch(function () {}); } catch (e) {}
+  };
+  // The visible fallback: a button that copies the same text, with execCommand when the
+  // clipboard API is missing or refuses. Its labels come in data attributes (this script is
+  // the same in every language, its hash is the CSP's).
+  var btn = document.getElementById("copy");
+  if (btn) {
+    var text = "sphinx.chat://?" + q;
+    var label = btn.textContent;
+    var done = function () {
+      btn.textContent = btn.getAttribute("data-copied") || label;
+      setTimeout(function () { btn.textContent = label; }, 2000);
+    };
+    var old = function () {
+      try {
+        var inp = document.createElement("input");
+        inp.readOnly = true;
+        inp.value = text;
+        inp.style.position = "absolute";
+        inp.style.left = "-9999px";
+        document.body.appendChild(inp);
+        inp.select();
+        var ok = document.execCommand("copy");
+        document.body.removeChild(inp);
+        if (ok) done();
+      } catch (e) {}
+    };
+    btn.onclick = function () {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, old);
+        else old();
+      } catch (e) { old(); }
+    };
+  }
   if (/Android/i.test(navigator.userAgent)) {
     var point = function (fallback) {
       var href = "intent://?" + q + "#Intent;scheme=sphinx.chat;package=" + PKG + ";S.browser_fallback_url=" + encodeURIComponent(fallback) + ";end";
       document.getElementById("open").href = href;
     };
     point(RELEASES);
-    // The tap that downloads Peel also hands it the invite, through the clipboard.
-    var copy = function () {
-      try { navigator.clipboard.writeText("sphinx.chat://?" + q).catch(function () {}); } catch (e) {}
-    };
     document.getElementById("open").onclick = copy;
     show("android");
-    // The newest APK itself, so no Peel yet is one tap to download.
+    // The newest APK itself, so no app yet is one tap to download.
     fetch(LATEST, { headers: { accept: "application/vnd.github+json" }, credentials: "omit", referrerPolicy: "no-referrer" })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (rel) {
@@ -102,6 +165,12 @@ export const JOIN_SCRIPT = `(function () {
         }
       })
       .catch(function () {});
+  } else if (/iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)) {
+    document.getElementById("testflight").href = TESTFLIGHT;
+    document.getElementById("open-ios").href = "peel://join?" + q;
+    document.getElementById("testflight").onclick = copy;
+    document.getElementById("open-ios").onclick = copy;
+    show("ios");
   } else {
     show("elsewhere");
     var s = document.createElement("script");
@@ -137,10 +206,15 @@ p { margin: 0; }
 .perf { border-top: 2px dashed var(--line); margin: 1.25rem -22px 1rem; }
 .meta { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.8rem; color: var(--muted); }
 #bad { text-align: center; }
-#android { position: sticky; bottom: 0; margin-top: auto; padding: 2rem 0 1.25rem; text-align: center; background: linear-gradient(to bottom, transparent, var(--bg) 40%); display: flex; flex-direction: column; gap: 0.6rem; }
+#android, #ios { position: sticky; bottom: 0; margin-top: auto; padding: 2rem 0 1.25rem; text-align: center; background: linear-gradient(to bottom, transparent, var(--bg) 40%); display: flex; flex-direction: column; gap: 0.6rem; }
+.copy { display: block; width: 100%; margin-top: 1rem; padding: 12px; border-radius: 999px; border: 1px solid var(--accent); background: transparent; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; }
+.copy + .muted { margin-top: 0.4rem; font-size: 0.8rem; }
 .button { display: block; padding: 17px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 700; text-decoration: none; }
 [hidden] { display: none !important; }
 `;
+
+/** TestFlight's App Store page, linked from the hint. */
+const IOS_TESTFLIGHT_APP = "https://apps.apple.com/app/testflight/id899247664";
 
 /** The page's words, per language: English the type, so a missing or
  *  misshaped Spanish message fails tsc. Plain text, put in as it is. */
@@ -151,13 +225,20 @@ const en = {
   withThem: "to join their team on Peel.",
   generic: "to join a team on Peel.",
   from: "From",
-  app: "Peel · Android",
+  app: "Peel",
   open: "Open in Peel",
   installs: "No Peel yet? This button downloads it and keeps your invite.",
-  scan: "Scan with an Android phone",
+  getPeel: "Get Peel",
+  tfHint: "Peel for iPhone needs Apple's TestFlight app first:",
+  tfApp: "get TestFlight",
+  haveIt: "Already have Peel? Open it with your invite.",
+  scan: "Scan with your phone",
   qr: "A QR code of this invite's link",
   bad: "This link has no invite in it. Ask whoever sent it for a new one.",
   language: "Language",
+  copyInvite: "Copy invite",
+  pasteHint: "Then open Peel and paste it at Join with an invite.",
+  copied: "Copied",
 };
 type JoinWords = typeof en;
 /** Neutral Latin American Spanish, `tú` (plans/i18n.md). */
@@ -168,13 +249,20 @@ const es: JoinWords = {
   withThem: "a unirte a su equipo en Peel.",
   generic: "para unirte a un equipo en Peel.",
   from: "De",
-  app: "Peel · Android",
+  app: "Peel",
   open: "Abrir en Peel",
   installs: "¿Aún no tienes Peel? Este botón lo descarga y guarda tu invitación.",
-  scan: "Escanea el código con un teléfono Android",
+  getPeel: "Obtener Peel",
+  tfHint: "Peel para iPhone necesita primero la app TestFlight de Apple:",
+  tfApp: "obtener TestFlight",
+  haveIt: "¿Ya tienes Peel? Ábrelo con tu invitación.",
+  scan: "Escanea el código con tu teléfono",
   qr: "Un código QR del enlace de esta invitación",
   bad: "Este enlace no tiene ninguna invitación. Pídele uno nuevo a quien te lo envió.",
   language: "Idioma",
+  copyInvite: "Copiar invitación",
+  pasteHint: "Luego abre Peel y pégala en Unirme con una invitación.",
+  copied: "Copiada",
 };
 const JOIN_WORDS = { en, es };
 export type JoinLang = keyof typeof JOIN_WORDS;
@@ -229,11 +317,19 @@ export function joinPage(name?: string, lang: JoinLang = "en"): string {
 </div>
 <div class="perf"></div>
 <div class="meta"><span>${n ? `${w.from} <b>${escape(n)}</b>` : ""}</span><span>${w.app}</span></div>
+<button type="button" id="copy" class="copy" data-copied="${w.copied}">${w.copyInvite}</button>
+<p class="muted">${w.pasteHint}</p>
 </div>
 <p id="bad" hidden>${w.bad}</p>
 <div id="android" hidden>
 <a id="open" class="button" href="#">${w.open}</a>
 <p class="muted">${w.installs}</p>
+</div>
+<div id="ios" hidden>
+<a id="testflight" class="button" href="#">${w.getPeel}</a>
+<p class="muted">${w.tfHint} <a href="${IOS_TESTFLIGHT_APP}">${w.tfApp}</a></p>
+<a id="open-ios" class="button" href="#">${w.open}</a>
+<p class="muted">${w.haveIt}</p>
 </div>
 </main>
 <script>${JOIN_SCRIPT}</script>

@@ -226,11 +226,11 @@ function CheckCard({ check, view, acts }: { check: Check; view: ChecksView; acts
       </div>
       <ul className="space-y-0.5 pl-6">
         {check.cases.map((c, k) => (
-          <li key={k} className="flex items-center gap-2" data-testid="check-case">
+          <li key={c.id ?? k} className="flex items-center gap-2" data-testid="check-case">
             <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={caseLabel(c)}>
               {caseLabel(c)}
             </span>
-            <Dots samples={check.samples.filter((s) => s.case === k)} at={`${at}:${k}`} picked={acts.picked} onPick={acts.onPick} />
+            <Dots samples={check.samples.filter((s) => !!c.id && s.case === c.id)} at={`${at}:${c.id ?? k}`} picked={acts.picked} onPick={acts.onPick} />
             {acts.admin && (
               <button type="button" aria-label="Remove this message" disabled={acts.busy} onClick={() => void setCases(check.cases.filter((_, i) => i !== k))} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
                 <X className="size-3" />

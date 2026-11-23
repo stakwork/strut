@@ -6,10 +6,13 @@ import {
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ACCENT_BUTTON, TaskForm } from "./TaskForm";
+import { ACCENT_BUTTON, ACCENT_EDGE, ACCENT_FILL, ACCENT_LINE, ACCENT_TINT, TaskForm } from "./TaskForm";
 import { errorText } from "../lib/format";
 import { refusalText, useWorkerWords, type WorkerWords } from "../lib/words";
 import { workerHeading } from "../lib/heading";
+import { shownFields } from "../lib/shown-fields";
+
+export { INTERNAL_KEYS, isInternalKey, shownFields } from "../lib/shown-fields";
 
 // The pieces of a WORKER app (plans/human-steps.md §5): what a task asks,
 // the photos an answer carries, the answer's form, and a whole page that
@@ -36,20 +39,6 @@ export function taskAsk(show: unknown): string | undefined {
   const o = show as Record<string, unknown>;
   for (const k of ["ask", "title"]) if (typeof o[k] === "string" && (o[k] as string).trim()) return (o[k] as string).trim();
   return undefined;
-}
-
-/** The rest of what a task shows, as label and value: `show`'s other plain
- *  fields (text, numbers, yes or no), in order. Nested values are left to an
- *  app's own view. */
-export function shownFields(show: unknown): Array<[string, string]> {
-  if (!show || typeof show !== "object" || Array.isArray(show)) return [];
-  const out: Array<[string, string]> = [];
-  for (const [k, v] of Object.entries(show as Record<string, unknown>)) {
-    if (k === "ask" || k === "title") continue;
-    if (typeof v === "string" && v.trim()) out.push([k, v]);
-    else if (typeof v === "number" || typeof v === "boolean") out.push([k, String(v)]);
-  }
-  return out;
 }
 
 /** A `show` key as a label: `posted_by` → "Posted by". */
@@ -89,7 +78,9 @@ export function PayPill({ msat, earned = false, className }: { msat: number; ear
   return (
     <span
       className={cn(
-        "inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/40 bg-amber-400/15 px-2.5 py-1 text-[13px] font-semibold text-amber-700 dark:text-amber-300",
+        "inline-flex w-fit items-center gap-1 rounded-full border px-2.5 py-1 text-[13px] font-semibold text-foreground",
+        ACCENT_EDGE,
+        ACCENT_TINT,
         className,
       )}
     >
@@ -178,10 +169,10 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
           </>
         ) : (
           <>
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_38%,rgb(245_197_66/0.18),transparent_62%)]" />
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_38%,color-mix(in_oklab,var(--color-background-inverse,oklch(82.8%_0.189_84.429))_18%,transparent),transparent_62%)]" />
             <Corners />
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-8 text-center">
-              <div className="grid size-20 place-items-center rounded-3xl border border-amber-400/40 bg-amber-400/15 text-amber-300">
+              <div className={cn("grid size-20 place-items-center rounded-3xl border", ACCENT_EDGE, ACCENT_TINT)}>
                 {images ? <Camera className="size-9" /> : <ImagePlus className="size-9" />}
               </div>
               <p className="text-[15px] leading-snug text-zinc-300">{images ? w.fillFrame : w.addFile}</p>
@@ -205,7 +196,7 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
               key={i}
               type="button"
               aria-label={w.show(images, i + 1)}
-              className={cn("relative size-16 overflow-hidden rounded-xl border-2 bg-muted", i === shown ? "border-amber-400" : "border-transparent")}
+              className={cn("relative size-16 overflow-hidden rounded-xl border-2 bg-muted", i === shown ? ACCENT_LINE : "border-transparent")}
               onClick={() => setShown(i)}
             >
               {p.type.startsWith("image/") && urls[i] ? <img src={urls[i]} alt="" className="size-full object-cover" /> : <span className="p-1 text-[10px]">{p.name}</span>}
@@ -234,7 +225,7 @@ export function TaskPhotos({ task, photos, onChange, title, className }: TaskPho
 
 /** A viewfinder's four corners, in the accent. */
 function Corners() {
-  const corner = "absolute size-9 border-amber-400";
+  const corner = cn("absolute size-9", ACCENT_LINE);
   return (
     <div aria-hidden className="pointer-events-none absolute inset-[7%]">
       <span className={cn(corner, "top-0 left-0 rounded-tl-xl border-t-[3px] border-l-[3px]")} />
@@ -309,11 +300,11 @@ export function WorkerTask({ task, submit, skip, label, className }: WorkerTaskP
         {task.payMsat > 0 && <PayPill msat={task.payMsat} />}
         <h2 className="text-[22px] leading-tight font-semibold tracking-tight text-balance">{ask ?? w.aTask}</h2>
         {fields.length > 0 && (
-          <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-2xl border bg-muted/40 px-4 py-3 text-sm">
+          <dl className="mt-1 w-full max-w-full min-w-0 grid grid-cols-1 gap-y-2.5 sm:grid-cols-[minmax(auto,max-content)_minmax(0,1fr)] sm:gap-x-4 sm:gap-y-2 rounded-2xl border bg-muted/40 px-4 py-3 text-sm">
             {fields.map(([k, v]) => (
-              <div key={k} className="contents">
-                <dt className="text-muted-foreground">{labelOf(k)}</dt>
-                <dd className="m-0 font-medium break-words whitespace-pre-line">{v}</dd>
+              <div key={k} className="min-w-0 sm:contents">
+                <dt className="text-[13px] text-muted-foreground sm:max-w-[12rem] sm:truncate sm:text-sm sm:whitespace-nowrap" title={labelOf(k)}>{labelOf(k)}</dt>
+                <dd className="m-0 min-w-0 font-medium [overflow-wrap:anywhere] break-words whitespace-pre-line">{v}</dd>
               </div>
             ))}
           </dl>
@@ -356,6 +347,8 @@ interface Sent {
   /** The lease it was answered by: what the workflow's reply comes back on. */
   lease?: string;
   msat: number;
+  /** It earns `msat` only once it is marked OK. */
+  onOk?: boolean;
   answer: Record<string, unknown>;
   schema: unknown;
   photos: File[];
@@ -462,7 +455,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
       setPaused(false);
       throw err;
     }
-    setSent({ ...(held ? { lease: held.lease } : {}), msat: held?.payMsat ?? 0, answer: (answer ?? {}) as Record<string, unknown>, schema: held?.answer, photos: [...(files ?? [])] });
+    setSent({ ...(held ? { lease: held.lease } : {}), msat: held?.payMsat ?? 0, ...(held?.payOn === "ok" ? { onOk: true } : {}), answer: (answer ?? {}) as Record<string, unknown>, schema: held?.answer, photos: [...(files ?? [])] });
   };
   const next = () => {
     setSent(null);
@@ -559,7 +552,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
             <ArrowLeft />
           </button>
         ) : (
-          <div className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-amber-400 text-amber-950 [&_svg]:size-4">{mark}</div>
+          <div className={cn("grid size-8 shrink-0 place-items-center rounded-[10px] [&_svg]:size-4", ACCENT_FILL)}>{mark}</div>
         )}
         <div className="min-w-0">
           <div className="truncate text-[15px] leading-tight font-semibold">{back && working ? typeLabel(working, me.data?.types.find((t) => t.name === working)?.title) : title}</div>
@@ -675,6 +668,7 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
             msat={info.balance.heldMsat}
             {...(info.balance.nextReleaseAt ? { note: w.nextClears(fmt.until(info.balance.nextReleaseAt)) } : {})}
           />
+          {!!info.pendingMsat && <Stat label={w.waitingForOk} msat={info.pendingMsat} note={w.paidOnceOk} />}
         </div>
       </section>
 
@@ -724,10 +718,10 @@ function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<W
     onGone();
   };
   return (
-    <div className="rounded-2xl border border-amber-500/40 bg-amber-400/15 p-4" data-testid="in-hand">
+    <div className={cn("rounded-2xl border p-4", ACCENT_EDGE, ACCENT_TINT)} data-testid="in-hand">
       <div className="flex items-center gap-2">
         <button type="button" onClick={onContinue} className="min-w-0 flex-1 text-left">
-          <div className="text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">{w.inYourHand}</div>
+          <div className="text-xs font-semibold tracking-wide text-foreground uppercase">{w.inYourHand}</div>
           <div className="truncate text-base font-semibold">{typeLabel(holding.type, title)}</div>
         </button>
         {holding.lease && !asking && (
@@ -736,7 +730,7 @@ function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<W
             aria-label={w.letGo}
             title={w.letGo}
             onClick={() => setAsking(true)}
-            className="mr-4 grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-amber-400/25 hover:text-foreground"
+            className="mr-4 grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-[color:color-mix(in_oklab,var(--color-background-inverse,oklch(82.8%_0.189_84.429))_25%,transparent)] hover:text-foreground"
           >
             <X className="size-4" />
           </button>
@@ -746,7 +740,7 @@ function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<W
         </button>
       </div>
       {asking && (
-        <div className="mt-3 flex flex-col gap-2 border-t border-amber-500/30 pt-3">
+        <div className={cn("mt-3 flex flex-col gap-2 border-t pt-3", ACCENT_EDGE)}>
           <p className="text-sm">{w.letGoAsk}</p>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="grid grid-cols-2 gap-2">
@@ -812,12 +806,13 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
   else if (item.status === "skipped") badge = <Badge>{w.skipped}</Badge>;
   else if (item.status === "expired") badge = <Badge>{w.notFinished}</Badge>;
   else if (item.review?.verdict === "rejected") badge = <Badge tone="error">{w.sentBack}</Badge>;
+  else if (item.pending) badge = <Badge>{w.waitingForOk}</Badge>;
   else if (!e) badge = <Badge tone="done">{w.sent}</Badge>;
   else if (e.takenBack) badge = <Badge tone="error">{w.notPaid}</Badge>;
   else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.until(e.releases))}</Badge>;
   else badge = <Badge tone="done">{w.cleared}</Badge>;
   return (
-    <li className={cn("flex items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
+    <li className={cn("flex min-w-0 items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[15px] font-medium">{item.ask ?? typeLabel(item.type, title)}</div>
         <div className="truncate text-xs text-muted-foreground">
@@ -827,9 +822,10 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
       </div>
       <div className="flex flex-col items-end gap-1">
         {e && <span className={cn("text-sm font-semibold tabular-nums", e.takenBack && "text-muted-foreground line-through")}>+{fmt.sats(e.msat)}</span>}
+        {item.pending && <span className="text-sm font-semibold text-muted-foreground tabular-nums">+{fmt.sats(item.pending.msat)}</span>}
         {badge}
       </div>
-      {item.review?.verdict === "rejected" && item.review.why && <div className="w-full text-sm text-destructive">{w.toFix(item.review.why)}</div>}
+      {item.review?.verdict === "rejected" && item.review.why && <div className="w-full min-w-0 text-sm [overflow-wrap:anywhere] text-destructive">{w.toFix(item.review.why)}</div>}
       {item.reply && <ReplyLine item={item} reply={item.reply} />}
     </li>
   );
@@ -841,12 +837,12 @@ function ReplyLine({ item, reply }: { item: Pick<WorkerHistoryItem, "lease">; re
   const w = useWorkerWords();
   const [open, setOpen] = useState(false);
   const files = reply.files ?? [];
-  const pictures = files.filter((f) => f.mediaType.startsWith("image/")).length;
+  const pictures = files.filter(isPicture).length;
   const said = taskAsk(reply.show) ?? shownFields(reply.show)[0]?.[1];
   const summary = said ?? (pictures ? w.pictures(pictures) : w.files(files.length));
   return (
-    <div className="basis-full">
-      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-1.5 text-left text-[13px] text-amber-700 dark:text-amber-300">
+    <div className="w-full max-w-full min-w-0 basis-full">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full max-w-full min-w-0 items-center gap-1.5 text-left text-[13px] font-medium text-foreground">
         <MessageSquare className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">
           <span className="font-semibold">{w.reply}</span>
@@ -872,14 +868,14 @@ export function TaskReplyView({ item, reply, file, className }: { item?: Pick<Wo
   const heading = taskAsk(reply.show);
   const fields = shownFields(reply.show);
   return (
-    <div className={cn("flex flex-col gap-2.5", className)} data-testid="task-reply">
-      {heading && <p className="m-0 text-[15px] leading-snug font-medium">{heading}</p>}
+    <div className={cn("flex w-full max-w-full min-w-0 flex-col gap-2.5", className)} data-testid="task-reply">
+      {heading && <p className="m-0 text-[15px] leading-snug font-medium [overflow-wrap:anywhere]">{heading}</p>}
       {fields.length > 0 && (
-        <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+        <dl className="m-0 w-full max-w-full min-w-0 grid grid-cols-1 gap-y-2.5 sm:grid-cols-[minmax(auto,max-content)_minmax(0,1fr)] sm:gap-x-4 sm:gap-y-2 text-sm">
           {fields.map(([k, v]) => (
-            <div key={k} className="contents">
-              <dt className="text-muted-foreground">{labelOf(k)}</dt>
-              <dd className="m-0 font-medium break-words whitespace-pre-line">{v}</dd>
+            <div key={k} className="min-w-0 sm:contents">
+              <dt className="text-[13px] text-muted-foreground sm:max-w-[12rem] sm:truncate sm:text-sm sm:whitespace-nowrap" title={labelOf(k)}>{labelOf(k)}</dt>
+              <dd className="m-0 min-w-0 font-medium [overflow-wrap:anywhere] break-words whitespace-pre-line">{v}</dd>
             </div>
           ))}
         </dl>
@@ -889,22 +885,26 @@ export function TaskReplyView({ item, reply, file, className }: { item?: Pick<Wo
   );
 }
 
-/** One file of a reply: a picture drawn, anything else (or a picture that
- *  cannot be read here) named. */
+/** A reply's file is a picture by its type, or by its name's ending. */
+const isPicture = (f: TaskReplyFile) => f.mediaType.startsWith("image/") || IMAGE_PATH.test(f.name) || IMAGE_PATH.test(f.path);
+
+/** One file of a reply: a picture drawn as a thumbnail with its name under
+ *  it, anything else (or a picture that cannot be read here) named. */
 function ReplyFile({ item, file }: { item?: Pick<WorkerHistoryItem, "lease">; file: TaskReplyFile }) {
-  const picture = file.mediaType.startsWith("image/");
+  const picture = isPicture(file);
   const read = useTaskFileUrl(item, file.path, { enabled: picture });
   if (picture && !read.error) {
     return (
-      <div className="overflow-hidden rounded-2xl border bg-muted/50">
-        {read.url ? <img src={read.url} alt={file.name} className="max-h-[55vh] w-full object-contain" /> : <div className="aspect-square w-full animate-pulse bg-muted" />}
-      </div>
+      <figure className="m-0 w-full max-w-full min-w-0 overflow-hidden rounded-2xl border bg-muted/50">
+        {read.url ? <img src={read.url} alt={file.name} className="max-h-60 w-full object-contain sm:max-h-80" /> : <div className="aspect-square max-h-60 w-full animate-pulse bg-muted" />}
+        <figcaption className="border-t px-3 py-1.5 text-xs [overflow-wrap:anywhere] text-muted-foreground">{file.name}</figcaption>
+      </figure>
     );
   }
   return (
-    <div className="flex items-center gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-sm">
+    <div className="flex w-full max-w-full min-w-0 items-center gap-2 rounded-xl border bg-muted/40 px-3 py-2 text-sm">
       <FileText className="size-4 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate">{file.name}</span>
+      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{file.name}</span>
     </div>
   );
 }
@@ -935,8 +935,8 @@ function SentReply({ lease }: { lease: string }) {
   }, []);
   if (!item || !reply) return null;
   return (
-    <div className="relative mt-4 w-full rounded-2xl border border-amber-500/40 bg-card p-4 text-left shadow-sm">
-      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold tracking-wide text-amber-700 uppercase dark:text-amber-300">
+    <div className={cn("relative mt-4 w-full rounded-2xl border bg-card p-4 text-left shadow-sm", ACCENT_EDGE)}>
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold tracking-wide text-foreground uppercase">
         <MessageSquare className="size-3.5" /> {w.reply}
       </div>
       <TaskReplyView item={item} reply={reply} />
@@ -950,7 +950,7 @@ function Badge({ children, tone }: { children: ReactNode; tone?: "accent" | "don
       className={cn(
         "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap",
         !tone && "text-muted-foreground",
-        tone === "accent" && "border-amber-500/40 bg-amber-400/15 text-amber-700 dark:text-amber-300",
+        tone === "accent" && cn("text-foreground", ACCENT_EDGE, ACCENT_TINT),
         tone === "done" && "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
         tone === "error" && "border-destructive/35 bg-destructive/10 text-destructive",
       )}
@@ -980,7 +980,7 @@ function Screen({ icon, heading, text, bar, tone = "accent", children }: { icon:
           aria-hidden
           className={cn(
             "pointer-events-none absolute inset-0 -z-0",
-            tone === "accent" && "bg-[radial-gradient(260px_circle_at_50%_42%,rgb(245_197_66/0.16),transparent)]",
+            tone === "accent" && "bg-[radial-gradient(260px_circle_at_50%_42%,color-mix(in_oklab,var(--color-background-inverse,oklch(82.8%_0.189_84.429))_16%,transparent),transparent)]",
             tone === "done" && "bg-[radial-gradient(260px_circle_at_50%_30%,rgb(16_185_129/0.16),transparent)]",
             tone === "error" && "bg-[radial-gradient(260px_circle_at_50%_42%,rgb(239_68_68/0.14),transparent)]",
           )}
@@ -988,7 +988,7 @@ function Screen({ icon, heading, text, bar, tone = "accent", children }: { icon:
         <div
           className={cn(
             "relative grid size-22 place-items-center rounded-[26px] border [&_svg]:size-10",
-            tone === "accent" && "border-amber-500/35 bg-amber-400/15 text-amber-600 dark:text-amber-300",
+            tone === "accent" && cn("text-foreground", ACCENT_EDGE, ACCENT_TINT),
             tone === "done" && "border-emerald-500/35 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
             tone === "error" && "border-destructive/35 bg-destructive/10 text-destructive",
           )}
@@ -1015,7 +1015,7 @@ function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean;
       tone="done"
       icon={<Check className="size-10" strokeWidth={2.5} />}
       heading={w.thanks}
-      text={sent.msat > 0 ? w.earnedHeld : w.answerIn}
+      text={sent.msat > 0 ? (sent.onOk ? w.earnedOnOk : w.earnedHeld) : w.answerIn}
       bar={
         <div className="flex flex-col gap-2">
           <Button className={cn("h-12 w-full rounded-xl text-base font-semibold", ACCENT_BUTTON)} onClick={next ? onNext : onHome}>
@@ -1039,7 +1039,7 @@ function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean;
         <div className="relative flex flex-wrap justify-center gap-2">
           <PayPill msat={sent.msat} earned />
           <span className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[13px] font-medium text-muted-foreground">
-            <Clock className="size-3.5" /> {w.held}
+            <Clock className="size-3.5" /> {sent.onOk ? w.waitingForOk : w.held}
           </span>
         </div>
       )}
@@ -1054,11 +1054,11 @@ function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean;
             </div>
           )}
           {rows.length > 0 && (
-            <dl className="flex flex-col gap-2.5 text-sm">
+            <dl className="flex min-w-0 flex-col gap-2.5 text-sm">
               {rows.map(([k, v]) => (
-                <div key={k}>
+                <div key={k} className="min-w-0">
                   <dt className="text-[13px] text-muted-foreground">{k}</dt>
-                  <dd className="m-0 font-medium break-words">{v}</dd>
+                  <dd className="m-0 min-w-0 font-medium [overflow-wrap:anywhere] break-words">{v}</dd>
                 </div>
               ))}
             </dl>

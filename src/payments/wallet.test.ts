@@ -268,7 +268,8 @@ describe("the wallet on a server", () => {
       },
     });
     try {
-      assert.deepEqual(await strut.payments.rate.read(), reading);
+      // Its dollars are kept by code too, as a source's every currency is.
+      assert.deepEqual(await strut.payments.rate.read(), { ...reading, perBtc: { USD: 73_176 } });
       await strut.payments.rate.read();
       assert.equal(calls, 1, "kept for a minute");
       assert.equal((bag(strut) as Record<string, unknown>)["rate"], undefined, "not on the services bag");

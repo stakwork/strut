@@ -1446,7 +1446,7 @@ describe("the API key gate", () => {
       assert.ok(res.status === 200 || res.status === 404, `${route} → ${res.status}`);
       // A worker invite's page (plans/human-steps.md §5.8) is static: the
       // invite rides after `#`, so it holds nothing but its own script.
-      if (path === "/public/join" || path === "/public/join/qrcode.js") {
+      if (path === "/public/join" || path === "/public/join/qrcode.js" || path === "/public/brand") {
         assert.equal(res.status, 200, route);
         continue;
       }
@@ -1827,9 +1827,10 @@ describe("the API key gate", () => {
       "GET /artifacts/x/x",
       "GET /jobs/x/files",
       "GET /jobs/x/files/x",
+      "GET /jobs/x/urls",
     ];
     for (const r of allowed) assert.ok(routes.includes(r), r);
-    assert.equal(routes.filter((r) => allowed.includes(r)).length, 15);
+    assert.equal(routes.filter((r) => allowed.includes(r)).length, 16);
     assert.ok(routes.length > 100, `swept ${routes.length} routes`);
     assert.ok(routes.includes("GET /host/mounted") && routes.includes("POST /host/mounted"));
     for (const route of routes) {
@@ -1993,6 +1994,10 @@ describe("the API key gate", () => {
     // A session cookie claiming a role strut does not know is no session.
     const forged = sessionToken({ actor: "x", exp: Date.now() + 60_000, role: "owner" as never })!;
     assert.equal((await strut.app.request("/apps", { headers: { cookie: `strut_session=${forged}` } })).status, 401);
+    // The app list is never cached: the UI reads it again after each change.
+    const listedApps = await strut.app.request("/apps", { headers: { cookie: admin.cookie, "x-strut-ui": "1" } });
+    assert.equal(listedApps.status, 200);
+    assert.equal(listedApps.headers.get("cache-control"), null);
   });
 
   it("the key opens them, as a Bearer header or as ?key=; unset, everything is open", async () => {

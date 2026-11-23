@@ -327,6 +327,7 @@ es.addEventListener("done", (m) => { console.log(JSON.parse(m.data)); es.close()
 | GET    | `/jobs/:id/claims`                                     | `{ enabled, job, claims: LedgerClaim[] }` — the job's ledger alone (§5.5): what the work must deliver and whether it does, as of its newest turn. `{ enabled: false, claims: [] }` without the claims layer; 404 for a job not on file |
 | POST   | `/jobs/:id/verify`                                     | `{ claims?: [<claim id>], detach?: boolean }` (gated) → `{ job, key, runId, subjects, checks: [{ subject, path, claimId, checkId, lastVerify }], evidence, slots, costUsd, claims: LedgerClaim[] }` — verify the job NOW against its newest turn (`runId`): every check on every claim about the job fires, `manual` ones included, and evidence on an already verified turn is appended, not skipped; the ledger comes back with each check's `lastVerify`. `claims` narrows to ids; no body is every claim. `detach: true` answers 202 `{ job, started: true }` at once instead — each check's evidence and the pass's end reach the job's `jobCallback` (`CALLBACKS.md` §5), the ledger is `GET /jobs/:id/claims` after; a detached verify while one runs joins it. 404 for a job not on file, 409 without the claims layer |
 | GET    | `/jobs/:id/updates?since=&wait=&limit=`                | `{ job, cursor, reset?, more?, updates: [{ event: "job.update", job, at, runId?, kind, url?, id?, title?, state?, detail? }] }` — the job's LIVE UPDATES (`plans/live-feeds.md` §1): the same `job.update`s a `jobCallback` receives (`CALLBACKS.md` §5), kept whether or not one is on file, for a reader that cannot be called (an app's page; the `job/updates` step is the same read). The newest state of each thing (`kind` + `url` + `id`), in the order they last changed, at most 200 per job, in memory. `since` is the `cursor` the last read returned — or `now`, only what comes after — and absent reads everything kept; `reset: true` says the cursor could not be honored (another process's: the server restarted, or the job dropped things past it) and everything kept follows — read again what you show. `wait` (ms, at most 55 000) holds the call while nothing is new; once something lands it answers a second later with whatever else landed by then, so a reader that asks again on each answer makes at most a call a second. `limit` caps `updates` (`more: true`, read again from `cursor`). Answers for a job with no record yet (a reader may start before the first run); 400 for a malformed id |
+| GET    | `/jobs/:id/urls`                                       | `{ job, urls: { <kind>: "https://…" } }` — `GET /jobs/:id`'s `urls` alone (the first hold of each kind with an address): what a host's side panel frames beside an app (a pod's app, plans/jamie-app.md §4), read from the job and never taken from the app's link. A member's session reads it (§13.1); 404 for no job, 400 for a malformed id. |
 | GET    | `/jobs/:id/files`                                      | `{ job, files: ["plan.md", …], token? }` — every file in a job's directory (`job/dir`, `plans/jobs.md`), recursive, skipping the repositories checked out into it, and the job's file token, as `/artifacts/:runId` mints the run's; 404 for a job with no directory, 400 for a malformed id (percent-encode a `/`). |
 | GET    | `/jobs/:id/files/<path>`                               | the file, served exactly like `/artifacts/:runId/<path>` — same content types, same headers, the job's token as `?t=` |
 | DELETE | `/jobs/:id`                                            | `{ ok: true, job, released: [<hold id>, …] }` — close a job (`plans/jobs.md` §6): every hold a tool registered on it (a pod) is released through its release step, then the repositories, the directory and the record are removed; runs, chats and sessions are records of their own and stay. 409 while a run holds the job; 500 and nothing removed when a hold will not release (the error names it — call again); 404 for a job with neither a directory nor a record |
@@ -1126,7 +1127,7 @@ interface ConversationTurn {
   ask?: string;             // its question
   artifacts?: ArtifactRef[]; // resolved, as GET …/runs/:runId/artifacts
   error?: string;
-  proposals: ProposalBrief[]; // as run.end carries them (§12)
+  proposals: ProposalBrief[]; // as run.end carries them (§12): every card made in this conversation, whoever's ask made it, for whoever reads it; who decides one is proposal/get's viewer.decides
   jobs: Array<{ job: string; runId: string; workflow?: string }>; // what it started (job/start) or continued; `workflow` the run's (job, builder), absent on a continue logged before job/continue returned it
 }
 ```
@@ -1496,9 +1497,13 @@ a person token's; strut's own page, in its own call, also lists an ADMIN
 viewer the proposals made in no conversation (`pageSees`: an automation's,
 the dream's changes to the Concept tree, §14.13), which their session
 already reads at `GET /proposals`. A page's own
-`proposal/get` also answers `viewer: { admin }`: whether its viewer is an
-admin here (`AppRef.admin`, §14.1), so a card shows "An admin must approve
-this" in place of an Accept the decision would refuse. `proposal/standing`
+`proposal/get` also answers `viewer: { admin, decides }`: whether its
+viewer is an admin here (`AppRef.admin`, §14.1), so a card shows "An admin
+must approve this" in place of an Accept the decision would refuse; and
+whether they decide this one at all (`decides`: their own ask's card, any
+card only an admin accepts for an admin, one made in no conversation for an
+admin), so someone else's card in a shared conversation says whose it is in
+place of buttons. `proposal/standing`
 ({} → `{ admin? }`) says whether the person a run is for is an admin here,
 by the same records (`AppRef.admin`, else the launch the run came from),
 `admin` left out when nothing says; the orchestrator puts a line before an
@@ -1506,7 +1511,8 @@ admin's message from it. `proposal/decide`
 ({ id, action: "accept" | "reject", input?, reason? } → the record after the
 decision) is the decide route for strut's own app (§14.10): it runs only as
 a first-party page's own call, decides only its viewer's proposals — and,
-for an admin, one made in no conversation — accepts one only an admin
+for an admin, one made in no conversation and any one only an admin accepts,
+whoever's ask made it — accepts one only an admin
 accepts only when the viewer is an admin, and an agent never runs it.
 
 ## 13. Sessions — a browser signs in
@@ -1597,6 +1603,7 @@ to show an app alone (`?app=<name>&solo=1`):
 | `POST /mcp` | the page's calls: `step_run` alone, run as the member under the app's grants, as a person token gets (§14.3); `GET` / `DELETE /mcp` answer 405 |
 | `POST /apps/:name/channel-ticket` | the app's channels (§14.11) |
 | `GET /artifacts/:runId[/…]`, `GET /jobs/:id/files[/…]` | a file the app hands the side panel, under §13's file rule |
+| `GET /jobs/:id/urls` | what a job holds at an address (a pod's app), which the side panel frames when the app links `?job=<id>&hold=<kind>` |
 
 Every other route is `403` — reads included, and a route a host mounts
 later. What is open to anyone stays open (`GET /health`, which tells a
@@ -2287,7 +2294,7 @@ state:
 | Link | The panel shows |
 |---|---|
 | `?artifact=<path>` | the file through the artifact viewer, as "One file alone" below reads it: `path` must be a served file (`isServedFilePath`: `/jobs/<job>/files/…`, `/artifacts/<runId>/…`, either behind `/peers/<id>` hops), else the link is not the panel's. A page this strut serves runs its scripts under its file token (`?t=`, the one credential a file URL carries; a strut with no secret to sign one falls back to `?key=`, as the viewer does everywhere); a peer's is read with the UI's credential and shown from its bytes, scripts off, no credential in any URL. |
-| `?app=<key>&input=…` | another app (`@<peer>/<name>` a peer's, a key may pin `@vN`) under a bar with its title, opened with `input`. A link to the page on screen is not the panel's: its input goes to it in place, as before. An app of this strut with more than one version, or held at a release, gets a chip on that bar (`v3 · draft`, `v1 · live · 2 drafts`) listing its versions (`GET /apps/:name/versions`): a click shows that one in the panel. Viewing only: making a version live is the full UI's Versions flyout, or a host's own admin page over `PUT /apps/:name/active`. |
+| `?app=<key>&input=…` | another app (`@<peer>/<name>` a peer's, a key may pin `@vN`) under a bar with its title, opened with `input`. A link to the page on screen is not the panel's: its input goes to it in place, as before. An app of this strut with more than one version, or held at a release, gets a chip on that bar (`v3 · draft`, `v1 · live · 2 drafts`) listing its versions (`GET /apps/:name/versions`): a click shows that one in the panel. For anyone but a member's session (`GET /auth/session`'s `role`), the list also holds the app's mode (Hold at vN / Follow latest) and each version's Make live or Restore, each confirmed first, over `PUT /apps/:name/active`; then the panel shows what is live. A member's list is for viewing only (the route refuses a member). |
 
 A new link replaces what the panel shows (a link to the app already in it
 is its new input, in place); ✕ closes it; its left edge drags its width,
@@ -2700,7 +2707,7 @@ What it calls, beyond §9.1, §12 and §14.2:
 | `llm/models` | `{}` | what `GET /llm/models` serves: `{ default, models: [{ name, provider, modelId, alias?, default, available, contextLimit?, pricing? }], listed, keyNames }` — every model aieo knows; `available` when the deployment's `STRUT_MODELS` lists it (`listed: true`), else when the provider has a key here, never the key; `pricing` is USD per million tokens, present only where the model's own rate is known: Maple's, Numes' and Token Factory's (aieo's tables), and every model bifrost's datasheet holds once the server has loaded it (`STRUT_MODEL_CATALOG`); `contextLimit` comes from the datasheet too, else aieo's table. The picker sends the choice as the turn's `params.model`, and a remembered choice no longer listed as none |
 | `job/verify` | `{ job, claims?, detach? }` | `POST /jobs/:id/verify` (§5.5) as a person: every check on the job's claims (or `claims`) against its newest turn, `manual` ones too — the pass and the ledger, or with `detach` `{ job, started: true }` at once, the verdicts on `job/updates` (`evidence`, then `verify` done) |
 | `job/evidence` | `{ job, claim, runId, supports, content, slot? }` | `POST /claims/:id/evidence { job, runId }` as a person: `asserted`, `by: person`, about that turn; `slot` answers a check waiting on a person's look. `{ ok, evidence, filled, subject }` |
-| `github/pr-status` | `{ repo, number }` | the pull request on GitHub now, read with the viewer's own `GITHUB_TOKEN` (an actor secret, `PUT /actors/:actor/secrets/GITHUB_TOKEN`): `{ url, repo, number, title, state: open \| draft \| merged \| closed, author, head, base, headSha, body, mergeable, checks: [{ name, status: failed \| running \| passed \| skipped, url }], counts }`, checks failed first. Errors `github_unauthorized:`, `github_not_found:`, `github_rate_limited:`, `github_error:` |
+| `github/pr-status` | `{ repo, number, logs? }` | the pull request on GitHub now, read with the viewer's own `GITHUB_TOKEN` (an actor secret, `PUT /actors/:actor/secrets/GITHUB_TOKEN`): `{ url, repo, number, title, state: open \| draft \| merged \| closed, author, head, base, headSha, body, mergeable, checks: [{ name, status: failed \| running \| passed \| skipped, url, log?: { path, lines, end }, logError? }], counts }`, checks failed first; `log` / `logError` only with `logs: true`, on a failed GitHub Actions check (docs/steps.md). Errors `github_unauthorized:`, `github_not_found:`, `github_rate_limited:`, `github_error:` |
 | `github/merge-pr` | `{ repo, number, sha?, method? }` | merges it as the viewer — squash by default, else the first method the repository allows — at `sha`, the head the viewer saw: `{ merged: true, url, sha, method }`. Refused before merging when it is not open, is a draft, has conflicts (`pr_not_mergeable:`) or has commits past `sha` (`pr_head_moved:`); `github_unauthorized:` with no token for the viewer. Runs only as a first-party page's own call, or as a proposal a person accepted |
 
 `job/verify` and `job/evidence` run only as a first-party page's own call
@@ -2797,19 +2804,23 @@ grants: `knowledge/claims`, `knowledge/checks`, `knowledge/add-check`,
 `knowledge/sample`, `knowledge/cycles`, `proposal/list`, `proposal/get` and
 `proposal/decide`. A Concept's panel lists its CHECKS (`knowledge/checks {
 concept }`, shown only when the page it answers is that node;
-plans/claim-trials.md): each claim, the cases that test it (`{ workflow,
-input }`) and a dot per verdict on the page's wording now, and the TESTS of
+plans/claim-trials.md): each claim, the cases that test it (`{ id,
+workflow, input }`, `id` the TestCase node several claims may share) and a
+dot per verdict on the page's wording now, and the TESTS of
 the page, each two wordings (`page`, `change`) with every claim's verdicts
 on each, and which of the two it `tried` (`change` until it is used, then
 `page`). The answer is `{ concept, ref_id, version, docs, fromGit?, checks:
 [{ id, text, status, speaker?, latest?, cases, samples }], tests: [{ id,
 at, page: { version, docs, samples }, change: { … }, live, tried }], running: [{
 id, test?, claim?, total, done, errors }], problem? }`, a sample `{ run,
-workflow?, supports, content?, at?, case?, trial? }`. An ADMIN's page also
-calls `knowledge/trial { claim, n }` (each case `n` times, as trials: the
-jobs, proposals and runs on other servers a trial would start are held; a
-trial's `run.start` and summary carry `trial: { claim, case? }`, and no
-launch body takes the field),
+workflow?, supports, content?, at?, case?, trial? }` (`case`: the id of
+the TestCase a trial replayed). An ADMIN's page also
+calls `knowledge/trial { claim, n }` (each case `n` times, as trials, each
+judged by every claim its case tests: the jobs, proposals and runs on
+other servers a trial would start are held, and a case whose workflow is
+a job's runs as a job of its own, closed once judged; a trial's
+`run.start` and summary carry `trial: { case, claims }`, and no launch
+body takes the field),
 `knowledge/cases { claim, cases }`, `knowledge/add-check { concept, text }`,
 `knowledge/test { concept, docs, n }` or `{ test, n }` (the page against a
 changed wording; nothing on the page changes), `knowledge/use { test }`
@@ -3068,7 +3079,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
 | `staff/numbers { type?, days? }` | `GET /tasks/numbers` | `{ types: TypeNumbers[] }` |
 | `staff/types` | `GET /tasks/types` | `{ types, tasks? }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); `tasks` the same for Tasks (`strut/worker`), the page every invite opens; neither when the public view door has no share read (a host's own) |
-| `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` | `PUT /tasks/types/:name` | `{ type }` |
+| `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, payOn?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/round-items { type }` | `GET /tasks/types/:name/round` | `{ type, workflow, input?, items, last? }` |
 | `staff/send-round { type, input? }` | `POST /tasks/types/:name/round` | `{ runId, workflow }` |
@@ -3237,7 +3248,14 @@ change shows the next time a page loads.
 ```
 GET /brand          any credential
 PUT /brand          full scope: { name?, color?, colorDark?, radius?, font? }
+GET /public/brand   no credential: { styles } (the look alone, for a visitor's page)
 ```
+
+A visitor's page has no credential, so strut's host reads `GET /public/brand`
+for it (`cache-control: public, max-age=60`) and sends it the same styles.
+The host draws its own frame around an app alone (`?solo=1`: the loading
+screen, the Back bar) in the brand's font on the kit's neutral surface, so the
+page reads as one from its first paint.
 
 Both answer `{ brand, styles }`. `PUT` replaces the whole brand: a field
 left out (or `""`, `null`) is unset, and `{}` resets it (`styles: null`).
@@ -3954,6 +3972,7 @@ refused), `remote_not_found:`, `remote_unreachable:` or `remote_empty:`
   "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
   "source": { "ref": "file:/srv/packages/acme-linear" }, "secrets": ["LINEAR_API_KEY", "NOTION_KEY"],  // what its steps may read: requires.secrets and requires.optional
   // "optional": ["NOTION_KEY"],      // requires.optional: read when set, never asked for (absent when none, and on a release installed before 2026-11-21)
+  "missing": { "secrets": [] },       // the required ones (secrets less optional) the deployment has no value for: its store, then strut's environment, an empty value counting as none — read as the gate and an install's `missing` read them; what a host offers an admin to set (absent for a package that reads no secret)
   // "provides": { "secrets": ["LINEAR_API_KEY"] },  // its strut.yaml's provides, when it has one (`git` too)
   // "git": true,                     // requires.git: its steps read the run's token for a repository's host
   // "commit": "8f2c…",               // a git+ ref: the commit its newest installed version was read at
@@ -4755,7 +4774,8 @@ a `404`, as if it were not there.
 | `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions?, wallet?, account?, link, peelLink }]` — each at the version the public view serves; `link` the visitor's page (`<base>/?app=<name>&solo=1&public=1`, base `STRUT_PUBLIC_URL`, else the request's origin with `x-forwarded-host` / `-proto` / `-prefix`), `peelLink` the same opened in Peel (`peel://open?url=<link, percent-encoded>`); `account` where the visitor's host draws its account widget by default (`app.yaml`'s `account: { corner, style }`, defaults filled); `permissions` what its frame is granted beyond every app's (as `dist/build.json` says); `wallet` the wallet connection the version requests (its `dist/build.json`'s, `app.yaml`'s `wallet:`), which a visitor's host offers the person's wallet on (specs/WALLET.md §1.1). Nothing else of the build |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
-| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds, but for the server's name ("‹name› invites you", HTML-escaped; "You're invited" with none, §14.12) and the worker's language: English or Spanish ("‹name› te invita", "Tienes una invitación"), from `?lang=` on the link, else the `join_lang` cookie, else the first tag of `Accept-Language`, else English (`Vary: Accept-Language, Cookie`). The page is an invitation card (the employer's initial, "Invite", the heading, a ticket meta row) with a two-button switcher, "English · Español", top right: a click sets `join_lang` (`Path=/public/join`, a year) and reloads with `?lang=`, the `#` invite kept. Its script reads the invite after `#` — which no browser sends — and on Android links the one "Open in Peel" button to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on it also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; anywhere else it says to open the link on an Android phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
+| `GET /public/brand` | `{ styles }`: the brand's look (§14.12), what strut's host hands a visitor's page; `styles: null` when none is set. Never the brand's `name` (that rides in each document) |
+| `GET /public/join` | a worker invite's page (`text/html`, §22 "Inviting a worker"): static, whatever the record holds, but for the server's name ("‹name› invites you", HTML-escaped; "You're invited" with none, §14.12) and the worker's language: English or Spanish ("‹name› te invita", "Tienes una invitación"), from `?lang=` on the link, else the `join_lang` cookie, else the first tag of `Accept-Language`, else English (`Vary: Accept-Language, Cookie`). The page is an invitation card (the employer's initial, "Invite", the heading, a ticket meta row) with a two-button switcher, "English · Español", top right: a click sets `join_lang` (`Path=/public/join`, a year) and reloads with `?lang=`, the `#` invite kept. Its script reads the invite after `#` — which no browser sends — and on Android links the one "Open in Peel" button to `intent://?<invite>#Intent;scheme=sphinx.chat;package=com.sphinx.peel;S.browser_fallback_url=<the newest APK on stakwork/peel-android's releases, percent-encoded>;end`, and a tap on it also copies `sphinx.chat://?<invite>` to the clipboard, where a Peel installed after it finds the invite; on an iPhone/iPad it shows "Get Peel" (TestFlight) and "Open in Peel" (`peel://join?<invite>`), both copying the same clipboard text; anywhere else it says to open the link on a phone and draws a QR code of its own URL. A CSP allows its own inline script by hash, `/public/join/qrcode.js` and GitHub's release lookup alone |
 | `GET /public/join/qrcode.js` | qrcode-generator's browser build, for that page |
 
 `host` says what another strut UI may do with this view: `remote` (a
@@ -5453,7 +5473,9 @@ dictation) would reach it through the frame's `allow`. So:
 **Paying** is §17.6, with the seller as the server:
 - the challenge is checked, and the sheet's price is the invoice's sats,
   in dollars at the HOSTING strut's rate alone: `GET /rate` (any
-  credential, a member's session included) → `{ usdPerBtc, at, source }`,
+  credential, a member's session included) → `{ usdPerBtc, perBtc, at, source }`
+  (`perBtc`: units of every currency the source answered per bitcoin, by
+  ISO 4217 code, `USD` among them — mempool's USD, EUR, GBP, CAD, CHF, AUD, JPY),
   read a minute at a time from src/payments/rate.ts, `503` with none to be
   had. A visitor with no credential on the hosting strut sees sats alone;
 - in Peel, the native wallet is asked first (specs/WALLET.md §1.2, naming
@@ -6149,12 +6171,12 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 
 | Step | Config | Answers |
 | --- | --- | --- |
-| `task/next` | `{ type?, wait?, invite? }` | `{ lease, type, show, files, expires, answer, payMsat, attachments? }` or `{ none: true }` |
+| `task/next` | `{ type?, wait?, invite? }` | `{ lease, type, show, files, expires, answer, payMsat, payOn?, attachments? }` or `{ none: true }`: `payOn: "ok"` when the answer earns `payMsat` only once a verdict says ok |
 | `task/submit` | `{ lease, answer, attachments? }` | `{ ok: true }` |
 | `task/skip` | `{ lease, reason?, all? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
-| `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, title?, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? } }` |
-| `task/history` | `{ all?, group?, groups? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, reply?: { show?, files?, at }, group?, review?: { verdict, why?, at } }], groups?: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last }] }`: with `group`, every answer of theirs in it (at most 1000) instead of the newest 50; `groups: true` adds their own groups, their answers alone counted ("A run's reply", §22) |
+| `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, title?, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, pendingMsat?, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? }, rate?: { perBtc, at, source } }`: `rate`, the exchange rate this server trusts (`GET /rate`'s, src/payments/rate.ts), units of each currency per bitcoin by ISO 4217 code (`perBtc.USD`, `perBtc.EUR`, …), for a page to show fiat beside sats — sats are what is paid; absent when no rate can be read (waited on at most 1.5 s; the kit's `fiatOfMsat(msat, rate, "EUR")`); `pendingMsat`, what their answers on types that pay on ok will earn once OK'd (not in `balance`; absent when nothing waits) |
+| `task/history` | `{ all?, group?, groups? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, pending?: { msat }, reply?: { show?, files?, at }, group?, review?: { verdict, why?, at } }], groups?: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last }] }`: with `group`, every answer of theirs in it (at most 1000) instead of the newest 50; `groups: true` adds their own groups, their answers alone counted ("A run's reply", §22) |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
@@ -6280,7 +6302,7 @@ server whose task store is its host's (which answers none of them).
 | Route | |
 | --- | --- |
 | `GET /tasks/types` | `{ types: TaskType[] }` |
-| `PUT /tasks/types/:name` | `{ title?, app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` → `{ type: TaskType }`: the whole type — what is left out is the default (no title, 600 s, 72 h, enabled, open, unpaid, no hold, no tests, no copies, no files, not standing, no round, no check). `check` is `{ step, config? }` or `null`: a sealed step run on each answer before it is accepted ("A check before an answer is accepted" below) — `400 bad_request` for `"equal"` or another shape, `400 bad_grader` naming why when the step is not here or not sealed. `title` is what workers call it, in their language and any words (plans/i18n.md), at most 80 characters, trimmed; empty or `null` is none, and workers read the name (`400 bad_request` past 80 or not a string). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `round` is `{ workflow }` or `null`: a ROUND type, whose tasks that workflow's runs make, one for each item — `400 bad_request` when the workflow is not here or has no `human` step of this type (at any depth: a `foreach`'s body counts; a task named by a template is read with the input defaults and params), and when the type is standing too. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types"). A NEW invite-only type is granted to the admin saving it (the request's actor, no qualifying), so they can try it at once |
+| `PUT /tasks/types/:name` | `{ title?, app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, payOn?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` → `{ type: TaskType }`: the whole type — what is left out is the default (no title, 600 s, 72 h, enabled, open, unpaid, no hold, paid as answered, no tests, no copies, no files, not standing, no round, no check). `payOn` is `"answer"` (the default, never stored), `"ok"` or `null`: `"ok"` pays an answer only once a verdict says ok ("Pay" below; `400 bad_request` otherwise). `check` is `{ step, config? }` or `null`: a sealed step run on each answer before it is accepted ("A check before an answer is accepted" below) — `400 bad_request` for `"equal"` or another shape, `400 bad_grader` naming why when the step is not here or not sealed. `title` is what workers call it, in their language and any words (plans/i18n.md), at most 80 characters, trimmed; empty or `null` is none, and workers read the name (`400 bad_request` past 80 or not a string). `standing` is `{ workflow }` or `null` ("Standing task types" below): `400 bad_request` naming why when the workflow cannot be one. `round` is `{ workflow }` or `null`: a ROUND type, whose tasks that workflow's runs make, one for each item — `400 bad_request` when the workflow is not here or has no `human` step of this type (at any depth: a `foreach`'s body counts; a task named by a template is read with the input defaults and params), and when the type is standing too. `attachments` is the files an answer carries, `{ max, min, types }` over the defaults `{ max: 1, min: 0, types: ["image/*", "application/pdf"] }` (`max` 1 to 10, `min` 0 to `max`, `types` media types, `image/*` a family; `400` otherwise), or `null` for none ("Files from a worker" below). Whether a PAID open type qualifies newcomers on tests is the admin's: nothing is refused for want of them ("Open task types"). A NEW invite-only type is granted to the admin saving it (the request's actor, no qualifying), so they can try it at once |
 | `GET /tasks/workflows?type=` | The type editor's "When there is work" picker: `{ type, workflows: [{ name, standing }] }`, the workflows (not sealed) with a `human` step of that type at any depth — each can be its round workflow — and `standing` true for those whose FIRST step is that step (its standing workflow), by name. `400` without `type` |
 | `GET /tasks/types/:name/round` | A round type's round (src/tasks/round.ts): `{ type, workflow, input?, items: [{ label, value }], last?: { runId, at, tasks } }` — the items are the workflow's first `json` input whose default is a list (`input`, its name), each labelled by its text and number fields joined ("Bean There – 412 Main St"); none when it has no such list. `last`: the newest round — the run of the type's newest task, when it was made, and how many tasks that run made. `400` for a type with no `round` |
 | `POST /tasks/types/:name/round { input? }` | Send a round: the type's round workflow launched as the caller (as `POST /workflows/:name/run` launches), with `input` — the items to send under the input's name — or with none, its defaults sending every item → `{ runId, workflow }`. `400` for an input that is not an object or does not fit the workflow, while draining, or with the workflow off |
@@ -6310,6 +6332,7 @@ server whose task store is its host's (which answers none of them).
   "open": true,                     // any signed-in worker takes it, no grant; false: invite-only. True for a type saved before it existed
   "paySats": 21,                    // what an answer earns, sats to the msat; absent: unpaid
   "holdHours": 0,                   // how long an earning waits before it can be withdrawn; 0 (the default): at once
+  // "payOn": "ok"                  — an answer earns only once a verdict says ok (staff's, or the run's task/reply); absent: as answered
   "limits": { "budgetSats": 60000, "perWorkerDay": 540 }, // checked whenever a task is handed out: the most it pays in all, the most tasks one worker takes a UTC day; absent: none (limit_reached when one is hit)
   "tests": {                        // absent: no tests (see "Tests, grading and standing")
     "rate": 0.05, "newRate": 0.25, "newTasks": 50, "qualify": 10,
@@ -6366,8 +6389,8 @@ server whose task store is its host's (which answers none of them).
                "earning": { "msat": 21000, "at": 1762949000000, "releases": 1763208200000
                             /*, "takenBack", "takenBackWhy", "takenBackBy" */ },
                "review": { "verdict": "rejected", "why": "the wrong dog",   // an answer's verdict, when given
-                           "by": "admin-1", "at": 1762952600000,
-                           "until": 1763208200000,     // when it can no longer change: the hold's end
+                           "by": "admin-1", "at": 1762952600000,   // or "workflow:<name>": the run's own (task/reply)
+                           "until": 1763208200000,     // when it can no longer change: the hold's end; absent while a type that pays on ok booked nothing
                            "final": false } }]
 }
 
@@ -6487,6 +6510,16 @@ with `standing: { workflow }` has work whenever a worker asks.
 - **Locked when the task is taken.** `task/next` stamps the type's pay on
   the lease (`payMsat`) and the answer earns exactly that. A lease taken
   before the type was paid earns nothing.
+- **As answered, or once OK'd.** By default an accepted answer earns as it
+  is answered. A type saved `payOn: "ok"` pays only for work a verdict
+  accepted: its answer is booked when a verdict says ok — staff's (`PUT
+  /tasks/:id/review`, a group's review) or the run that asked
+  (`task/reply`'s `verdict`) — its hold running from the ok; a test's
+  answer when graded `pass` or `error` (so a page cannot tell them apart);
+  a rejected answer, or a test graded `fail`, is never booked, and the sweep
+  leaves both. Until then the worker sees it as pending (`task/me`'s
+  `pendingMsat`, `task/history`'s `pending`). Turning `payOn` off books what
+  waits, except what was rejected.
 - **Owed in sats.** An accepted answer under a paid lease is booked in the
   ledger (`payments/ledger.db`, made by the first paid answer): its
   `releases` is when it was accepted plus the type's hold AS BOOKED. It is
@@ -6642,7 +6675,7 @@ Full scope, beside the rest; `strut/staff` reaches them through
 | Route | Answers |
 | --- | --- |
 | `POST /tasks/invites { sats?, type? }` | `{ code, link, sats, status, type? }`: `sats` the worker's starting balance, the payout settings' `inviteSats` when left out (1 to 100,000); `type` the kind of work it is for (left out: open work alone). Tasks not in the public view is `409 no_worker_app`; the app that draws `type` not in it, `409 not_online`; no such type, `400`. Each refusal comes before the wallet is asked. `status` is the daemon's: `sending` until the mixer has it, then `ready` |
-| `GET /tasks/invites` | `{ invites: [{ code, link?, sats, status, createdAt?, type? }], sats, why? }`: the daemon's invites, newest first, each `link` the one it was sent with (none while Tasks is not in the public view) and `type` its work; `sats` the default; `why` — `no_pay_credential` or `no_invites` — when this server cannot invite, with no invites |
+| `GET /tasks/invites` | `{ invites: [{ code, link?, sats, status, createdAt?, type?, expiresAt?, by?, takenBy? }], sats, why? }`: the daemon's invites, newest first, each `link` the one it was sent with (none while Tasks is not in the public view) and `type` its work; one that made a grant is `used` with `takenBy` (the worker), whatever the daemon says, since an account Peel already had never makes the daemon say `used`; `sats` the default; `why` — `no_pay_credential` or `no_invites` — when this server cannot invite, with no invites |
 | `POST /tasks/invites/:code/cancel` | `{ code, status }`: one not used yet; `404 unknown_invite` |
 | `POST /tasks/online` | `{ app: "strut/worker", public: true }`: Tasks put in the public view in the admin's name, as the Public view tab saves it with nothing unticked (§14.16: it calls only the worker's `task/*` steps). The one app a staff page puts online itself; any other goes through the Public view or an `app/make-public` card |
 
@@ -6879,11 +6912,23 @@ an `image` step drew from their photo):
     task: "{{ shot.task }}"          # the human step's task
     show: { note: "Here it is" }      # a JSON object they see
     files: ["{{ remix.path }}"]       # files of this run they can open
+    verdict: "{{ check.ok ? 'ok' : 'rejected' }}"   # the run's verdict on the answer
+    why: "{{ check.reason }}"         # read by the worker; a rejection must say
 ```
 
 | Step | Config | Answers |
 | --- | --- | --- |
-| `task/reply` | `{ task, show?, files?, group? }` | `{ task, at }` |
+| `task/reply` | `{ task, show?, files?, group?, verdict?, why? }` | `{ task, at }` |
+
+- **A verdict.** `verdict` (`ok`, or `rejected` with `why`) is the run's
+  judgement of the answer the task settled with (a copies task's agreed
+  one), given as staff give one ("Review" below) by `workflow:<name>`: it
+  moves money as theirs does, counts against standing as theirs does, and
+  staff can change it until it is final. On a type that pays on ok
+  (`payOn: "ok"`) it is what the answer earns by: `ok` books it, a
+  rejection leaves nothing owed, so a photo the run refused and its retake
+  are paid once between them. `why` without a verdict is `400`; an `ok`'s
+  empty `why` is none. A reply may be a verdict alone.
 
 - **A group.** `group` (at most 200 characters, one line, trimmed) names the
   deliverable the task is part of — a book its pages, a batch its photos —
@@ -6907,7 +6952,8 @@ an `image` step drew from their photo):
   of the run's artifacts, each a path or `{ path, name?, mediaType? }` (what
   a `human` step's `attachments` lists), at most 10, each at most 3,800,000
   bytes — what `task/file` can hand a page inside `step_run`'s 5 MB answer
-  (a 3 MB picture, 4 MB as base64, passes). One of the two at least. The
+  (a 3 MB picture, 4 MB as base64, passes). A reply has one of them, a
+  group or a verdict. The
   task keeps `reply: { show?, files?: [{ name, mediaType, size, path }],
   at }`; the files stay in the run.
 - **Replaced whole** by a later reply.
@@ -6939,7 +6985,12 @@ second `human` step of a review type, or copies).
 - **Changeable until the hold ends, then final.** `until` is the answer's
   earning's `releases`, or for an unpaid answer the type's `holdHours`
   from when it was answered. A first verdict may come later, final at once;
-  any change after `until` is `409 final`.
+  any change after `until` is `409 final`. On a type that pays on ok, a
+  paid answer with nothing booked has no `until` and is never final: no
+  money moved, so a rejection (the run's too) can become `ok` any time,
+  which pays it.
+- **By a person or the run.** Staff give it here; the run that asked gives
+  one with `task/reply`'s `verdict`, `by` `workflow:<name>`.
 - **Standing.** A rejection counts against the worker's standing in the
   type as a failed test does: a `fail` in the window, at the time the
   answer was given, for answers given since the grant (`standing.rejected`
@@ -6954,7 +7005,9 @@ second `human` step of a review type, or copies).
   restores only a take-back a rejection made, never one by hand (`POST
   /tasks/:id/take-back`) or a graded test's. Past the hold nothing moves:
   a first rejection then is a mark and a standing fail alone, and paid
-  money never moves back. The answer carries its `earning` after the
+  money never moves back. On a type that pays on ok, `ok` BOOKS the
+  answer's earning (held its type's hold from then) and a rejection before
+  any ok books nothing. The answer carries its `earning` after the
   verdict.
 
 ### Asking for a task type — `task/set-type` (`plans/human-steps.md` §9.8)
@@ -6966,7 +7019,7 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
 | Step | Config | Answers |
 | --- | --- | --- |
 | `task/types` | `{}` | `{ types: [TaskType less changedBy, plus openTasks?, workers?, answeredWeek?, readyTests?] }`: each type (`open`: open or invite-only), its open tasks (`openTasks`), how many workers hold it (`workers`, a count: who is the staff's to read), its answers in the last 7 days (`answeredWeek`) and its ready tests (`readyTests`). The four counts are absent on a server whose task store is its host's and answers no queue |
-| `task/set-type` | `{ name, title?, app, answer?, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, limits?, tests?, copies? }` | `{ type: TaskType }`, as a PROPOSAL an admin accepted (§12) |
+| `task/set-type` | `{ name, title?, app, answer?, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, payOn?, limits?, tests?, copies? }` | `{ type: TaskType }`, as a PROPOSAL an admin accepted (§12) |
 | `task/report` | `{ type?, days? }` | `{ types: TypeNumbers[] }` (`GET /tasks/numbers`'s): how the work is going, read inside the assistant's turn |
 | `task/grant` | `{ type, worker? }` | `{ worker, type, status, notice? }`, as a PROPOSAL an admin accepted: `worker` left out is the person who asked |
 

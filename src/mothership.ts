@@ -1,16 +1,26 @@
 /**
  * Mothership cost control — opt-in (plans/mothership-cost-control.md §3).
  *
- * Routes strut's LLM spend through the Agent Mothership (the stakgraph
- * gateway) so every call is billed to a PERSON, a WORKFLOW and a STEP, and
- * capped per run and per delegation. Hive mints, once per user and
- * deployment, a long-lived macaroon — an org-signed user authorization plus a
- * user-signed *standing invocation* for the agent `strut-agent` — and pushes
- * it here with that user's virtual key and the gateway URL. Strut never
- * signs: before each LLM call it appends keyless HMAC links (gatekey's
- * `attenuate`) that name the run, its cap, and the step, and hands
- * `{ apiKey, baseUrl, headers }` to core's `llmAuth` seam (llm.ts). The
- * gateway verifies the chain and bills the LAST agent name — the step.
+ * Routes strut's LLM spend through the Agent Mothership gateway so every
+ * call is billed to a PERSON, a WORKFLOW and a STEP, and capped per run and
+ * per delegation. The host (Stadeum; Hive on the swarms) mints, once per
+ * person and deployment, a long-lived delegation for the agent `strut-agent`
+ * and pushes it here with that person's virtual key and the gateway URL.
+ * Before each LLM call strut extends it with a link that names the run and
+ * its cap and one that names the step, and hands `{ apiKey, baseUrl,
+ * headers }` to core's `llmAuth` seam (llm.ts). The gateway verifies the
+ * chain and bills the LAST agent name — the step.
+ *
+ * Two formats, picked by the delegation's `v`:
+ * - **v2** (gatekey 1.x, Stadeum's mothership gateway): a chain of signed
+ *   blocks plus a proof key. The delegation is two blocks, the org's grant
+ *   to the person and the person's to `strut-agent`, and its proof is the
+ *   private half of strut's key. `attenuate` signs each new block with it
+ *   and hands on a fresh key, so a holder can append but never drop a
+ *   block. Every block's limits apply at the gateway: nothing narrows.
+ * - **v1** (gatekey 0.x, stakgraph's gateway on the swarms): keyless HMAC
+ *   links that must narrow the parent's. src/mothership-v1.ts, to delete
+ *   when the swarms retire.
  *
  * Core never imports this module. A host builds it, passes `llmAuth` to
  * `createStrut`, and calls `mount(strut)` for the delegation routes:
@@ -33,7 +43,7 @@
  */
 
 import type { Hono } from "hono";
-import type { Attenuation, AttenuationCaveats, Macaroon } from "gatekey";
+import type { Caveats, Token } from "gatekey";
 import { randomBytes } from "node:crypto";
 import { principalRequired, requireApiKey } from "./auth.js";
 import { FileSecretStore, type SecretStore } from "./secret-store.js";
@@ -57,18 +67,20 @@ const RELINK_BEFORE_MS = 3600_000;
 
 // ── Delegations ────────────────────────────────────────────────────────────
 
-/** What hive pushes for one user, plus what strut copies out of the macaroon
- *  on `PUT` so listing is one decrypt per entry. */
+/** What the host pushes for one person, plus what strut copies out of the
+ *  macaroon on `PUT` so listing is one decrypt per entry. */
 export interface Delegation {
-  /** The base64url macaroon: UA + standing invocation, no attenuations. */
+  /** The base64url macaroon, as the host minted it (strut appends its own links). */
   macaroon: string;
-  /** The standing invocation's `run_id` — the gateway's key for this user's
-   *  cumulative strut spend and its kill switch. */
+  /** Its format. Absent: stored before v2, so v1. */
+  v?: 1 | 2;
+  /** The run id of the person's grant to strut — the gateway's key for this
+   *  person's cumulative strut spend and its kill switch. */
   delegationId: string;
-  /** The user's virtual key and the gateway root. */
+  /** The person's virtual key and the gateway root. */
   apiKey: string;
   baseUrl: string;
-  /** The earlier of the UA's and the invocation's expiry. */
+  /** The earliest expiry in it. */
   exp: string;
 }
 
@@ -76,13 +88,15 @@ export interface DelegationSummary {
   actor: string;
   exp: string;
   delegationId: string;
+  /** The macaroon's format, so the host can re-mint an old one. */
+  v: 1 | 2;
 }
 
 export interface DelegationStore {
   get(actor: string): Promise<Delegation | undefined>;
   put(actor: string, d: Delegation): Promise<void>;
   delete(actor: string): Promise<boolean>;
-  /** What hive's reconciler diffs against — never the macaroon or key. */
+  /** What the host's reconciler diffs against — never the macaroon or key. */
   list(): Promise<DelegationSummary[]>;
 }
 
@@ -115,56 +129,110 @@ export function delegationStore(secrets: SecretStore): DelegationStore {
         if (!name.startsWith(NAME_PREFIX)) continue;
         const actor = actorFor(name);
         const d = await this.get(actor);
-        if (d) out.push({ actor, exp: d.exp, delegationId: d.delegationId });
+        if (d) out.push({ actor, exp: d.exp, delegationId: d.delegationId, v: d.v ?? 1 });
       }
       return out;
     },
   };
 }
 
-/** What `PUT /llm/delegations/:actor` checks about a macaroon's SHAPE before
- *  storing it. Signatures cannot be checked here (strut has no org pubkey;
- *  the gateway is the verifier) — this catches the wrong kind of macaroon:
- *  one already attenuated, minted for another agent, carrying a call-count
- *  cap strut could never narrow under, or with no ceiling at all. */
-export async function checkDelegationMacaroon(
-  encoded: string,
-): Promise<{ delegationId: string; exp: string; ceilingUsd: number }> {
-  const { decodeMacaroon } = await import("gatekey");
-  let m: Macaroon;
+// ── Opening a delegation ───────────────────────────────────────────────────
+
+/** What a link strut appends says. */
+export interface LinkCaveats {
+  runId: string;
+  /** The agent it is billed as; none for a run's own link (billed as `strut-agent`). */
+  agent?: string;
+  capUsd: number;
+  iat: string;
+  exp: string;
+}
+
+/** A chain strut can extend: the delegation, a run's link, a step's. */
+export interface Link {
+  /** A new link under this one; this one is unchanged. */
+  extend(c: LinkCaveats): Link;
+  /** The `x-macaroon` header value. */
+  encode(): string;
+}
+
+/** A delegation, decoded and checked. */
+export interface OpenDelegation {
+  v: 1 | 2;
+  delegationId: string;
+  /** The earliest expiry in it. */
+  exp: string;
+  /** The most the person lets strut spend in all. */
+  ceilingUsd: number;
+  root: Link;
+}
+
+/** Decodes a delegation and checks its SHAPE, by its `v`. Signatures cannot
+ *  be checked here (strut has no org pubkey; the gateway is the verifier):
+ *  this catches the wrong kind of macaroon — one already extended, minted
+ *  for another agent, or with no ceiling. */
+export async function openDelegation(encoded: string): Promise<OpenDelegation> {
+  let v: unknown;
   try {
-    m = decodeMacaroon(encoded);
+    v = (JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as { v?: unknown } | null)?.v;
   } catch (err) {
     throw new Error(`macaroon does not decode: ${err instanceof Error ? err.message : String(err)}`);
   }
-  if (m.v !== 1) throw new Error(`macaroon v=${String(m.v)}; expected 1`);
-  const ua = m.user_authorization;
-  const inv = m.invocation;
-  if (!ua || typeof ua !== "object" || !inv || typeof inv !== "object") {
-    throw new Error("macaroon must carry a user_authorization and an invocation");
+  if (v === 2) return openV2(encoded);
+  if (v === 1) return (await import("./mothership-v1.js")).openV1(encoded);
+  throw new Error(`macaroon v=${String(v)}; expected 1 or 2`);
+}
+
+async function openV2(encoded: string): Promise<OpenDelegation> {
+  const gk = await import("gatekey");
+  const t: Token = gk.decodeToken(encoded);
+  if (!Array.isArray(t.blocks) || t.blocks.length !== 2) {
+    throw new Error("a delegation must be two blocks, the org's grant and strut's — strut appends its own");
   }
-  if (!Array.isArray(m.attenuations) || m.attenuations.length > 0) {
-    throw new Error("a delegation must carry no attenuations — strut appends its own");
+  const [grant, own] = t.blocks.map((b) => (b?.caveats ?? {}) as Partial<Caveats>) as [Partial<Caveats>, Partial<Caveats>];
+  if (!grant.user_id) throw new Error("block 0 must name the person (user_id)");
+  if (own.agent !== STRUT_AGENT) throw new Error(`block 1 must hand the run to agent "${STRUT_AGENT}"`);
+  if (typeof own.max_cost_usd !== "number" || !(own.max_cost_usd > 0)) {
+    throw new Error("block 1's max_cost_usd (the delegation ceiling) must be a positive number");
   }
-  if (!Array.isArray(inv.agents) || !inv.agents.includes(STRUT_AGENT)) {
-    throw new Error(`the invocation must authorize agent "${STRUT_AGENT}"`);
+  if (typeof own.run_id !== "string" || !own.run_id) throw new Error("block 1 must carry a run_id (the delegation id)");
+  for (const [i, c] of [grant, own].entries()) {
+    if (typeof c.exp !== "string" || !Number.isFinite(Date.parse(c.exp))) throw new Error(`block ${i}'s exp is not a timestamp`);
   }
-  if (inv.max_steps !== 0) {
-    throw new Error(`the invocation's max_steps must be 0 (no call-count cap); got ${String(inv.max_steps)}`);
+  // Without the private half of block 1's key strut could append nothing.
+  const key = t.blocks[1]!.next_key;
+  let proofOk = false;
+  try {
+    proofOk = gk.bytesToHex(gk.publicKeyBytes(key.alg, gk.hexToBytes(t.proof))) === key.key;
+  } catch {
+    /* not hex, or not a key */
   }
-  if (typeof inv.max_cost_usd !== "number" || !(inv.max_cost_usd > 0)) {
-    throw new Error("the invocation's max_cost_usd (the delegation ceiling) must be a positive number");
-  }
-  if (typeof inv.run_id !== "string" || !inv.run_id) {
-    throw new Error("the invocation must carry a run_id (the delegation id)");
-  }
-  for (const [what, exp] of [["user_authorization", ua.exp], ["invocation", inv.exp]] as const) {
-    if (typeof exp !== "string" || !Number.isFinite(Date.parse(exp))) {
-      throw new Error(`the ${what}'s exp is not a timestamp`);
-    }
-  }
-  const exp = Date.parse(ua.exp) <= Date.parse(inv.exp) ? ua.exp : inv.exp;
-  return { delegationId: inv.run_id, exp, ceilingUsd: inv.max_cost_usd };
+  if (!proofOk) throw new Error("the delegation's proof is not the private key of block 1's next_key");
+
+  const nonce = () => randomBytes(16).toString("hex");
+  const link = (t: Token): Link => ({
+    extend: (c) =>
+      link(gk.attenuate(t, { run_id: c.runId, ...(c.agent ? { agent: c.agent } : {}), max_cost_usd: c.capUsd, iat: c.iat, exp: c.exp, nonce: nonce() })),
+    encode: () => gk.encodeToken(t),
+  });
+  return {
+    v: 2,
+    delegationId: own.run_id,
+    exp: Date.parse(grant.exp!) <= Date.parse(own.exp!) ? grant.exp! : own.exp!,
+    ceilingUsd: own.max_cost_usd,
+    root: link(t),
+  };
+}
+
+/** What `PUT /llm/delegations/:actor` checks before storing a delegation:
+ *  its shape (`openDelegation`), and that it has not expired. */
+export async function checkDelegationMacaroon(
+  encoded: string,
+  now: Date = new Date(),
+): Promise<{ v: 1 | 2; delegationId: string; exp: string; ceilingUsd: number }> {
+  const { v, delegationId, exp, ceilingUsd } = await openDelegation(encoded);
+  if (Date.parse(exp) <= now.getTime()) throw new Error(`the delegation expired at ${exp}`);
+  return { v, delegationId, exp, ceilingUsd };
 }
 
 // ── Naming and caps ────────────────────────────────────────────────────────
@@ -255,8 +323,9 @@ export interface Mothership {
 }
 
 interface RunLink {
-  link: Attenuation;
+  link: Link;
   capUsd: number;
+  exp: string;
   expMs: number;
   delegationId: string;
 }
@@ -271,16 +340,8 @@ export function createMothership(opts: MothershipOptions): Mothership {
 
   const required = principalRequired;
   const nonce = () => randomBytes(16).toString("hex");
-  const caveats = (agents: string[], runId: string, capUsd: number, exp: string): AttenuationCaveats => ({
-    agents,
-    run_id: runId,
-    max_cost_usd: capUsd,
-    max_steps: 0, // no call-count cap — restated on every link (see the plan, §3)
-    exp,
-    nonce: nonce(),
-  });
   /** `now + 8h` (or `ttlMs`), or the parent's own exp string when that is
-   *  sooner. The verifier compares exps as strings, so the parent's is
+   *  sooner. v1's verifier compares exps as strings, so the parent's is
    *  returned verbatim. */
   const expFor = (now: Date, parentExp: string, ttlMs = LINK_TTL_MS) => {
     const mine = now.getTime() + ttlMs;
@@ -303,12 +364,13 @@ export function createMothership(opts: MothershipOptions): Mothership {
     }
     return d;
   };
-  /** The cap for a run, checked against the delegation's ceiling — a link
-   *  above it would be rejected by the gateway, so fail here, loudly. */
-  const capOrThrow = (workflowCap: number | undefined, ceiling: number, principal: string, runCap?: number) => {
+  /** The cap for a run. v1's gateway refuses a link above the delegation's
+   *  ceiling, so there fail here, loudly. v2 has no such rule: the
+   *  delegation's own block stops the spend at its ceiling. */
+  const capOrThrow = (workflowCap: number | undefined, o: OpenDelegation, principal: string, runCap?: number) => {
     const cap = resolveRunCap(workflowCap, bootEnv(), opts.runCapDefault ?? DEFAULT_RUN_CAP_USD, runCap);
-    if (cap > ceiling) {
-      throw new Error(`workflow cap $${cap} exceeds the delegation ceiling $${ceiling} for ${principal} — lower the cap or re-authorize with a higher ceiling`);
+    if (o.v === 1 && cap > o.ceilingUsd) {
+      throw new Error(`workflow cap $${cap} exceeds the delegation ceiling $${o.ceilingUsd} for ${principal} — lower the cap or re-authorize with a higher ceiling`);
     }
     return cap;
   };
@@ -316,26 +378,19 @@ export function createMothership(opts: MothershipOptions): Mothership {
     for (const [k, v] of runLinks) if (v.expMs <= nowMs) runLinks.delete(k);
   };
 
-  async function runLink(
-    gk: typeof import("gatekey"),
-    ctx: LlmAuthContext,
-    m: Macaroon,
-    d: Delegation,
-    principal: string,
-    now: Date,
-  ): Promise<RunLink> {
+  async function runLink(ctx: LlmAuthContext, o: OpenDelegation, principal: string, now: Date): Promise<RunLink> {
     const runId = ctx.runId!;
     const cached = runLinks.get(runId);
-    if (cached && cached.delegationId === d.delegationId && cached.expMs - now.getTime() > RELINK_BEFORE_MS) return cached;
+    if (cached && cached.delegationId === o.delegationId && cached.expMs - now.getTime() > RELINK_BEFORE_MS) return cached;
     if (!workspace) throw new Error("createMothership: call mount(strut) before running workflows");
     const meta = ctx.workflow ? await workspace.getWorkflowMetadata(ctx.workflow).catch(() => null) : null;
     // A public run carries a cap of its own (plans/paid-runs.md §7): the
     // link carries the smaller of it and the workflow's.
-    const capUsd = capOrThrow(meta?.maxRunCostUsd, m.invocation.max_cost_usd, principal, ctx.maxCostUsd);
-    const exp = expFor(now, m.invocation.exp);
-    const link = gk.attenuate(gk.invocationSigBytes(m.invocation), caveats([STRUT_AGENT], runId, capUsd, exp));
+    const capUsd = capOrThrow(meta?.maxRunCostUsd, o, principal, ctx.maxCostUsd);
+    const exp = expFor(now, o.exp);
+    const link = o.root.extend({ runId, capUsd, iat: now.toISOString(), exp });
     sweep(now.getTime());
-    const entry = { link, capUsd, expMs: Date.parse(exp), delegationId: d.delegationId };
+    const entry = { link, capUsd, exp, expMs: Date.parse(exp), delegationId: o.delegationId };
     runLinks.set(runId, entry);
     return entry;
   }
@@ -345,47 +400,36 @@ export function createMothership(opts: MothershipOptions): Mothership {
     const now = clock();
     const d = await delegationFor(principal, "this LLM call", now);
     if (!d || !principal) return undefined;
-    const gk = await import("gatekey");
-    const m = gk.decodeMacaroon(d.macaroon);
-    let links: Attenuation[];
+    const o = await openDelegation(d.macaroon);
+    const iat = now.toISOString();
+    let chain: Link;
     let sessionId: string;
     if (ctx.kind === "chat") {
-      // One link off the invocation: billed as the assistant, one gateway
+      // One link off the delegation: billed as the assistant, one gateway
       // run per turn, capped at the env/default (no workflow to override it).
-      const capUsd = capOrThrow(undefined, m.invocation.max_cost_usd, principal);
-      links = [
-        gk.attenuate(
-          gk.invocationSigBytes(m.invocation),
-          caveats([STRUT_AGENT, STRUT_ASSISTANT], `${ctx.chatId}.${ctx.turn ?? 0}`, capUsd, expFor(now, m.invocation.exp)),
-        ),
-      ];
+      const capUsd = capOrThrow(undefined, o, principal);
+      chain = o.root.extend({ runId: `${ctx.chatId}.${ctx.turn ?? 0}`, agent: STRUT_ASSISTANT, capUsd, iat, exp: expFor(now, o.exp) });
       sessionId = ctx.chatId ?? "chat";
     } else {
       if (!ctx.runId) throw new Error("mothership: a step call needs a runId");
-      const run = await runLink(gk, ctx, m, d, principal, now);
-      // The step link restates the run's id and cap (the gateway dedupes
-      // chain layers by run id: the enforced chain is [run, delegation]) and
-      // adds the step to the lineage — the last name is what gets billed.
-      const step = gk.attenuate(
-        gk.attenuationSigBytes(run.link),
-        caveats([STRUT_AGENT, stepAgentName(ctx.stepPath ?? "")], ctx.runId, run.capUsd, run.link.caveats.exp),
-      );
-      links = [run.link, step];
+      const run = await runLink(ctx, o, principal, now);
+      // The step link restates the run's id and cap (one counter at the
+      // gateway) and names the step — the last name is what gets billed.
+      chain = run.link.extend({ runId: ctx.runId, agent: stepAgentName(ctx.stepPath ?? ""), capUsd: run.capUsd, iat, exp: run.exp });
       sessionId = ctx.workflow ?? "";
     }
-    const macaroon = gk.encodeMacaroon({ ...m, attenuations: links });
     return {
       apiKey: d.apiKey,
       baseUrl: d.baseUrl,
       headers: {
-        "x-macaroon": macaroon,
+        "x-macaroon": chain.encode(),
         "x-bf-dim-session-id": sessionId,
         // Every strut lineage starts at strut-agent; sent as a plain dim so the
         // Mothership UI can fold strut's steps under one node from day one.
         "x-bf-dim-root-agent": STRUT_AGENT,
       },
       explainError: (err) =>
-        explainExhausted(err, d, principal, m.invocation.max_cost_usd) ?? explainRefused(err) ?? explainUnrouted(err, ctx.provider),
+        explainExhausted(err, d, principal, o.ceilingUsd) ?? explainRefused(err) ?? explainUnrouted(err, ctx.provider),
       // A provider this gateway does not hold (a Numes nobody set up on it)
       // is called directly — unless every call must be billed here.
       direct: !required(),
@@ -394,11 +438,11 @@ export function createMothership(opts: MothershipOptions): Mothership {
 
   // ── Grants: model calls for a machine outside strut ──────────────────────
   // (stakwork/pods PLAN.md §3.2.) A link of the grant's own off the person's
-  // invocation — its own run id, so the gateway caps its spend apart from any
+  // delegation — its own run id, so the gateway caps its spend apart from any
   // run's, and its own expiry — then the host makes a virtual key under the
-  // person's gateway customer and joins the two. The link does not bind
-  // whoever holds the key: gatekey carries each link's HMAC, so dropping the
-  // link leaves the person's whole delegation. So the host is sent the cap and
+  // person's gateway customer and joins the two. On v2 the link binds whoever
+  // holds the key: a chain cannot be shortened. On v1 it does not (dropping
+  // it leaves the person's whole delegation), so the host is sent the cap and
   // the expiry too, and holds the key to them.
 
   const grantsUrl = opts.grantsUrl?.replace(/\/+$/, "");
@@ -431,14 +475,13 @@ export function createMothership(opts: MothershipOptions): Mothership {
     const now = clock();
     const d = await delegationFor(principal, "this grant", now);
     if (!d || !principal) return null;
-    const gk = await import("gatekey");
-    const m = gk.decodeMacaroon(d.macaroon);
-    // Never above the person's ceiling (the gateway would refuse the link): a
-    // person whose spending limit is under the cap still gets a grant.
-    const capUsd = Math.min(resolveGrantCap(), m.invocation.max_cost_usd);
-    const exp = expFor(now, m.invocation.exp, hours * 3600_000);
-    const link = gk.attenuate(gk.invocationSigBytes(m.invocation), caveats([STRUT_AGENT, name], `grant-${nonce()}`, capUsd, exp));
-    const macaroon = gk.encodeMacaroon({ ...m, attenuations: [link] });
+    const o = await openDelegation(d.macaroon);
+    // Never above the person's ceiling (v1's gateway would refuse the link;
+    // on v2 the ceiling binds anyway): a person whose spending limit is under
+    // the cap still gets a grant.
+    const capUsd = Math.min(resolveGrantCap(), o.ceilingUsd);
+    const exp = expFor(now, o.exp, hours * 3600_000);
+    const macaroon = o.root.extend({ runId: `grant-${nonce()}`, agent: name, capUsd, iat: now.toISOString(), exp }).encode();
     const res = await askHost("POST", grantsUrl!, { name, macaroon, max_cost_usd: capUsd, expires_at: exp }, principal);
     if (!res.ok) throw new Error(`no grant for ${principal}: ${grantsUrl} answered ${res.status} ${res.text.slice(0, 300)}`);
     let body: { id?: unknown; key?: unknown; address?: unknown } | null = null;
@@ -473,7 +516,7 @@ export function createMothership(opts: MothershipOptions): Mothership {
     // Lets the UI know the run-cap field means something here.
     app.get("/llm/mothership", (c) => c.json({ enabled: true }));
 
-    // What hive's reconciler diffs against: actors, expiries, delegation ids.
+    // What the host's reconciler diffs against: actors, expiries, delegation ids, formats.
     app.get("/llm/delegations", requireApiKey, async (c) => c.json(await delegations.list()));
 
     app.put("/llm/delegations/:actor", requireApiKey, async (c) => {
@@ -491,8 +534,9 @@ export function createMothership(opts: MothershipOptions): Mothership {
       } catch (err) {
         return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
       }
-      await delegations.put(actor, { macaroon, apiKey, baseUrl: baseUrl.replace(/\/+$/, ""), delegationId: checked.delegationId, exp: checked.exp });
-      return c.json({ actor, exp: checked.exp, delegationId: checked.delegationId });
+      const { v, delegationId, exp } = checked;
+      await delegations.put(actor, { macaroon, v, apiKey, baseUrl: baseUrl.replace(/\/+$/, ""), delegationId, exp });
+      return c.json({ actor, exp, delegationId, v });
     });
 
     app.delete("/llm/delegations/:actor", requireApiKey, async (c) => {

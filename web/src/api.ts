@@ -1248,6 +1248,11 @@ export const getJob = (id: string, opts: { nodes?: boolean; limit?: number } = {
   return fetchJSON<JobView>(`/jobs/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
 };
 
+/** `GET /jobs/:id/urls`: what the job holds at an address, by kind
+ *  (`{ pod: "https://…" }`) — what the side panel beside an app frames. */
+export const getJobUrls = (id: string) =>
+  fetchJSON<{ job: string; urls: Record<string, string> }>(`/jobs/${encodeURIComponent(id)}/urls`);
+
 /** A stored model message, as a transcript endpoint serves it. */
 export interface StoredMessage {
   role: string;
@@ -2376,16 +2381,18 @@ export async function fetchAppDocument(name: string, version: string, token: str
  *  src/brand.ts): MCP Apps standard names, handed to every hosted page. */
 export type BrandStyles = Record<"light" | "dark", { variables: Record<string, string> }>;
 
-let brandOnce: Promise<BrandStyles | null> | undefined;
+const brandOnce: { member?: Promise<BrandStyles | null>; visitor?: Promise<BrandStyles | null> } = {};
 
 /** The brand every hosted app is shown in, read once per page: it changes
- *  rarely, and the next load picks a change up. Null when none is set or it
- *  cannot be read: an app is shown unbranded, never held up. */
-export function getBrandStyles(): Promise<BrandStyles | null> {
-  brandOnce ??= apiFetch("/brand")
+ *  rarely, and the next load picks a change up. A visitor's page reads the
+ *  look alone, with no credential (`GET /public/brand`). Null when none is
+ *  set or it cannot be read: an app is shown unbranded, never held up. */
+export function getBrandStyles(visitor = false): Promise<BrandStyles | null> {
+  const key = visitor ? "visitor" : "member";
+  brandOnce[key] ??= apiFetch(visitor ? "/public/brand" : "/brand")
     .then(async (res) => (res.ok ? ((await res.json()) as { styles: BrandStyles | null }).styles : null))
     .catch(() => null);
-  return brandOnce;
+  return brandOnce[key];
 }
 
 // ── Packages (plans/marketplace.md §12.1, §13; specs/API.md §16) ────────────

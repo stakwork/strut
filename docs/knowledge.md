@@ -360,11 +360,36 @@ index. A change in this area updates this file, not AGENTS.md.
 - **Trials and tests — how often a rule holds, and whether a change to a
   page makes the difference** (`src/trials.ts`, plans/claim-trials.md; on a
   graph workspace with claims on, `ctx.services.trials`). A CASE is one
-  input to a workflow, `{ workflow, input }`, kept on a claim about a
-  Concept (`<dataDir>/trials/cases/<claim id>.json`, at most 20, replaced
-  whole by `setCases`). A TRIAL runs a claim's cases as fresh runs.
-  `trial` is a LAUNCH-LEVEL FIELD shaped like `branch` (`RunTrial { claim,
-  case? }`, src/core.ts): on `run.start` and the summary, `ctx.trial`, kept
+  input to a workflow, `{ workflow, input }`: a `TestCase` node (a seed
+  type beside `Claim`, src/graph/seed-types.ts: `id`, `name`,
+  `case_workflow`, `case_input` as JSON; Epistemic, never embedded) that
+  `TESTS` the claims it was written for (`TestCase —TESTS→ Claim`, the
+  edge a `Check` uses). Its id is a hash of the workflow and its input,
+  keys in any order (`testCaseId`, src/graph/claims.ts), so the same
+  message under two claims, in a page's file or typed twice, is ONE node
+  with two edges, and writing it again writes nothing. A claim lists its
+  cases first written first (`reader.testCasesFor`), at most 20, replaced
+  whole by `setCases`: one taken away loses this claim's edge alone, and
+  the node, its other claims and every verdict on it stay. A reworded
+  claim's successor gains a `TESTS` edge from each of its cases, as from
+  its checks (claims-writer.ts `editClaim`). `Claim` gains no attribute: a
+  swarm's graph shares that type and strut does not extend it. A TRIAL
+  runs a claim's cases as fresh runs, and EVERY claim a case tests judges
+  each run of it (`reader.claimsOfTestCase`), so a dear run (a job that
+  sets a workspace up) feeds all its claims at once.
+  A case whose workflow is a job's (`JOB_WORKFLOWS`, src/jobs.ts: `job`,
+  `builder`) RUNS AS A JOB OF ITS OWN: each sample a new job id
+  (`trial-<batch>-<hex>`), so a tool that needs a job (a pod's `claim`)
+  has one, and once the sample is judged the job is closed as `DELETE
+  /jobs/:id` closes one (`deleteJob`: its holds released through their
+  steps, then its repositories, directory and record), so a pod a sample
+  held is let go and strut knows nothing about pods (the deps' `jobs: {
+  workflows, close }`). A job that will not close (a hold that will not
+  release) is kept with a warning, and the idle sweep tries again. What
+  the job would start is held like any trial's.
+  `trial` is a LAUNCH-LEVEL FIELD shaped like `branch` (`RunTrial { case,
+  claims }`, src/core.ts: the TestCase's id and the claims it tested at
+  launch): on `run.start` and the summary, `ctx.trial`, kept
   by a resume, inherited by every run the run starts (`trackRun`), never in
   `input` and never taken from a request — the trials capability alone
   launches one, through `strut.run`. A trial starts nothing outside itself:
@@ -375,30 +400,46 @@ index. A change in this area updates this file, not AGENTS.md.
   pending one would, `held: true`), strut/run-workflow, remote/call and
   remote/run-workflow throw `TRIAL_HELD`, nothing is scheduled
   (`bindTrial`, runner.ts), and no wake and no callback follow its end
-  (`launchDetached`). A shell or the web an agent has is NOT held. The
-  claim a trial replays a case of judges it whatever its check's policy
-  (`verifyOne`: forced when the pass's `trial.claim` is the claim's; every
-  other claim keeps its policy), and every evidence a trial is the source
-  of says so (`SourceContext.trial`, and `case` on the replayed claim's). A
-  sample is one run and its verdict; four run at once across everything in
-  flight, and what is in flight is in memory only (a restart forgets the
-  samples not yet started).
+  (`launchDetached`). A shell or the web an agent has is NOT held. Every
+  claim a trial's case tests judges it whatever its check's policy
+  (`verifyOne`: forced when the claim is among the pass's `trial.claims`;
+  every other claim keeps its policy), and every evidence a trial is the
+  source of says so (`SourceContext.trial`, and `case`, the TestCase's id,
+  on the evidence of each claim it tests). A sample is one run and its
+  verdicts; four run at once across everything in flight, and what is in
+  flight is in memory only (a restart forgets the samples not yet
+  started).
   A PAGE'S FILE CARRIES ITS CLAIMS: the front matter's `claims:` block, in
   either form of page file (`parseConceptFile` → `ConceptFile.claims`,
   `readPageClaims`, claims-schemas.ts): each claim its `text`, the
-  `workflow` its cases run and the `cases`, each that workflow's input.
-  Never an attribute, and not part of the page's version, so a new case
+  `workflow` its cases run, the `cases`, each that workflow's input, and
+  its `checks`, the list a workflow's `claims:` block takes
+  (`checkSpecSchema`: a step check `{ type, config, policy, … }`, or an
+  external `{ description }`). A claim that names none gets the standard
+  check (`conceptCheckSpec`, a model reading the work); one that names a
+  step is judged by that step, which a check on a Concept is handed the
+  work's root run, its pages and its job's id (`input.job`), so a
+  package's step can look at what the work left in the world (a pod's
+  image) while the trial's job is still open. As a workflow's block, the
+  checks are those a claim was first written with: a change to them is a
+  new sentence. Never an attribute, and not part of the page's version, so a new case
   moves no verdict to stale. `seedConcepts` hands a seeded page's block out
   on its outcome, and createStrut records strut's own at boot
   (`trials.seed`, speaker `strut`; `createStrut({ concepts: { claims:
   false } })`, or the same in `STRUT_HOST_CONFIG`, seeds the pages without
   them), by the sentence, so a page's checks match its file: a claim
-  already there is kept and the file's cases are added to what it has
-  (never taken away); a claim `strut` wrote on a sentence the file no
+  already there is kept and the file's cases are linked to it (never
+  taken away; two claims with the same message share its node); a claim `strut` wrote on a sentence the file no
   longer carries (reworded, or the block gone) is retired, while a
   person's or the dream's claim on the page is never touched. Every page
-  that is the seed's is handed over, with a block or with none. Not built: a package's pages'
-  blocks at install (the outcome carries them; nothing records them yet).
+  that is the seed's is handed over, with a block or with none. A
+  PACKAGE'S PAGES' claims are recorded the same way at its install, by the
+  package (src/packages/install.ts, `PackageDeps.pageClaims` →
+  `trials.seed`, speaker the package's name, as its workflows' claims are
+  published by it): once its pages and steps are in, so a check may name
+  a step the package ships; an update retires a sentence the file no
+  longer carries; what was not recorded is the install's warning. A page
+  the package's uninstall retires takes its claims out of sight with it.
   A TEST is two wordings of one page run against the same checks: the page
   as it is, and the page with a change (`test({ concept, docs, n })`). The
   other wording is read by its runs on a Concept branch made for them
@@ -406,10 +447,11 @@ index. A change in this area updates this file, not AGENTS.md.
   the last sample is judged; `sweep` drops what a restart left. The test
   itself is kept (`<dataDir>/trials/tests/<id>.json`: both texts and their
   versions), so its diff and its verdicts stay whatever the page becomes,
-  and the same two wordings are always the same test. Every check on the
-  page with a case runs `n` samples of each case on the change, and the
-  page is topped up to as many (`test({ test, n })`, again: `n` more on
-  both). VERDICTS ARE COUNTED BY TEXT: a page version names one wording,
+  and the same two wordings are always the same test. Every case a check
+  on the page is tested by runs `n` samples on the change, ONCE however
+  many of the page's checks it tests, and the page is topped up to as many
+  runs of it on its wording (a run counts once, whichever of its claims
+  judged it; `test({ test, n })`, again: `n` more on both). VERDICTS ARE COUNTED BY TEXT: a page version names one wording,
   and a verdict on it counts from a run on main or from a run on one of
   THAT page's own tests (`verdictsOf`; another branch's works never count
   here). Status keeps reading per side (ruling 4); this is the count the
@@ -561,7 +603,7 @@ a WORK (plans/concept-evals.md, rulings 5 and 9): a root run and every run it ca
 
 ### `src/trials.ts`
 
-trials and tests (plans/claim-trials.md; "Trials and tests" above): `createTrials({ dataDir, graph, claims, verifier, store, branches?, sources?, history?, hasWorkflow, run })` → `ctx.services.trials`, set by createStrut wherever the claims layer is on, a host's own winning. `checks(concept)` (the one read), `addCheck` (a person's claim with the standard check), `setCases`, `trial({ claim, n })` and `test({ concept, docs, n } | { test, n })` (both return at once with the batch; the samples run four at a time and each is `run` then `verifier.verifyRun`), `use({ test, proposer })`, `sample({ workflow, run })` (null unless the run's summary carries `trial`), `seed(pages, speaker)` (the claims and cases a seeded page's file carries) and `sweep()` (the test branches a restart left). Pure and exported for the tests: `sampleOf` (an evidence row as a verdict, or null when it is none of a check's) and `orient` (a test as the page reads it now). On disk under `<dataDir>/trials/`: `cases/<claim id>.json`, `tests/<id>.json`. Tested end to end on a graph in src/graph/trials.test.ts (a stand-in model: the seeded page's check and cases, a held job, a test whose branch is dropped, a page from git refused, an ordinary page taking the other wording).
+trials and tests (plans/claim-trials.md; "Trials and tests" above): `createTrials({ dataDir, graph, claims, verifier, store, branches?, sources?, history?, hasWorkflow, run })` → `ctx.services.trials`, set by createStrut wherever the claims layer is on, a host's own winning. `checks(concept)` (the one read), `addCheck` (a person's claim with the standard check), `setCases`, `trial({ claim, n })` and `test({ concept, docs, n } | { test, n })` (both return at once with the batch; the samples run four at a time and each is `run` then `verifier.verifyRun`), `use({ test, proposer })`, `sample({ workflow, run })` (null unless the run's summary carries `trial`), `seed(pages, speaker)` (the claims and cases a seeded page's file carries) and `sweep()` (the test branches a restart left). Pure and exported for the tests: `sampleOf` (an evidence row as a verdict, or null when it is none of a check's) and `orient` (a test as the page reads it now). Cases are `TestCase` nodes (above); on disk under `<dataDir>/trials/`: `tests/<id>.json` (a `cases/` folder an earlier strut wrote is read by nothing). Tested end to end on a graph in src/graph/trials.test.ts (a stand-in model: the seeded page's two checks sharing one case node and both judging its runs, a held job, a test whose branch is dropped, a page from git refused, an ordinary page taking the other wording, a job's case run as a job of its own whose hold is released once judged, a reworded claim keeping its cases).
 
 ### `src/knowledge.ts`
 
@@ -597,7 +639,7 @@ Concept files → `Concept` nodes on either engine: seedConcepts(graph, sets) �
 
 ### `src/concepts/`
 
-the Concept pages strut SHIPS (copied into build/ by `npm run build`): `Workflow Builder` (what the builder's prompt reads; byte-identical to the page the stakgraph lab seeded first, whose stamps `lab/builder/concepts/` + `lab/job/concepts/` count as strut's) and `Job` (what the job workflow puts in its agent's prompt, `context/concept`) — roots, workspace-general; each deployment grows the tree under them — ONE TREE PER AGENT: `Job` is the job agent's and `Workflow Builder` the builder's, and the orchestrator reads the kinds under BOTH (`docs: false`) as its two lists, so a kind the builder builds is listed under `Workflow Builder`, never under `Job` (`Workflow Build`, the builder's entry under `Job` while the orchestrator read `Job` alone, is `retired` in `STRUT_CONCEPTS` and soft-deleted at boot; `Job`'s own docs tell a job agent that meets a workflow or an app that lives in a workspace to run `builder` through meta/run-workflow) — and `App` UNDER `Workflow Builder`: the builders' manual (layout, kit, hooks, grants, routines; hand a published app over BY NAME, `{ kind: "app", app }`), and `Game` UNDER `App`: a game as an app — the `game` starter, the loop, input, assets as imports, physics, scores, the look with `window.__debug`; and `Worker Tasks` UNDER `Workflow Builder`: work by people — the page the orchestrator opens (it holds graph/graph-get, and its two lists say how to open a kind's page) before a build of that kind, so the person settles in one message what is theirs: when there is work (any time, a standing type; or one for each item, a `human` step in a run), who (only people they invite, or anyone with the link), the pay in dollars — then what they do once it is built (approve, add money in Earnings, invite in Workers, try it; for work one for each item, ask the assistant to send a round, which a job starts), in their words with no workflow names, inputs or limits, an app pointed to as an artifact, and for the builder how each decision maps onto the type, and that the person's reports stay out of the worker app: `App`'s "Worker apps" says why — a worker app goes public with every workflow it grants, runs and all, so hiding a tab behind `useHost().public` locks nothing) — and `Plan` UNDER `Job`: work too large for one job, or that the person wants planned first, whatever it is made of — code in repositories, workflows and apps here, documents; its description, the line the orchestrator routes by, says a JOB writes the plan and runs it (plans/orchestrator-plans.md) — a plan job keeps ONE `plan.md` (overview, work items, contracts, open questions each with a default, progress) and builds nothing; the person reads its reply alone, an overview and the questions, and "go" takes every default; after go it names one item at a time, which the orchestrator's wake turn starts as a job of its own and hands back when it ends, and it checks what that job made against the plan; a plan need not be about code, so the page speaks of a repository in ONE sentence that applies only to work in one (one branch there for the whole plan, ending as one pull request) and an item names repositories only if it has any; the page holds no rule per failure (access control built too deep, a migration nobody needs): they are the CASES of its one claim, run as trials — and `Dream`, the dream's own tree (a root; what holds for any source: the posture, what a lesson is, where it goes) with one page per KIND of source under it, `Assistant Conversations` the first (what `dream/turns` hands over: what to look for in it, which run a person's words are about): the dream's rules, read by the `dream` workflow, not its prompt. Like every page here they are the fixed base every strut ships (`Job` → a kind, `Workflow Builder` → `App`, `Dream` → `Assistant Conversations`); what a workspace learns grows in the pages around them. `Job App`, the job side of an app, is `retired` too (2026-10-22): a page over a job's own results is an HTML file in its directory, an app is the builder's, and `Job`'s docs say to pass the builder's app deliverable on `Orchestrator` (a root, plans/claim-trials.md §1): the orchestrator's RULES, the judgment that was `orchestrator.yaml`'s `params.system`, moved as it was; the workflow reads it with `context/concept` (`frame: false`) so every turn opens the page and a claim on it judges the turn, and its seed carries the same file's text as `params.rulesText` for a workspace with no graph. Its front matter carries its two checks and the case that tests each ("Can you use bash?"): it says yes and offers to do it, never that it lacks a shell, files or the web; and it never tells the person how it works (jobs, background tasks). They were one claim until its last clause ("never explains how it is built") was judged both ways on near-identical replies (2026-11-20); the old sentence is retired at boot.
+the Concept pages strut SHIPS (copied into build/ by `npm run build`): `Workflow Builder` (what the builder's prompt reads; byte-identical to the page the stakgraph lab seeded first, whose stamps `lab/builder/concepts/` + `lab/job/concepts/` count as strut's) and `Job` (what the job workflow puts in its agent's prompt, `context/concept`) — roots, workspace-general; each deployment grows the tree under them — ONE TREE PER AGENT: `Job` is the job agent's and `Workflow Builder` the builder's, and the orchestrator reads the kinds under BOTH (`docs: false`) as its two lists, so a kind the builder builds is listed under `Workflow Builder`, never under `Job` (`Workflow Build`, the builder's entry under `Job` while the orchestrator read `Job` alone, is `retired` in `STRUT_CONCEPTS` and soft-deleted at boot; `Job`'s own docs tell a job agent that meets a workflow or an app that lives in a workspace to run `builder` through meta/run-workflow) — and `App` UNDER `Workflow Builder`: the builders' manual (layout, kit, hooks, grants, routines; hand a published app over BY NAME, `{ kind: "app", app }`), and `Game` UNDER `App`: a game as an app — the `game` starter, the loop, input, assets as imports, physics, scores, the look with `window.__debug`; and `Worker Tasks` UNDER `Workflow Builder`: work by people — the page the orchestrator opens (it holds graph/graph-get, and its two lists say how to open a kind's page) before a build of that kind, so the person settles in one message what is theirs: when there is work (any time, a standing type; or one for each item, a `human` step in a run), who (only people they invite, or anyone with the link), the pay in dollars — then what they do once it is built (approve, add money in Earnings, invite in Workers, try it; for work one for each item, ask the assistant to send a round, which a job starts), in their words with no workflow names, inputs or limits, an app pointed to as an artifact, and for the builder how each decision maps onto the type, and that the person's reports stay out of the worker app: `App`'s "Worker apps" says why — a worker app goes public with every workflow it grants, runs and all, so hiding a tab behind `useHost().public` locks nothing) — and `Plan` UNDER `Job`: work too large for one job, or that the person wants planned first, whatever it is made of — code in repositories, workflows and apps here, documents; its description, the line the orchestrator routes by, says a JOB writes the plan and runs it (plans/orchestrator-plans.md) — a plan job keeps ONE `plan.md` (overview, work items, contracts, open questions each with a default, progress) and builds nothing; the person reads its reply alone, an overview and the questions, and "go" takes every default; the questions are the few whose answer would change the plan, often three or four (a typical count, never a cap: a large plan can have ten real ones; what the person knows and the job cannot see, what changes what gets built or how much), put so someone who has never built software can answer them unless the request shows the person builds software, and sent as the reply's `ask` since the job cannot go on without the person's go; every other choice, how it is built above all and whatever the brief lists, the job decides and records under Decided in `plan.md`, where a developer reads the detail (an orchestrator's brief that listed "unit conversion, stock tracking, saving past days, scaling" drew 6 to 8 questions before, 3 to 5 after); and it plans the smaller version (what exists, what can wait, what nobody asked for) and says in its overview what that leaves out (2026-11-22); after go it names one item at a time, which the orchestrator's wake turn starts as a job of its own and hands back when it ends, and it checks what that job made against the plan, from the job's work rather than its report; a plan need not be about code, so the page speaks of a repository in ONE sentence that applies only to work in one (one branch there for the whole plan, ending as one pull request) and an item names repositories only if it has any; the page holds no rule per failure (access control built too deep, a migration nobody needs): they are the CASES of its first claim, run as trials; a second claim (questions about what gets built, never how, in words the person can answer, and a smaller plan offered) has a case from a bakery owner — and `Dream`, the dream's own tree (a root; what holds for any source: the posture, what a lesson is, where it goes — and where a change to a page from git is skipped, the change goes on a page under it, the workspace's own, so a deployed box still learns about a page strut ships, 2026-11-22) with one page per KIND of source under it, `Assistant Conversations` the first (what `dream/turns` hands over: what to look for in it, which run a person's words are about): the dream's rules, read by the `dream` workflow, not its prompt. Like every page here they are the fixed base every strut ships (`Job` → a kind, `Workflow Builder` → `App`, `Dream` → `Assistant Conversations`); what a workspace learns grows in the pages around them. `Job App`, the job side of an app, is `retired` too (2026-10-22): a page over a job's own results is an HTML file in its directory, an app is the builder's, and `Job`'s docs say to pass the builder's app deliverable on `Orchestrator` (a root, plans/claim-trials.md §1): the orchestrator's RULES, the judgment that was `orchestrator.yaml`'s `params.system`, moved as it was; the workflow reads it with `context/concept` (`frame: false`) so every turn opens the page and a claim on it judges the turn, and its seed carries the same file's text as `params.rulesText` for a workspace with no graph. Its front matter carries its two checks and the case that tests each ("Can you use bash?"): it says yes and offers to do it, never that it lacks a shell, files or the web; and it never tells the person how it works (jobs, background tasks). They were one claim until its last clause ("never explains how it is built") was judged both ways on near-identical replies (2026-11-20); the old sentence is retired at boot.
 
 ### `src/steps/lib/context/`
 

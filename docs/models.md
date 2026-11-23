@@ -52,21 +52,45 @@ daily cap: `RunOptions.maxCostUsd` → `run.start` → `ctx.maxCostUsd` →
 two (`resolveRunCap`, src/run-cap.ts).
 
 **The module.** `createMothership({ dataDir })` → `{ llmAuth, mount(strut) }` (and `grants`, below).
-Hive mints, once per user and deployment, a macaroon (org-signed user
-authorization + a user-signed standing invocation for `strut-agent`, 60
-days, a cumulative ceiling) and pushes it with that user's virtual key and
-the gateway URL: `PUT /llm/delegations/:actor { macaroon, apiKey, baseUrl }`
-(`GET` lists `{ actor, exp, delegationId }`; `DELETE` removes; all behind
-`requireApiKey`). Strut never signs: per run it appends one keyless HMAC link
-(the run id, the cap, 8 h) and per step a second one that adds
-`<workflow>.<step>` to the agent lineage — the gateway bills the last name
-— and sends `x-macaroon`, `x-bf-dim-session-id: <workflow>` and
-`x-bf-dim-root-agent: strut-agent`. A chat turn is one link billed as
-`strut-assistant`. Delegations live in a second encrypted `FileSecretStore`
+The host mints, once per person and deployment, a delegation for
+`strut-agent` (60 days, a cumulative ceiling) and pushes it with that
+person's virtual key and the gateway URL: `PUT /llm/delegations/:actor
+{ macaroon, apiKey, baseUrl }` (`GET` lists `{ actor, exp, delegationId, v }`,
+`v` the macaroon's format so the host can re-mint an old one, and a record
+stored before v2 reads as 1; `DELETE` removes; all behind `requireApiKey`).
+The PUT checks the shape and that it has not expired. Per run strut appends
+one link (the run id, the cap, 8 h) and per step a second one that names
+`<workflow>.<step>` — the gateway bills the last name — and sends
+`x-macaroon`, `x-bf-dim-session-id: <workflow>` and `x-bf-dim-root-agent:
+strut-agent`. A chat turn is one link billed as `strut-assistant`. The
+format is the delegation's `v`:
+
+- **v2** (Stadeum, the mothership gateway; gatekey 1.x): a chain of signed
+  blocks plus a proof key. The delegation is two blocks: the org's grant to
+  the person (`user_id`, `agents: [strut-agent]`) and the person's to strut
+  (`agent: strut-agent`, `max_cost_usd` = the ceiling, its `run_id` = the
+  delegation id), and its `proof` is the private key of strut's key. Each
+  link is gatekey's `attenuate`: a block signed with the proof, naming a
+  fresh Ed25519 key that becomes the new proof. So a holder can append but
+  never drop a block (the parent's token would need the parent's key):
+  `invalid_proof`. A run's block names no agent (strut-agent holds it); a
+  step's or a chat turn's names the agent billed. Every block's caps apply
+  at the gateway and nothing narrows, so a run cap above the ceiling is no
+  error: the delegation's block stops the spend at the ceiling. No
+  `max_steps` (a present cap must be non-zero; absent is none).
+- **v1** (Hive, stakgraph's gateway on the swarms; gatekey 0.x as the npm
+  alias `gatekey-v1`, `src/mothership-v1.ts`): an org-signed user
+  authorization + a user-signed standing invocation, extended by keyless
+  HMAC links. A link must narrow its parent, so each restates `max_steps: 0`
+  and the lineage from `strut-agent`, and a run cap above the ceiling fails
+  before any call. Kept while mcp runs strut against the swarms.
+
+Delegations live in a second encrypted `FileSecretStore`
 file, `mothership.json` beside `secrets.json`: never on the services bag (no
 step can read another user's macaroon), never in the Secrets list. Tests:
 `src/mothership.test.ts` verifies the built chain with gatekey's own
-verifier — the TS mirror of the gateway's Go one. The default server builds it when
+verifier, both versions — the TS mirror of the gateway's Go one;
+`src/test-util/mint-delegation.ts` mints both. The default server builds it when
 `STRUT_MOTHERSHIP=1`; `docker-compose.gateway.yml` + `npm run test:gateway`
 run the whole path locally (see "Running"). A chat's model pick is validated
 through the same hook, so a strut behind the gateway needs no provider keys.
@@ -98,7 +122,7 @@ it the builder and the agent step have `web_fetch` only.
 §3.2). `ctx.services.llm.grant({ name, hours })` → `{ id, env, expiresAt }`,
 and `revoke(id)`: a pod's apps call the box's gateway themselves, billed to
 the run's principal. Strut adds a link of the grant's own to that person's
-macaroon, off the invocation: its own run id (`grant-<nonce>`, so the
+delegation: its own run id (`grant-<nonce>`, so the
 gateway caps it apart from any run), the cap (`STRUT_GRANT_MAX_COST_USD`,
 $1000 by default, the owner's call on 2026-11-20; lowered to the
 delegation's ceiling when that is less, so a person with a lower spending
@@ -117,10 +141,12 @@ standard variables: `OPENAI_BASE_URL` (`<address>/openai/v1`),
 out (its SDKs share no base-URL variable). `revoke` is `DELETE <url>/<id>`
 with the deployment key and no person (a job's sweep releases with none); a
 404 is fine. The `id` is the host's, and is what a step keeps (a job's
-hold), never the key. The cap and the expiry are sent to the host because
-the link does not bind whoever holds the key: gatekey carries each link's
-HMAC, so the pod's code can drop it and present the person's bare
-delegation, and only the key's own budget and deletion hold it. No grant: a
+hold), never the key. On v2 the grant's block binds whoever holds the key:
+the pod's code cannot drop it to spend under the person's delegation
+(`invalid_proof`). On v1 it does not (gatekey 0.x carries each link's HMAC,
+so the pod can present the person's bare delegation), which is why the cap
+and the expiry are sent to the host too, and the key's own budget and
+deletion hold it. No grant: a
 strut without the Mothership, or without `STRUT_MOTHERSHIP_GRANTS_URL`, has
 no `llm` on the bag; `grant` answers null when nobody can be billed here (no
 principal, or no delegation for them), an error under
@@ -282,7 +308,11 @@ what a MEDIA step shares (`image` now, `video` next): `saveMedia` — the file w
 
 ### `src/mothership.ts`
 
-OPT-IN Mothership cost control (plans/mothership-cost-control.md §3): createMothership({ dataDir, grantsUrl? }) → { llmAuth, grants?, mount }. `grants` is `ctx.services.llm` (model calls for a machine outside strut, a key the host makes per grant: "Grants" above). Hive pushes one standing macaroon per user (PUT /llm/delegations/:actor); strut appends keyless HMAC links per run and per step (gatekey `attenuate`) so the gateway bills user × workflow × step and caps the run. Delegations live in a second encrypted file (mothership.json), never on the services bag. A public run's own cap (`LlmAuthContext.maxCostUsd`, from `ctx.maxCostUsd` through `stepAuth`) makes the run link carry the smaller of it and the workflow's (src/run-cap.ts). Core never imports it
+OPT-IN Mothership cost control (plans/mothership-cost-control.md §3): createMothership({ dataDir, grantsUrl? }) → { llmAuth, grants?, mount }. `grants` is `ctx.services.llm` (model calls for a machine outside strut, a key the host makes per grant: "Grants" above). The host pushes one standing delegation per person (PUT /llm/delegations/:actor); strut extends it with a link per run and per step so the gateway bills user × workflow × step and caps the run. `openDelegation` picks the format by the macaroon's `v`: v2 (gatekey 1.x, signed blocks with a proof key) here, v1 in src/mothership-v1.ts; both hand back a `Link` (`extend`, `encode`). Delegations live in a second encrypted file (mothership.json), never on the services bag. A public run's own cap (`LlmAuthContext.maxCostUsd`, from `ctx.maxCostUsd` through `stepAuth`) makes the run link carry the smaller of it and the workflow's (src/run-cap.ts). Core never imports it
+
+### `src/mothership-v1.ts`
+
+`openV1`: a macaroon v1 delegation (gatekey 0.x through the `gatekey-v1` npm alias; what Hive mints and stakgraph's gateway on the swarms reads), checked and opened as a `Link` that appends keyless HMAC links restating `max_steps: 0` and the agent lineage. Loaded only for a `v: 1` delegation; delete it and the alias when the swarms retire
 
 ### `src/steps/lib/llm/`
 

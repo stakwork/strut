@@ -1897,10 +1897,19 @@ function-bind@^1.1.2:
   resolved "https://registry.npmjs.org/function-bind/-/function-bind-1.1.2.tgz"
   integrity sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==
 
-gatekey@^0.1.1:
+"gatekey-v1@npm:gatekey@0.1.1":
   version "0.1.1"
-  resolved "https://registry.npmjs.org/gatekey/-/gatekey-0.1.1.tgz"
+  resolved "https://registry.yarnpkg.com/gatekey/-/gatekey-0.1.1.tgz#81d5fc76100824d0bff1e15529a0d7ff2fa06bd8"
   integrity sha512-vpJw5sLToc3yfHm4U9Dg8+KPcpvUdWThaCvknNE5c+0jZgV2ZGd0aP64YXygC43I8lxFmCLViyvFQb244Ingbg==
+  dependencies:
+    "@noble/curves" "^1.6.0"
+    "@noble/hashes" "^1.5.0"
+    canonicalize "^2.0.0"
+
+gatekey@^1.1.0:
+  version "1.1.0"
+  resolved "https://registry.yarnpkg.com/gatekey/-/gatekey-1.1.0.tgz#3e1387bc56d39cb41fea4dea95933dd46fa62f32"
+  integrity sha512-rWtRzcS+GTBccqjH65Yh4kazOc9oCh9PMMlcXU/OyQoao+EUbtkgbm09bw0obcSQUYrtzQJK2rhaFir/3FPuEw==
   dependencies:
     "@noble/curves" "^1.6.0"
     "@noble/hashes" "^1.5.0"

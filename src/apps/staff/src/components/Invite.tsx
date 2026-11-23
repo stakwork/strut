@@ -2,7 +2,7 @@
 // Invite a worker panel (./Share): the wallet's Sphinx daemon makes a Sphinx
 // invite (it pays the mixer for it: the starting sats and the mixer's
 // price), and strut hands back `https://<public view>/public/join#…`, which
-// on Android installs Peel when there is none, signs them up and opens Tasks
+// on a phone (Android or iPhone) gets Peel when there is none, signs them up and opens Tasks
 // on the work the invite is for. Here: the invites' one read, and on the
 // Workers tab every invite with its work, status, Copy and Share while it
 // may be used, and Cancel. The daemon keeps the invites; strut notes only
@@ -112,7 +112,7 @@ export function InviteList(props: { types?: TaskType[] | undefined; workers?: Wo
               </span>
               <div className="flex basis-full flex-wrap items-center gap-x-3 text-xs text-muted-foreground">
                 <span>Made {i.createdAt ? new Date(i.createdAt).toLocaleString() : "—"}{maker && ` by ${maker}`}</span>
-                {took && <span className="text-foreground">Taken by {took.who}, {fmtWhen(took.at)}</span>}
+                {took && <span className="text-foreground">Taken by {took.who}{took.at !== undefined && `, ${fmtWhen(took.at)}`}</span>}
                 {until !== null && <span>link valid until {new Date(until).toLocaleDateString()}</span>}
               </div>
               {inviteOpen(i) && (
