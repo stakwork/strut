@@ -1906,10 +1906,10 @@ function-bind@^1.1.2:
     "@noble/hashes" "^1.5.0"
     canonicalize "^2.0.0"
 
-gatekey@^1.0.0:
-  version "1.0.0"
-  resolved "https://registry.yarnpkg.com/gatekey/-/gatekey-1.0.0.tgz#92d64fb10ec936417bbb343ad58b0c2ae37d6f59"
-  integrity sha512-lEDTKTZpss0gNmx6W0HiQemqbrSI3G+3IqVuU3dp5QBkVc7WVf4zBhMN8AfMCTQY9eKr5AMIsDwChAFmUuE8Mw==
+gatekey@^1.1.0:
+  version "1.1.0"
+  resolved "https://registry.yarnpkg.com/gatekey/-/gatekey-1.1.0.tgz#3e1387bc56d39cb41fea4dea95933dd46fa62f32"
+  integrity sha512-rWtRzcS+GTBccqjH65Yh4kazOc9oCh9PMMlcXU/OyQoao+EUbtkgbm09bw0obcSQUYrtzQJK2rhaFir/3FPuEw==
   dependencies:
     "@noble/curves" "^1.6.0"
     "@noble/hashes" "^1.5.0"
