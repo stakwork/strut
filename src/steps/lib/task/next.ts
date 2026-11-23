@@ -27,7 +27,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx?: StepContext) {
-    const { tasks, actor, app } = workerCall("task/next", ctx);
-    return tasks.next(actor, { app, ...(cfg.type === undefined ? {} : { type: cfg.type }), ...(cfg.wait === undefined ? {} : { wait: cfg.wait }), ...(cfg.invite ? { invite: cfg.invite } : {}) });
+    const { tasks, actor, app, address } = workerCall("task/next", ctx);
+    return tasks.next(actor, { app, ...(cfg.type === undefined ? {} : { type: cfg.type }), ...(cfg.wait === undefined ? {} : { wait: cfg.wait }), ...(cfg.invite ? { invite: cfg.invite } : {}), ...(address ? { address } : {}) });
   },
 });

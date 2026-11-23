@@ -33,7 +33,8 @@ export type SphinxSendStatus = "sending" | "sent" | "failed";
  *  the daemon sends one id once, and a FAILED one again under it (Retry). */
 export interface SphinxDm {
   id: string;
-  /** A contact's pubkey (66 hex): never a tribe, never someone it has not met. */
+  /** A contact's pubkey (66 hex), or anyone's Sphinx address, where the
+   *  daemon meets someone new first (3 sats). Never a tribe. */
   to: string;
   text?: string;
   /** The Sphinx id of the message quoted. */

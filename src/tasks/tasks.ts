@@ -768,7 +768,7 @@ export interface TasksCapability {
    *  to appear before answering `{ none: true }`; it counts as one call.
    *  `invite`: the token the worker's invite link opened `app` with
    *  (§5.8): first, it gives them the app's invite-only types. */
-  next(actor: string, o?: { type?: string; app?: string; wait?: number; invite?: string }): Promise<WorkerTask | { none: true }>;
+  next(actor: string, o?: { type?: string; app?: string; wait?: number; invite?: string; address?: string }): Promise<WorkerTask | { none: true }>;
   /** Answers the lease: `answer` in the type's answer schema, and the
    *  files its `attachments` rule takes (§5.6) — `[{ name, mediaType?,
    *  data }]`, the chat's shape and caps — saved in the task's run before
@@ -1027,6 +1027,11 @@ export interface TasksDeps {
    *  (not a new signup) redeemed it, send its sats back. It runs after the
    *  grant, not waited for, and never undoes it: a failure is only logged. */
   invite?: { read(token: string): { code: string; app: string; types?: string[] } | undefined; live(code: string): Promise<boolean>; spent?(code: string): Promise<void> };
+  /** A worker seen for the first time (`me` or `next`), with the Sphinx
+   *  address their sign-in carries: the host may welcome them (Support's
+   *  welcome, plans/support-chat.md §11). Not waited for; a failure is only
+   *  logged. */
+  newWorker?(w: { actor: string; address: string }): Promise<void>;
   /** §7.2's draws, and the tie between least-served tests: [0, 1). */
   random?(): number;
   gradeTimeoutMs?: number;
@@ -1087,11 +1092,17 @@ export function createTasks(deps: TasksDeps): TasksService {
     if (++at.n > perMinute) throw new TaskError("too_many", `at most ${perMinute} task calls a minute for one worker; wait a minute (a held next { wait } counts once)`);
   };
 
-  /** Rules 5 and 6: the worker as they are now, written `new` on first sight. */
-  const worker = async (actor: string): Promise<{ s: TaskStores; w: WorkerRecord }> => {
+  /** Rules 5 and 6: the worker as they are now, written `new` on first
+   *  sight — and then, with the Sphinx address their session carries, the
+   *  host told (`newWorker`). */
+  const worker = async (actor: string, address?: string): Promise<{ s: TaskStores; w: WorkerRecord }> => {
     actorOk(actor);
     const s = await stores();
-    return { s, w: note(await s.workers.seen(actor, now())) };
+    // Two first calls at once may both find no row: the host's welcome is once per worker.
+    const fresh = !!address && !!deps.newWorker && !(await s.workers.get(actor));
+    const w = note(await s.workers.seen(actor, now()));
+    if (fresh) void deps.newWorker!({ actor, address: address! }).catch((err) => console.warn(`worker ${actor}: newWorker failed:`, err));
+    return { s, w };
   };
   /** A lease's type is drawn by the calling app (§5.1): another app reaches
    *  none of its tasks, whatever lease it names. */
@@ -1141,8 +1152,8 @@ export function createTasks(deps: TasksDeps): TasksService {
     }
   };
   /** One try at a task: the lease, or the types the worker may take now. */
-  const attempt = async (actor: string, o: { type?: string; app?: string; invite?: string }): Promise<{ got?: WorkerTask; types: string[] }> => {
-    const seen = await worker(actor);
+  const attempt = async (actor: string, o: { type?: string; app?: string; invite?: string; address?: string }): Promise<{ got?: WorkerTask; types: string[] }> => {
+    const seen = await worker(actor, o.address);
     const s = seen.s;
     if (seen.w.status === "suspended" || seen.w.status === "banned") mayWork(seen.w);
     // §5.8: an invite's link gives its worker the app's invite-only types.
@@ -1875,7 +1886,7 @@ export function createTasks(deps: TasksDeps): TasksService {
 
     async me(actor, o = {}) {
       count(actor);
-      const seen = await worker(actor);
+      const seen = await worker(actor, o.address);
       const s = seen.s;
       // §5.8: an invite's link gives its worker the app's invite-only types.
       const w = await enterInvite(s, seen.w, o.app ?? o.inviteApp, o.invite);

@@ -15,9 +15,10 @@ import { appIdentity, signInTicket } from "../auth.js";
 import { defineStep, type AppRef, type StepContext } from "../core.js";
 import { createRegistry } from "../steps/registry.js";
 import { kitForTests } from "../test-util/app-kit.js";
-import { setEnv } from "../test-util/public-door.js";
+import { publicAppToken, setEnv, sphinxSignIn, stepCall, type Fetch } from "../test-util/public-door.js";
 import { STEP_RUN_TOOL } from "./tools.js";
 import { STAFF_APP } from "./staff-seed.js";
+import { WORKER_APP } from "./worker-seed.js";
 import { DROPPED_SUPPORT_TABLES, tasksPath } from "../tasks/tasks.js";
 import { sphinxCapability } from "../payments/sphinx-dm.js";
 import { payoutLine } from "../steps/lib/support/_shared.js";
@@ -279,6 +280,51 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
     await worker("/worker-contact", { pubkey: ed });
     await new Promise((r) => setTimeout(r, 200));
     assert.equal((await thread(ed)).filter((m) => m.from_me).length, 0);
+  });
+
+  it("a worker's first time in Tasks, signed in with Peel: the welcome goes to their address, met there, once; none for a contact, none with no welcome", async () => {
+    const req: Fetch = (path, init) => strut.app.request(path, init);
+    const view = await strut.app.request("/public-view", { method: "PUT", headers: { authorization: `Bearer ${KEY}`, ...json }, body: JSON.stringify({ apps: [{ name: WORKER_APP }], visitors: { signIn: ["sphinx"] } }) });
+    assert.equal(view.status, 200, await view.text());
+    const tasks = await publicAppToken(req, WORKER_APP);
+    const me = async (token: string) => {
+      const r = await stepCall(req, "/public/mcp", "task/me", {}, { authorization: `Bearer ${token}` }, tasks);
+      assert.equal(r.error, undefined, r.error);
+      return r.result!;
+    };
+    const keyOf = (address: string) => address.split("_")[0]!;
+    const settle = () => new Promise((r) => setTimeout(r, 300));
+
+    // Fay is Support's contact from before the welcome was saved (the welcome test cleared it).
+    const fay = await sphinxSignIn(req);
+    await worker("/worker-contact", { pubkey: keyOf(fay.address), alias: "Fay" });
+    assert.equal((await page("sqlite/exec", { sql: WELCOME_SQL, params: { welcome: "Welcome! This is Support." } })).error, undefined);
+
+    // Dee already had Peel: her invite was ignored, so Support never met her.
+    const dee = await sphinxSignIn(req);
+    const deeKey = keyOf(dee.address);
+    assert.equal((await me(dee.token))["status"], "new");
+    const welcome = await until("Dee's welcome", async () => (await thread(deeKey)).find((m) => m.by === "welcome" && m.status === "sent"));
+    assert.equal(welcome.text, "Welcome! This is Support.");
+    assert.ok((await rows(CONVERSATION_SQL, { worker: dee.actor }))[0].welcomed_at > 0);
+    assert.ok((await feed()).some((d) => d.fromMe && d.peer.pubkey === deeKey && d.status === "sent"), "the daemon met her at her address and sent it");
+    // Her next visit, and her contact's key exchange arriving after: no second welcome.
+    await me(dee.token);
+    await worker("/worker-contact", { pubkey: deeKey, alias: "Dee" });
+    await settle();
+    assert.equal((await thread(deeKey)).filter((m) => m.by === "welcome").length, 1, "each worker at most once");
+
+    // Fay's first time in Tasks: Support has her already (ruling 8), so none.
+    await me(fay.token);
+    await settle();
+    assert.equal((await thread(keyOf(fay.address))).filter((m) => m.from_me).length, 0);
+
+    // No welcome saved: nothing goes.
+    await page("sqlite/exec", { sql: WELCOME_SQL, params: { welcome: "" } });
+    const eve = await sphinxSignIn(req);
+    await me(eve.token);
+    await settle();
+    assert.equal((await thread(keyOf(eve.address))).length, 0);
   });
 
   it("delete takes one of Support's messages back on both sides; Support's picture goes through the daemon", async () => {

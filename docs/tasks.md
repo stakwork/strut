@@ -500,7 +500,20 @@ index. A change in this area updates this file, not AGENTS.md.
   on an admin first-party page's bag (`adminServices`) and on a run an
   admin first-party app launched (`sendsAsSupport` in `launchDetached`),
   nowhere else. PAYOUT LINES: the withdrawals' `paid` hook calls
-  `payoutLine` with strut/staff's database and the capability. Support as
+  `payoutLine` with strut/staff's database and the capability. THE WELCOME
+  BY ADDRESS (plans/support-chat.md §11): a worker who already had Peel
+  never adds Support (Peel ignores an invite on an account it has; a Share
+  link carries none), so no key exchange marks their welcome due. The task
+  service tells its `newWorker` dep the first time it sees a worker (`me` or
+  `next`, no row before) whose session carries a Sphinx address
+  (`WORKER_ADDRESS`); createStrut's `supportWelcome` calls `welcomeWorker`,
+  which sends the saved welcome to that ADDRESS (`deliver`'s `address`: the
+  daemon meets them there, 3 sats, and keeps it for a Retry) unless Support
+  already has a conversation with them (a contact, the backlog included,
+  ruling 8). The conversation is made `welcomed_at` in the same
+  transaction, so the key exchange of an invite's new account arriving
+  after, or a second first call at once, sends none. Not waited for; never
+  throws. Support as
   first built is dropped at boot, with no copy (ruling 7): the task store's
   first open drops `support_conversations`, `support_messages` and
   `support_state` (`DROPPED_SUPPORT_TABLES`), and boot deletes
@@ -565,7 +578,7 @@ the TASK STORE (plans/human-steps.md §4, item 2a; the `human` step that parks o
 
 ### `src/steps/lib/support/`
 
-SUPPORT's tools (plans/people-and-hosts.md §5; "Support" above): `receive` (the Sphinx daemon's call, through strut/staff's `hosts:`), `send`, `send-due` (support-outbox's step), `delete`, `file`, `set-photo`, over strut/staff's own SQLite (`ctx.app`'s, `ctx.services.appDb`). `_shared.ts`: `dmOf` (a feed record, lenient on the time), `keepRecord` (inside the caller's transaction), `keepOwn` / `deliver` / `sendOwn` (kept before it goes, then the daemon's answer unless its record came first, by `seq`), `payoutLine` (the engine's hook), `tx` (never across an `await`).
+SUPPORT's tools (plans/people-and-hosts.md §5; "Support" above): `receive` (the Sphinx daemon's call, through strut/staff's `hosts:`), `send`, `send-due` (support-outbox's step), `delete`, `file`, `set-photo`, over strut/staff's own SQLite (`ctx.app`'s, `ctx.services.appDb`). `_shared.ts`: `dmOf` (a feed record, lenient on the time), `keepRecord` (inside the caller's transaction), `keepOwn` / `deliver` / `sendOwn` (kept before it goes, then the daemon's answer unless its record came first, by `seq`), `payoutLine` (the engine's hook), `welcomeWorker` (the welcome to a worker's address on their first time in Tasks, the engine's hook too), `tx` (never across an `await`).
 
 ### `src/steps/lib/task/`
 

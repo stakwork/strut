@@ -43,7 +43,7 @@
 | 12 | A message the worker deleted | Hidden, as "Message deleted". Strut keeps its row, flagged |
 | 13 | Workers' pictures | **Later** (§11). Item 1 shows initials |
 | 14 | Sending the welcome | **Automatic only**, once an admin has saved it. No Send welcome button, no "Send to all", no `{name}` |
-| 15 | Writing first to a worker who isn't a contact (one who came by a Share link) | **Later** (§11). Item 1 writes only to existing contacts |
+| 15 | Writing first to a worker who isn't a contact (one who came by a Share link) | **Later** (§11). Item 1 writes only to existing contacts. **Then (2026-11-23):** the welcome only, to the address a worker's sign-in carries on their first time in Tasks, with no hourly cap (§11) |
 | 16 | How new messages arrive | **Polled.** Strut polls the daemon every few seconds, and the page refetches every few seconds. No held connections |
 
 ## Problem
@@ -529,6 +529,19 @@ when it is wanted.
   4 sats; the message token gets a cap on new contacts per hour. The
   welcome then needs a way to reach them, since no key exchange arrives to
   trigger it.
+  **Built differently (2026-11-23), for the welcome alone:** Evan asked
+  whether a worker who already had Peel, invited to a task for the first
+  time, gets the welcome. They did not: Peel ignores an invite on an
+  account it has, so no key exchange reaches the daemon. Now the task
+  service tells the host the first time it sees a worker (`me` or `next`)
+  whose session carries a Sphinx address, and strut sends the saved welcome
+  to that address (`welcomeWorker`), unless Support already has a
+  conversation with them. Strut stores no address: the session carries it
+  at that moment, and the daemon keeps it on the send for a Retry.
+  `POST /dm` takes an address (stakwork/sphinx); the meeting costs 3 sats,
+  the message 1 more. No cap per hour (Evan: "we dont need an hourly limit
+  for now"). Staff still write only to contacts: a reply to someone the
+  welcome never reached is `not_a_contact`.
 - **Sending the welcome by hand** (ruling 14): Send welcome on a
   conversation, "Send to all" for those not welcomed, `{name}`.
 

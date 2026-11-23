@@ -1079,6 +1079,32 @@ describe("task/file's read (§5.5): only a path on the task's list, through the 
   });
 });
 
+describe("a worker's first sight (newWorker): the host is told once, with the Sphinx address their session carries", () => {
+  it("on the first me or next with an address; never again, never without one", async () => {
+    const told: Array<{ actor: string; address: string }> = [];
+    const svc = createTasks({ open: async () => memoryTaskStores(), newWorker: async (w) => void told.push(w) });
+    const tasks = svc.capability;
+    try {
+      await tasks.me("ann", { address: "ann-address" });
+      await tasks.me("ann", { address: "ann-address" });
+      // Bob holds no type yet, so next refuses him: he was seen all the same.
+      await assert.rejects(tasks.next("bob", { address: "bob-address" }), refused("not_active"));
+      await assert.rejects(tasks.next("bob", { address: "bob-address" }), refused("not_active"));
+      // Cy's first call carried none: the host has nowhere to write, then or later.
+      await tasks.me("cy");
+      await tasks.me("cy", { address: "cy-address" });
+      await new Promise((r) => setImmediate(r));
+      assert.deepEqual(told, [{ actor: "ann", address: "ann-address" }, { actor: "bob", address: "bob-address" }]);
+      // A host that fails is only logged: the worker's call stands.
+      const failing = createTasks({ open: async () => memoryTaskStores(), newWorker: async () => Promise.reject(new Error("down")) });
+      assert.equal((await failing.capability.me("dee", { address: "dee-address" })).status, "new");
+      await failing.close();
+    } finally {
+      await svc.close();
+    }
+  });
+});
+
 // ── a run's reply to its workers (task/reply) ─────────────────────────────
 
 /** A picture the run made, as `task/reply` hands the store one. */
