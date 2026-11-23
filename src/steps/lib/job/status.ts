@@ -16,10 +16,10 @@ import type { JobsCapability } from "../../../jobs.js";
 export default defineStep({
   type: "job/status",
   description:
-    `Tell whoever watches this run's job (the job card, an app's page) what it is doing now, in one line, and, with \`items\`, ` +
-    `the turn's checklist: its steps in order and where each stands: { sent }. ` +
-    `Each call replaces the last from the same run, so send the whole list every time while the turn has one. ` +
-    `Nothing happens on a run with no job.`,
+    `Show the person watching this job (its card, an app's page) what the turn is doing: one line, and with \`items\` the turn's checklist, ` +
+    `its steps in order and where each stands: { sent }. They see nothing else until the turn ends. ` +
+    `On a turn of more than one step, call it FIRST, before any other tool, then again each time a step moves on. ` +
+    `Each call replaces the last, so send the whole list every time. Nothing happens on a run with no job.`,
   input: z.object({
     title: z.string().min(1).max(500).describe("The line, in the person's words: what is happening now."),
     items: z

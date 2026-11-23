@@ -157,9 +157,13 @@ index. A change in this area updates this file, not AGENTS.md.
   (`kind: "status"`, one per run, the newest replacing the last): the line,
   and with `items` the turn's checklist (1–8 steps, each `todo`, `doing` or
   `done`, sent whole every time, in `detail.items`). The job and builder
-  agents are granted it, and their prompts ask for the steps up front on a
-  turn that is more than a quick answer; strut/jamie's job card draws them
-  under the line. Cursors are `<epoch>.<seq>`: a restart
+  agents are granted it. On a turn of more than one step they set the steps
+  out before any other tool: the step's own description says so ("call it
+  FIRST"), because a sentence in their 10k-character prompts alone never
+  made Sonnet 5.5 call it in three real runs (2026-11-23), and the
+  description did in two of two. Ticking the list as the turn goes was not
+  seen on those 25–40 s turns. strut/jamie's job card draws the list under
+  the line. Cursors are `<epoch>.<seq>`: a restart
   empties the feeds and the next read says `reset: true` — a feed is a
   notification, never the record. Not heard: raw Cypher, another process's
   writes.
