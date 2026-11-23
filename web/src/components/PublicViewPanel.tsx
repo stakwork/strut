@@ -85,7 +85,7 @@ function Cascade(props: { needs: api.PublicViewNeeds; onAdd: (checked: Set<strin
       <div class="auto-card-head"><span>Adding {what} brings along</span></div>
       {needs.app && (
         <div class="auto-hint">
-          The page, held at {needs.app.version}: a later publish is a draft until you move its release. Visitors can read; they cannot start a run.
+          The page, held at {needs.app.version}{needs.app.summary ? ` (${needs.app.summary})` : ""}: a later publish is a draft until you move its release. Visitors can read; they cannot start a run.
         </div>
       )}
       {needs.workflows.length > 0 && <div class="flyout-section-title">Workflows</div>}

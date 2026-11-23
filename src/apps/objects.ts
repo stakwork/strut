@@ -91,6 +91,12 @@ export async function readTree(versionDir: string): Promise<AppTree | null> {
   }
 }
 
+/** One recorded file's text, or null when it is missing or not text. */
+export async function readTreeText(versionDir: string, sha: string): Promise<string | null> {
+  const bytes = await readFile(objectPath(versionDir, sha)).catch(() => null);
+  return bytes && !bytes.includes(0) ? bytes.toString("utf8") : null;
+}
+
 /** Write a recorded version's sources into `to` (a new directory): the
  *  directory the version was published as, without `dist/`. */
 export async function restoreSources(versionDir: string, tree: AppTree, to: string): Promise<void> {

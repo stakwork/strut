@@ -4560,6 +4560,7 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .app-version-list { display: flex; flex-direction: column; }
 .app-version-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
   min-height: 34px;
@@ -4571,6 +4572,8 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .app-version-name { font-size: 13px; font-weight: 600; color: var(--text); min-width: 32px; }
 .app-version-state { font-size: 11px; color: var(--text-dim); }
 .app-version-state.is-draft { color: var(--accent); }
+.app-version-summary { order: 1; flex: 0 0 100%; min-width: 0; margin: 0 0 4px; font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; line-height: 1.35; color: var(--text-dim); }
+.app-live-summary { margin-top: var(--sp-1); font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; line-height: 1.35; color: var(--text-dim); }
 .app-version-when { font-size: 11px; color: var(--text-dim); margin-left: auto; white-space: nowrap; }
 .app-version-actions { display: inline-flex; gap: var(--sp-1); min-width: 128px; justify-content: flex-end; }
 .app-version-actions .btn { padding: 2px 8px; font-size: 11px; }
@@ -4973,6 +4976,7 @@ html.solo-light .app-solo {
   flex: 1;
   min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
   min-height: 30px;
@@ -4988,6 +4992,7 @@ html.solo-light .app-solo {
 .app-panel-version:hover { color: var(--text); background: rgba(110, 168, 255, 0.06); }
 .app-panel-version.is-current { color: var(--text); background: rgba(110, 168, 255, 0.1); }
 .app-panel-version-name { font-size: 13px; font-weight: 600; min-width: 32px; }
+.app-panel-version-summary { order: 1; flex: 0 0 100%; min-width: 0; margin: 0 0 4px; font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; line-height: 1.35; color: var(--text-dim); }
 .app-panel-version-when { margin-left: auto; font-size: 11px; color: var(--text-dim); white-space: nowrap; }
 .app-panel-versions-note { padding: var(--sp-1) var(--sp-1) var(--sp-2); font-size: 11px; color: var(--text-dim); }
 .app-panel-change { padding: 2px 8px; font-size: 11px; }

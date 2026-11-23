@@ -317,3 +317,5 @@ OPT-IN Mothership cost control (plans/mothership-cost-control.md §3): createMot
 ### `src/steps/lib/llm/`
 
 llm/models: the model catalog `GET /llm/models` serves (every model aieo knows, each `available` when the host's `STRUT_MODELS` lists it or, with no list, when its provider has a key here; the deployment's default) over `ctx.services.llmModels`, the one list both read — what strut's own assistant app's model picker reads (plans/jamie-app.md §5). Not the `llm` core step: it calls no model
+
+A small non-agent model call outside any run: the app version summary (`src/apps/summary.ts`, docs/apps.md) calls `resolveModel({ model: "haiku", secrets, llmAuth })` with a `chat` auth (`chatId: app-summary:<name>`, `turn`: the version's number, `principal`: the publisher — the run's principal, else the actor) and `generateText`, in the background of a publish; a failure is a warning, never an error.

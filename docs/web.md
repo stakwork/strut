@@ -265,7 +265,7 @@ the Versions flyout's Screenshots section: the newest version's list (`GET /apps
 
 ### `web/src/components/AppVersionsFlyout.tsx`
 
-an app's Versions (plans/app-releases.md), the topbar's version chip: the mode ("Every publish goes live" / "Hold a version"), the live version (since when, by whom), one row per version newest first — live, was live, draft (web/src/app-versions.ts, tested) — with View (this browser only: the frame shows it under a banner with Make live and Back to live), Make live, or Restore for a version that was live (its newest release); every change asks first; release ids only in History. No workflow version numbers: the lock's `behind` and `floating` are not shown until runs keep to the lock (work item 2)
+an app's Versions (plans/app-releases.md), the topbar's version chip: the mode ("Every publish goes live" / "Hold a version"), the live version (since when, by whom), one row per version newest first — live, was live, draft (web/src/app-versions.ts, tested) — each with its one-line change summary beside the name when there is one (ellipsis, full text on hover; the side panel's version list shows it too, `AppVersionRow.summary`), with View (this browser only: the frame shows it under a banner with Make live and Back to live), Make live, or Restore for a version that was live (its newest release); every change asks first; release ids only in History. No workflow version numbers: the lock's `behind` and `floating` are not shown until runs keep to the lock (work item 2)
 
 ### `web/src/components/AppUsageFlyout.tsx`
 

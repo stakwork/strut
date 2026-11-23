@@ -2223,7 +2223,7 @@ export interface AppVersionsResponse {
   name: string;
   active: string;
   /** `source: "seed"`: strut makes this version live at every start (it cannot be held). */
-  versions: Record<string, { createdAt: string; hash: string; source?: string; actor?: string; publisher?: string }>;
+  versions: Record<string, { createdAt: string; hash: string; source?: string; actor?: string; publisher?: string; summary?: string }>;
   /** The live release's id, or `latest` while following. */
   live: string;
   releases: AppRelease[];
@@ -3144,7 +3144,7 @@ export interface PublicViewNeedLine {
   note: string;
 }
 export interface PublicViewNeeds {
-  app?: { name: string; version: string; title: string };
+  app?: { name: string; version: string; title: string; summary?: string };
   workflow?: string;
   workflows: Array<PublicViewNeedLine & { runs: boolean }>;
   steps: PublicViewNeedLine[];

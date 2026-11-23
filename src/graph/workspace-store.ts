@@ -198,10 +198,11 @@ interface AppVersionRow {
   actor?: string;
   /** JSON `Upstream`. */
   upstream?: string;
+  summary?: string;
 }
 
 const APP_FIELDS = ["ref_id", "name", "title", "description", "publisher", "owner", "pinned", "active_version", "live", "releases"] as const;
-const APP_VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "published_at", "manifest", "publisher", "version_source", "actor", "upstream", "created_at"] as const;
+const APP_VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "published_at", "manifest", "publisher", "version_source", "actor", "upstream", "summary", "created_at"] as const;
 
 /** A JSON attribute, or undefined when absent or unreadable. */
 function parseJson<T>(text: string | undefined): T | undefined {
@@ -1036,6 +1037,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         ...(v.version_source ? { source: v.version_source } : {}),
         ...(v.actor ? { actor: v.actor } : {}),
         ...(upstream ? { upstream } : {}),
+        ...(v.summary ? { summary: v.summary } : {}),
       };
       out.versions[v.version_label] = info;
       if (v.content_hash === app.active_version) out.active = v.version_label;
@@ -1216,6 +1218,13 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     const v = versions.find((x) => x.version_label === label);
     if (!v) throw new Error(`Version "${label}" not found for app "${name}"`);
     await this.pointAppAt(a, v, live);
+  }
+
+  async setAppVersionSummary(name: string, version: string, summary: string): Promise<void> {
+    validateAppName(name);
+    const v = (await this.appVersionRows(name)).find((x) => x.version_label === version);
+    if (!v) throw new Error(`Version "${version}" not found for app "${name}"`);
+    await this.backend.nodes.update(v.ref_id, { set: { summary } });
   }
 
   async setAppPinned(name: string, pinned: boolean): Promise<void> {

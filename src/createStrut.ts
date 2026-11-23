@@ -133,6 +133,7 @@ import { globToRegExp, grantWidenedBy, stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
 import { aiWroteVersion, buildAuthoringCapability } from "./authoring.js";
 import type { ReachPolicy } from "./reach.js";
+import { llmSummarizer } from "./apps/summary.js";
 import { appErrors, appManifests, createApps, watchAppWrites, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
 import { fileAppGrants } from "./apps/grants.js";
 import { createAppMonitor, type AppCallStatus, type AppMonitor } from "./apps/monitor.js";
@@ -2303,6 +2304,8 @@ export async function createStrut<TServices = unknown>(
       // Its migrations, applied at publish and tried at build (src/apps/data.ts).
       appDb,
       manifests: appVersions,
+      // Each new version's one-line summary, by a small model (src/apps/summary.ts).
+      summarize: llmSummarizer({ ...(secretsCap ? { secrets: secretsCap } : {}), ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}) }),
       // An app's declared graph types are registered here, on Neo4j.
       ...(graph ? { graph } : {}),
     });
@@ -4719,7 +4722,7 @@ export async function createStrut<TServices = unknown>(
     stepSources: () => stepSources,
     app: async (name, version) => {
       const view = await apps.get(name, version).catch(() => null);
-      return view ? { version: view.version, title: view.manifest.title, grants: { workflows: view.manifest.grants.workflows, steps: view.manifest.grants.steps } } : null;
+      return view ? { version: view.version, title: view.manifest.title, ...(view.versions[view.version]?.summary ? { summary: view.versions[view.version]!.summary! } : {}), grants: { workflows: view.manifest.grants.workflows, steps: view.manifest.grants.steps } } : null;
     },
     walk: (roots) => publicSurface.walk(roots),
   };
@@ -4744,7 +4747,7 @@ export async function createStrut<TServices = unknown>(
         app: async (name, version) => {
           const rec = await workspace.getApp(name).catch(() => null);
           if (!rec) return null;
-          return { version: rec.version, held: !!rec.live, seeded: rec.versions[version ?? rec.version]?.source === "seed" };
+          return { version: rec.version, held: !!rec.live, seeded: rec.versions[version ?? rec.version]?.source === "seed", ...(rec.versions[version ?? rec.version]?.summary ? { summary: rec.versions[version ?? rec.version]!.summary! } : {}) };
         },
         served: () => serveRef?.ref,
         proposal: (id) => readProposal(proposalsRoot(dataDir), id),

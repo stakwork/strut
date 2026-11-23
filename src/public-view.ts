@@ -40,7 +40,7 @@ export interface NeedLine {
 }
 
 export interface PublicViewNeeds {
-  app?: { name: string; version: string; title: string };
+  app?: { name: string; version: string; title: string; summary?: string };
   workflow?: string;
   workflows: Array<NeedLine & { runs: boolean }>;
   steps: NeedLine[];
@@ -56,7 +56,7 @@ export interface PublicViewDeps {
   stepSources: () => Record<string, string>;
   /** The app's manifest at the version the public view would serve: the
    *  one named, else the one live now. */
-  app?: (name: string, version?: string) => Promise<{ version: string; title: string; grants: { workflows: string[]; steps: string[] } } | null>;
+  app?: (name: string, version?: string) => Promise<{ version: string; title: string; summary?: string; grants: { workflows: string[]; steps: string[] } } | null>;
   walk: (roots: string[]) => Promise<PublicConceptTree>;
 }
 
@@ -113,7 +113,7 @@ export async function publicViewNeeds(deps: PublicViewDeps, q: { app?: string; v
   if (q.app) {
     const app = deps.app ? await deps.app(q.app, q.version) : null;
     if (!app) return { error: `no app "${q.app}"${q.version ? ` at ${q.version}` : ""} on this strut server` };
-    out.app = { name: q.app, version: app.version, title: app.title };
+    out.app = { name: q.app, version: app.version, title: app.title, ...(app.summary ? { summary: app.summary } : {}) };
     workflows = app.grants.workflows;
     runs = true;
     for (const type of app.grants.steps) {
@@ -247,6 +247,8 @@ export interface MakePublicPlan {
   live?: { version: string; held: boolean };
   /** Strut seeds the app: it always runs its committed version, never held. */
   seeded?: boolean;
+  /** The one-line summary of the version the yes holds, once written. */
+  summary?: string;
   /** The app is in the public view already. */
   listed: boolean;
   /** The view's sign-in, unchanged: its own (`set`), else the default. */
@@ -299,7 +301,7 @@ export interface PublicViewDoorDeps {
   needs(app: string, version?: string): Promise<PublicViewNeeds | { error: string }>;
   view(): Promise<PublicSurface>;
   /** The app as people open it now, and whether `version` is a seed. */
-  app(name: string, version?: string): Promise<{ version: string; held: boolean; seeded: boolean } | null>;
+  app(name: string, version?: string): Promise<{ version: string; held: boolean; seeded: boolean; summary?: string } | null>;
   /** The package a served box serves, or undefined. */
   served(): string | undefined;
   /** A proposal's record on disk, or null. */
@@ -324,6 +326,7 @@ export function createPublicViewDoor(deps: PublicViewDoorDeps): PublicViewCapabi
         ...(at ? { version: at } : {}),
         ...(app ? { live: { version: app.version, held: app.held } } : {}),
         ...(app?.seeded ? { seeded: true } : {}),
+        ...(app?.summary ? { summary: app.summary } : {}),
         listed: view.apps.some((a) => a.name === name),
         visitors: view.visitors
           ? { signIn: view.visitors.signIn, ...(view.visitors.visitorKey === "domain" ? { visitorKey: "domain" as const } : {}), set: true }
@@ -467,7 +470,7 @@ export function makePublicCard(cfg: MakePublic, plan: MakePublicPlan | undefined
   // with what it exposes (as the Public view tab shows it), the sign-in.
   // A danger is never folded.
   const detail = (f: CardField): CardField => (f.danger ? f : { ...f, detail: true });
-  fields.push(detail({ label: "App", value: `${app.title} — ${app.name} ${v}` }));
+  fields.push(detail({ label: "App", value: `${app.title} — ${app.name} ${v}${plan.summary ? `: ${plan.summary}` : ""}` }));
   fields.push(
     detail({
       label: "Held at",

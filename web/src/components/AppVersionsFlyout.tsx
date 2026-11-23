@@ -141,6 +141,9 @@ export function AppVersionsFlyout(props: {
                       {seeded ? "" : " · every publish goes live"}
                     </span>}
               </div>
+              {data.versions[data.active]?.summary && (
+                <div class="app-live-summary" title={data.versions[data.active]!.summary}>{data.versions[data.active]!.summary}</div>
+              )}
             </div>
 
             {failed && (
@@ -163,6 +166,7 @@ export function AppVersionsFlyout(props: {
                   {row.state && row.state !== "live" && <span class={`app-version-state is-${row.state}`}>{STATE_LABEL[row.state]}</span>}
                   {row.state === "live" && <span class="badge badge-ok">live</span>}
                   {row.version === props.viewing && <span class="badge">viewing</span>}
+                  {row.summary && <span class="app-version-summary" title={row.summary}>{row.summary}</span>}
                   <span class="app-version-when" title={new Date(row.createdAt).toLocaleString()}>{when(row.createdAt)}</span>
                   <span class="app-version-actions">
                     {row.version !== shown && (
