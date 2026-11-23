@@ -653,7 +653,7 @@ describe("the join page's script (§5.8)", () => {
     assert.equal(badIos.els["ios"]!.hidden, true);
   });
 
-  it("an expired invite: the card stays, no Copy, Open or QR, it says ask for a new one; a live one, a token it cannot read, none at all: as before", async () => {
+  it("an expired invite: the card stays, no Copy, Open or QR, it says it has expired; a live one, a token it cannot read, none at all: as before", async () => {
     const claims = (exp: unknown) => Buffer.from(JSON.stringify({ c: "code", a: "strut/worker", exp })).toString("base64url");
     const linkWith = (token: string) => {
       const appUrl = `https://s.example/?app=strut%2Fworker&solo=1&public=1&input=${encodeURIComponent(`invite=${token}&type=book-scan-page`)}`;

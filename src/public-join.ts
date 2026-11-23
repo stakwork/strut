@@ -31,7 +31,7 @@
  * - **An expired invite**: the worker app's token inside `a=`
  *   (`strut-invite.<claims>.<sig>`, src/auth.ts) carries its `exp`; the page
  *   reads it, unverified (only to word the page; Tasks checks the signature),
- *   and past it keeps the card but shows `#expired` ("ask for a new one")
+ *   and past it keeps the card but shows `#expired` ("This invite has expired")
  *   instead of the Copy and Open buttons or the QR code. A cancelled or used
  *   invite looks live here: only the server knows.
  * - **Anywhere else** it says to open the link on a phone and draws
@@ -269,7 +269,6 @@ const en = {
   pasteHint: "Then open Peel and paste it at Join with an invite.",
   copied: "Copied",
   expired: "This invite has expired.",
-  expiredHint: "Ask whoever sent it for a new one.",
 };
 type JoinWords = typeof en;
 /** Neutral Latin American Spanish, `tú` (plans/i18n.md). */
@@ -295,7 +294,6 @@ const es: JoinWords = {
   pasteHint: "Luego abre Peel y pégala en Unirme con una invitación.",
   copied: "Copiada",
   expired: "Esta invitación caducó.",
-  expiredHint: "Pídele una nueva a quien te la envió.",
 };
 const JOIN_WORDS = { en, es };
 export type JoinLang = keyof typeof JOIN_WORDS;
@@ -354,7 +352,7 @@ export function joinPage(name?: string, lang: JoinLang = "en"): string {
 <p class="muted">${w.pasteHint}</p>
 </div>
 <p id="bad" hidden>${w.bad}</p>
-<p id="expired" class="note" role="status" hidden><b>${w.expired}</b> ${w.expiredHint}</p>
+<p id="expired" class="note" role="status" hidden>${w.expired}</p>
 <div id="android" hidden>
 <a id="open" class="button" href="#">${w.open}</a>
 <p class="muted">${w.installs}</p>
