@@ -412,8 +412,17 @@ index. A change in this area updates this file, not AGENTS.md.
   A PAGE'S FILE CARRIES ITS CLAIMS: the front matter's `claims:` block, in
   either form of page file (`parseConceptFile` → `ConceptFile.claims`,
   `readPageClaims`, claims-schemas.ts): each claim its `text`, the
-  `workflow` its cases run and the `cases`, each that workflow's input.
-  Never an attribute, and not part of the page's version, so a new case
+  `workflow` its cases run, the `cases`, each that workflow's input, and
+  its `checks`, the list a workflow's `claims:` block takes
+  (`checkSpecSchema`: a step check `{ type, config, policy, … }`, or an
+  external `{ description }`). A claim that names none gets the standard
+  check (`conceptCheckSpec`, a model reading the work); one that names a
+  step is judged by that step, which a check on a Concept is handed the
+  work's root run, its pages and its job's id (`input.job`), so a
+  package's step can look at what the work left in the world (a pod's
+  image) while the trial's job is still open. As a workflow's block, the
+  checks are those a claim was first written with: a change to them is a
+  new sentence. Never an attribute, and not part of the page's version, so a new case
   moves no verdict to stale. `seedConcepts` hands a seeded page's block out
   on its outcome, and createStrut records strut's own at boot
   (`trials.seed`, speaker `strut`; `createStrut({ concepts: { claims:
@@ -423,8 +432,14 @@ index. A change in this area updates this file, not AGENTS.md.
   taken away; two claims with the same message share its node); a claim `strut` wrote on a sentence the file no
   longer carries (reworded, or the block gone) is retired, while a
   person's or the dream's claim on the page is never touched. Every page
-  that is the seed's is handed over, with a block or with none. Not built: a package's pages'
-  blocks at install (the outcome carries them; nothing records them yet).
+  that is the seed's is handed over, with a block or with none. A
+  PACKAGE'S PAGES' claims are recorded the same way at its install, by the
+  package (src/packages/install.ts, `PackageDeps.pageClaims` →
+  `trials.seed`, speaker the package's name, as its workflows' claims are
+  published by it): once its pages and steps are in, so a check may name
+  a step the package ships; an update retires a sentence the file no
+  longer carries; what was not recorded is the install's warning. A page
+  the package's uninstall retires takes its claims out of sight with it.
   A TEST is two wordings of one page run against the same checks: the page
   as it is, and the page with a change (`test({ concept, docs, n })`). The
   other wording is read by its runs on a Concept branch made for them

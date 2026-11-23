@@ -98,29 +98,37 @@ export type Case = z.infer<typeof caseSchema>;
 /** The `claims:` block of a Concept PAGE's front matter: the rules its
  *  readers are held to, and the cases that test each, shipped with the page
  *  (strut's own pages, a package's). Each claim is its sentence, the
- *  `workflow` its cases run, and the `cases`, each that workflow's input.
- *  The check is always the standard one (`concept-check`). */
+ *  `workflow` its cases run, the `cases`, each that workflow's input, and
+ *  its `checks`, the same list a workflow's `claims:` block takes; without
+ *  them the standard check (`concept-check`, a model reading the work). */
 const pageClaimsSchema = z.array(
   z
     .object({
       text: z.string().min(1),
       workflow: z.string().min(1).optional(),
       cases: z.array(z.record(z.string(), z.any())).optional(),
+      checks: z.array(checkSpecSchema).min(1).optional(),
     })
     .refine((c) => !c.cases?.length || !!c.workflow, { message: "a claim with cases names the workflow they run" }),
 );
 
-/** A claim a page's file carries: its sentence and its cases. */
+/** A claim a page's file carries: its sentence, its cases, and the checks
+ *  it names (none: the standard check). */
 export interface PageClaim {
   text: string;
   cases: Case[];
+  checks?: Array<z.infer<typeof checkSpecSchema>>;
 }
 
 /** A page's `claims:` block, read: null when it is not one. */
 export function readPageClaims(raw: unknown): PageClaim[] | null {
   const r = pageClaimsSchema.safeParse(raw);
   if (!r.success) return null;
-  return r.data.map((c) => ({ text: c.text.trim(), cases: (c.cases ?? []).map((input) => ({ workflow: c.workflow!, input })) }));
+  return r.data.map((c) => ({
+    text: c.text.trim(),
+    cases: (c.cases ?? []).map((input) => ({ workflow: c.workflow!, input })),
+    ...(c.checks?.length ? { checks: c.checks } : {}),
+  }));
 }
 
 export const CLAIMS_OFF = "Claims need the graph-backed workspace (this deployment keeps workflows and steps on the filesystem).";

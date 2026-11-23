@@ -672,6 +672,53 @@ for (const tb of testBackends()) {
       assert.deepEqual(under?.edges.map((e) => e.other), [(await conceptNode("Issues"))!.ref_id], "still under Linear");
     });
 
+    it("records its pages' claims as its own: the checks each names, else the standard one, and its cases", async () => {
+      // The standard check is the `concept-check` system workflow: this strut seeds it.
+      await strut.close?.();
+      strut = await boot(new GraphWorkspaceStore(backend, { materializeDir: join(scratch, "steps"), appsDir: join(scratch, "apps") }), { dataDir: scratch, systemWorkflows: true });
+      api = client(strut);
+      const files = {
+        ...PACKAGE,
+        "workflows/sync.yaml": WORKFLOW("acme/linear/sync"),
+        "concepts/Linear.md": [
+          "---",
+          "description: The tracker",
+          "claims:",
+          "  - text: A sync files the issue it is asked for.",
+          "    workflow: acme/linear/sync",
+          "    cases:",
+          "      - { title: The login page is blank }",
+          "    checks:",
+          "      - { type: acme/linear/create-issue, name: the issue is there }",
+          "  - text: The page is read before an issue is filed.",
+          "---",
+          "How Linear works here.",
+          "",
+        ].join("\n"),
+      };
+      const dir = await writeTree(files);
+      const r = await api.install(`file:${dir}`);
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      assert.deepEqual(r.body.warnings, []);
+      const trials = (strut.services as unknown as { trials: { checks(c: string): Promise<{ checks: Array<{ id: string; text: string; speaker?: string; cases: Array<{ workflow: string; input: unknown }> }> } | null> } }).trials;
+      const view = (await trials.checks("Linear"))!;
+      assert.deepEqual(
+        view.checks.map((c) => [c.text, c.speaker, c.cases.map(({ workflow, input }) => ({ workflow, input }))]),
+        [
+          ["A sync files the issue it is asked for.", "acme/linear", [{ workflow: "acme/linear/sync", input: { title: "The login page is blank" } }]],
+          ["The page is read before an issue is filed.", "acme/linear", []],
+        ],
+      );
+      // The check a claim names is the step the package ships; one that names none is a model reading the work.
+      const types = async (id: string) => (await strut.claims!.checksFor(id)).map((k) => k.step_type);
+      assert.deepEqual(await types(view.checks[0]!.id), ["acme/linear/create-issue"]);
+      assert.deepEqual(await types(view.checks[1]!.id), ["subflow"]);
+
+      // The same package again writes nothing twice.
+      assert.equal((await api.install(`file:${dir}`)).status, 201);
+      assert.deepEqual((await trials.checks("Linear"))!.checks.map((c) => c.id), view.checks.map((c) => c.id));
+    });
+
     it("says how far it is: each phase in order, the Concepts and their tree counted", async () => {
       const seen: string[] = [];
       const files = { ...PACKAGE, ...CONCEPTS };

@@ -67,6 +67,13 @@ describe("concept files (pure)", () => {
     // A block that is not one is left out, and the page is still a page: cases with no workflow to run them, a list of strings.
     assert.equal(parseConceptFile("Rules.md", "---\nclaims:\n  - text: x\n    cases:\n      - prompt: y\n---\nd", "p/").claims, undefined);
     assert.equal(parseConceptFile("Rules.md", "---\nclaims: [a, b]\n---\nd", "p/").docs, "d");
+    // A claim names its checks as a workflow's claims block does; one that names none gets the standard check later.
+    const checked = parseConceptFile("Rules.md", "---\nclaims:\n  - text: It bakes.\n    checks:\n      - { type: acme/pods/baked, policy: always }\n  - text: It is brief.\n---\nd", "p/");
+    assert.deepEqual(checked.claims, [
+      { text: "It bakes.", cases: [], checks: [{ type: "acme/pods/baked", policy: "always" }] },
+      { text: "It is brief.", cases: [] },
+    ]);
+    assert.equal(parseConceptFile("Rules.md", "---\nclaims:\n  - text: x\n    checks: []\n---\nd", "p/").claims, undefined, "an empty list of checks is no block");
     // Writing the page's text back keeps the block byte for byte (a change of its docs is a diff of its docs).
     assert.ok(!renderConceptPage({ ...now, docs: "Be kinder." }).includes("claims"), "a page rendered anew carries no block");
   });
