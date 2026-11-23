@@ -171,8 +171,9 @@ container in the compose (strut and any service that registers steps).
   /apps`, `/apps/:name/versions`, `/apps/:name/:version/files[/…]`, `GET
   /brand`, `/mcp` (`step_run` alone, as `personAppHandler` serves a
   person token; GET / DELETE its 405), `POST
-  /apps/:name/channel-ticket`, `GET /artifacts/:runId[/…]` and `GET
-  /jobs/:id/files[/…]`. Everything else is 403, reads and a host's later
+  /apps/:name/channel-ticket`, `GET /artifacts/:runId[/…]`, `GET
+  /jobs/:id/files[/…]` and `GET /jobs/:id/urls` (a job's hold address,
+  which the side panel frames). Everything else is 403, reads and a host's later
   routes included; `createStrut.test.ts` ("a member's session") sweeps
   them and counts the allowed. The UI asks `GET /auth/session` before it
   renders (`api.pageSession`) and picks the page (`web/src/page.ts`

@@ -4,14 +4,15 @@
 // (`job/updates`); open, its reply, what it made (artifact cards) and its
 // claims. What asks something of the person stays visible collapsed: the
 // job's question (with a password box when it asks for a secret), why it
-// failed, a captcha.
-import { useContext, useState } from "react";
+// failed, a captcha. So does what the job holds at an address (a pod's
+// app, `urls` in `job/get`): a row that opens it beside the chat, or in a tab.
+import { useContext, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bot, ChevronRight } from "lucide-react";
-import { useJobUpdates, useRun, useStrutClient } from "@strut/kit";
+import { Bot, ChevronRight, ExternalLink, Monitor } from "lucide-react";
+import { useHost, useJobUpdates, useRun, useStrutClient } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
-import { answeredSince, askedSecret, jobLook, jobRunWorkflow, liveStrip } from "../lib/jobs";
+import { answeredSince, askedSecret, holdLinks, jobLook, jobRunWorkflow, liveStrip, type HoldLink } from "../lib/jobs";
 import { inFlight } from "../lib/chat";
 import { openable } from "../lib/artifacts";
 import type { ArtifactRef, JobView } from "../lib/types";
@@ -62,6 +63,13 @@ function JobRunCard({ job, runId, workflow, conversation }: JobCardProps) {
   const status = run.data?.status ?? (run.isError ? "unreadable" : "running");
   const running = inFlight(status);
   const view = useJob(job, running);
+  // Once more when the turn ends: what it made in its last seconds (a pod's link).
+  const wasRunning = useRef(running);
+  useEffect(() => {
+    if (wasRunning.current && !running) void view.refetch();
+    wasRunning.current = running;
+  }, [running]);
+  const holds = holdLinks(job, view.data?.urls);
   const [open, setOpen] = useState(false);
   const out = (run.data?.output ?? {}) as JobOutput;
   const text = typeof out.text === "string" ? out.text : undefined;
@@ -99,6 +107,7 @@ function JobRunCard({ job, runId, workflow, conversation }: JobCardProps) {
         <Pill tone={look.tone} spin={running}>{look.label}</Pill>
       </button>
       {running && <LiveStrip job={job} runId={runId} />}
+      {holds.map((h) => <HoldRow key={h.kind} link={h} />)}
       {!open && ask && <p className="border-t px-3 py-2 text-sm"><span className="font-medium">Asks: </span>{ask}</p>}
       {!open && secretBox && <div className="px-3 pb-2">{secretBox}</div>}
       {!open && error && status === "error" && <p className="border-t px-3 py-2 text-xs text-rose-700 dark:text-rose-300">{error}</p>}
@@ -119,6 +128,24 @@ function JobRunCard({ job, runId, workflow, conversation }: JobCardProps) {
           {view.data?.claims && view.data.claims.length > 0 && <ClaimsPanel job={job} claims={view.data.claims} runId={view.data.runs.find((r) => !r.parentRunId)?.runId ?? runId} />}
         </div>
       )}
+    </div>
+  );
+}
+
+/** What the job holds at an address: beside the chat (the host reads the
+ *  address from the job), or in a tab — the way that always works. */
+function HoldRow({ link }: { link: HoldLink }) {
+  const host = useHost();
+  return (
+    <div className="flex items-center gap-1 border-t px-3 py-1.5" data-testid="job-hold" data-kind={link.kind}>
+      <button type="button" onClick={() => void host.openLink(link.beside)} title="Open beside the chat" className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded text-left text-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <Monitor className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="truncate">{link.label}</span>
+      </button>
+      <button type="button" onClick={() => void host.openLink(link.url)} title="Open in a new tab" aria-label={`${link.label} in a new tab`} className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground">
+        <ExternalLink className="size-3" />
+        Tab
+      </button>
     </div>
   );
 }

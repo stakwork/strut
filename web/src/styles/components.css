@@ -5013,6 +5013,8 @@ html.solo-light .app-solo {
   display: flex;
 }
 .app-panel-body > .empty { flex: 1; display: flex; align-items: center; justify-content: center; }
+/* A job's hold at its address (a pod's app): another site's page, on its own background. */
+.app-panel-frame { flex: 1; width: 100%; min-width: 0; border: 0; background: #fff; }
 @container (max-width: 760px) {
   .app-panel {
     position: absolute;

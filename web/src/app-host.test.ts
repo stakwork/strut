@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appKey, appMessage, appPageAddress, appToolInput, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, publicAppHop, soloTheme, strutLink } from "./app-links";
+import { appKey, appMessage, appPageAddress, appToolInput, frameableHold, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, publicAppHop, soloTheme, strutLink } from "./app-links";
 import { appLink } from "../../kit/src/links";
 
 /** The pure parts of the app host's relay (./app-links, what ./app-host
@@ -78,6 +78,9 @@ describe("the app host", () => {
     assert.deepEqual(panelTarget({ app: "bench@v2" }, [bench]), { app: "bench@v2" }, "another version is another page");
     // From the panel, its own app is on screen too.
     assert.equal(panelTarget({ app: "strut/views" }, [{ name: "strut/views", version: "v1" }, bench]), null);
+    // What a job holds at an address: the job and the kind, never an address.
+    assert.deepEqual(panelTarget(link("?job=j%201&hold=pod"), [bench]), { job: "j 1", hold: "pod" });
+    assert.equal(panelTarget(link("?hold=pod"), [bench]), null, "a hold names its job");
     // Workflows, runs, jobs: as before the panel.
     for (const url of ["?wf=clip", "?wf=clip&run=12", "?job=j1"]) assert.equal(panelTarget(link(url), [bench]), null, url);
     // Nothing strut serves as a file.
@@ -87,6 +90,16 @@ describe("the app host", () => {
     assert.equal(panelTarget({ app: "@acme" }, [bench]), null, "a key that names nothing");
   });
 
+
+  it("a job's hold is framed at an http(s) address on another origin, never this page's", () => {
+    const here = "https://box.stakwork.ai";
+    const pod = "https://p1a2b3-3000.stakwork.bot/_pods/open/tok";
+    assert.equal(frameableHold(pod, here), pod);
+    assert.equal(frameableHold("http://p1-3000.pods.localhost:4600/_pods/open/t", "http://localhost:3000"), "http://p1-3000.pods.localhost:4600/_pods/open/t");
+    assert.equal(frameableHold(undefined, here), null, "the hold is gone");
+    assert.equal(frameableHold("https://box.stakwork.ai/secrets", here), null, "this page's origin");
+    for (const url of ["javascript:alert(1)", "data:text/html,x", "/relative", "not a url"]) assert.equal(frameableHold(url, here), null, url);
+  });
 
   it("a link to the app on screen is told apart from one to another app", () => {
     const bench = { name: "bench", version: "v3" };
