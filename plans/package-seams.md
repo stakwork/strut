@@ -19,6 +19,13 @@
 > items 24 to 26 beside item 14 (panels) and item 17 (a pull-request step
 > chosen by host), and stakwork/pods `PLAN.md` §1, which moves `.pod/`
 > out of the repositories and into strut.
+>
+> **2026-11-23, later: a fifth seam, proposed (§7).** The owner ruled that
+> work a package starts for a person shows as a Jamie chat in that
+> person's own view. It starts automatically, with no model turn to
+> decide it and no extra click: *"THE JAMIE CHAT IS THE BEST UI FOR
+> ALMOST EVERYTHING."* The first real Set Up on a Stadeum box started its
+> job with `job/start`, outside any chat, so nobody could see it.
 
 ## The rule
 
@@ -73,6 +80,7 @@ every way, uses the same four.
 | 3 | How a package acts on another's write | **`on:` in `strut.yaml`:** a workflow run when a node of a type is created, updated or deleted, as the person whose run wrote it (§2) | built |
 | 4 | How a package shows its part | **Panels** (§3; stadeum `plans/software.md` §5, item 14) | proposed there |
 | 5 | A forge's steps | **Named on its `provides.git` entry.** Strut's `git/repositories` and `git/pull-request` pick them by host (§4) | built |
+| 6 | Where work a package starts for a person shows | **A Jamie chat of that person's own,** started with no model turn: their message, strut's fixed reply, and the job already running. The chat is about a node, so an app finds it (§7) | **owner** (2026-11-23: a chat, automatic, no extra click); the seam's shape is proposed |
 
 ## 1. Files on a node
 
@@ -320,8 +328,86 @@ in `src/jobs.ts` today.
    - `git/repositories` and `git/pull-request`;
    - `docs/packages.md` and `docs/steps.md`.
 4. **Panels,** once their open question is answered.
+5. **A package starts a chat** (§7):
+   - the orchestrator's prepared turn;
+   - `conversation/start`;
+   - `about` on a chat's record, and `conversation/list { about }`;
+   - tests: a fixture package's workflow starts a chat, the chat lists
+     the turn with its job, and the job's end wakes it;
+   - `docs/jobs.md`.
 
-All four run in `npm test`: none needs a model or a network.
+All five run in `npm test`: none needs a model or a network.
+
+## 7. A package starts a chat with Jamie
+
+**Ruled (owner, 2026-11-23):** work a package starts for a person shows
+as a Jamie chat in that person's own view. It starts automatically: no
+model turn decides it, and the person clicks nothing more. The rest of
+this section is proposed.
+
+**What the person sees,** in a new chat of their own:
+
+- their message: the work's title and, under it, what they wrote, such
+  as "Set up stakwork" and their note;
+- Jamie's reply: strut's fixed words, "On it.", with the job's card,
+  already running under its title;
+- later, the job's end or its question, through the wake, as for any
+  job a chat started;
+- whatever they type next, which goes to Jamie as usual.
+
+**What exists** (read against strut `main` @f47ddc4f):
+
+- A chat's turns are runs of `orchestrator` on its session
+  (`src/conversations.ts`). The orchestrator is one model call (`turn`),
+  then a plain `job/start` step for the job its reply's `start` names
+  (`src/workflows/orchestrator.yaml`). The job's card is read from that
+  step (`turnJobs`), whatever filled it.
+- A job that ends naming a chat wakes it (`src/wake.ts`), when its
+  launch asked for wakes, as pr-checks' launches do
+  (`src/createStrut.ts:1685`).
+- Jamie's link opens a chat by its `session`.
+
+**What is added:**
+
+1. **A turn with no model.** The orchestrator takes an optional
+   `prepared: { title, brief, kind?, repos? }`. With it, `turn` is
+   skipped, `job/start` starts that job, and the reply is strut's fixed
+   "On it." The orchestrator stays sealed: only `conversation/start`
+   passes `prepared`.
+2. **`conversation/start { message, job: { title, brief, kind?, repos? },
+   about? } → { session, job }`:**
+   - It runs as the run's person: a page's call runs as its viewer, and
+     an `on:` run as the writer. With no person it refuses, and it
+     refuses inside a job's run, since that job's own chat is where its
+     work shows.
+   - It makes a new chat, `<person>/<12 hex>`, and launches the prepared
+     turn detached, with wakes asked for, and `message` as the person's
+     words.
+   - It has `effect: "write"`, so it is granted like any step and a
+     `job:` grant shows it. It isn't sealed: it can only start a new
+     chat with one job. It can't continue a chat or speak as Jamie
+     beyond strut's fixed words.
+   - The chat says where it came from: the calling step's package
+     (`startedBy`), shown as "from stadeum/pods".
+3. **A chat about a node.** `about: <ref_id>` is kept on the chat's
+   record, and `conversation/list { about }` answers the viewer's chats
+   about that node, newest first. Any app finds "the chat about this"
+   the same way.
+
+**The example.** Code's Set Up writes the `Workspace` with the person's
+note on it. pods' `on: created: Workspace` runs `setup`, which calls
+`conversation/start` as the person who pressed it, with:
+
+- `message`: "Set up stakwork" and the note;
+- `job`: `{ title: "Set up stakwork", kind: "Pod Setup", brief }`;
+- `about`: the workspace.
+
+Right after Set Up, Code asks `conversation/list { about }` for a few
+seconds and opens Jamie at that chat. From then on its card links to the
+chat. Code names no package, and pods names only its own page.
+
+Unlike it: a CRM package's `on: created: Customer` hands an onboarding
+job to whoever added the customer, in a chat they can follow and answer.
 
 ## Open questions
 
@@ -335,3 +421,6 @@ All four run in `npm test`: none needs a model or a network.
 4. **A node of another package's type.** Any step with graph writes can
    create a `Workspace` today, and stadeum/code guards only its own
    steps. Should a package's types be written only by that package?
+5. **The fixed reply's words** (§7). Is "On it." enough, or should it
+   name the job ("On it: Set up stakwork")? The job's card already shows
+   the title.
