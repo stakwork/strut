@@ -1317,7 +1317,10 @@ export default defineStep({
     `It returns a free-form report (finalAnswer), a structured object (schema), or the final text. Needs the provider's key (secret store or env), and git + rg on PATH for the built-ins (toolFilter: ['none'] needs neither). Output: { result, object?, steps, usage, cost } (+ messages when returnMessages; + session: { id, turn, offset } when session is set; + stopped: { tool } when a tool ended the turn).\n\n` +
     EXAMPLE,
   input: z.object({
-    cwd: z.string().describe("working directory the tools operate in"),
+    cwd: z
+      .string()
+      .optional()
+      .describe("working directory the tools operate in (default: the run's artifact dir, as exec's)"),
     system: z.string().describe("system prompt / agent persona"),
     prompt: z.string().describe("the user task driving the agent"),
     message: z
@@ -1439,6 +1442,11 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx) {
     const { ToolLoopAgent, Output, tool, isStepCount, jsonSchema, streamText, parsePartialJson } = await import("ai");
+    // No `cwd`: the run's artifact dir, as exec's, so files flow between the
+    // run's steps by relative path and stay with the run.
+    const artifacts = (ctx?.services as { artifacts?: ArtifactsCapability } | undefined)?.artifacts;
+    if (!cfg.cwd && !(artifacts && ctx?.runId)) throw new Error("agent: no artifacts capability in ctx.services — set `cwd`");
+    const cwd = cfg.cwd || (await artifacts!.dir(ctx!.runId));
 
     // Model/provider resolution via aieo (shared with mcp) through strut's
     // resolver (src/llm.ts): friendly aliases ("sonnet", "grok"), canonical
@@ -1472,7 +1480,7 @@ export default defineStep({
 
     // Anthropic-only extras: the provider-defined text
     // editor (the model is specially trained on its schema; we supply the
-    // execute that performs the edit inside cfg.cwd), and EPHEMERAL PROMPT
+    // execute that performs the edit inside cwd), and EPHEMERAL PROMPT
     // CACHING at the call level (the request's top-level `cache_control`:
     // Anthropic's automatic caching moves the breakpoint to the end of the
     // conversation every step, so each step reads everything before it and
@@ -1488,7 +1496,7 @@ export default defineStep({
     if (provider === "anthropic") {
       const { anthropic } = await import("@ai-sdk/anthropic");
       textEditorTool = anthropic.tools.textEditor_20250728({
-        execute: async (input: TextEditInput) => textEdit(input, [cfg.cwd, os.tmpdir()], resultCap),
+        execute: async (input: TextEditInput) => textEdit(input, [cwd, os.tmpdir()], resultCap),
       });
       providerOptions = { anthropic: { cacheControl: { type: "ephemeral", ttl: cfg.cacheTtl } } };
     }
@@ -1564,7 +1572,7 @@ export default defineStep({
           ? `${Math.round(cfg.bashTimeoutMs / 1000)} seconds`
           : `${cfg.bashTimeoutMs} ms`;
 
-    // Built-in tools (operate on cfg.cwd). `inputSchema` cast to any to stop the
+    // Built-in tools (operate on cwd). `inputSchema` cast to any to stop the
     // SDK's tool() from deeply inferring the zod type (TS2589 in strict builds).
     const allTools: Record<string, any> = {
       repo_overview: tool({
@@ -1573,7 +1581,7 @@ export default defineStep({
         inputSchema: z.object({}) as any,
         execute: async () => {
           try {
-            return await getRepoMap(cfg.cwd);
+            return await getRepoMap(cwd);
           } catch {
             return "Could not retrieve repository map";
           }
@@ -1585,7 +1593,7 @@ export default defineStep({
         inputSchema: z.object({ query: z.string().describe("The term to search for") }) as any,
         execute: async ({ query }: { query: string }) => {
           try {
-            return await fulltextSearch(query, cfg.cwd);
+            return await fulltextSearch(query, cwd);
           } catch (e) {
             return `Search failed: ${e}`;
           }
@@ -1598,7 +1606,7 @@ export default defineStep({
           sshNote,
         inputSchema: z.object({ command: z.string().describe("The bash command to execute") }) as any,
         execute: async ({ command }: { command: string }) => {
-          if (!existsSync(cfg.cwd)) return "Working directory does not exist";
+          if (!existsSync(cwd)) return "Working directory does not exist";
           // One command is one unit of run control (RUN_CONTROL_SPEC §4): watch
           // the run's state while it runs and kill the PROCESS GROUP the moment
           // the run starts cancelling — the exec step's treatment — so a cancel
@@ -1615,7 +1623,7 @@ export default defineStep({
           let res: ProcessResult;
           try {
             res = await runShellProcess(command, {
-              cwd: cfg.cwd,
+              cwd,
               timeoutMs: cfg.bashTimeoutMs,
               maxOutputChars: resultCap,
               env: bashEnv,
@@ -1642,7 +1650,7 @@ export default defineStep({
         }) as any,
         execute: async ({ file_path }: { file_path: string }) => {
           try {
-            return await stakgraphSummary(file_path, cfg.cwd);
+            return await stakgraphSummary(file_path, cwd);
           } catch {
             return "Bad file path";
           }
@@ -1650,7 +1658,7 @@ export default defineStep({
       });
     }
     // File editing (str_replace_based_edit_tool): view/create/str_replace/insert,
-    // sandboxed to cfg.cwd. For anthropic use the provider-defined tool (the
+    // sandboxed to cwd. For anthropic use the provider-defined tool (the
     // model is specially trained on it); other providers get an identical generic
     // tool. The key MUST be `str_replace_based_edit_tool` for the anthropic case.
     allTools.str_replace_based_edit_tool = textEditorTool
@@ -1671,7 +1679,7 @@ export default defineStep({
             old_str: z.string().optional(),
             view_range: z.array(z.number().int()).optional(),
           }) as any,
-          execute: async (input: TextEditInput) => textEdit(input, [cfg.cwd, os.tmpdir()], resultCap),
+          execute: async (input: TextEditInput) => textEdit(input, [cwd, os.tmpdir()], resultCap),
         });
 
     // Apply toolFilter (empty = all). Unknown names are ignored.
@@ -2018,7 +2026,7 @@ export default defineStep({
       // code — never a turn of their own. Stamped told once the turn commits.
       const toTell = session ? await proposalsOf(ctx?.services)?.unreported(session.id).catch(() => []) ?? [] : [];
       const told = proposalResultLines(toTell);
-      const preamble = [filesInReach ? buildPreamble(cfg.cwd) : "", ...told].filter(Boolean).join("\n");
+      const preamble = [filesInReach ? buildPreamble(cwd) : "", ...told].filter(Boolean).join("\n");
       const startTime = Date.now();
       // STREAM, don't generate: a long drafting turn (multi-minute, many
       // thousands of output tokens) produces zero bytes on a non-streaming

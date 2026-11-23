@@ -173,6 +173,21 @@ describe("McpBrowser: strut's verbs on a Browser MCP server over HTTP", () => {
       await wrong.close();
     }
   });
+
+  it("runs a call once more on a new session when the server dropped its own", async () => {
+    const stateful = await standInMcp(fakeBrowserTools(), { token: "s3cret", sessions: true });
+    const b = new McpBrowser({ url: stateful.url, token: "s3cret", settle: { fixedMs: 0, quiet: false } });
+    try {
+      await b.open("run-7", { url: "https://example.com/" });
+      stateful.dropSessions(); // a restart, or the server's idle limit
+      const snap = await b.snapshot("run-7");
+      assert.match(snap.tree, /link "Pricing"/);
+      assert.equal(stateful.calls.filter((c) => c.name === "take_snapshot").length, 1, "the refused call never reached the browser");
+    } finally {
+      await b.close();
+      await stateful.close();
+    }
+  });
 });
 
 describe("Browser MCP's text forms", () => {

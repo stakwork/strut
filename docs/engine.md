@@ -24,9 +24,10 @@ services bag can override it, same as `http`/`secrets`).
   and puts the RELATIVE path in its output; downstream steps resolve it via
   `read`/`dir`. Enforced from 2026-10-30: a step output over
   `STRUT_STEP_OUTPUT_MAX_BYTES` (8 MB as JSON) fails the step with this
-  convention in its error (`src/output-cap.ts`). Point an `agent` step's `cwd` at `dir(ctx.runId)` and the
-  built-in file tools (`str_replace_based_edit_tool`, `bash`) see the same
-  files — that's how agents in a workflow hand files to each other.
+  convention in its error (`src/output-cap.ts`). An `agent` step with no `cwd` works in `dir(ctx.runId)`, as
+  `exec` does, so the built-in file tools (`str_replace_based_edit_tool`,
+  `bash`) see the same files — that's how agents in a workflow hand files
+  to each other.
 - **Isolation:** paths are guarded per run — a relPath cannot escape its
   run's directory (so one run can't reach another's files). Invalid runIds
   (path separators, `..`) are rejected.
