@@ -1055,9 +1055,19 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       `MATCH ${d.node("a", "StrutApp", { namespace: "$ns" })} WHERE ${d.live("a")} RETURN ${d.project("a", APP_FIELDS)} AS p`,
       { ns: this.ns },
     );
+    const versionRows = await this.rows<AppVersionRow>(
+      `MATCH ${d.node("v", "StrutAppVersion", { namespace: "$ns" })} WHERE ${d.live("v")} RETURN ${d.project("v", APP_VERSION_FIELDS)} AS p`,
+      { ns: this.ns },
+    );
+    const byApp = new Map<string, AppVersionRow[]>();
+    for (const v of versionRows) {
+      const g = byApp.get(v.name);
+      if (g) g.push(v);
+      else byApp.set(v.name, [v]);
+    }
     const out: AppListEntry[] = [];
     for (const a of apps.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0))) {
-      const meta = this.appMetadata(a, await this.appVersionRows(a.name));
+      const meta = this.appMetadata(a, (byApp.get(a.name) ?? []).sort(byCreation));
       const active = meta?.versions[meta.active];
       if (!meta || !active) continue;
       out.push(appListEntry(a.name, meta, active));

@@ -1248,6 +1248,11 @@ export const getJob = (id: string, opts: { nodes?: boolean; limit?: number } = {
   return fetchJSON<JobView>(`/jobs/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
 };
 
+/** `GET /jobs/:id/urls`: what the job holds at an address, by kind
+ *  (`{ pod: "https://…" }`) — what the side panel beside an app frames. */
+export const getJobUrls = (id: string) =>
+  fetchJSON<{ job: string; urls: Record<string, string> }>(`/jobs/${encodeURIComponent(id)}/urls`);
+
 /** A stored model message, as a transcript endpoint serves it. */
 export interface StoredMessage {
   role: string;

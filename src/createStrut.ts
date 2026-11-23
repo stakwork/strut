@@ -228,7 +228,7 @@ import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobHolder, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
 import { createPrChecks } from "./pr-checks.js";
-import { createJobIndex } from "./job-index.js";
+import { createJobIndex, holdUrls } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { ARCHIVE_LOCAL_WINDOW, createRetention, fleetRetentionFromEnv, formatRetention, type Retainer } from "./retention.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
@@ -2881,9 +2881,9 @@ export async function createStrut<TServices = unknown>(
   const CONVERSATION_POSTS = new Set(["/conversations/update", "/conversations/fork"]);
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
   /** What a member's session may call: the page of one app, its calls, its
-   *  channels, and a file it hands the side panel. `GET /brand` is the
-   *  style the app is shown in; `GET /rate` what a stranger's invoice is
-   *  priced at in dollars (specs/API.md §17.9); `GET` and `DELETE /mcp` answer 405 (the
+   *  channels, and a file or a job's hold address it hands the side panel.
+   *  `GET /brand` is the style the app is shown in; `GET /rate` what a
+   *  stranger's invoice is priced at in dollars (specs/API.md §17.9); `GET` and `DELETE /mcp` answer 405 (the
    *  page's MCP client asks for a stream once). */
   const MEMBER_ROUTES: Array<[method: string, path: RegExp]> = [
     ["GET", /^\/auth\/session$/],
@@ -2898,6 +2898,7 @@ export async function createStrut<TServices = unknown>(
     ["POST", /^\/apps\/[^/]+\/channel-ticket$/],
     ["GET", /^\/artifacts\/[^/]+(?:\/.+)?$/],
     ["GET", /^\/jobs\/[^/]+\/files(?:\/.+)?$/],
+    ["GET", /^\/jobs\/[^/]+\/urls$/],
   ];
   const memberMay = (method: string, path: string) =>
     MEMBER_ROUTES.some(([m, re]) => (m === method || (m === "GET" && method === "HEAD")) && re.test(path));
@@ -4783,6 +4784,8 @@ export async function createStrut<TServices = unknown>(
   app.get("/apps", async (c) => {
     const listed = await apps.list();
     const full = (await scopeOf(c)) === "full";
+    // No Cache-Control: the UI reads the list again right after a publish,
+    // set-live or pin, and a cached copy would hide the change.
     return c.json({ apps: full ? listed : listed.filter((a) => !a.admin) });
   });
   const adminAppRefusal = async (c: Context, name: string, version?: string): Promise<Response | null> => {
@@ -6865,6 +6868,17 @@ export async function createStrut<TServices = unknown>(
         signal: c.req.raw.signal,
       }),
     );
+  });
+
+  // What a job holds at an address, by kind — `urls` as `GET /jobs/:id`
+  // folds it (`holdUrls`), alone: what the side panel beside an app frames
+  // (a pod's app, plans/jamie-app.md §4), read here and never taken from
+  // the app's link. A member's session reads it, as it reads the files.
+  app.get("/jobs/:id/urls", async (c) => {
+    const at = jobRoute(c);
+    if (at instanceof Response) return at;
+    const rec = await readJobRecord(at.root);
+    return c.json({ job: at.id, urls: holdUrls(rec?.holds ?? []) });
   });
 
   app.get("/jobs/:id/files", async (c) => {

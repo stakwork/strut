@@ -1217,6 +1217,9 @@ describe("jobs — the index (plans/job-index.md)", () => {
     );
     assert.deepEqual(v.urls, { pod: "https://pod-2.example", browser: "ws://browser-1.example" });
     assert.deepEqual(holdUrls([]), {});
+    // The fold alone, for the side panel beside an app (a member reads it).
+    assert.deepEqual((await api("/jobs/j-u/urls")).json, { job: "j-u", urls: v.urls });
+    assert.equal((await api("/jobs/no-such-job/urls")).status, 404);
   });
 
   it("a run in flight is `running` and holds the job; a sealed workflow's run shows its status and nothing more", async () => {
