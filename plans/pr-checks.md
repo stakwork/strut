@@ -3,6 +3,11 @@
 Status: PROPOSED (2026-11-22), for Evan to discuss. Nothing is built.
 Each open question below has a recommended default.
 
+Revised 2026-11-23, on Evan's go-ahead: the work is split. Strut does
+what acts as a person: the index, the read, the one turn. strut-github
+says when to look, with a `schedules:` entry now and its `hooks:` route
+later. There is no core timer and no environment variable.
+
 ## The ask
 
 A job on a Stadeum box (Jamie, on stadeum.stakwork.ai) opens a pull request
@@ -57,12 +62,34 @@ strut's own `plans/job-artifact-events.md` §3 and §5 (removed from main;
 - **The pattern for a small index.** `jobs/.sweep/<id>` is one empty file
   per job the sweep must look at, kept by `updateJobRecord` under the
   record's lock, so the sweep never reads every record.
-- **The pattern for a timer.** Retention runs once at boot and then hourly,
-  beside `automations.start()`, behind the same `STRUT_SCHEDULER` switch.
-  Its timer is unref'd and stopped by `close()`.
+- **A package's trigger.** Package schedules (strut#791): a `schedules:`
+  entry in a package's `strut.yaml` runs one of its workflows on the
+  automations' closed grammar (`interval` with `minutes`, and so on). An
+  admin can switch it on or off. It runs as the workflow's owner
+  (`runsAs`, strut#794). On a box that follows the package, that owner is
+  the person who followed it.
+- **A package never names a person** (stadeum `plans/software.md` §5,
+  item 15). A package's steps are fenced to their run's person
+  (`src/packages/fence.ts`). A package's workflow launches through core
+  steps, which run as that run's person. So the package can't read a PR as
+  each job's person, or start a turn as them. Strut has to do both.
 
 What's missing on a Stadeum box: a pull request → job index, the
 once-only mark, and a trigger.
+
+## Where each part lives
+
+- **Strut core:** everything that acts as a person. That's the index on
+  the job record (§1), the check that reads as each job's person and
+  launches the one turn (§2), and one step that runs the check,
+  `job/pr-checks { url? }` (§3). It takes no person and no text, so its
+  caller can only make strut look sooner.
+- **strut-github (stadeum/github):** when to look. A `schedules:` entry
+  that runs `job/pr-checks` every 5 minutes, and later its `hooks:` →
+  `on-event` workflow, calling `job/pr-checks { url }` when a `check_run`
+  or `workflow_run` completes (§3).
+- **strut-code:** one line in Code Change §6.
+- **Stadeum:** nothing. A box has this when it follows strut-github.
 
 ## Proposal
 
@@ -99,8 +126,10 @@ job with a WATCHED entry. An entry is watched when it has no `fixed`, no
 `over`, and is less than 7 days old (a constant, like the sweep's TTL). Only
 watched entries are polled, so the checker never reads every record.
 
-With the poll off (§3), nothing is written. Records from before need no
-backfill: an old job's pull request was handled by hand anyway.
+It's written on every box. Only `job/pr-checks` reads it (§3), so where
+nothing calls that, it's a few empty files that `deleteJob` removes with
+their records. Records from before need no backfill: an old job's pull
+request was handled by hand anyway.
 
 The record is a file under `dataDir`, not a workspace node, so no graph
 schema changes.
@@ -141,13 +170,34 @@ sends. The run records `wakeAsked`, and `wakeOnEnd` relays the turn's end to
 that conversation, where the orchestrator tells the person in one line or
 stays silent, as after any job turn.
 
-### 3. The trigger: a poll now, a webhook later
+### 3. The trigger: strut-github's schedule now, its webhook later
 
-One pass every `STRUT_PR_CHECKS_MINUTES`. It reads `jobs/.prs/` and runs
-`checkJob` for each job there, one job at a time. If a pass is still
-running when the next is due, the next is skipped. It starts beside
-retention, behind `STRUT_SCHEDULER`, with an unref'd timer that `close()`
-stops. A box with nothing watched reads one empty folder.
+**The step, in strut:** `job/pr-checks { url? }` (`src/steps/lib/job/`),
+backed by a `prChecks` capability that `createStrut` puts on the services
+bag.
+- With no `url`, it makes one pass: it reads `jobs/.prs/` and runs
+  `checkJob` for each job there, one job at a time.
+- With a `url`, it runs `checkJob` for each job watching that pull
+  request.
+- It takes no person and no text. It answers with counts only
+  (`{ jobs, sent }`), nothing from anyone's job.
+- One pass runs at a time. A call made while a pass runs returns once that
+  pass is done, and starts nothing of its own.
+- A box with nothing watched reads one empty folder.
+
+**The trigger, in strut-github 0.3.0:**
+
+```yaml
+schedules:
+  - name: pr-checks
+    workflow: pr-checks          # one step: job/pr-checks
+    trigger: { interval: { minutes: 5 } }
+```
+
+The schedule runs as the package's owner, who reads nothing and launches
+nothing themself. The step does both, as each job's person. An admin
+switches it off as any package schedule. Its runs are visible to
+whoever opens the automation's runs: one step, two counts.
 
 **Against the 2026-11-19 ruling** (stadeum `plans/software.md` §10, row 10:
 repository webhooks to each box's strut, polling as the fallback), polling
@@ -161,11 +211,11 @@ first is still the right order:
 - **Minutes are fine here.** The fix turn itself takes minutes. Polling also
   needs no public route and no signatures.
 - **The webhook is a trigger, not a redesign.** When `hooks:` lands,
-  stadeum/github's `on-event` workflow calls one step, `job/pr-checked
-  { url }`. That step runs `checkJob` now for each job watching that URL (a
-  scan of the `.prs` records), and the poll stays as the fallback. The step
-  gives its caller nothing: it reads as each job's own person, and fires at
-  most once. A forged delivery only makes strut look sooner.
+  stadeum/github's `on-event` workflow calls the same step with the pull
+  request's URL, `job/pr-checks { url }`, and the schedule stays as the
+  fallback. The step gives its caller nothing: it reads as each job's own
+  person, and fires at most once. A forged delivery only makes strut look
+  sooner.
 
 **Cost.** Each watched pull request costs 3 GitHub reads per pass (the pull,
 its check runs, its statuses), on its person's token. Every 5 minutes, that
@@ -202,8 +252,8 @@ pins that it says what `fixPrompt` says for the same pull request.
 - **Never beside a live turn.** A job with a turn in flight is skipped
   without taking anything.
 - **One pass at a time,** in one process. Every take happens under the
-  record's lock, so a later `job/pr-checked` running beside a pass finds the
-  mark taken.
+  record's lock, so a `job/pr-checks { url }` from the webhook running
+  beside a pass finds the mark taken.
 - **The race that's left:** a person's Fix landing between the busy check
   and the launch. One of the two runs then fails with `job_busy:`. That's
   harmless, because the other is already fixing it.
@@ -232,12 +282,11 @@ again in a minute."
 
 ## Open questions, each with a default
 
-1. **On by default?** Hive's swarms already do this, and Hive asks strut to
-   wake (`wake: true` on its launches). If strut also did it there, a job
-   would get two turns. **Default: off.** `STRUT_PR_CHECKS_MINUTES` unset or
-   0 means off, and stadeum's boxes set it to 5 (one line in
-   stadeum-fleet's env). Once Hive drops its own copy, the default can be
-   5 everywhere.
+1. **Where is it on?** Settled by where the trigger lives. It's on where
+   a box follows strut-github 0.3.0, and off everywhere else. That
+   includes Hive's swarms, which wake their jobs themselves; if both did
+   it there, a job would get two turns. An admin switches it off with the
+   schedule's switch. **Default: the schedule ships on**, every 5 minutes.
 2. **Whose token, and who runs the turn?** **Default: the person of the
    turn that reported the pull request** (its `actor` and `principal`).
    Their token pushed it, and their bill pays. In practice that is the
@@ -269,13 +318,16 @@ again in a minute."
   with their packages.
 - **The webhook route itself** (stadeum §5 item 7). Only the step it would
   call is sketched here.
+- **Granting `job/pr-checks` to the agent.** Nothing needs it: the job's
+  own turn reads its checks with `github_pr_status`.
 - **A pending queue for a busy job.** The next pass is the retry.
 - **Conditional reads (ETags)** to make a pass cheaper. Add them if the
   read count ever matters.
 
 ## Work items
 
-One strut PR, then two one-liners elsewhere.
+One strut PR, then strut-github 0.3.0 once a strut with the step is on
+`stable`, then a one-line change to strut-code.
 
 1. **`src/jobs.ts`:** `pullRequests` on `JobRecord`, and the
    `jobs/.prs/` mark kept by `updateJobRecord` (watched = no `fixed`, no
@@ -290,21 +342,31 @@ One strut PR, then two one-liners elsewhere.
    → the mark given back, two pull requests → one turn, no token →
    `unread` and still watched.
 3. **`src/createStrut.ts`:** `watch` in the run-end path beside
-   `wakeOnEnd` (once the wake outcome is known), and the timer beside
-   retention, behind `STRUT_PR_CHECKS_MINUTES`.
-4. **`job/get` / `GET /jobs/:id`:** `pullRequests`. The Jamie card shows
+   `wakeOnEnd` (once the wake outcome is known), and the `prChecks`
+   capability on the services bag.
+4. **`src/steps/lib/job/pr-checks.ts`:** the step, `{ url? }` →
+   `{ jobs, sent }`. Tests: a pass, one URL, and a call during a pass
+   waiting for it and starting nothing.
+5. **`job/get` / `GET /jobs/:id`:** `pullRequests`. The Jamie card shows
    the line. `JobView` gains the field.
-5. **Docs:** `docs/jobs.md` (a key concept and the file), and
-   `docs/environment.md` (`STRUT_PR_CHECKS_MINUTES`). In `specs/API.md`,
-   the `GET /jobs/:id` field.
-6. **Elsewhere, after it lands:** stadeum-fleet sets
-   `STRUT_PR_CHECKS_MINUTES=5` on boxes. strut-code's Code Change §6 gets
-   one line under "Still running": if they fail later, strut sends you one
-   turn to fix them.
+6. **Docs:** `docs/jobs.md` (a key concept, the file and the step). In
+   `specs/API.md`, the `GET /jobs/:id` field and the step.
+7. **strut-github 0.3.0** (stakwork/strut-github), after strut's `stable`
+   has the step:
+   - `workflows/pr-checks.yaml`, one `job/pr-checks` step;
+   - the `schedules:` entry;
+   - the README;
+   - a package test that the schedule is declared and that its workflow
+     runs the step.
+
+   On an older strut the step is unknown, and each fire fails saying so.
+   That's why the package waits for strut.
+8. **strut-code:** Code Change §6 gets one line under "Still running": if
+   they fail later, strut sends you one turn to fix them.
 
 ## Validation
 
-On stadeum.stakwork.ai, with the variable set:
+On stadeum.stakwork.ai, following strut-github 0.3.0:
 
 1. Ask Jamie for a change in a test repository whose CI will fail (a
    failing test on the branch).
