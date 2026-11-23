@@ -144,6 +144,9 @@ export interface AppPublishOptions {
   surface: PublishSurface;
   publisher?: string;
   actor?: string;
+  /** Who pays for the version's summary (./summary.ts): a run's principal
+   *  (`app/publish`). Default: `actor`. */
+  principal?: string;
   source?: VersionSource;
   upstream?: Upstream | null;
   reactivateKnown?: boolean;
@@ -426,7 +429,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
    *  files against the version before it goes to the summarizer, and what
    *  comes back is written onto the version. Failure or a timeout leaves it
    *  empty — never the publish's problem. */
-  const summarize = async (name: string, version: string, manifest: AppManifest, dir: string): Promise<void> => {
+  const summarize = async (name: string, version: string, manifest: AppManifest, dir: string, payer: { actor?: string; principal?: string }): Promise<void> => {
     if (!deps.summarize) return;
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -449,7 +452,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
         }
       }
       const line = await Promise.race([
-        deps.summarize({ name, version, manifest, ...(diff !== undefined ? { diff } : {}) }),
+        deps.summarize({ name, version, manifest, ...(diff !== undefined ? { diff } : {}), ...(payer.actor ? { actor: payer.actor } : {}), ...(payer.principal ? { principal: payer.principal } : {}) }),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), deps.summaryTimeoutMs ?? SUMMARY_TIMEOUT_MS); }),
       ]);
       if (line) await deps.workspace.setAppVersionSummary(name, version, line);
@@ -801,7 +804,10 @@ export function createApps(deps: AppsDeps): AppsCapability {
         await recordTree(path, built.hash);
       });
       await evict(name);
-      if (r.changed && opts.source !== "seed") void summarize(name, r.version, built.manifest, path);
+      if (r.changed && opts.source !== "seed") {
+        const principal = opts.principal ?? opts.actor;
+        void summarize(name, r.version, built.manifest, path, { ...(opts.actor ? { actor: opts.actor } : {}), ...(principal ? { principal } : {}) });
+      }
       // A person's publish of a manifest naming a sealed workflow IS their
       // grant of it (./grants.ts): recorded, so the pages may launch it.
       if (opts.surface === "person") {

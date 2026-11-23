@@ -14,6 +14,12 @@ export interface AppSummaryInput {
   version: string;
   manifest: AppManifest;
   diff?: string;
+  /** Who published it. */
+  actor?: string;
+  /** Who the model call is billed to (`llmAuth`'s principal, as for a chat
+   *  turn): the publish's principal, else its actor. Absent: nobody, so a
+   *  strut that requires a payer (STRUT_MOTHERSHIP_REQUIRED) refuses it. */
+  principal?: string;
 }
 
 /** Returns the one line, or nothing; throws on failure. */
@@ -24,6 +30,9 @@ const DIFF_MAX = 6000;
 const FILE_MAX = 800;
 const LINE_MAX = 160;
 const SUMMARY_MAX = 140;
+
+/** `v7` → 7 (0 for a label that is not `v<N>`). */
+const versionNumber = (version: string) => Number.parseInt(version.slice(1), 10) || 0;
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
@@ -58,12 +67,14 @@ export function oneLine(text: string): string {
  *  resolver as the llm step — the secrets boundary and the `llmAuth`
  *  gateway seam. With no model it throws and nothing is written. */
 export function llmSummarizer(deps: { secrets?: SecretsCapability; llmAuth?: LlmAuth }): AppSummarizer {
-  return async ({ name, manifest, diff }) => {
+  return async ({ name, version, manifest, diff, actor, principal }) => {
     // No model here: throw, and nothing is written (the caller warns).
     const { model } = await resolveModel({
       model: "haiku",
       ...(deps.secrets ? { secrets: deps.secrets } : {}),
-      ...(deps.llmAuth ? { llmAuth: deps.llmAuth, auth: { kind: "chat" as const, chatId: `app-summary:${name}`, turn: 0 } } : {}),
+      // One gateway session per app, one turn per version: each summary is
+      // its own run at the gateway, under its own cap.
+      ...(deps.llmAuth ? { llmAuth: deps.llmAuth, auth: { kind: "chat" as const, chatId: `app-summary:${name}`, turn: versionNumber(version), ...(actor ? { actor } : {}), ...(principal ? { principal } : {}) } } : {}),
     });
     const { generateText } = await import("ai");
     const about = `App "${manifest.title}"${manifest.description ? ` — ${manifest.description}` : ""}.`;

@@ -7,8 +7,9 @@ import { FileWorkspaceStore } from "../workspace.js";
 import { manifestSchema } from "./manifest.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { createApps } from "./apps.js";
-import { appDiff, oneLine, type AppSummarizer, type AppSummaryInput } from "./summary.js";
+import { appDiff, llmSummarizer, oneLine, type AppSummarizer, type AppSummaryInput } from "./summary.js";
 import type { KitLocation } from "./kit.js";
+import type { LlmAuthContext } from "../llm.js";
 
 /** A version's one-line summary: written after the publish, by an injected summarizer; never the publish's problem. */
 
@@ -61,6 +62,33 @@ describe("app version summaries", () => {
     const rec = await ws.getApp("tasks");
     assert.equal(rec?.versions["v2"]?.summary, "Added an archive button");
     assert.equal((await apps.get("tasks"))?.versions["v1"]?.summary, "A task list");
+  });
+
+  it("the publisher pays: the summarizer is told the actor, and a run's principal over it", async () => {
+    const seen: AppSummaryInput[] = [];
+    const { ws, apps } = setup(async (i) => { seen.push(i); return "A task list"; });
+    assert.equal((await apps.publish(await appDir("p1"), "tasks", { surface: "person", actor: "alice" })).ok, true);
+    await settle(async () => !!(await summaryOf(ws, "v1")));
+    assert.equal(seen[0]?.actor, "alice");
+    assert.equal(seen[0]?.principal, "alice");
+    assert.equal((await apps.publish(await appDir("p2"), "tasks", { surface: "ai", actor: "bob", principal: "owner" })).ok, true);
+    await settle(async () => !!(await summaryOf(ws, "v2")));
+    assert.equal(seen[1]?.actor, "bob");
+    assert.equal(seen[1]?.principal, "owner");
+  });
+
+  it("llmSummarizer asks llmAuth to bill the principal, one chat turn per version", async () => {
+    const asked: LlmAuthContext[] = [];
+    // The hook stops the call before any model is reached.
+    const summarize = llmSummarizer({ llmAuth: async (ctx) => { asked.push(ctx); throw new Error("stop here"); } });
+    const manifest = manifestSchema.parse({ title: "T" });
+    await assert.rejects(summarize({ name: "acme/tasks", version: "v3", manifest, actor: "alice", principal: "alice" }), /stop here/);
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0]!.kind, "chat");
+    assert.equal(asked[0]!.principal, "alice");
+    assert.equal(asked[0]!.actor, "alice");
+    assert.equal(asked[0]!.chatId, "app-summary:acme/tasks");
+    assert.equal(asked[0]!.turn, 3);
   });
 
   it("a summarizer that throws still publishes, with no summary, and warns", async () => {

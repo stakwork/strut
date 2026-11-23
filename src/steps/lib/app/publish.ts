@@ -23,6 +23,8 @@ export default defineStep({
       surface: "ai",
       source: "agent",
       ...(ctx.actor ? { actor: ctx.actor } : {}),
+      // The run's payer pays for the version's summary.
+      ...(ctx.principal ? { principal: ctx.principal } : {}),
     });
   },
 });
