@@ -260,6 +260,25 @@ index. A change in this area updates this file, not AGENTS.md.
     each iteration's tool calls show in order. No-op without a runner `ctx`
     (in-code/test); skips `final_answer` + provider-executed tools (no
     `execute`). `agent.run` now consumes `ctx` (registry + emit).
+  - **On a job's turn, the agent is reminded of its checklist**
+    (`wrapToolsWithChecklist`, applied once to the whole tool set). Only
+    when the run has a job and the agent holds `job/status`. After
+    `CHECKLIST_EVERY` (10) tool calls with no status call, the next tool
+    answer the model reads ends with one line: the list it last sent ("done:
+    … · doing: … · todo: …"), or that the person watching sees none. Again
+    at 20, 40, … quiet calls, so a turn that ignores it hears less of it;
+    a status call starts the count over, and a list whose steps are all done
+    gets nothing. The line goes on what the model READS (`toModelOutput`,
+    by the call's id, since the SDK converts one result more than once), so
+    the tool's output, its run event and `run.json` are unchanged; it is in
+    the result when the result is made, so the recorded history keeps it
+    byte for byte. A failed call passes a due line to the next call that
+    answers. Why: the step's description gets a first call at best. Two Pod
+    Setup turns on a real box (2026-11-23) sent the list once at second 2
+    and never again in 26 minutes, or never sent one. Claude Code keeps its
+    to-do list current the same way, by reminding from the harness. Tests:
+    `steps/core/agent-checklist.test.ts`, one of them a turn against a
+    stand-in provider.
   - **A `bash` command is one unit of run control.** The tool runs the line
     through `runShellProcess` (`shell.ts`: `runProcess` under the platform
     shell — its own PROCESS GROUP) and watches `ctx.control.state` while it
