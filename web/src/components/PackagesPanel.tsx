@@ -433,7 +433,7 @@ function PackagePage(props: {
             ))}
           </div>
         )}
-        <input type="text" value={typeDraft} list="package-types" placeholder="A node type the workflows write, with its parents and edges"
+        <input type="text" value={typeDraft} list="package-types" placeholder="Add a node type"
           onInput={(e) => {
             const v = (e.target as HTMLInputElement).value;
             // A pick from the list is a whole name: add it at once.

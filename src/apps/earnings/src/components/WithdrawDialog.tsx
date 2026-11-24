@@ -73,7 +73,7 @@ export function WithdrawDialog(props: { wallet: Wallet; outstandingUsd: number; 
         </DialogHeader>
         {stage === "paste" && (
           <div className="flex flex-col gap-3">
-            <Textarea placeholder="lnbc… — an invoice from the wallet the sats should go to" className="h-24 w-full min-w-0 resize-none font-mono text-xs break-all [field-sizing:fixed]" value={text} onChange={(e) => setText(e.target.value)} />
+            <Textarea placeholder="Paste a Lightning invoice" className="h-24 w-full min-w-0 resize-none font-mono text-xs break-all [field-sizing:fixed]" value={text} onChange={(e) => setText(e.target.value)} />
             {reading && !reading.ok && reading.error && <div className="text-sm text-destructive">{reading.error}</div>}
             {reading?.ok && (
               <div className="flex flex-col gap-1 text-sm">

@@ -98,7 +98,7 @@ export function WithdrawDialog(props: {
                 id="withdraw-invoice"
                 class="withdraw-invoice"
                 rows={4}
-                placeholder="lnbc… — from the wallet the sats should go to"
+                placeholder="Paste a Lightning invoice"
                 value={text}
                 disabled={stage.at !== "edit"}
                 onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}
