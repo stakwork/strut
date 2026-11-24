@@ -126,8 +126,9 @@ the same branch, push, and say what failed.
   - It's stamped with the run's id once the turn launches, and given back
     if the launch throws.
   - A fix that fails again is a person's click on the card.
-- **Never beside a live turn:** a job whose directory a run holds
-  (`jobHolder`) is passed over without taking anything. The next pass is
+- **Never beside a live turn:** a job with a run in flight (what
+  `job/start` checks; since plans/job-follow-ups.md, before that the
+  directory's holder) is passed over without taking anything. The next pass is
   the retry.
 - **One pass at a time:** a call while a pass runs gets that pass's result
   and starts nothing.

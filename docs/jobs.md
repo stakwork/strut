@@ -283,6 +283,23 @@ index. A change in this area updates this file, not AGENTS.md.
   who and what. When to look is a caller's: `job/pr-checks`, which
   strut-github's schedule runs, takes no person and no text.
 
+- **A step says "look again later": one turn once it settles**
+  (`plans/job-follow-ups.md`; `src/follow-ups.ts`,
+  `ctx.services.jobs.followUp`). For work that goes on after a step
+  returns — a pod's bake takes ten minutes — so the job's agent ends its
+  turn instead of sleeping in a shell, and the person can talk to the job
+  meanwhile. A step in a job's turn names a look (a step and its input), an
+  interval and a limit; strut keeps it on the job's record, runs the look
+  as the person of the run that asked until its output says `settled:
+  true`, and sends the job one turn carrying the answer (or saying it timed
+  out), naming that run's conversation with `wake: true`, as the CI wake
+  does. A turn that is due while a run of the job is in flight waits on
+  the record until the job is free. A package never names the person: it
+  names nothing but the look, and only with its own steps. The look is
+  driven by strut's own timer, armed only while one is pending, so it
+  needs no schedule, and only a step that asks gets a turn (nothing on
+  Hive's swarms does).
+
 - **Jobs sidebar — the operator's view of a job** (`plans/jobs-sidebar.md`;
   `src/job-threads.ts`, `web/src/components/JobTimeline.tsx`). The first-class
   item in a job is a THREAD, not a run: `GET /jobs/:id` folds every agent
@@ -392,7 +409,7 @@ SYSTEM WORKFLOWS: the built-in automations strut ships, one folder each under sr
 
 ### `src/jobs.ts`
 
-the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`; a child run launched by `meta/run-workflow` shares it — its controller descends from the holder's; `reholdJob` takes it again for a run a durable resume replays past `job/dir` or a kept `git/checkout` — their `onReplay` — and waits while another run holds it, told at once when it goes), the idle sweep (holds released, repositories removed, files kept; it reads only the jobs in `jobs/.sweep/`), the two INDEXES beside the records (`jobs/.used/` by `usedAt`, `jobsByUse`; `jobs/.sweep/`, `needsSweep`; kept by `updateJobRecord`, filled for older records by one pass, `jobsIndexed`, stamped in `jobs/.indexed`), HOLDS (plans/jobs.md §6: `ctx.services.jobs.hold/release/holds` — what a tool claimed that outlives the run, a pod, recorded with the registry step that lets it go; `releaseWith` runs it under a minimal context from the sweep and from `DELETE /jobs/:id` → `deleteJob`), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use, `JOB_WORKFLOWS` + `turnOf` (the job-shaped workflows a job's turns may run — `job`, `builder` — and the job's newest such run: what `job/continue` launches and `GET /jobs/:id` reports as `workflow`), and LIVE UPDATES (plans/live-artifacts.md: `setJobCallback` keeps a launch's `jobCallback` in `jobs/.callbacks/`, never in the record; `notifyJob` / `ctx.services.jobs.notify` POST `job.update` there, ordered per job and coalesced per thing; holds and the verify pass announce themselves, a hold's update naming the job's turn in flight through the `runOf` seam; the jobs a run starts through `job/start` / `job/continue` INHERIT the launching run's `jobCallback` — kept beside its log by `RunStore.setRunJobCallback`, so a jobless orchestrator turn carries one for the jobs it starts, CALLBACKS.md §5); every update is also KEPT, callback or not, in a per-job feed (`readJobUpdates`, src/live-feed.ts, 200 things a job, in memory) that `ctx.services.jobs.updates`, the `job/updates` step and `GET /jobs/:id/updates` read — how an app's page, which cannot be called, follows its jobs (plans/live-feeds.md §1). And `prFixes` with `editPrFixes`: the one automatic fix per pull request (plans/pr-checks.md, src/pr-checks.ts), changed under the record's lock without stamping `usedAt`
+the job directory (plans/jobs.md): `<dataDir>/jobs/<encoded id>/` + its record beside it (usedAt, the repos checked out into it), held by one run at a time (`job_busy:`; a child run launched by `meta/run-workflow` shares it — its controller descends from the holder's; `reholdJob` takes it again for a run a durable resume replays past `job/dir` or a kept `git/checkout` — their `onReplay` — and waits while another run holds it, told at once when it goes), the idle sweep (holds released, repositories removed, files kept; it reads only the jobs in `jobs/.sweep/`), the two INDEXES beside the records (`jobs/.used/` by `usedAt`, `jobsByUse`; `jobs/.sweep/`, `needsSweep`; kept by `updateJobRecord`, filled for older records by one pass, `jobsIndexed`, stamped in `jobs/.indexed`), HOLDS (plans/jobs.md §6: `ctx.services.jobs.hold/release/holds` — what a tool claimed that outlives the run, a pod, recorded with the registry step that lets it go; `releaseWith` runs it under a minimal context from the sweep and from `DELETE /jobs/:id` → `deleteJob`), `withLock` (the in-process keyed mutex the git steps share), the file listing/path guard the `/jobs/:id/files` routes use, `JOB_WORKFLOWS` + `turnOf` (the job-shaped workflows a job's turns may run — `job`, `builder` — and the job's newest such run: what `job/continue` launches and `GET /jobs/:id` reports as `workflow`), the FOLLOW-UPS a step asked for (`JobRecord.followUps`, `editFollowUps`, marked in `jobs/.follow-ups/` and read back by `jobsFollowingUp`; src/follow-ups.ts runs them), and LIVE UPDATES (plans/live-artifacts.md: `setJobCallback` keeps a launch's `jobCallback` in `jobs/.callbacks/`, never in the record; `notifyJob` / `ctx.services.jobs.notify` POST `job.update` there, ordered per job and coalesced per thing; holds and the verify pass announce themselves, a hold's update naming the job's turn in flight through the `runOf` seam; the jobs a run starts through `job/start` / `job/continue` INHERIT the launching run's `jobCallback` — kept beside its log by `RunStore.setRunJobCallback`, so a jobless orchestrator turn carries one for the jobs it starts, CALLBACKS.md §5); every update is also KEPT, callback or not, in a per-job feed (`readJobUpdates`, src/live-feed.ts, 200 things a job, in memory) that `ctx.services.jobs.updates`, the `job/updates` step and `GET /jobs/:id/updates` read — how an app's page, which cannot be called, follows its jobs (plans/live-feeds.md §1). And `prFixes` with `editPrFixes`: the one automatic fix per pull request (plans/pr-checks.md, src/pr-checks.ts), changed under the record's lock without stamping `usedAt`
 
 ### `src/live-feed.ts`
 
@@ -442,12 +459,22 @@ A JOB'S PULL REQUEST FAILS ITS CHECKS (plans/pr-checks.md), Hive's `check-failur
   - its artifacts of `kind: "pull_request"` with a github.com link (`prOf`, the Jamie card's rule), read through the job index (`JobView.artifacts`, each with the run that last reported it);
   - that run's `run.start`: the conversation its end woke (`startedBy.session`, else `conversation`), its actor, principal and `params.model`. With no conversation the PR is not read.
   - The PR is read with `readPullRequest` and the person's `secrets.git(url)`.
-- **The outcome** (`outcomeOf`): merged or closed, a check still running, or none failed — nothing. Otherwise the job gets ONE turn, the job's own workflow (`turnOf`), as that person, `{ input: { prompt }, job, conversation, wake: true }` — what the card's Fix sends — so `wake.ts` relays its end.
+- **The outcome** (`outcomeOf`): merged or closed, a check still running, or none failed — nothing. Otherwise the job gets ONE turn, the job's own workflow (`turnOf`), as that person, `{ input: { prompt, kind? }, job, conversation, wake: true }` (createStrut's `launchJobTurn`, shared with follow-ups: the job's kind carried as a continue carries it) — what the card's Fix sends — so `wake.ts` relays its end.
 - **The words** are `checksFixPrompt` (the card's `fixPrompt`, pinned by a test) for each failed PR, then `STRUT_SENT`.
 - **Once per pull request, ever:** `JobRecord.prFixes[url]`, taken under the record's lock before the launch (`editPrFixes`, jobs.ts: not a use), stamped with the run's id once launched, given back when the launch throws.
-- **Never beside a live turn:** a job whose directory a run holds (`jobHolder`) is passed over without taking anything, and the next pass is the retry.
+- **Never beside a live turn:** a job with a run in flight (createStrut's `jobBusy`, what `job/start` checks) is passed over without taking anything, and the next pass is the retry. The launch checks again with nothing awaited before it (`launchJobTurn`), so a turn that started meanwhile refuses it and the mark is given back.
 - **One pass at a time:** a call while a pass runs gets that pass's result.
 - A missing token or a refused read is warned once per process, not every pass.
+
+### `src/follow-ups.ts`
+
+A STEP SAYS "LOOK AGAIN LATER" (plans/job-follow-ups.md): strut runs a step again, as the person of the run that asked, until its output says `settled: true`, then sends the job ONE turn carrying the answer.
+- **`createFollowUps(deps)`** gives `ask`, which createStrut puts on the bag as `ctx.services.jobs.followUp`, and the timer (`tick`, `start` at boot, `stop` at close).
+- **Asked for:** `{ job, runId, id?, look: { type, input }, everySeconds?, limitMinutes? }`. The run must be one of the job's, and not a trial's (whose job is closed once it is judged); its person and conversation are read by strut from its `run.start` (`turnPerson`, shared with pr-checks). Kept on `JobRecord.followUps` (`editFollowUps`, jobs.ts: not a use), the job marked in `jobs/.follow-ups/`. The same `id` again replaces it. A package's step holds it to its own run and job, looking with its package's own steps (src/packages/fence.ts).
+- **Looked at** on a timer armed only while one is pending, every `FOLLOW_UP_TICK_MS` (15 s): each follow-up after its own interval (30–3600 s, default 60), outside any run, as a proposal's apply is: the bag bound to the person (`bindPrincipal`), its node files naming the run that asked, the registry, the job. A look that throws is tried again; the last look of each is kept in memory, so a restart looks again at once.
+- **Settled, or past `until`** (1–1440 minutes, default 60): the turn's prompt (`settledPrompt`, `timedOutPrompt`) is written on the record as `ready`, and goes as soon as no run of the job is in flight: the job's own workflow (`turnOf`), as the person, naming the conversation with `wake: true` and carrying the job's `kind` and `peer` as `job/continue` does (`launchJobTurn`), so `wake.ts` relays its end and the kind's claims judge it. Its last line is `FOLLOW_UP_SENT`.
+- **Once:** taken off the record under its lock before the launch, put back when the launch is refused. Ready ones of one job go as one turn.
+- **Within the job's budget:** `launchJobTurn` refuses a job that has spent its budget (`jobBudgetProblem`, `job_budget_spent:`), so the turn waits on the record until a person raises it; the look's bag is bound with the job as its `budgetJob`, so a grant it makes is held to the budget.
 
 ### `src/artifact-refs.ts`
 

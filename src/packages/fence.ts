@@ -196,6 +196,8 @@ function held<T extends object>(cap: T, methods: Record<string, unknown>): T {
  * runner gave this step — whatever it passes. `runs.launch` takes the run's
  * own caller; `authoring.runWorkflow`, `resumeRun` and `controlRun`,
  * `jobs.launch` and `proposals.propose` take the run's actor and principal;
+ * `jobs.followUp` takes the run itself, whose person strut reads, and
+ * looks only with the package's own steps;
  * a request to a peer carries the run's principal as `x-strut-actor`, or
  * none. A run that acts for nobody launches none from it (`runs.launch`,
  * `jobs.launch`): with no person, a launch runs as the launched workflow's
@@ -238,14 +240,33 @@ function heldToItsRun(services: Record<string, unknown>, ctx: StepContext<any>, 
     });
   }
   const jobs = services["jobs"] as JobsCapability | undefined;
-  if (jobs?.launch) {
-    const launch = jobs.launch.bind(jobs);
+  if (jobs?.launch || jobs?.followUp) {
+    const launch = jobs.launch?.bind(jobs);
+    const followUp = jobs.followUp?.bind(jobs);
     out["jobs"] = held(jobs, {
-      launch: (opts: Parameters<typeof launch>[0]) => {
-        someone();
-        const { actor: _a, principal: _p, ...rest } = opts;
-        return launch({ ...rest, ...person });
-      },
+      ...(launch
+        ? {
+            launch: (opts: Parameters<typeof launch>[0]) => {
+              someone();
+              const { actor: _a, principal: _p, ...rest } = opts;
+              return launch({ ...rest, ...person });
+            },
+          }
+        : {}),
+      // A follow-up looks as the person of the run that asks
+      // (plans/job-follow-ups.md): this step's own run and job, and with
+      // one of its package's own steps.
+      ...(followUp
+        ? {
+            followUp: (ask: Parameters<typeof followUp>[0]) => {
+              if (!ctx.job) throw new Error(`follow_up_fenced: ${type} came from the package ${fence.package}, and its run has no job to follow up`);
+              if (!ask.look?.type?.startsWith(`${fence.package}/`)) {
+                throw new Error(`follow_up_fenced: ${type} came from the package ${fence.package}, whose follow-ups look with its own steps, not ${ask.look?.type}`);
+              }
+              return followUp({ ...ask, job: ctx.job, runId: ctx.runId });
+            },
+          }
+        : {}),
     });
   }
   const proposals = services["proposals"] as ProposalsCapability | undefined;
