@@ -3401,8 +3401,9 @@ GET /apps/look/stream?app=<name>[&version=vN][&input=<deep link>]     (a WebSock
   request it makes answered by strut in this process as that person
   (§14.3, `app/look`): the browser holds no credential and has no route to
   strut.
-- **The app:** `app` its name, `version` a published version (the live one
-  without it), `input` what a deep link to it carries (`k=v&k2=v2`,
+- **The app:** `app` its name (a package's app is `<package>/<folder>`: the
+  canvas package's is `stadeum/canvas/canvas`), `version` a published
+  version (the live one without it), `input` what a deep link to it carries (`k=v&k2=v2`,
   URL-encoded): the query the kit's `appLink(name, input)` writes, so the
   app opens where that link takes a person.
 - **Refused before the upgrade**, as JSON with the status: `401` no
@@ -3432,7 +3433,7 @@ Once open, strut sends and never reads:
   (the voice service does, every second).
 
 ```js
-const ws = new WebSocket("ws://strut:3000/apps/look/stream?app=stadeum%2Fcanvas&input=" + encodeURIComponent("present=job-12"),
+const ws = new WebSocket("ws://strut:3000/apps/look/stream?app=stadeum%2Fcanvas%2Fcanvas&input=" + encodeURIComponent("present=job-12"),
   { headers: { authorization: `Bearer ${STRUT_API_KEY}`, "x-strut-actor": person } });
 ws.on("message", (data, binary) => (binary ? show(data) : console.error(JSON.parse(String(data)).error)));
 ```

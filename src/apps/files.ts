@@ -67,10 +67,13 @@ export function appVersionDir(root: string, name: string, version: string): stri
 }
 
 /** An absolute path inside a version's directory, or a throw: the file
- *  routes' guard, as `jobFilePath` is the job routes'. */
+ *  routes' guard, as `jobFilePath` is the job routes'. `root` may be
+ *  relative (a data dir of `./workspace`): it is resolved before the
+ *  comparison, or every file under it would read as escaping. */
 export function appFilePath(root: string, relPath: string): string {
-  const abs = resolve(root, relPath);
-  if (abs !== root && !abs.startsWith(root + sep)) throw new Error(`apps: path escapes the app directory: ${relPath}`);
+  const base = resolve(root);
+  const abs = resolve(base, relPath);
+  if (abs !== base && !abs.startsWith(base + sep)) throw new Error(`apps: path escapes the app directory: ${relPath}`);
   return abs;
 }
 
