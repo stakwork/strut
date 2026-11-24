@@ -37,6 +37,12 @@ import { attachmentsField, handedOn, launchOnce, launchOutput, requireJobLaunch 
  * `kindPage`), so the job starts from the kind's convention — a Code
  * Change's sizing rule, its sandbox — instead of having to open it. A
  * builder job reads its own page, so `kind` is a code job's only.
+ *
+ * `budgetUsd` is the job's budget (stadeum plans/experiments.md, "A budget
+ * on a job"): the person's own figure, passed on by their conversation, set
+ * on the job's record before its first run (src/jobs.ts `budgetUsd`).
+ * Raising it later is a person's too (`PUT /jobs/:id/budget`), never a
+ * step's: the job's own agent holds no way to change it.
  */
 export default defineStep({
   type: "job/start",
@@ -75,6 +81,13 @@ export default defineStep({
       .describe(
         "The kind of work, by its name in the list of the kinds of work a job does here (\"Code Change\"), when the request is one of them: the job starts every turn from that kind's page. Leave it out when none fits. workflow: job only — a builder job reads its own page.",
       ),
+    budgetUsd: z
+      .number()
+      .positive()
+      .optional()
+      .describe(
+        "The job's budget in dollars: a cap on what its model calls may spend, it and everything it runs, kept by the server — the job stops when it is spent. Only the amount the PERSON gave in this conversation (\"$100\"), never one you chose; leave it out when they named none.",
+      ),
     attachments: attachmentsField,
   }),
   output: launchOutput,
@@ -105,6 +118,7 @@ export default defineStep({
         ...(cfg.kind ? { kind: cfg.kind } : {}),
       },
       ...(attachments ? { attachments } : {}),
+      ...(cfg.budgetUsd !== undefined ? { budgetUsd: cfg.budgetUsd } : {}),
     });
   },
 });

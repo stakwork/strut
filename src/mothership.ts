@@ -36,6 +36,17 @@
  * no step (LLM-authored ones included) can read another user's macaroon
  * through `ctx.services.secrets`, and never in the Secrets list.
  *
+ * A JOB with a budget (stadeum plans/experiments.md, "A budget on a job";
+ * src/jobs.ts `budgetUsd`) gets a link of its own between the delegation and
+ * the link of each run that spends it (`ctx.budgetJob`: the job's own runs,
+ * and a trial's samples one of them started) — the same run id for every
+ * such run (`jobLinkId`), so the gateway sums the job's spend across them and
+ * refuses the call that would go past the budget, in flight or not. A run
+ * link under it is capped at no more than what strut's record says the job
+ * has left, which holds even after the gateway's counter for the job
+ * expired (a job idle past the counter's life). A job that has spent it all
+ * gets no link: the call fails `job_budget_spent:` here.
+ *
  * With `grantsUrl`, `grants` is `ctx.services.llm` (stakwork/pods PLAN.md
  * §3.2): model calls for a machine outside strut — a pod — through a key the
  * host makes for it, billed to the run's principal under a cap and an expiry
@@ -52,6 +63,8 @@ import type { LlmAuth, LlmAuthContext, LlmAuthResult, LlmGrant, LlmGrants } from
 import { gatewayLacksProvider } from "./llm.js";
 import { bootEnv } from "./env.js";
 import { DEFAULT_RUN_CAP_USD, resolveRunCap } from "./run-cap.js";
+import { budgetSpentMessage, jobBudgetOf, jobRoot, readJobRecord, type JobBudget } from "./jobs.js";
+import { idProblem } from "./session-store.js";
 
 /** The one agent name hive authorizes for strut; every lineage starts here. */
 export const STRUT_AGENT = "strut-agent";
@@ -256,6 +269,14 @@ export function stepAgentName(stepPath: string): string {
   return name || "unknown";
 }
 
+/** The run id a job's link carries (the job's budget at the gateway): the
+ *  same for every run of the job, so the gateway's counter for it is the
+ *  job's spend. Prefixed so it never meets a run's id, and encoded so a job
+ *  id's `/` (an app's `app/<name>/…`) never reaches a gateway route. */
+export function jobLinkId(job: string): string {
+  return `job.${encodeURIComponent(job)}`;
+}
+
 /** A run's cost cap (src/run-cap.ts): re-exported, the Mothership's to apply. */
 export { resolveRunCap };
 
@@ -328,6 +349,9 @@ interface RunLink {
   exp: string;
   expMs: number;
   delegationId: string;
+  /** The job budget it was linked under (`job:usd:left`), or "" for none: a
+   *  budget changed since (a person raised it) links the run again. */
+  jobKey: string;
 }
 
 export function createMothership(opts: MothershipOptions): Mothership {
@@ -378,19 +402,46 @@ export function createMothership(opts: MothershipOptions): Mothership {
     for (const [k, v] of runLinks) if (v.expMs <= nowMs) runLinks.delete(k);
   };
 
+  /** The job's budget, read off its record beside `dataDir` (src/jobs.ts),
+   *  leaving out `runId`'s own recorded cost — a resumed run's, which its own
+   *  gateway counter already holds. Undefined with no job, no record or no
+   *  budget. */
+  const jobBudget = async (job: string | undefined, runId: string | undefined): Promise<JobBudget | undefined> => {
+    if (!job || idProblem(job)) return undefined;
+    return jobBudgetOf(await readJobRecord(jobRoot(opts.dataDir, job)), runId);
+  };
+  /** The job's own link off the delegation: its budget, under the one run id
+   *  every run of the job shares (`jobLinkId`), so the gateway sums the job.
+   *  It lives as long as the delegation, so the gateway's counter for it
+   *  lives as long as it can (its TTL follows a link's exp, to a ceiling). On
+   *  v1, where a link must narrow its parent's, never above the ceiling. */
+  const jobLink = (o: OpenDelegation, job: string, budget: JobBudget, now: Date): Link =>
+    o.root.extend({
+      runId: jobLinkId(job),
+      capUsd: o.v === 1 ? Math.min(budget.usd, o.ceilingUsd) : budget.usd,
+      iat: now.toISOString(),
+      exp: o.exp,
+    });
+
   async function runLink(ctx: LlmAuthContext, o: OpenDelegation, principal: string, now: Date): Promise<RunLink> {
     const runId = ctx.runId!;
+    const budget = await jobBudget(ctx.budgetJob, runId);
+    if (budget && budget.leftUsd <= 0) throw new Error(budgetSpentMessage(ctx.budgetJob!, budget));
+    const jobKey = budget ? `${ctx.budgetJob}:${budget.usd}:${budget.leftUsd}` : "";
     const cached = runLinks.get(runId);
-    if (cached && cached.delegationId === o.delegationId && cached.expMs - now.getTime() > RELINK_BEFORE_MS) return cached;
+    if (cached && cached.delegationId === o.delegationId && cached.jobKey === jobKey && cached.expMs - now.getTime() > RELINK_BEFORE_MS) return cached;
     if (!workspace) throw new Error("createMothership: call mount(strut) before running workflows");
     const meta = ctx.workflow ? await workspace.getWorkflowMetadata(ctx.workflow).catch(() => null) : null;
     // A public run carries a cap of its own (plans/paid-runs.md §7): the
-    // link carries the smaller of it and the workflow's.
-    const capUsd = capOrThrow(meta?.maxRunCostUsd, o, principal, ctx.maxCostUsd);
+    // link carries the smaller of it and the workflow's. A run under a job
+    // with a budget, the smaller of that and what the job has left.
+    const runCap = budget ? Math.min(ctx.maxCostUsd ?? Infinity, budget.leftUsd) : ctx.maxCostUsd;
+    const capUsd = capOrThrow(meta?.maxRunCostUsd, o, principal, runCap);
     const exp = expFor(now, o.exp);
-    const link = o.root.extend({ runId, capUsd, iat: now.toISOString(), exp });
+    const parent = budget ? jobLink(o, ctx.budgetJob!, budget, now) : o.root;
+    const link = parent.extend({ runId, capUsd, iat: now.toISOString(), exp });
     sweep(now.getTime());
-    const entry = { link, capUsd, exp, expMs: Date.parse(exp), delegationId: o.delegationId };
+    const entry = { link, capUsd, exp, expMs: Date.parse(exp), delegationId: o.delegationId, jobKey };
     runLinks.set(runId, entry);
     return entry;
   }
@@ -429,7 +480,10 @@ export function createMothership(opts: MothershipOptions): Mothership {
         "x-bf-dim-root-agent": STRUT_AGENT,
       },
       explainError: (err) =>
-        explainExhausted(err, d, principal, o.ceilingUsd) ?? explainRefused(err) ?? explainUnrouted(err, ctx.provider),
+        explainExhausted(err, d, principal, o.ceilingUsd) ??
+        (ctx.kind === "step" && ctx.budgetJob ? explainJobSpent(err, ctx.budgetJob) : undefined) ??
+        explainRefused(err) ??
+        explainUnrouted(err, ctx.provider),
       // A provider this gateway does not hold (a Numes nobody set up on it)
       // is called directly — unless every call must be billed here.
       direct: !required(),
@@ -464,7 +518,7 @@ export function createMothership(opts: MothershipOptions): Mothership {
     return { ok: res.ok, status: res.status, text };
   };
 
-  async function grant(principal: string | undefined, req: { name: string; hours: number }): Promise<LlmGrant | null> {
+  async function grant(principal: string | undefined, req: { name: string; hours: number }, job?: string): Promise<LlmGrant | null> {
     const { name: asked, hours } = req ?? ({} as typeof req);
     if (typeof asked !== "string" || !asked.trim()) throw new Error("llm.grant: name (a string) is required");
     if (typeof hours !== "number" || !Number.isFinite(hours) || hours <= 0 || hours > MAX_GRANT_HOURS) {
@@ -479,9 +533,15 @@ export function createMothership(opts: MothershipOptions): Mothership {
     // Never above the person's ceiling (v1's gateway would refuse the link;
     // on v2 the ceiling binds anyway): a person whose spending limit is under
     // the cap still gets a grant.
-    const capUsd = Math.min(resolveGrantCap(), o.ceilingUsd);
+    // Made in a job's run, a grant is held to the job's budget: its link sits
+    // under the job's (so the machine's calls count toward the job at the
+    // gateway) and is capped at what the job has left.
+    const budget = await jobBudget(job, undefined);
+    if (budget && budget.leftUsd <= 0) throw new Error(budgetSpentMessage(job!, budget));
+    const capUsd = Math.min(resolveGrantCap(), o.ceilingUsd, budget?.leftUsd ?? Infinity);
     const exp = expFor(now, o.exp, hours * 3600_000);
-    const macaroon = o.root.extend({ runId: `grant-${nonce()}`, agent: name, capUsd, iat: now.toISOString(), exp }).encode();
+    const parent = budget ? jobLink(o, job!, budget, now) : o.root;
+    const macaroon = parent.extend({ runId: `grant-${nonce()}`, agent: name, capUsd, iat: now.toISOString(), exp }).encode();
     const res = await askHost("POST", grantsUrl!, { name, macaroon, max_cost_usd: capUsd, expires_at: exp }, principal);
     if (!res.ok) throw new Error(`no grant for ${principal}: ${grantsUrl} answered ${res.status} ${res.text.slice(0, 300)}`);
     let body: { id?: unknown; key?: unknown; address?: unknown } | null = null;
@@ -503,8 +563,8 @@ export function createMothership(opts: MothershipOptions): Mothership {
     if (!res.ok && res.status !== 404) throw new Error(`could not revoke grant ${id}: ${grantsUrl} answered ${res.status} ${res.text.slice(0, 300)}`);
   }
 
-  const grantsFor = (principal: string | undefined): LlmGrants => ({
-    grant: (req) => grant(principal, req),
+  const grantsFor = (principal: string | undefined, job?: string): LlmGrants => ({
+    grant: (req) => grant(principal, req, job),
     revoke,
     forPrincipal: grantsFor,
   });
@@ -558,6 +618,17 @@ export function explainExhausted(err: unknown, d: Pick<Delegation, "delegationId
   if (!errorText(err).includes(d.delegationId)) return undefined;
   const ceiling = ceilingUsd != null ? ` ($${ceilingUsd})` : "";
   return `Mothership authorization for ${actor} is exhausted — its ceiling${ceiling} is spent; re-authorize from hive. (delegation ${d.delegationId}: ${String((err as { message?: unknown } | null)?.message ?? "")})`;
+}
+
+/**
+ * The gateway's refusal for a job whose BUDGET is spent names the job's link
+ * (`jobLinkId`), the layer that tripped: say so in the words every refusal
+ * of a spent job uses (`job_budget_spent:`), so the run's error is the same
+ * whether strut or the gateway stopped it. Any other error is left alone.
+ */
+export function explainJobSpent(err: unknown, job: string): string | undefined {
+  if (!errorText(err).includes(jobLinkId(job))) return undefined;
+  return `job_budget_spent: job "${job}" reached its budget at the gateway, which refused this call — a person raises the budget to go on. (${String((err as { message?: unknown } | null)?.message ?? "")})`;
 }
 
 /**

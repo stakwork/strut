@@ -46,6 +46,8 @@ export default defineStep({
       // Under the same job (plans/jobs.md §4): the child's `{{ $job }}` and
       // `job/dir` are this run's, and it shares the directory this run holds.
       ...(ctx.job ? { job: ctx.job } : {}),
+      // Spending the same job's budget (src/jobs.ts `budgetUsd`).
+      ...(ctx.budgetJob ? { budgetJob: ctx.budgetJob } : {}),
       // Its agents reach the same caller (`ctx.mcp`), as this run's do.
       ...(ctx.mcp?.length ? { mcp: ctx.mcp } : {}),
       // On this run's Concept branch, or (from main) the one named; a run on

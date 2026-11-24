@@ -182,12 +182,16 @@ export interface TrialsCapability {
   /** The cases a claim is tested by, replaced whole: a case already written is the same
    *  node, linked; one taken away is unlinked from this claim alone. */
   setCases(input: { claim: string; cases: Case[] }): Promise<{ ok: true; cases: TestCase[] } | Fail>;
-  /** Run a claim's cases `n` times each on the page as it is. Returns at once. */
-  trial(input: { claim: string; n: number; by?: string }): Promise<{ ok: true; batch: Batch } | Fail>;
+  /** Run a claim's cases `n` times each on the page as it is. Returns at once.
+   *  `budgetJob`: the job whose budget the samples spend — the job of the run
+   *  that asked (`ctx.budgetJob`), so an experiment's trials are held to its
+   *  budget (src/jobs.ts `budgetUsd`). */
+  trial(input: { claim: string; n: number; by?: string; budgetJob?: string }): Promise<{ ok: true; batch: Batch } | Fail>;
   /** Test a change: every check on the page, `n` samples a case on the
    *  change and the page topped up to as many. `docs` makes a new test;
-   *  `test` runs an existing one again, `n` more on both. Returns at once. */
-  test(input: { concept?: string; docs?: string; test?: string; n: number; by?: string }): Promise<{ ok: true; test: string; batch: Batch } | Fail>;
+   *  `test` runs an existing one again, `n` more on both. Returns at once.
+   *  `budgetJob` as `trial`'s. */
+  test(input: { concept?: string; docs?: string; test?: string; n: number; by?: string; budgetJob?: string }): Promise<{ ok: true; test: string; batch: Batch } | Fail>;
   /** The page takes a test's other wording. A page from git becomes a
    *  proposal into its checkout, or is refused where there is none. */
   use(input: { test: string; by?: string; proposer?: Proposal["by"] }): Promise<{ ok: true; landed?: true; proposed?: ProposedCheckout } | Fail>;
@@ -214,8 +218,9 @@ export interface TrialsDeps {
   history?: { touch(t: { cause: string; actor?: string }): void };
   /** Whether a workflow of that name is published here. */
   hasWorkflow(name: string): Promise<boolean>;
-  /** Run a workflow to its end, as a trial; `job`: as that job's turn. */
-  run(workflow: string, input: unknown, o: { actor?: string; branch?: string; trial: RunTrial; job?: string }): Promise<RunResult>;
+  /** Run a workflow to its end, as a trial; `job`: as that job's turn;
+   *  `budgetJob`: spending that job's budget. */
+  run(workflow: string, input: unknown, o: { actor?: string; branch?: string; trial: RunTrial; job?: string; budgetJob?: string }): Promise<RunResult>;
   /** A case whose workflow is one of `workflows` IS a job: each sample runs as a job of its own, and
    *  `close` lets the job go once the sample is judged (what it held, its directory, its record). */
   jobs?: { workflows: readonly string[]; close(id: string): Promise<void> };
@@ -391,6 +396,8 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
 
   /** Who started each batch: whose run each sample is. Never on what a page is shown. */
   const actors = new Map<string, string>();
+  /** The job whose budget each batch's samples spend: the asking run's (`trial`'s `budgetJob`). */
+  const budgets = new Map<string, string>();
   /** Each batch's samples as they ran: the claims judging it and the run, to see which were judged. */
   const ran = new Map<string, Array<{ claims: string[]; run: string }>>();
   /** What the last batch on a page left unjudged, in a line (`ChecksView.problem`). */
@@ -405,6 +412,7 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
         ...(s.branch ? { branch: s.branch } : {}),
         trial: { case: s.c.id, claims: s.claims },
         ...(job ? { job } : {}),
+        ...(budgets.get(batch.id) ? { budgetJob: budgets.get(batch.id)! } : {}),
       });
       ran.get(batch.id)?.push({ claims: s.claims, run: res.runId });
       if (res.status !== "success") batch.errors.push(res.error?.message ?? `the run ended ${res.status}`);
@@ -418,12 +426,13 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
     }
   };
   /** Start a batch's samples; `after` runs when the last one is judged. */
-  const start = (batch: Batch, by: string | undefined, samples: Sampled[], after?: () => Promise<void>) => {
+  const start = (batch: Batch, from: { by?: string; budgetJob?: string }, samples: Sampled[], after?: () => Promise<void>) => {
     batch.total = samples.length;
     batches.set(batch.id, batch);
     ran.set(batch.id, []);
     problems.delete(batch.concept);
-    if (by) actors.set(batch.id, by);
+    if (from.by) actors.set(batch.id, from.by);
+    if (from.budgetJob) budgets.set(batch.id, from.budgetJob);
     void Promise.all(samples.map((s) => limit(() => sampleRun(batch, s))))
       .then(() => after?.())
       .then(() => unjudged(batch))
@@ -431,6 +440,7 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
       .finally(() => {
         batches.delete(batch.id);
         actors.delete(batch.id);
+        budgets.delete(batch.id);
         ran.delete(batch.id);
       });
   };
@@ -539,7 +549,7 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
       return { ok: true, cases: await casesOf(claim) };
     },
 
-    async trial({ claim, n, by }) {
+    async trial({ claim, n, by, budgetJob }) {
       const each = nOf(n);
       if (!each) return { error: `n is a whole number from 1 to ${TRIAL_N_MAX}: the samples of each case` };
       const concept = await conceptOf(claim);
@@ -552,7 +562,7 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
         const judges = await claimsOfCase(c.id, claim);
         for (let i = 0; i < each; i++) samples.push({ c, claims: judges });
       }
-      start(batch, by, samples);
+      start(batch, { by, budgetJob }, samples);
       return { ok: true, batch };
     },
 
@@ -631,7 +641,7 @@ export function createTrials(deps: TrialsDeps): TrialsCapability {
         for (let i = 0; i < each; i++) samples.push({ c, claims: judges, branch });
       }
       const batch: Batch = { id: newId(), concept, test: rec.id, total: 0, done: 0, errors: [] };
-      start(batch, input.by, samples, () => dropBranch(branch));
+      start(batch, { by: input.by, budgetJob: input.budgetJob }, samples, () => dropBranch(branch));
       return { ok: true, test: rec.id, batch };
     },
 

@@ -81,6 +81,10 @@ export interface LlmAuthContext {
    *  run's (plans/paid-runs.md §7). The Mothership's run link carries the
    *  smaller of it and the workflow's (`resolveRunCap`). */
   maxCostUsd?: number;
+  /** The job whose budget the run spends (`ctx.budgetJob`: its own job,
+   *  or the one that started it for its work): a host that keeps job
+   *  budgets (src/mothership.ts) caps the call at what that job has left. */
+  budgetJob?: string;
 }
 
 export interface LlmAuthResult {
@@ -136,8 +140,9 @@ export interface LlmGrants {
   grant(req: { name: string; hours: number }): Promise<LlmGrant | null>;
   /** Ends a grant now. One already gone is not an error. */
   revoke(id: string): Promise<void>;
-  /** The same, billed to `principal`: the runner's call. */
-  forPrincipal?(principal: string): LlmGrants;
+  /** The same, billed to `principal` — and, with `budgetJob`, held to that
+   *  job's budget: the runner's call. */
+  forPrincipal?(principal: string, budgetJob?: string): LlmGrants;
 }
 
 export interface ResolveModelOptions {
@@ -387,6 +392,7 @@ export function stepAuth(ctx: StepContext<unknown> | undefined, session?: string
       ...(ctx.actor ? { actor: ctx.actor } : {}),
       ...(ctx.principal ? { principal: ctx.principal } : {}),
       ...(ctx.maxCostUsd !== undefined ? { maxCostUsd: ctx.maxCostUsd } : {}),
+      ...(ctx.budgetJob ? { budgetJob: ctx.budgetJob } : {}),
     },
   };
 }

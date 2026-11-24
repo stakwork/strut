@@ -1180,6 +1180,26 @@ export interface JobListing {
   busy?: string;
   runs: number;
   holds: number;
+  /** What the job's model calls cost so far, in dollars. */
+  spentUsd?: number;
+  /** The job's budget: its cap in dollars, what it spent, what is left. */
+  budget?: JobBudget;
+}
+
+/** A job's budget (`GET /jobs/:id`'s `budget`, `PUT /jobs/:id/budget`). */
+export interface JobBudget {
+  usd: number;
+  spentUsd: number;
+  leftUsd: number;
+}
+
+/** Set a job's budget in dollars, or remove it with null. */
+export function setJobBudget(id: string, usd: number | null): Promise<{ job: string; budget: JobBudget | null }> {
+  return fetchJSON(`/jobs/${encodeURIComponent(id)}/budget`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ usd }),
+  });
 }
 
 export interface JobRunView {
