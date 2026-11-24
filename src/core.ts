@@ -77,7 +77,8 @@ export interface StepDef<
    *  beyond the input — a title in their words and a summary read at
    *  proposal time (`package/install` reads the index's page of the
    *  package). Called by the gate once, best effort: a throw or nothing
-   *  leaves the description's first sentence as the title. */
+   *  leaves the description's first sentence as the title — except the
+   *  package fence's refusal, which fails the call (src/packages/fence.ts). */
   describe?: (cfg: z.infer<TInput>, ctx: StepContext<TServices>) => Promise<ProposalDescription | undefined>;
   /** For a call an agent's `approve:` gates: the step's OWN answer in place
    *  of the proposal, or undefined to propose it as usual. For a call there
