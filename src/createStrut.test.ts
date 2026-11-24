@@ -1495,8 +1495,9 @@ describe("the API key gate", () => {
     // And people's names (plans/people-and-hosts.md §1): an admin's read.
     // And an app's database, every row of it (plans/apps.md §4.4).
     // And a host's places (plans/jamie-in-tribes.md §5.4): its key's alone; and a
-    // person's, which need the token Peel holds for a box.
-    const fullOnlyReads = ["GET /people", "GET /apps/x/data", "GET /hosts/places", "GET /people/places", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/numbers", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /tasks/groups", "GET /branches", "GET /branches/x/compare"];
+    // person's, which need the token Peel holds for a box. And whether the
+    // voice service joins group calls (src/voice.ts): a call is a person's.
+    const fullOnlyReads = ["GET /voice/calls", "GET /people", "GET /apps/x/data", "GET /hosts/places", "GET /people/places", "GET /tasks/types/x/round", "GET /tasks/workflows", "GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve", "GET /tasks/types", "GET /tasks/workers", "GET /tasks/workers/x", "GET /tasks", "GET /tasks/x", "GET /tasks/tests", "GET /tasks/tests/x", "GET /tasks/stats", "GET /tasks/numbers", "GET /tasks/x/files/*", "GET /tasks/payouts", "GET /tasks/invites", "GET /tasks/groups", "GET /branches", "GET /branches/x/compare"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;

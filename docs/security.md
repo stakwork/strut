@@ -428,11 +428,12 @@ container in the compose (strut and any service that registers steps).
   app's `step_run` and nothing else, run as its actor under the app's
   grants (plans/apps.md §7.4: a person's own strut hosting a peer's app;
   a run the page launches is the app's, `origin: "app"`, whatever the
-  workflow's YAML says about peers). It may also POST `/voice/calls`
+  workflow's YAML says about peers). It may also POST `/voice/calls` and
+  `/voice/calls/ticket`, and GET `/voice/calls`
   (`src/voice.ts`, plans/private-voice.md §4.1): the body forwarded as it
   came to the voice service beside strut, as its actor, the answer back as
   it came, nothing of either logged or kept (the deployment key with
-  `x-strut-actor` may too; the plain peer key may not). Its `job` is still
+  `x-strut-actor` may too; the plain peer key may not, a GET included). Its `job` is still
   `peer/<job>`.
 
 The same secret authenticates **both directions** within a deployment:
