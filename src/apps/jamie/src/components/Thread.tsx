@@ -32,6 +32,7 @@ import { ThreadPrs } from "./PullRequestCard";
 import { prKey, prOf } from "../lib/pr";
 import { Composer } from "./Composer";
 import { JobCard, useJob } from "./JobCard";
+import { SecretBox } from "./SecretBox";
 import { ProposalCard } from "./ProposalCard";
 import { CopyButton, IconButton, Notice, errorText } from "./bits";
 import { ShareMenu } from "./Share";
@@ -118,6 +119,16 @@ export function Thread({ session, draft, everyone = false, onReadAsAdmin, onStar
     card.animate([{ boxShadow: "0 0 0 2px var(--ring)" }, { boxShadow: "0 0 0 0 transparent" }], { duration: 1600 });
   }, [focusJob, turns]);
 
+  // A secret the reply asked for was stored: tell the assistant, in the
+  // thread, by name alone (never the value), on the viewer's model.
+  const onSecretStored = async (prompt: string, model: string) => {
+    if (!session) return;
+    await send.mutateAsync({ session, prompt, context: turnContext(new Date(), host.timeZone), ...(model ? { model } : {}) });
+    conv.refresh();
+    void qc.invalidateQueries({ queryKey: ["assistant", "list"] });
+    setPinned(true);
+  };
+
   const onSend = async (text: string, files: File[], model: string): Promise<boolean> => {
     if (!session) return false;
     setRefusal(null);
@@ -197,7 +208,7 @@ export function Thread({ session, draft, everyone = false, onReadAsAdmin, onStar
           <ReadOnlyContext.Provider value={reading}>
             <ThreadPrs.Provider value={threadPrs}>
               {turns.map((t) => (
-                <Turn key={t.runId} turn={t} conversation={session!} carded={carded} />
+                <Turn key={t.runId} turn={t} conversation={session!} carded={carded} newest={t.runId === newest?.runId} onSecretStored={reading || hosted ? undefined : onSecretStored} />
               ))}
             </ThreadPrs.Provider>
           </ReadOnlyContext.Provider>
@@ -272,8 +283,13 @@ function turnRuns(turn: ConversationTurn): TurnRuns {
   return { byJob, byRun };
 }
 
-function Turn({ turn, conversation, carded }: { turn: ConversationTurn; conversation: string; carded: ReadonlySet<string> }) {
+function Turn({ turn, conversation, carded, newest, onSecretStored }: { turn: ConversationTurn; conversation: string; carded: ReadonlySet<string>; newest: boolean; onSecretStored?: (prompt: string, model: string) => Promise<void> }) {
   const working = inFlight(turn.status);
+  // A secret the reply asks for (its name checked by strut's `replyOf`): a
+  // masked box on the newest turn only, where the viewer can reply here —
+  // not someone else's read as an admin, nor a host's (a tribe's), which is
+  // continued there and refuses the turn naming it.
+  const secret = onSecretStored && newest && turn.status === "success" ? turn.secret : undefined;
   const runs = useMemo(() => turnRuns(turn), [turn]);
   const silent = silentReply(turn.text);
   const threadPrs = useContext(ThreadPrs);
@@ -318,6 +334,7 @@ function Turn({ turn, conversation, carded }: { turn: ConversationTurn; conversa
         </div>
       )}
       {!working && turn.ask && <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">{turn.ask}</div>}
+      {secret && onSecretStored && <SecretBox name={secret} tell={onSecretStored} />}
       {!working && <Deliverables items={delivered.filter(shownHere)} runs={runs} card={card} />}
       {turn.status === "error" && <Notice tone="error">{turn.error ?? "This turn failed."}</Notice>}
       {turn.status === "cancelled" && (

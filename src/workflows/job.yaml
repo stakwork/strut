@@ -131,6 +131,7 @@ steps:
             required: [message]
             properties:
               message: { type: string }
+              secret: { type: string, description: "A secret this server lacks and the work needs, by NAME (letters, digits, _): the person types its value into a masked box under your question — never into a message — and your next message begins `[secret] NAME stored` (or `[secret] NAME is already set here`). One per turn; `message` says what it is for. Never ask for a value in `text` or `message`, and never say where to add one by hand." }
   - id: local
     type: acp/prompt
     depends: own

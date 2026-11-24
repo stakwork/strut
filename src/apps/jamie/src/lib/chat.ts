@@ -9,7 +9,7 @@ import type { ConversationListItem, ModelCatalog } from "./types";
 /** Where this conversation is read, as the orchestrator's `context.where`
  *  says it (plans/jamie-app.md §1.3): what the person sees beside the reply. */
 export const WHERE =
-  "In the assistant app: your reply is read in full, and each job you start shows under it as a card the person opens — its reply, what it made, its checks. ";
+  "In the assistant app: your reply is read in full, and each job you start shows under it as a card the person opens — its reply, what it made, its checks. A secret your question names (`ask.secret`) gets a masked box under it. ";
 
 /** "Wed 4 Nov 2026, 14:02, Europe/London. ": the time where the person is,
  *  as Hive writes it (`orchestratorContextLine`) — UTC when the zone is

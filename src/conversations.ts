@@ -331,6 +331,8 @@ export interface ConversationTurn {
   attachments?: Array<Pick<RunAttachment, "name" | "mediaType" | "size" | "path">>;
   text?: string;
   ask?: string;
+  /** The NAME of a secret the reply asks the person to type into a box (`ask.secret`). */
+  secret?: string;
   artifacts?: ArtifactRef[];
   error?: string;
   proposals: ProposalBrief[];

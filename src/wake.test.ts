@@ -114,6 +114,8 @@ describe("wakePrompt on the template strut ships", () => {
 describe("the wake's pure parts", () => {
   it("replyOf reads `output.object ?? output`, `ask` as a string or { message }", () => {
     assert.deepEqual(replyOf({ text: " hi ", ask: { message: "ok?" } }), { text: "hi", ask: "ok?" });
+    assert.deepEqual(replyOf({ text: "x", ask: { message: "key?", secret: " TYPESAFE_AI_API_KEY " } }), { text: "x", ask: "key?", secret: "TYPESAFE_AI_API_KEY" });
+    assert.deepEqual(replyOf({ ask: { message: "key?", secret: "not a name!" } }), { ask: "key?" });
     assert.deepEqual(replyOf({ object: { text: "a", ask: "b?" } }), { text: "a", ask: "b?" });
     assert.deepEqual(replyOf("plain"), { text: "plain" });
     assert.deepEqual(replyOf({ text: "", ask: { message: " " } }), {});
