@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { fmtDuration, fmtSats, moneyOf, needsYou, type Place, type Shown } from "../lib/view";
-import type { Books, TaskStats, TaskType } from "../lib/types";
+import type { Books, TaskStats, TaskType, Worker } from "../lib/types";
 import { Empty, ErrorLine, Label, Loading, Note, Section, Stat } from "./bits";
 import { SendRound } from "./SendRound";
 
@@ -19,7 +19,7 @@ export const STATS_EVERY_MS = 10_000;
 
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 
-export function Overview(props: { go: (p: Place) => void; shown: Shown; hasGroups: boolean; types?: TaskType[] }) {
+export function Overview(props: { go: (p: Place) => void; shown: Shown; hasGroups: boolean; types?: TaskType[]; workers?: Worker[] }) {
   const client = useStrutClient();
   // React Query refetches on the interval only while the page is visible.
   const stats = useQuery({ queryKey: ["staff", "stats"], queryFn: () => client.run<TaskStats>("staff/stats", {}), refetchInterval: STATS_EVERY_MS });
@@ -30,7 +30,9 @@ export function Overview(props: { go: (p: Place) => void; shown: Shown; hasGroup
   if (stats.error) return <ErrorLine error={stats.error} />;
   if (!s) return <Loading>Reading the queue…</Loading>;
   // The answers to review are named only where a verdict can be given.
-  const needs = needsYou(s, { groups: props.hasGroups }).filter((n) => n.tone === "warn" || props.shown.review);
+  // The people waiting to be let in: Review opens the one who waited longest.
+  const fresh = props.workers?.filter((w) => w.status === "new");
+  const needs = needsYou(s, { groups: props.hasGroups, ...(fresh ? { waiting: fresh } : {}) }).filter((n) => n.tone === "warn" || props.shown.review);
   const waiting = sum(s.types.map((t) => t.waiting));
   const working = sum(s.types.map((t) => t.working));
   const oldest = Math.max(0, ...s.types.map((t) => t.oldest ?? 0));
