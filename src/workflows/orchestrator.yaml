@@ -225,6 +225,7 @@ steps:
               peer: { type: string, description: "With workflow: builder only: the server the workflow or app is published on when it is not this one, by id (@acme-web → acme-web)." }
               repos: { type: array, items: { type: string }, description: "Repository URLs the job works on, checked out before it starts (a private one only this way). workflow: job only." }
               attachments: { type: array, items: { type: string }, description: "Files attached to THIS message that the job needs, by name as the message shows them. A file from an earlier message: call job/start instead." }
+              budgetUsd: { type: number, description: "The job's budget in dollars, a cap on its model calls that the server keeps: only the amount the PERSON gave (\"$100\"), never one you chose. Leave it out when they named none." }
           artifacts:
             type: array
             description: "Usually none: what a job just delivered is shown under your reply already. An earlier deliverable you point the person to — by the url job/get gave it, or an app by its name — or a small piece of inline content. You write no files: anything that is one is a job's."
@@ -277,6 +278,9 @@ steps:
       # launched with, never an earlier turn's (the agent hands those to its
       # tools alone), so a file from an earlier message goes by job/start.
       attachments: "{{ turn.object.start.attachments }}"
+      # The person's budget for the job (stadeum plans/experiments.md), set
+      # on its record before it runs.
+      budgetUsd: "{{ turn.object.start.budgetUsd }}"
     options:
       onError:
         id: notStarted

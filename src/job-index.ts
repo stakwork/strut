@@ -27,7 +27,7 @@ import type { RunStore } from "./store.js";
 import type { SessionInfo, SessionStore } from "./session-store.js";
 import { idProblem, sessionInfo } from "./session-store.js";
 import { artifactEntriesOf, artifactKind, resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
-import { jobFilePath, jobHolder, jobRoot, jobsByUse, listJobFiles, noteJobSessions, readJobRecord, turnOf, type JobHold, type JobRecord, type JobRun } from "./jobs.js";
+import { jobBudgetOf, jobFilePath, jobHolder, jobRoot, jobsByUse, jobSpentUsd, listJobFiles, noteJobSessions, readJobRecord, turnOf, type JobBudget, type JobHold, type JobRecord, type JobRun } from "./jobs.js";
 import { foldJobThreads, type JobThread, type ThreadRun } from "./job-threads.js";
 import { searchWorkflows } from "./search.js";
 
@@ -74,6 +74,13 @@ export interface JobListing {
   workflow?: string;
   runs: number;
   holds: number;
+  /** What the job's model calls cost so far, in dollars (`jobSpentUsd`:
+   *  its top-level runs' recorded cost). Absent before a run that called a
+   *  model settled. */
+  spentUsd?: number;
+  /** The job's budget (src/jobs.ts `budgetUsd`): its cap in dollars, what
+   *  it has spent and what is left. Absent with none. */
+  budget?: JobBudget;
 }
 
 export interface JobRunView extends JobRun {
@@ -216,6 +223,8 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
   const listing = (rec: JobRecord): JobListing => {
     const busy = jobHolder(rootOf(rec.name));
     const turn = turnOf(rec.runs);
+    const spentUsd = jobSpentUsd(rec.runs);
+    const budget = jobBudgetOf(rec);
     return {
       job: rec.name,
       ...(rec.title ? { title: rec.title } : {}),
@@ -227,6 +236,8 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       ...(turn ? { workflow: turn.workflow } : {}),
       runs: rec.runs?.length ?? 0,
       holds: rec.holds?.length ?? 0,
+      ...(spentUsd > 0 ? { spentUsd } : {}),
+      ...(budget ? { budget } : {}),
     };
   };
 

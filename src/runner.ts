@@ -25,7 +25,7 @@ import type { RunStore } from "./store.js";
 import { MemoryRunStore, countSteps, countUsage, generateRunId, tallyStep, tallyUsage } from "./store.js";
 import { executedWorkflowHash } from "./journal.js";
 import { RunController, isCancelledError } from "./run-control.js";
-import type { JobsCapability } from "./jobs.js";
+import { budgetSpentMessage, type JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
 import { resolveSettings } from "./extensions.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
@@ -38,6 +38,9 @@ import { guardEscapes } from "./escaped-errors.js";
 import { ParkedError, isParkedError, mergeParked, parkPrefix, type ParkingCapability } from "./park.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
+/** The bag's jobs capability, or undefined on a bag with none. */
+const jobsOf = (services: unknown): Partial<JobsCapability> | undefined =>
+  services && typeof services === "object" ? ((services as { jobs?: Partial<JobsCapability> }).jobs ?? undefined) : undefined;
 
 // ── Runner ─────────────────────────────────────────────────────────────────
 
@@ -274,14 +277,15 @@ function causeChain(err: Error): string {
 /** The run's view of the services bag: `secrets` and `llm` (the grants it
  *  bills, src/llm.ts) bound to the principal when the capability supports it
  *  (`forPrincipal`), else the bag itself. */
-function bindPrincipal<TServices>(services: TServices, principal: string | undefined): TServices {
+function bindPrincipal<TServices>(services: TServices, principal: string | undefined, job?: string): TServices {
   if (!principal || services == null || typeof services !== "object") return services;
   const view: Record<string, unknown> = { ...(services as object) };
   let bound = false;
   for (const name of ["secrets", "llm"]) {
-    const cap = view[name] as { forPrincipal?: (p: string) => unknown } | undefined;
+    const cap = view[name] as { forPrincipal?: (p: string, job?: string) => unknown } | undefined;
     if (typeof cap?.forPrincipal !== "function") continue;
-    view[name] = cap.forPrincipal(principal);
+    // A grant made in a job's run is held to the job's budget (src/mothership.ts).
+    view[name] = name === "llm" && job ? cap.forPrincipal(principal, job) : cap.forPrincipal(principal);
     bound = true;
   }
   return bound ? (view as TServices) : services;
@@ -592,7 +596,7 @@ async function executeRun<TServices = unknown>(
     bindNodeFiles(bindTrial(bindBranch(
       bindApp(
         bindPeer(
-          bindHost(bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, opts?.credit ?? runId), opts?.origin, opts?.host),
+          bindHost(bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal, opts?.job), opts?.origin, opts?.credit ?? runId), opts?.origin, opts?.host),
           opts?.origin,
           opts?.peerPerson ? opts.actor : undefined,
           opts?.continues,
@@ -657,9 +661,19 @@ async function executeRun<TServices = unknown>(
       if (!branches) throw new Error(`no_branch: this strut server keeps no Concept branches (they need a graph) — the run cannot be on "${branch}"`);
       if (!(await branches.get(branch))) throw new Error(`no_branch: there is no Concept branch "${branch}" here (it was dropped, or never made) — GET /branches lists them`);
     }
+    // A job whose budget is spent starts nothing more (stadeum
+    // plans/experiments.md, "A budget on a job"): a new run under it is
+    // refused here, whichever door launched it. A resume goes on — it was
+    // started when there was money, and the gateway's link for the job
+    // refuses its calls past the budget — and a check the verify pass runs
+    // is the job's judging, not its work.
+    if (opts?.job && !opts.resume && opts.origin !== "verify") {
+      const budget = await jobsOf(opts.services)?.budget?.(opts.job).catch(() => undefined);
+      if (budget && budget.leftUsd <= 0) throw new Error(budgetSpentMessage(opts.job, budget));
+    }
     parsedInput = workflow.input.parse(input);
   } catch (err) {
-    const branchErr = err instanceof Error && /^(branch_fixed|no_branch):/.test(err.message);
+    const branchErr = err instanceof Error && /^(branch_fixed|no_branch|job_budget_spent):/.test(err.message);
     const error = {
       message: branchErr ? (err as Error).message : `Input validation failed: ${err instanceof Error ? err.message : String(err)}`,
       stack: err instanceof Error ? err.stack : undefined,
@@ -897,6 +911,14 @@ async function executeRun<TServices = unknown>(
     // The run's last graph writes, sent now rather than a second from now
     // (never throws: a report is a notification).
     await graphReports?.flush();
+    // What the run cost, on its line of the job's record: the job's spend,
+    // which its budget is held to (`jobSpentUsd`). Bookkeeping, like
+    // `recordRun`: a warning, never a failed run.
+    if (opts?.job && opts.origin !== "verify" && totals.cost > 0) {
+      await jobsOf(services)
+        ?.recordCost?.(opts.job, runId, totals.cost)
+        .catch((err: unknown) => console.warn(`[runner] the cost of run ${runId} was not recorded on job "${opts.job}":`, err));
+    }
     // Step-registered disposers (`ctx.onRunEnd`) first, newest first, each
     // guarded — a step's worktree or browser is gone before the consumer's
     // per-run teardown looks. A disposer that throws never blocks the rest.

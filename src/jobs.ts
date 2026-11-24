@@ -88,6 +88,14 @@ export interface JobRecord {
    *  whose checks failed (plans/pr-checks.md), by the pull request's URL:
    *  taken before the turn launches, `runId` once it has. Absent until one. */
   prFixes?: Record<string, PrFix>;
+  /** The job's BUDGET in dollars (stadeum plans/experiments.md, "A budget on
+   *  a job"): a cap on the model calls of the job and every run under it.
+   *  A person's yes to the spending — set by `PUT /jobs/:id/budget` or by
+   *  `job/start` / `job/continue` naming one, never by the job's own agent.
+   *  Kept at the gateway (src/mothership.ts: a link of the job's own above
+   *  each run's) and by strut, which starts no more runs under the job once
+   *  its recorded spend reaches it (`jobBudgetProblem`). Absent: no budget. */
+  budgetUsd?: number;
 }
 
 /** One automatic fix (`JobRecord.prFixes`). */
@@ -107,6 +115,12 @@ export interface JobRun {
   /** The turn that started this run through `job/start` / `job/continue`
    *  (`RunEvent.startedBy`): which conversation the job belongs to. */
   startedBy?: StartedBy;
+  /** What the run's model calls cost in dollars (its summary's
+   *  `totals.cost`, aieo's list prices), written when it settles
+   *  (`recordJobRunCost`). A top-level run's counts toward the job's spend
+   *  (`jobSpentUsd`); a child's is already in its parent's, which waited on
+   *  it. Absent until a run that called a model settles. */
+  cost?: number;
 }
 
 /**
@@ -132,6 +146,89 @@ export function turnOf(runs: readonly JobRun[] | undefined): JobRun | undefined 
     if (!r.parentRunId && (JOB_WORKFLOWS as readonly string[]).includes(r.workflow)) return r;
   }
   return undefined;
+}
+
+// ── the budget (stadeum plans/experiments.md, "A budget on a job") ────────
+
+/** What a job has spent on model calls, in dollars: the recorded cost of
+ *  its top-level runs (`JobRun.cost`) — a child's is in the parent that
+ *  waited on it, so it is not counted twice. `except` leaves one run out
+ *  (the run asking, whose own spend its gateway link already counts). An
+ *  estimate at list prices, as each run's own `totals.cost` is; the gateway
+ *  keeps the bill. */
+export function jobSpentUsd(runs: readonly JobRun[] | undefined, except?: string): number {
+  let spent = 0;
+  for (const r of runs ?? []) if (!r.parentRunId && r.runId !== except && typeof r.cost === "number") spent += r.cost;
+  return spent;
+}
+
+/** A job's budget and what it has spent, or undefined with none. */
+export interface JobBudget {
+  usd: number;
+  spentUsd: number;
+  /** What is left, never below 0. */
+  leftUsd: number;
+}
+
+export function jobBudgetOf(rec: Pick<JobRecord, "budgetUsd" | "runs"> | null | undefined, except?: string): JobBudget | undefined {
+  if (typeof rec?.budgetUsd !== "number") return undefined;
+  const spentUsd = jobSpentUsd(rec.runs, except);
+  return { usd: rec.budgetUsd, spentUsd, leftUsd: Math.max(0, rec.budgetUsd - spentUsd) };
+}
+
+/** Dollars, the way a person reads them: `$0.42`, `$64`, `$100.50`. */
+export function usd(n: number): string {
+  return Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`;
+}
+
+/** The refusal for a job whose budget is spent: it opens
+ *  `job_budget_spent:`, what every door refusing such a job says, and is the
+ *  fixed line the person is told. */
+export function budgetSpentMessage(job: string, b: Pick<JobBudget, "usd" | "spentUsd">): string {
+  return `job_budget_spent: job "${job}" has spent ${usd(b.spentUsd)} of its ${usd(b.usd)} budget, so nothing more runs under it — a person raises the budget to go on`;
+}
+
+/** Why no more may start under the job — its budget is spent — or
+ *  undefined (`budgetSpentMessage`). */
+export function jobBudgetProblem(job: string, rec: Pick<JobRecord, "budgetUsd" | "runs"> | null | undefined, except?: string): string | undefined {
+  const b = jobBudgetOf(rec, except);
+  return b && b.leftUsd <= 0 ? budgetSpentMessage(job, b) : undefined;
+}
+
+/** A budget as given: a positive, finite number of dollars, or null to
+ *  remove it. Anything else is an error, never a fallback — a budget read
+ *  as "none" by way of a typo would spend without a cap. */
+export function parseBudgetUsd(v: unknown): number | null {
+  if (v === null) return null;
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+    throw new Error(`budget must be a positive number of dollars (or null to remove it), got ${JSON.stringify(v)}`);
+  }
+  return v;
+}
+
+/** Set (or with null remove) a job's budget, under its record's lock: a
+ *  use, like any write that names the job. Returns the record. */
+export async function setJobBudget(root: string, name: string, usdCap: number | null): Promise<JobRecord> {
+  const cap = parseBudgetUsd(usdCap);
+  return updateJobRecord(root, name, (rec) => {
+    if (cap === null) delete rec.budgetUsd;
+    else rec.budgetUsd = cap;
+  });
+}
+
+/** Write what a run under the job cost on its line (`JobRun.cost`), under
+ *  the record's lock. Not a use: `usedAt` stays. A resumed run's line is
+ *  overwritten with its whole cost so far. Nothing happens when the job or
+ *  the line is not on file. */
+export async function recordJobRunCost(root: string, runId: string, cost: number): Promise<void> {
+  if (!Number.isFinite(cost) || cost < 0) return;
+  await withLock(`${root}.json`, async () => {
+    const rec = await readJobRecord(root);
+    const line = rec?.runs?.find((r) => r.runId === runId);
+    if (!rec || !line || line.cost === cost) return;
+    line.cost = cost;
+    await writeJobRecord(root, rec);
+  });
 }
 
 /**
@@ -606,6 +703,15 @@ export interface JobsCapability extends Partial<JobIndex> {
    *  job (kept until a later launch carries another); its `actor` joins the
    *  job's `actors` (and is `createdBy` when it is the first). */
   recordRun(job: string, run: Omit<JobRun, "at"> & { title?: string; actor?: string }): Promise<void>;
+  /** What a run under the job cost, when it settles — the runner's call
+   *  (`recordJobRunCost`). */
+  recordCost?(job: string, runId: string, cost: number): Promise<void>;
+  /** The job's budget and spend (`jobBudgetOf`), or undefined with none —
+   *  what the runner reads before a run starts under the job. */
+  budget?(job: string): Promise<JobBudget | undefined>;
+  /** Set or remove the job's budget (`setJobBudget`): a person's call
+   *  (`PUT /jobs/:id/budget`, `job/start` / `job/continue` naming one). */
+  setBudget?(job: string, usd: number | null): Promise<JobBudget | undefined>;
   /** Tell the job's host that something changed (plans/live-artifacts.md):
    *  a step that wrote a file the person may want to watch — a screenshot,
    *  a walkthrough's frame. Fire and forget: never throws, never waits.
@@ -671,6 +777,10 @@ export interface JobLaunch {
    *  the launching run's artifacts): saved under the job run's artifacts and
    *  put on its agent's prompt. */
   attachments?: Attachment[];
+  /** The job's budget in dollars, set on its record before the run
+   *  launches (`job/start`, `job/continue` naming one): the person's word,
+   *  passed on by their conversation. Absent: the record's stands. */
+  budgetUsd?: number;
 }
 
 /** The record's own writer, index or not. `index` (a server's stores) adds
@@ -715,6 +825,15 @@ export function jobsCapability(
         }
         rec.runs = [...(rec.runs ?? []), { ...run, at: new Date().toISOString() }];
       });
+    },
+    async recordCost(job, runId, cost) {
+      await recordJobRunCost(rootOf(job), runId, cost);
+    },
+    async budget(job) {
+      return jobBudgetOf(await readJobRecord(rootOf(job)));
+    },
+    async setBudget(job, cap) {
+      return jobBudgetOf(await setJobBudget(rootOf(job), job, cap));
     },
     async release(job, id) {
       const root = rootOf(job);

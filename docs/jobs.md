@@ -178,6 +178,39 @@ index. A change in this area updates this file, not AGENTS.md.
   app" — plans/chained-orchestrators.md §6): a `{ kind: "app", path }`
   entry is an error saying to hand the app over by name.
 
+- **A budget on a job — a cap on its model calls, kept at the gateway**
+  (stadeum plans/experiments.md, "A budget on a job"; `src/jobs.ts`,
+  `src/mothership.ts`). `JobRecord.budgetUsd` is a person's yes to the
+  spending: set by `PUT /jobs/:id/budget { usd | null }` (the deployment key,
+  an admin, or a member who launched a run under the job), or by
+  `job/start { budgetUsd }` — the orchestrator's reply `start.budgetUsd` —
+  carrying the figure the person gave in the conversation. Nothing a job's
+  own agent holds can raise it. The SPEND is strut's estimate: the runner
+  writes each run's `totals.cost` on its line of the record when it settles
+  (`JobRun.cost`, `recordJobRunCost`; a resume overwrites it), and
+  `jobSpentUsd` sums the top-level runs — a child's is already in the parent
+  that waited on it. Two keepers. **Strut** starts nothing more under a job
+  that has spent it: the runner refuses a new run (`job_budget_spent: …`,
+  before `run.start`, so it is not one of the job's runs; a resume and a
+  verify check go on), and the launcher refuses `job/start` /
+  `job/continue` at once (a launch naming a budget writes it first, so a
+  raised one lets the job go on). **The gateway** refuses what is in
+  flight: the Mothership puts a link of the job's own (`jobLinkId`, the
+  same run id for every run of the job, capped at the budget, living as
+  long as the delegation) between the delegation and each run's link, which
+  is capped at no more than what the record says is left — so the cap holds
+  even after the gateway's counter for the job expired. A grant made in a
+  job's run (a pod's model key) sits under the same link (`forPrincipal(p,
+  job)`). Its 402 reads `job_budget_spent:` (`explainJobSpent`). A job turn
+  that ended for want of budget wakes no model turn: its end is a fixed line,
+  the wake's outcome `capped` (src/wake.ts `budgetSpent`), and the host shows
+  it as it is. `GET /jobs[/:id]` carry `spentUsd` and `budget: { usd,
+  spentUsd, leftUsd }`, and each run's `cost`; the web's job view shows
+  "budget $64 of $100" with a button to set it. Not yet: a job started FROM
+  a budgeted job's run is not held to the parent's budget (no job's agent
+  holds `job/start` today), and with no gateway (no Mothership) only the
+  between-runs refusal holds.
+
 - **Live feeds — what a job and the graph are doing, for a reader that
   cannot be called** (`plans/live-feeds.md`; `src/live-feed.ts`,
   `src/graph-writes.ts`). A host hears a job on its `jobCallback`; an app's
