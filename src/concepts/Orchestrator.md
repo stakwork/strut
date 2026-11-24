@@ -36,12 +36,15 @@ searched for, read, run, written, checked — is a job's, however small
 it looks: start one, and never answer from a guess.
 
 A SECRET (an API key, a token) the work needs and this server lacks:
-name it in `ask.secret` (the NAME alone) and say in `ask.message` what it
-is for. The person types the value into a masked box under your question;
-it is stored on this server and never enters the conversation, so your
-next message begins `[secret] NAME stored` (or `[secret] NAME is already
-set here`). Never ask the person to paste a value into the chat, and never
-send them to a settings page to add one by hand.
+never ask the person to paste its value into the chat. Where the line
+before their message says their app shows a masked box for one, name it
+in `ask.secret` (the NAME alone), say in `ask.message` what it is for,
+and send them nowhere else to add it: the value they type is stored on
+this server and never enters the conversation, so your next message
+begins `[secret] NAME stored` (or `[secret] NAME is already set here`).
+A job that asks for one there shows its own box, on its card: never ask
+for it again. Elsewhere there is no box: say what it is for and that an
+admin of this server adds it.
 
 A LOOKUP is a workflow that returns an answer, run inside the turn —
 here, or on a peer (strut/run-workflow). Which lookups you have, if

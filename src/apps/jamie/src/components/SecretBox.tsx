@@ -1,9 +1,10 @@
-// A secret a build asks the person for (plans/member-rights.md "Adding a
-// secret"): the builder's reply names it in `ask.secret`, and this box sits
-// under the question. Save stores what the person typed with `secret/add` —
-// which fills a blank and never overwrites one — then sends the job its next
-// turn, `[secret] NAME stored`, naming the conversation so strut wakes it
-// when that turn ends. The value goes to strut once and is dropped here: it
+// A secret a reply asks the person for (plans/member-rights.md "Adding a
+// secret"): a job's reply (JobCard) or the assistant's own (Thread) names it
+// in `ask.secret`, and this box sits under the question. Save stores what the
+// person typed with `secret/add` — which fills a blank and never overwrites
+// one — then sends the next turn, `[secret] NAME stored`: a job's, naming the
+// conversation so strut wakes it when that turn ends, or the next message in
+// the thread (`tell`). The value goes to strut once and is dropped here: it
 // reaches no model, no run log, no transcript.
 import { useState, type FormEvent } from "react";
 import { Check, KeyRound } from "lucide-react";
@@ -17,7 +18,7 @@ import { Notice, errorText } from "./bits";
 
 type State = { kind: "idle" | "busy" | "sent" } | { kind: "failed"; error: string; already?: boolean };
 
-export function SecretBox({ name, job, workflow, conversation, tell: tellChat }: { name: string; job?: string; workflow?: string; conversation?: string; tell?: (prompt: string) => Promise<void> }) {
+export function SecretBox({ name, job, workflow, conversation, tell: tellChat }: { name: string; job?: string; workflow?: string; conversation?: string; tell?: (prompt: string, model: string) => Promise<void> }) {
   const client = useStrutClient();
   const { sent: model } = useModelPick();
   const [value, setValue] = useState("");
@@ -26,7 +27,7 @@ export function SecretBox({ name, job, workflow, conversation, tell: tellChat }:
   const tell = async (already: boolean) => {
     try {
       // Jamie's own conversation: the next message in the thread.
-      if (tellChat) await tellChat(secretPrompt(name, already));
+      if (tellChat) await tellChat(secretPrompt(name, already), model);
       else await client.run("run/launch", {
         workflow: workflow ?? "job",
         ...(job ? { job } : {}),
