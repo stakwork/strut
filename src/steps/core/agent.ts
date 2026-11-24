@@ -1280,6 +1280,94 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
   }
 }
 
+/** Quiet tool calls (none of them `job/status`) before a tool's answer on a
+ *  job's turn reminds the agent of its checklist; then twice as many, four
+ *  times, … while it stays quiet (`wrapToolsWithChecklist`). */
+export const CHECKLIST_EVERY = 10;
+
+type ChecklistItem = { text: string; state: string };
+
+/**
+ * The checklist reminder. On a job's turn whose agent holds `job/status`, once
+ * CHECKLIST_EVERY tool calls pass with no status call, the next tool answer
+ * the model reads ends with one line: the list the person watching sees, or
+ * that they see none. Again at 2×, 4×, … quiet calls, so a turn that ignores
+ * it hears less of it; any status call starts the count over. Nothing for a
+ * list whose every step is done. A description alone gets a first call at
+ * best: a Pod Setup turn (2026-11-23) sent its list at second 2 and never
+ * again in 26 minutes and 65 calls, and the next one sent none. Claude Code
+ * keeps its to-do list the same way: the harness reminds, not the prompt.
+ *
+ * Only what the MODEL reads changes (`toModelOutput`, by the call's id, so
+ * the SDK's several conversions of one result agree): the tool's output, its
+ * run event and `run.json` stay the tool's own. The line is in the result
+ * when it is made, so the recorded history keeps it byte for byte. A call
+ * that fails passes a due reminder to the next one that answers.
+ */
+export function wrapToolsWithChecklist(tools: Record<string, any>, ctx: StepContext | undefined): void {
+  const status = toolNameFor("job/status");
+  if (!ctx?.job || typeof tools[status]?.execute !== "function") return;
+  let items: ChecklistItem[] | undefined;
+  let quiet = 0;
+  let owed = false;
+  const lines = new Map<string, string>();
+  for (const [name, t] of Object.entries(tools)) {
+    if (name === "final_answer" || typeof t?.execute !== "function") continue;
+    const run = t.execute;
+    t.execute = async (input: unknown, opts: unknown) => {
+      if (name === status) {
+        items = (input as { items?: ChecklistItem[] } | null)?.items;
+        quiet = 0;
+        owed = false;
+        return run(input, opts);
+      }
+      const k = ++quiet / CHECKLIST_EVERY;
+      if (Number.isInteger(k) && (k & (k - 1)) === 0) owed = true;
+      const out = await run(input, opts);
+      const id = (opts as { toolCallId?: unknown } | undefined)?.toolCallId;
+      if (owed && typeof id === "string") {
+        owed = false;
+        const line = checklistLine(items, quiet, status);
+        if (line) lines.set(id, line);
+      }
+      return out;
+    };
+    const own = t.toModelOutput;
+    t.toModelOutput = async (o: { toolCallId: string; output: unknown }) => {
+      const shown: ToolResultOutput = own
+        ? await own(o)
+        : typeof o.output === "string"
+          ? { type: "text", value: o.output }
+          : { type: "json", value: toJsonValue(o.output) };
+      const line = lines.get(o.toolCallId);
+      return line ? withLine(shown, line) : shown;
+    };
+  }
+}
+
+function checklistLine(items: ChecklistItem[] | undefined, quiet: number, status: string): string | undefined {
+  if (!items?.length) {
+    return `[checklist] The person watching this job sees no checklist for this turn. If it has more than one step, send them with ${status} (items), then again as each one moves on.`;
+  }
+  if (items.every((i) => i.state === "done")) return undefined;
+  const list = items.map((i) => `${i.state}: ${i.text}`).join(" · ");
+  return `[checklist] ${quiet} tool calls ago you sent this list, and it is what the person watching sees: ${list}. If a step has moved on, send the whole list again with ${status}.`;
+}
+
+/** A tool's model output with one more line at the end. */
+function withLine(shown: ToolResultOutput, line: string): ToolResultOutput {
+  switch (shown.type) {
+    case "text":
+      return { ...shown, value: `${shown.value}\n\n${line}` };
+    case "json":
+      return { ...shown, type: "text", value: `${JSON.stringify(shown.value)}\n\n${line}` };
+    case "content":
+      return { ...shown, value: [...shown.value, { type: "text", text: line }] };
+    default:
+      return shown;
+  }
+}
+
 const EXAMPLE = `- id: fix
   type: agent
   config:
@@ -1997,6 +2085,9 @@ export default defineStep({
         wrapToolsWithEmit(registered.tools, ctx, calls);
         Object.assign(tools, registered.tools);
       }
+      // Every tool is in now: on a job's turn, a tool's answer reminds the
+      // agent of its checklist once it has gone quiet (wrapToolsWithChecklist).
+      wrapToolsWithChecklist(tools, ctx);
       // Steps that completed BEFORE a mid-stream failure are unreachable through
       // the stream's result promises — `steps`, `responseMessages`, `usage` and
       // `text` all reject with the stream error — so the only way to keep that
