@@ -4,6 +4,11 @@
 // `x-strut-actor`, the secret the two share as the bearer, and the service's
 // answer back as it came. Strut only says who the call is for.
 //
+// A group call (stadeum plans/group-calls.md §5, §7) adds two more, forwarded
+// the same way: `GET /voice/calls` (the service's `GET /calls`: whether it can
+// join a group call, and the LiveKit it joins) and `POST /voice/calls/ticket`
+// (a person's own join ticket for a call the box is in).
+//
 // A route, not a workflow: the body and the answer carry the call's key and
 // room tokens, and a run records its input and output where every peer scope
 // may read them. Nothing here logs or keeps either, and no error echoes them.
@@ -26,6 +31,10 @@ export interface VoiceConfig {
 
 /** The route (createStrut's gate admits a person's token to it). */
 export const VOICE_CALLS = "/voice/calls";
+/** A person's own ticket into a group call the box is in. */
+export const VOICE_TICKET = "/voice/calls/ticket";
+/** The POSTs a person's token may make here (createStrut's gate). */
+export const VOICE_POSTS: ReadonlySet<string> = new Set([VOICE_CALLS, VOICE_TICKET]);
 /** The largest body a call set-up carries: a key, or a sealed envelope. */
 export const VOICE_BODY_MAX = 16 * 1024;
 const VOICE_TIMEOUT_MS = 15_000;
@@ -48,24 +57,36 @@ export function voiceConfig(opt: VoiceConfig | false | undefined, env: NodeJS.Pr
   return { url: url.replace(/\/+$/, ""), token };
 }
 
-export function voiceRoutes(app: Hono, deps: { voice?: VoiceConfig; resolveActor: (c: Context) => string | undefined | Promise<string | undefined> }): void {
+export function voiceRoutes(
+  app: Hono,
+  deps: {
+    voice?: VoiceConfig;
+    resolveActor: (c: Context) => string | undefined | Promise<string | undefined>;
+    /** True for the plain peer key: its actor is a header any strut sets. */
+    plainPeer?: (c: Context) => boolean | Promise<boolean>;
+  },
+): void {
   const tooBig = bodyLimit({ maxSize: VOICE_BODY_MAX, onError: (c) => c.json({ error: `a call's body is at most ${VOICE_BODY_MAX} bytes` }, 413) });
-  app.post(VOICE_CALLS, tooBig, async (c) => {
-    // The gate lets a person's token through and refuses a plain peer; the
-    // deployment key must still name the person (x-strut-actor).
-    const actor = await deps.resolveActor(c);
+  /** The request to the service at `path`, as the person, its answer back
+   *  as it came. Nothing of either is logged or kept. */
+  const forward = async (c: Context, path: string) => {
+    // The gate lets a person's token through and refuses a plain peer's
+    // POST; a GET it lets through, so it is refused here. The deployment
+    // key must still name the person (x-strut-actor).
+    const actor = (await deps.plainPeer?.(c)) ? undefined : await deps.resolveActor(c);
     if (!actor) return c.json({ error: "forbidden: a call runs as a person — a person token, or the deployment key with x-strut-actor" }, 403);
     const voice = deps.voice;
     if (!voice) return c.json({ error: "no voice service is configured here (STRUT_VOICE_URL)" }, 503);
-    const body = await c.req.arrayBuffer();
+    const post = c.req.method === "POST";
+    const body = post ? await c.req.arrayBuffer() : undefined;
     let res: Response;
     let answer: ArrayBuffer;
     try {
       const signal = AbortSignal.timeout(VOICE_TIMEOUT_MS);
-      res = await fetch(`${voice.url}/calls`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-strut-actor": actor, authorization: `Bearer ${voice.token}` },
-        body,
+      res = await fetch(`${voice.url}${path}`, {
+        method: c.req.method,
+        headers: { ...(post ? { "content-type": "application/json" } : {}), "x-strut-actor": actor, authorization: `Bearer ${voice.token}` },
+        ...(body ? { body } : {}),
         signal,
       });
       answer = await res.arrayBuffer();
@@ -74,7 +95,10 @@ export function voiceRoutes(app: Hono, deps: { voice?: VoiceConfig; resolveActor
     }
     const headers = { "content-type": res.headers.get("content-type") ?? "application/json", "cache-control": "no-store" };
     return new Response(answer.byteLength ? answer : null, { status: res.status, headers });
-  });
+  };
+  app.get(VOICE_CALLS, (c) => forward(c, "/calls"));
+  app.post(VOICE_CALLS, tooBig, (c) => forward(c, "/calls"));
+  app.post(VOICE_TICKET, tooBig, (c) => forward(c, "/calls/ticket"));
 }
 
 /** What a warm-up transcribes: half a second of silence, 16 kHz mono 16-bit,

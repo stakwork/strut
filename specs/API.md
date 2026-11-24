@@ -60,7 +60,8 @@ actor the token's own whatever `x-strut-actor` says, and three things
 more: a launch of a workflow whose YAML says `peer: person`, the actor's
 own agent sessions (§3), the actor's room, `POST /mcp`, where it gets
 an app's `step_run` alone, run as the actor under the app's grants (§14.3,
-"A peer's app"), `POST /voice/calls`, a call set up as the actor (§15.2),
+"A peer's app"), `GET` and `POST /voice/calls` and `POST /voice/calls/ticket`,
+a call set up or joined as the actor (§15.2),
 and `POST /proposals/:id/decide` for a proposal its actor
 made — and it lists only those, but reads any proposal by id (§12). The
 plain peer key decides no proposal and sees none. A host maps its
@@ -3513,17 +3514,34 @@ two-sentence reply's first audio in 0.36 s, all 5.5 s of it in 1.2 s.
 ### 15.2 A voice call — handed to the voice service (`src/voice.ts`)
 
 A person's call to their agent is set up by the voice service running beside
-strut (plans/private-voice.md §4.1); strut only says who the call is for.
+strut (plans/private-voice.md §4.1); strut only says who the call is for. A
+group call (stadeum `plans/group-calls.md` §5, §7) adds two routes, forwarded
+the same way.
 
 | Method | Path | Body / reply |
 | ------ | ---- | ------------ |
-| POST   | `/voice/calls` | the body as it came (≤ 16 KB) → the voice service's status and body, as they came |
+| GET    | `/voice/calls` | → the service's `GET /calls`: its status and body, as they came |
+| POST   | `/voice/calls` | the body as it came (≤ 16 KB) → the service's `POST /calls`: its status and body, as they came |
+| POST   | `/voice/calls/ticket` | the body as it came (≤ 16 KB) → the service's `POST /calls/ticket`: its status and body, as they came |
+
+- **`GET /voice/calls`** says whether the box can be asked into a group call:
+  the service answers `{ group, livekit }`, `group` true once its streaming
+  speech model answers, `livekit` the LiveKit URL it joins. Peel offers the
+  box in a group call only when `group` is true and `livekit` is the call's
+  server.
+- **`POST /voice/calls`** with `{ mode: "group", room, key, record? }` asks
+  the box into a group call (the body goes through as it came, so `mode`
+  needs nothing of strut); without `mode`, a 1:1 call, as before.
+- **`POST /voice/calls/ticket { room, name }`**: a person's own join ticket
+  for a group call the box is in. The service mints a LiveKit token under a
+  `box_<32 hex>` identity and records it against the person for that call,
+  so what they ask Jamie there runs as them.
 
 The caller is a **person token** (the call runs as its actor, whatever
 `x-strut-actor` says) or the deployment key with `x-strut-actor` (a test,
-the deployment itself). strut POSTs the body unchanged to
-`{STRUT_VOICE_URL}/calls` with `content-type: application/json`,
-`x-strut-actor: <the person>` and `authorization: Bearer
+the deployment itself). strut sends the request to the service's path (a
+POST's body unchanged, with `content-type: application/json`; a GET with
+none) with `x-strut-actor: <the person>` and `authorization: Bearer
 <STRUT_VOICE_TOKEN>`, the secret the two share (`createStrut({ voice: { url,
 token } })` wins over the env, `false` turns it off), and answers what the
 service answers (`cache-control: no-store`) — a `402` from it stays a `402`.
@@ -3532,12 +3550,18 @@ service answers (`cache-control: no-store`) — a `402` from it stays a `402`.
 curl -s -X POST localhost:3000/voice/calls -H "authorization: Bearer $PERSON_TOKEN" \
   -H 'content-type: application/json' -d '{}'
 # → 200 { "url": "ws://127.0.0.1:7880", "room": "sphinx.call.voice.<32 hex>", "token": "<LiveKit JWT>", … }
+curl -s localhost:3000/voice/calls -H "authorization: Bearer $PERSON_TOKEN"
+# → 200 { "group": true, "livekit": "wss://livekit.example" }
+curl -s -X POST localhost:3000/voice/calls/ticket -H "authorization: Bearer $PERSON_TOKEN" \
+  -H 'content-type: application/json' -d '{"room":"sphinx.call.<name>","name":"Tom"}'
+# → the service's answer: the person's LiveKit token for that room, under a box_<32 hex> identity
 ```
 
-401 with no credential strut can verify; 403 for the plain peer key, or the
-deployment key with no `x-strut-actor` (a call always runs as a person); 413
-for a body over 16 KB; 503 with no voice service configured, or one that
-does not answer within 15 s. A route, not a workflow: the body and the
+401 with no credential strut can verify; 403 for the plain peer key (a GET
+included, which the gate lets a peer make), or the deployment key with no
+`x-strut-actor` (a call always runs as a person); 413 for a body over 16 KB;
+503 with no voice service configured, or one that does not answer within
+15 s. A route, not a workflow: the body and the
 answer hold the call's key and room tokens, so nothing of either is logged,
 kept or recorded as a run.
 

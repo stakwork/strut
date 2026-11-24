@@ -1,5 +1,6 @@
 // POST /voice/calls (src/voice.ts): a person's call handed to the voice
-// service beside strut, against a stand-in service on a free port.
+// service beside strut, against a stand-in service on a free port — and the
+// two a group call adds, GET /voice/calls and POST /voice/calls/ticket.
 import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -24,13 +25,13 @@ describe("POST /voice/calls", () => {
   const dir = mkdtempSync(join(tmpdir(), "strut-voice-"));
   const saved = { api: process.env["STRUT_API_KEY"], peer: process.env["STRUT_PEER_KEY"], url: process.env["STRUT_VOICE_URL"], token: process.env["STRUT_VOICE_TOKEN"] };
   // The stand-in voice service: what it was sent, and what it answers.
-  let seen: { headers: http.IncomingHttpHeaders; body: Buffer; path?: string } | undefined;
+  let seen: { headers: http.IncomingHttpHeaders; body: Buffer; path?: string; method?: string } | undefined;
   let answer = { status: 200, body: '{"room":"sphinx.call.voice.abc","token":"LIVEKIT-JWT-SENTINEL"}' };
   const service = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
-      seen = { headers: req.headers, body: Buffer.concat(chunks), path: req.url };
+      seen = { headers: req.headers, body: Buffer.concat(chunks), path: req.url, method: req.method };
       res.writeHead(answer.status, { "content-type": "application/json" }).end(answer.body);
     });
   });
@@ -136,6 +137,71 @@ describe("POST /voice/calls", () => {
       await down.close();
     }
     assert.ok(!lines.some((l) => /S0VZLVNFTlRJTkVM|LIVEKIT-JWT-SENTINEL|voice-shared-token/.test(l)), lines.join("\n"));
+  });
+
+  const ask = (s: Strut, auth: string, headers: Record<string, string> = {}) => s.app.request("/voice/calls", { headers: { authorization: `Bearer ${auth}`, ...headers } });
+  const ticket = (s: Strut, auth: string, body: string = "{}", headers: Record<string, string> = {}) =>
+    s.app.request("/voice/calls/ticket", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${auth}`, ...headers }, body });
+
+  it("GET /voice/calls asks the service's GET /calls as the person, with no body, and answers what it answers", async () => {
+    answer = { status: 200, body: '{"group":true,"livekit":"wss://livekit.example"}' };
+    const res = await ask(strut, personToken("tom-1")!.token, { "x-strut-actor": "mallory-9" });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    assert.equal(await res.text(), answer.body);
+    assert.equal(seen?.method, "GET");
+    assert.equal(seen?.path, "/calls");
+    assert.equal(seen?.headers["x-strut-actor"], "tom-1");
+    assert.equal(seen?.headers["authorization"], `Bearer ${SHARED}`);
+    assert.equal(seen?.body.length, 0);
+    seen = undefined;
+    assert.equal((await ask(strut, KEY, { "x-strut-actor": "evan-2" })).status, 200);
+    assert.equal(seen?.headers["x-strut-actor"], "evan-2");
+  });
+
+  it("GET /voice/calls: a plain peer (a read the gate lets through) and the deployment key with no actor are 403, never forwarded", async () => {
+    const peer = await ask(strut, PEER_KEY, { "x-strut-actor": "tom-1" });
+    assert.equal(peer.status, 403);
+    assert.match(((await peer.json()) as { error: string }).error, /runs as a person/);
+    assert.equal((await ask(strut, KEY)).status, 403);
+    assert.equal((await ask(strut, "nope")).status, 401);
+    assert.equal(seen, undefined);
+  });
+
+  it("POST /voice/calls/ticket goes to <url>/calls/ticket as the person, the body byte for byte, the answer as it came", async () => {
+    const body = '{ "room": "sphinx.call.abc", "name": "Tom" }';
+    answer = { status: 200, body: '{"token":"LIVEKIT-JWT-SENTINEL","identity":"box_0123"}' };
+    const res = await ticket(strut, personToken("tom-1")!.token, body, { "x-strut-actor": "mallory-9" });
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), answer.body);
+    assert.equal(seen?.method, "POST");
+    assert.equal(seen?.path, "/calls/ticket");
+    assert.equal(seen?.headers["x-strut-actor"], "tom-1");
+    assert.equal(seen?.headers["authorization"], `Bearer ${SHARED}`);
+    assert.equal(seen?.headers["content-type"], "application/json");
+    assert.ok(seen?.body.equals(Buffer.from(body)), "byte for byte");
+    seen = undefined;
+    answer = { status: 404, body: '{"error":"the box is not in that call"}' };
+    const missing = await ticket(strut, KEY, body, { "x-strut-actor": "evan-2" });
+    assert.equal(missing.status, 404);
+    assert.equal(await missing.text(), answer.body);
+  });
+
+  it("POST /voice/calls/ticket: the plain peer key is 403, no actor is 403, over the cap is 413 — none forwarded", async () => {
+    assert.equal((await ticket(strut, PEER_KEY, "{}", { "x-strut-actor": "tom-1" })).status, 403);
+    assert.equal((await ticket(strut, KEY)).status, 403);
+    assert.equal((await ticket(strut, personToken("tom-1")!.token, JSON.stringify({ room: "x".repeat(VOICE_BODY_MAX) }))).status, 413);
+    assert.equal(seen, undefined);
+  });
+
+  it("GET /voice/calls and POST /voice/calls/ticket with no voice service configured are 503", async () => {
+    const off = await boot(false);
+    try {
+      assert.equal((await ask(off, personToken("tom-1")!.token)).status, 503);
+      assert.equal((await ticket(off, personToken("tom-1")!.token)).status, 503);
+    } finally {
+      await off.close();
+    }
   });
 
   it("config: the option wins over the env, false turns it off, and half a configuration fails the boot", async () => {

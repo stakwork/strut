@@ -246,7 +246,7 @@ import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { seedMediaWorkflows } from "./media-seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
-import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
+import { VOICE_POSTS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
 import { appOfDomain, createPublicSurface, normalizeSurface, signInOf, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
 import { PUBLIC_PATH, PUBLIC_POST, PUBLIC_REQUESTS_PER_MINUTE, publicRoutes } from "./public-routes.js";
@@ -2978,7 +2978,8 @@ export async function createStrut<TServices = unknown>(
   // `step_run` holds every call to the app's grants and runs as the viewer,
   // and a plain peer's actor is a header any strut sets. On a home box
   // (`homeSync: "box"`), home sync's `/home/pull` and `/home/push` too.
-  // And `/voice/calls`, a call set up as that person (src/voice.ts).
+  // And `/voice/calls` and `/voice/calls/ticket`, a call set up or joined
+  // as that person (src/voice.ts).
   //
   // A sixth: a CHANNEL TICKET (`channelTicketOf`, auth.ts) opens the one
   // read it was minted for, `GET /channels` — a browser host's upgrade of
@@ -3116,10 +3117,10 @@ export async function createStrut<TServices = unknown>(
     if (!read) {
       const scope = await scopeOf(c);
       const post = c.req.method === "POST";
-      const personPost = scope === "peer:person" && (path === "/mcp" || path === VOICE_CALLS || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path) || CONVERSATION_POSTS.has(path) || path === "/people/places");
+      const personPost = scope === "peer:person" && (path === "/mcp" || VOICE_POSTS.has(path) || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path) || CONVERSATION_POSTS.has(path) || path === "/people/places");
       const personDelete = scope === "peer:person" && c.req.method === "DELETE" && PERSON_PLACE.test(path);
       if (isPeerScope(scope) && !personDelete && !(post && (PEER_POST.test(path) || path === "/packages/subscriptions/sync" || personPost))) {
-        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut server to sync its subscriptions; a person's token may also call an app's step_run on /mcp, start a voice call, decide the proposals it made, change or fork its conversations, and link or remove its places" }, 403);
+        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut server to sync its subscriptions; a person's token may also call an app's step_run on /mcp, start or join a voice call, decide the proposals it made, change or fork its conversations, and link or remove its places" }, 403);
       }
     }
     return next();
@@ -11584,7 +11585,7 @@ export async function createStrut<TServices = unknown>(
   }
   if (tts) speakRoutes(app, tts);
   if (homeRole === "box") homeSyncRoutes(app, { services, scopeOf });
-  voiceRoutes(app, { voice, resolveActor });
+  voiceRoutes(app, { voice, resolveActor, plainPeer: async (c) => (await scopeOf(c)) === "peer" });
 
   // ── Static files (web UI) ────────────────────────────────────────────────
 
