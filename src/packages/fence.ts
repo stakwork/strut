@@ -6,7 +6,9 @@
  * pinned version), so every way a step runs — a workflow, an agent's tool
  * call, `run_step`, a check, a proposal's apply — passes its
  * `ctx.services.secrets` through the fence, and a name outside the list
- * fails naming the package.
+ * fails naming the package. Every function of the step is wrapped, not only
+ * `run` (`STEP_FUNCTIONS`): the card it writes for a person, its own answer
+ * to a gated call and a replay's `onReplay` read behind the same fence.
  *
  * It also hands the step the secrets its package PROVIDES
  * (`provides.secrets`), and those alone, to manage: `secrets.own`, the run's
@@ -116,12 +118,27 @@ function fencedScope(scope: SecretScope, type: string, fence: Fence, whose: stri
   });
 }
 
-/** The step, running behind its package's fence. */
+/** Every function of a step's definition that is handed the run's context
+ *  (`AnyStepDef`, src/core.ts): its run, the card it writes for a person,
+ *  its own answer to a gated call, what a replay puts back. A test reads
+ *  core.ts and fails when one is added there and not here. */
+export const STEP_FUNCTIONS = ["run", "describe", "answerGated", "onReplay"] as const;
+
+/** The step, every function of it running behind its package's fence. */
 export function fenceStep(def: AnyStepDef, fence: Fence): AnyStepDef {
-  return {
-    ...def,
-    run: (cfg, ctx) => def.run(cfg, fencedContext(ctx, def.type, fence)),
-  };
+  const out: Record<string, unknown> = { ...def };
+  for (const name of STEP_FUNCTIONS) {
+    const fn = def[name] as ((cfg: unknown, ctx: StepContext<any>, ...rest: unknown[]) => unknown) | undefined;
+    if (fn) out[name] = (cfg: unknown, ctx: StepContext<any>, ...rest: unknown[]) => fn.call(def, cfg, fencedContext(ctx, def.type, fence), ...rest);
+  }
+  return out as unknown as AnyStepDef;
+}
+
+/** The fence refused this (`secret_fenced:`, `run_as_fenced:`, any
+ *  `…_fenced:`): an error a caller that is otherwise best effort passes on,
+ *  so it is never hidden. */
+export function fenceRefused(err: unknown): boolean {
+  return err instanceof Error && /^[a-z_]+_fenced:/.test(err.message);
 }
 
 /** Each fenced bag → the run's own it was made from (`unfencedServicesOf`). */

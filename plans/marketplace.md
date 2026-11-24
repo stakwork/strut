@@ -2064,6 +2064,10 @@ production until install (step 2) calls the resolver.
        `run_step`, a check and a proposal's apply are all fenced with no
        change at each. `StepListEntry` carries the active version's
        `upstream` for it; `materializeStepVersion` returns a pin's.
+       2026-11-24: the wrapper fenced only `run`, so a package step's
+       `describe`, `answerGated` and `onReplay` got the run's whole bag;
+       now every function of the step that takes the run's context is
+       fenced (`STEP_FUNCTIONS`, docs/packages.md).
      - **The rule after install lives in the stores**
        (`refuseUnderInstalledPackage`, both backends, a conformance case):
        a publish of a NEW workflow or step name under a prefix where an

@@ -11,6 +11,7 @@ import { bindGraph } from "./graph-writes.js";
 import { bindBranch, type BranchesCapability } from "./branches.js";
 import type { Scope } from "./auth.js";
 import { buildCard, type ProposalCard } from "./proposal-card.js";
+import { fenceRefused } from "./packages/fence.js";
 
 /**
  * Proposals (plans/proposals.md): a tool call a person approves before it
@@ -569,7 +570,9 @@ export async function proposeCall(
   if (def.describe) {
     try {
       described = await def.describe(parsed, ctx);
-    } catch {
+    } catch (err) {
+      // A package's card that reads past its fence fails the call, never a plainer card.
+      if (fenceRefused(err)) throw err;
       described = undefined;
     }
   }

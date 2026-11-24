@@ -3948,7 +3948,11 @@ edit of an installed item is a FORK — a new version that carries the
 `upstream` forward. And an installed step — a fork too — reads only the
 secrets its package declares: any other `secrets.get(NAME)` fails
 `secret_fenced: <step> came from the package <package>, which declares
-only …` (`src/packages/fence.ts`).
+only …` (`src/packages/fence.ts`). That holds in every function of the
+step: its run, the card it writes when an agent's call needs approval
+(`describe`), its own answer to such a call (`answerGated`) and a resume's
+`onReplay`. A card that reads past the fence is never proposed: the call
+fails with that error.
 
 **Secrets a package provides.** A package names the secrets its steps
 MANAGE, each one they may read (else `bad_package`):
