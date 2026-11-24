@@ -60,6 +60,8 @@ export async function resolveAppPath(ctx: StepContext<StrutCapabilities>, path: 
     if (!isAbsolute(path)) throw new Error(`"${path}": with no job and no run directory to resolve against, an app path must be absolute`);
     return resolve(path);
   }
+  // A relative data dir (`./workspace`) would make every path inside it read as leaving it.
+  base = resolve(base);
   const abs = resolve(base, path);
   const where = jobId ? "job's" : ctx.runId ? "run's" : "data";
   if (abs !== base && !abs.startsWith(base + sep)) throw new Error(`"${path}" leaves the ${where} directory (${base})`);
