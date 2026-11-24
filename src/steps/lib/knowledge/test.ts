@@ -31,6 +31,8 @@ export default defineStep({
       ...(cfg.test ? { test: cfg.test } : { concept: cfg.concept!, docs: cfg.docs! }),
       n: cfg.n,
       ...(ctx.actor ? { by: ctx.actor } : {}),
+      // The samples spend the asking job's budget (src/jobs.ts `budgetUsd`).
+      ...(ctx.budgetJob ? { budgetJob: ctx.budgetJob } : {}),
     });
     if (!("ok" in r)) throw new Error(r.error);
     return r;

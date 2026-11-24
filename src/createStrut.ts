@@ -1073,6 +1073,9 @@ export interface StrutRunOptions<TServices = unknown> {
   branch?: string;
   /** The run is a TRIAL (`RunTrial`, src/trials.ts): what it starts is held. */
   trial?: RunTrial;
+  /** The job whose budget the run spends, when not `job`
+   *  (`RunOptions.budgetJob`): a trial's sample started by a job's run. */
+  budgetJob?: string;
 }
 
 // ── Run-output helpers ─────────────────────────────────────────────────────
@@ -3693,6 +3696,8 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.prepared ? { prepared: p.runStart.prepared } : {}),
         // A trial stays one (src/trials.ts): resumed, it still holds what it starts.
         ...(p.runStart.trial ? { trial: p.runStart.trial } : {}),
+        // And spends the budget it spent (src/jobs.ts `budgetUsd`).
+        ...(p.runStart.budgetJob ? { budgetJob: p.runStart.budgetJob } : {}),
         // Billed to whoever the original launch was billed to — never
         // re-derived, the owner may have changed since (§2).
         ...(p.runStart.actor ? { actor: p.runStart.actor } : {}),
@@ -8381,6 +8386,9 @@ export async function createStrut<TServices = unknown>(
        *  to launch, never a request's — so here, not on the body. Recorded on
        *  `run.start`; no wake and no callback follow its end. */
       trial?: RunTrial;
+      /** The job whose budget the run spends, when not its own
+       *  (`RunOptions.budgetJob`): never a request's, so here. */
+      budgetJob?: string;
       /** The conversation a person's turn continues (`continuesFor`,
        *  plans/jamie-app.md §2.2): opened as it is. */
       continues?: string;
@@ -8507,6 +8515,7 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.actor ? { actor: extra.actor } : {}),
         ...(principal ? { principal } : {}),
         ...(body.job ? { job: body.job } : {}),
+        ...(extra?.budgetJob ? { budgetJob: extra.budgetJob } : {}),
         ...(body.job && body.title ? { title: body.title } : {}),
         ...(body.branch ? { branch: body.branch } : {}),
         ...(controller.trial ? { trial: controller.trial } : {}),
@@ -11614,6 +11623,7 @@ export async function createStrut<TServices = unknown>(
         ...(runOpts?.actor ? { actor: runOpts.actor } : {}),
         ...(principal ? { principal } : {}),
         ...(runOpts?.job ? { job: runOpts.job } : {}),
+        ...(runOpts?.budgetJob ? { budgetJob: runOpts.budgetJob } : {}),
         ...(runOpts?.job && runOpts.title ? { title: runOpts.title } : {}),
         ...(runOpts?.mcp?.length ? { mcp: runOpts.mcp } : {}),
         ...(controller.branch ? { branch: controller.branch } : {}),

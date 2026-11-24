@@ -479,9 +479,10 @@ export function countSteps(events: RunEvent[]): StepCounts {
 }
 
 /** Add one event's spend to `RunSummary.totals`: a `step.end` carrying the
- *  fields `withUsage` puts there (core.ts). */
+ *  fields `withUsage` puts there (core.ts), or a `step.error` carrying what
+ *  the step spent before it failed. */
 export function tallyUsage(totals: ModelUsage, event: RunEvent): void {
-  if (event.type !== "step.end") return;
+  if (event.type !== "step.end" && event.type !== "step.error") return;
   if (event.modelCalls === undefined && event.cost === undefined && event.usage === undefined) return;
   totals.modelCalls += event.modelCalls ?? 0;
   totals.cost += event.cost ?? 0;

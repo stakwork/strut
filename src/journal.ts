@@ -47,6 +47,8 @@ export function readRunStart(
   branch?: string;
   /** The run is a trial (`RunTrial`) — kept by a resume, so it still holds what it starts. */
   trial?: RunTrial;
+  /** The job whose budget the run spends, when not `job` — kept by a resume. */
+  budgetJob?: string;
   /** Who launched it, when not a person or an API call — a peer's run stays
    *  the peer's to control after a resume (plans/federation.md §3). */
   origin?: RunEvent["origin"];
@@ -103,6 +105,7 @@ export function readRunStart(
     job: start.job,
     ...(start.branch ? { branch: start.branch } : {}),
     ...(start.trial ? { trial: start.trial } : {}),
+    ...(start.budgetJob ? { budgetJob: start.budgetJob } : {}),
     origin: start.origin,
     ...(start.peerPerson ? { peerPerson: true as const } : {}),
     ...(start.host ? { host: start.host } : {}),

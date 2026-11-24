@@ -1,11 +1,15 @@
 /**
  * A budget on a job (stadeum plans/experiments.md, "A budget on a job"): a
- * cap on the model calls of the job and every run under it, kept at the
- * gateway and by strut. The record's arithmetic; the runner recording each
- * run's cost and refusing a new run under a spent job; the Mothership's link
- * of the job's own between the delegation and each run (and a grant); the
+ * cap on the model calls of the job and every run it starts, kept at the
+ * gateway and by strut. The record's ledger; the runner writing each run's
+ * cost on the ledger of the job whose budget it spends — a run started for
+ * another job's work (a trial's sample) included — and refusing a new run
+ * under a spent job; a failed step's spend counted; the Mothership's link of
+ * the job's own between the delegation and each run (and a grant); the
  * launcher and `PUT /jobs/:id/budget`; the index showing it; the wake telling
  * a spent job's end with no model turn. OFFLINE — no gateway, no provider.
+ * A trial's samples spending the asking job's budget, end to end, is in
+ * src/graph/trials.test.ts.
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -29,7 +33,6 @@ import {
   readJobRecord,
   recordJobRunCost,
   setJobBudget,
-  type JobRun,
 } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { createMothership, explainJobSpent, jobLinkId } from "./mothership.js";
@@ -43,14 +46,6 @@ import { defineStep, flow, step, withUsage, type StepRegistry } from "./core.js"
 import { runWorkflow } from "./runner.js";
 import { mintDelegation, mintDelegationV1 } from "./test-util/mint-delegation.js";
 
-const run = (runId: string, cost?: number, parentRunId?: string): JobRun => ({
-  workflow: "job",
-  runId,
-  at: "2026-11-24T00:00:00.000Z",
-  ...(cost !== undefined ? { cost } : {}),
-  ...(parentRunId ? { parentRunId } : {}),
-});
-
 let dataDir: string;
 beforeEach(async () => {
   dataDir = await mkdtemp(join(tmpdir(), "strut-job-budget-"));
@@ -60,23 +55,24 @@ afterEach(async () => {
 });
 
 describe("job budget: the record", () => {
-  it("spend is the top-level runs' recorded cost — a child's is in its parent's — and `except` leaves one run out", () => {
-    const runs = [run("a", 1.5), run("b", 2), run("c", 0.75, "b"), run("d")];
-    assert.equal(jobSpentUsd(runs), 3.5);
-    assert.equal(jobSpentUsd(runs, "b"), 1.5);
+  it("spend is the sum of the job's ledger, and `except` leaves one run out", () => {
+    const rec = { spent: { a: 1.5, b: 2, d: 0 } };
+    assert.equal(jobSpentUsd(rec), 3.5);
+    assert.equal(jobSpentUsd(rec, "b"), 1.5);
     assert.equal(jobSpentUsd(undefined), 0);
+    assert.equal(jobSpentUsd({}), 0);
   });
 
   it("a budget: what is spent and what is left, never below zero; none without one", () => {
-    assert.equal(jobBudgetOf({ runs: [run("a", 3)] }), undefined);
-    assert.deepEqual(jobBudgetOf({ budgetUsd: 10, runs: [run("a", 3)] }), { usd: 10, spentUsd: 3, leftUsd: 7 });
-    assert.deepEqual(jobBudgetOf({ budgetUsd: 10, runs: [run("a", 12)] }), { usd: 10, spentUsd: 12, leftUsd: 0 });
+    assert.equal(jobBudgetOf({ spent: { a: 3 } }), undefined);
+    assert.deepEqual(jobBudgetOf({ budgetUsd: 10, spent: { a: 3 } }), { usd: 10, spentUsd: 3, leftUsd: 7 });
+    assert.deepEqual(jobBudgetOf({ budgetUsd: 10, spent: { a: 12 } }), { usd: 10, spentUsd: 12, leftUsd: 0 });
   });
 
   it("a spent job's refusal opens job_budget_spent: and says what it spent of what", () => {
-    assert.equal(jobBudgetProblem("j", { budgetUsd: 10, runs: [run("a", 3)] }), undefined);
-    assert.equal(jobBudgetProblem("j", { runs: [run("a", 300)] }), undefined, "no budget, no refusal");
-    const line = jobBudgetProblem("j", { budgetUsd: 100, runs: [run("a", 100)] })!;
+    assert.equal(jobBudgetProblem("j", { budgetUsd: 10, spent: { a: 3 } }), undefined);
+    assert.equal(jobBudgetProblem("j", { spent: { a: 300 } }), undefined, "no budget, no refusal");
+    const line = jobBudgetProblem("j", { budgetUsd: 100, spent: { a: 100 } })!;
     assert.match(line, /^job_budget_spent: job "j" has spent \$100 of its \$100 budget/);
     assert.equal(budgetSpentMessage("j", { usd: 50, spentUsd: 50.456 }).includes("$50.46 of its $50 budget"), true);
   });
@@ -88,18 +84,22 @@ describe("job budget: the record", () => {
     for (const bad of [0, -1, "100", Number.NaN, Infinity, undefined, {}]) assert.throws(() => parseBudgetUsd(bad), /positive number of dollars/, String(bad));
   });
 
-  it("setJobBudget writes it (making the record when there is none) and null removes it; recordJobRunCost writes a run's line", async () => {
+  it("setJobBudget writes it (making the record when there is none) and null removes it; recordJobRunCost writes a run's entry on the ledger", async () => {
     const root = jobRoot(dataDir, "exp-1");
     await setJobBudget(root, "exp-1", 100);
     assert.equal((await readJobRecord(root))!.budgetUsd, 100);
     const jobs = jobsCapability(dataDir);
     await jobs.recordRun("exp-1", { workflow: "job", runId: "r1" });
     await recordJobRunCost(root, "r1", 4.25);
-    await recordJobRunCost(root, "nope", 9);
-    assert.deepEqual(await jobs.budget!("exp-1"), { usd: 100, spentUsd: 4.25, leftUsd: 95.75 });
+    // A run that is not on the job's list — another job's, a trial's sample — spends it too.
+    await recordJobRunCost(root, "sample-1", 9);
+    assert.deepEqual(await jobs.budget!("exp-1"), { usd: 100, spentUsd: 13.25, leftUsd: 86.75 });
     await recordJobRunCost(root, "r1", 6);
-    assert.equal((await jobs.budget!("exp-1"))!.spentUsd, 6, "a resumed run's line takes its whole cost again");
-    assert.deepEqual(await jobs.setBudget!("exp-1", 5), { usd: 5, spentUsd: 6, leftUsd: 0 });
+    assert.equal((await jobs.budget!("exp-1"))!.spentUsd, 15, "a resumed run's entry takes its whole cost again");
+    assert.deepEqual((await readJobRecord(root))!.spent, { r1: 6, "sample-1": 9 });
+    await recordJobRunCost(jobRoot(dataDir, "not-on-file"), "r9", 1);
+    assert.equal(await readJobRecord(jobRoot(dataDir, "not-on-file")), null, "no record is made for a cost");
+    assert.deepEqual(await jobs.setBudget!("exp-1", 5), { usd: 5, spentUsd: 15, leftUsd: 0 });
     assert.equal(await jobs.setBudget!("exp-1", null), undefined);
     assert.equal((await readJobRecord(root))!.budgetUsd, undefined);
     await assert.rejects(() => setJobBudget(root, "exp-1", 0), /positive number/);
@@ -119,7 +119,7 @@ describe("job budget: the runner", () => {
   const registry = { spend } as unknown as StepRegistry;
   const wf = flow("job", { input: z.object({ cost: z.number() }), steps: [step("s", "spend", { cost: "{{ input.cost }}" })] });
 
-  it("records each run's cost on its line, and refuses a new run once the spend reaches the budget", async () => {
+  it("records each run's cost on the job's ledger, and refuses a new run once the spend reaches the budget", async () => {
     const jobs = jobsCapability(dataDir);
     const services = { jobs };
     await jobs.setBudget!("exp", 10);
@@ -141,9 +141,69 @@ describe("job budget: the runner", () => {
     // A run outside any job, and a job with no budget, are never refused.
     assert.equal((await runWorkflow(wf, { cost: 1 }, registry, { services })).status, "success");
     await jobs.setBudget!("exp", 5);
-    assert.equal((await runWorkflow(wf, { cost: 1 }, registry, { services, job: "exp", origin: "verify" })).status, "success", "a check is the job's judging, not its work");
+    const check = await runWorkflow(wf, { cost: 1 }, registry, { services, job: "exp", origin: "verify" });
+    assert.equal(check.status, "success", "a check is the job's judging: never refused by strut");
+    assert.equal((await readJobRecord(jobRoot(dataDir, "exp")))!.spent![check.runId], 1, "but what it spent is the job's");
     await jobs.setBudget!("exp", null);
     assert.equal((await runWorkflow(wf, { cost: 1 }, registry, { services, job: "exp" })).status, "success");
+  });
+
+  it("a run started for another job's work spends that job's budget: its cost on that job's ledger, its run.start says so, and it is refused once that one is spent", async () => {
+    const jobs = jobsCapability(dataDir);
+    const services = { jobs };
+    const store = new MemoryRunStore();
+    await jobs.setBudget!("exp", 10);
+    // A trial's sample: a job of its own, spending the experiment's budget.
+    const a = await runWorkflow(wf, { cost: 6 }, registry, { services, store, job: "trial-1", budgetJob: "exp" });
+    assert.equal(a.status, "success");
+    assert.deepEqual(await jobs.budget!("exp"), { usd: 10, spentUsd: 6, leftUsd: 4 });
+    assert.equal((await readJobRecord(jobRoot(dataDir, "trial-1")))!.spent, undefined, "not on the sample's own record, which goes once it is judged");
+    const start = (await store.getRunEvents("job", a.runId)).find((e) => e.type === "run.start")!;
+    assert.equal(start.budgetJob, "exp", "a resume keeps spending it");
+    // A run whose budget job is its own job records nothing extra on run.start.
+    const own = await runWorkflow(wf, { cost: 5 }, registry, { services, store, job: "exp" });
+    assert.equal((await store.getRunEvents("job", own.runId)).find((e) => e.type === "run.start")!.budgetJob, undefined);
+    // The experiment is spent: its next sample is refused, though the sample's own job has no budget.
+    const c = await runWorkflow(wf, { cost: 1 }, registry, { services, store, job: "trial-2", budgetJob: "exp" });
+    assert.equal(c.status, "error");
+    assert.match(c.error!.message, /^job_budget_spent: job "exp" has spent \$11 of its \$10 budget/);
+  });
+
+  it("a step that fails after spending: what it spent is on its step.error, in the run's totals and on the job's ledger — a retried attempt's too, and the one an onError fallback stood in for", async () => {
+    const usage = { inputTokens: 1, outputTokens: 1 } as never;
+    /** A step that calls a model, then fails — as a gateway's 402 stops an agent mid-loop. */
+    const failing = defineStep({
+      type: "spend-then-fail",
+      input: z.object({ cost: z.number() }),
+      output: z.any(),
+      async run(cfg) {
+        throw withUsage(new Error("402: over the cap"), { modelCalls: 2, usage, cost: cfg.cost });
+      },
+    });
+    const reg = { spend, "spend-then-fail": failing } as unknown as StepRegistry;
+    const jobs = jobsCapability(dataDir);
+    const services = { jobs };
+    const store = new MemoryRunStore();
+    const spentOn = async (runId: string) => (await readJobRecord(jobRoot(dataDir, "exp")))!.spent![runId];
+
+    // Two attempts, both failed: both attempts' spend is on the one step.error.
+    const retried = flow("job", { input: z.object({}), steps: [step("s", "spend-then-fail", { cost: 3 }, { retry: { max: 1 } })] });
+    const a = await runWorkflow(retried, {}, reg, { services, store, job: "exp" });
+    assert.equal(a.status, "error");
+    const failed = (await store.getRunEvents("job", a.runId)).find((e) => e.type === "step.error")!;
+    assert.deepEqual([failed.modelCalls, failed.cost], [4, 6]);
+    assert.equal((await store.getRunSummary("job", a.runId))!.totals!.cost, 6);
+    assert.equal(await spentOn(a.runId), 6);
+
+    // An onError fallback that spends: its step.end carries its own spend and the failed step's.
+    const fallback = flow("job", {
+      input: z.object({}),
+      steps: [step("s", "spend-then-fail", { cost: 2 }, { onError: { id: "s2", type: "spend", config: { cost: 1 } } })],
+    });
+    const b = await runWorkflow(fallback, {}, reg, { services, store, job: "exp" });
+    assert.equal(b.status, "success");
+    assert.equal((await store.getRunSummary("job", b.runId))!.totals!.cost, 3);
+    assert.equal(await spentOn(b.runId), 3);
   });
 });
 
@@ -193,7 +253,7 @@ describe("job budget: the gateway", () => {
     const { ms } = await build();
     const plain = verify((await ms.llmAuth(stepCtx()))!.headers!["x-macaroon"]!, policy, new Date());
     assert.equal(plain.chain.length, 4);
-    const noBudget = verify((await ms.llmAuth(stepCtx({ job: "no-budget", runId: "2" })))!.headers!["x-macaroon"]!, policy, new Date());
+    const noBudget = verify((await ms.llmAuth(stepCtx({ budgetJob: "no-budget", runId: "2" })))!.headers!["x-macaroon"]!, policy, new Date());
     assert.equal(noBudget.chain.length, 4);
   });
 
@@ -205,7 +265,7 @@ describe("job budget: the gateway", () => {
     await recordJobRunCost(jobRoot(dataDir, "exp/1"), "r-old", 64);
 
     const chainOf = async (runId: string) =>
-      verify((await ms.llmAuth(stepCtx({ job: "exp/1", runId })))!.headers!["x-macaroon"]!, policy, new Date()).chain.map((l) => [l.run_id, l.max_cost_usd]);
+      verify((await ms.llmAuth(stepCtx({ budgetJob: "exp/1", runId })))!.headers!["x-macaroon"]!, policy, new Date()).chain.map((l) => [l.run_id, l.max_cost_usd]);
     const a = await chainOf("r-a");
     assert.deepEqual(a.slice(1), [[d.delegationId, 10_000], [jobLinkId("exp/1"), 100], ["r-a", 36], ["r-a", 36]]);
     assert.ok(!jobLinkId("exp/1").includes("/"), "no slash reaches a gateway route");
@@ -228,7 +288,7 @@ describe("job budget: the gateway", () => {
     await jobs.setBudget!("spent", 10);
     await jobs.recordRun("spent", { workflow: "job", runId: "r1" });
     await recordJobRunCost(jobRoot(dataDir, "spent"), "r1", 10);
-    await assert.rejects(() => ms.llmAuth(stepCtx({ job: "spent", runId: "r2" })), /^Error: job_budget_spent: job "spent" has spent \$10 of its \$10 budget/);
+    await assert.rejects(() => ms.llmAuth(stepCtx({ budgetJob: "spent", runId: "r2" })), /^Error: job_budget_spent: job "spent" has spent \$10 of its \$10 budget/);
   });
 
   it("v1: the job's link narrows the delegation (never above its ceiling) and the run's narrows the job's", async () => {
@@ -236,7 +296,7 @@ describe("job budget: the gateway", () => {
     const { ms } = await build({ v1: true, ceiling: 50, runCap: 20 });
     const jobs = jobsCapability(dataDir);
     await jobs.setBudget!("exp", 80);
-    let header = (await ms.llmAuth(stepCtx({ job: "exp" })))!.headers!["x-macaroon"]!;
+    let header = (await ms.llmAuth(stepCtx({ budgetJob: "exp" })))!.headers!["x-macaroon"]!;
     assert.deepEqual(v1.decodeMacaroon(header).attenuations.map((a) => [a.caveats.run_id, a.caveats.max_cost_usd]), [
       [jobLinkId("exp"), 50],
       ["1700000000000", 20],
@@ -245,7 +305,7 @@ describe("job budget: the gateway", () => {
     assert.doesNotThrow(() => v1.verify(header, policyV1, new Date()));
     // A budget below the run's cap: the run's link narrows to what the job has left.
     await jobs.setBudget!("exp", 8);
-    header = (await ms.llmAuth(stepCtx({ job: "exp", runId: "2" })))!.headers!["x-macaroon"]!;
+    header = (await ms.llmAuth(stepCtx({ budgetJob: "exp", runId: "2" })))!.headers!["x-macaroon"]!;
     assert.deepEqual(v1.decodeMacaroon(header).attenuations.map((a) => [a.caveats.run_id, a.caveats.max_cost_usd]), [
       [jobLinkId("exp"), 8],
       ["2", 8],
@@ -258,7 +318,7 @@ describe("job budget: the gateway", () => {
     const { ms } = await build({ v1: true, ceiling: 50 });
     await assert.rejects(() => ms.llmAuth(stepCtx()), /exceeds the delegation ceiling/);
     await jobsCapability(dataDir).setBudget!("small", 30);
-    const header = (await ms.llmAuth(stepCtx({ job: "small", runId: "3" })))!.headers!["x-macaroon"]!;
+    const header = (await ms.llmAuth(stepCtx({ budgetJob: "small", runId: "3" })))!.headers!["x-macaroon"]!;
     assert.deepEqual(v1.decodeMacaroon(header).attenuations.map((a) => a.caveats.max_cost_usd), [30, 30, 30]);
   });
 
@@ -306,7 +366,10 @@ describe("job budget: where it shows", () => {
     assert.deepEqual(row!.budget, { usd: 100, spentUsd: 64, leftUsd: 36 });
     const view = (await index.get("exp", { threads: false }))!;
     assert.deepEqual(view.budget, { usd: 100, spentUsd: 64, leftUsd: 36 });
-    assert.equal(view.runs[0]!.cost, 64, "each run's cost on its row");
+    // A run of another job that spent this one's budget (a trial's sample) is in its spend.
+    await recordJobRunCost(jobRoot(dataDir, "exp"), "sample-1", 6);
+    [row] = await index.list();
+    assert.deepEqual(row!.budget, { usd: 100, spentUsd: 70, leftUsd: 30 });
   });
 
   it("the wake: a job its budget stopped is told in a fixed line — no model turn — and any other end wakes as before", async () => {

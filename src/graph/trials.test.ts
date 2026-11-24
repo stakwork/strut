@@ -21,10 +21,11 @@ import { projectionsSettled } from "./projector.js";
 import { testBackends } from "./test-util.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
 import { createStrut, type Strut } from "../createStrut.js";
-import { defineStep, type AnyStepDef, type StepContext } from "../core.js";
-import { jobRoot, type JobsCapability } from "../jobs.js";
+import { defineStep, withUsage, type AnyStepDef, type StepContext } from "../core.js";
+import { jobRoot, readJobRecord, type JobsCapability } from "../jobs.js";
 import { ORCHESTRATOR_PAGE, ORCHESTRATOR_WORKFLOW, orchestratorRules } from "../orchestrator-seed.js";
 import { createRegistry } from "../steps/registry.js";
+import { emptyUsage } from "../pricing.js";
 import { MemoryRunStore, type RunStore } from "../store.js";
 import { SEED_SPEAKER, createTrials, type ChecksView, type TrialsCapability } from "../trials.js";
 import type { ConceptSources, PageSource } from "../concept-sources.js";
@@ -432,5 +433,49 @@ for (const tb of testBackends()) describe(`trials and tests of a page, on ${tb.n
     const reworded = await new ClaimsWriter(backend, strut.claims!).editClaim(added.id, `${POLITE} and kind`);
     const now = (await trials.checks("Tone"))!;
     assert.deepEqual(of(now, reworded.id).cases.map((c) => c.id), [setup!.id]);
+  });
+
+  it("a trial a job asked for spends that job's budget: each sample's cost and its judging are on the job's ledger after the samples' own jobs are gone, and a spent budget runs no more", async () => {
+    // A step that spent on model calls, as an agent does.
+    const spend = defineStep({
+      type: "trialtest/spend",
+      input: z.object({}),
+      output: z.any(),
+      async run() {
+        return withUsage({}, { modelCalls: 1, usage: { ...emptyUsage(), inputTokens: 1, outputTokens: 1 }, cost: 2 });
+      },
+    });
+    const strut = await boot([spend] as AnyStepDef[]);
+    const trials = trialsOf(strut);
+    const jobs = (strut.services as unknown as { jobs: JobsCapability }).jobs;
+    await backend.nodes.writeMany([{ type: "Concept", data: { name: "Tone", description: "how replies sound", docs: "Be polite." } }]);
+    await strut.workspace.publishWorkflowByContent(
+      "job",
+      ["name: job", "steps:", "  - id: page", "    type: context/concept", "    config: { name: Tone, frame: false }", "  - id: spend", "    type: trialtest/spend", "  - id: result", "    type: pack", '    config: { text: "{{ page.text }}" }', ""].join("\n"),
+    );
+    const added = ok(await trials.addCheck({ concept: "Tone", text: POLITE, by: "ada" }));
+    ok(await trials.setCases({ claim: added.id, cases: [{ workflow: "job", input: { prompt: "Set it up." } }] }));
+    await jobs.setBudget!("experiment", 100);
+
+    ok(await trials.trial({ claim: added.id, n: 2, budgetJob: "experiment" }));
+    const view = await settled(strut, "Tone");
+    const samples = of(view, added.id).samples;
+    assert.equal(samples.length, 2, JSON.stringify(view.problem));
+    const spent = (await readJobRecord(jobRoot(dir, "experiment")))!.spent ?? {};
+    for (const s of samples) {
+      const start = (await store.getRunEvents("job", s.run)).find((e) => e.type === "run.start")!;
+      assert.match(start.job ?? "", /^trial-/, "each sample is still a job of its own");
+      assert.equal(start.budgetJob, "experiment");
+      assert.equal(spent[s.run], 2, "its cost is on the experiment's ledger");
+    }
+    const judging = Object.keys(spent).filter((r) => !samples.some((s) => s.run === r));
+    assert.ok(judging.length >= 1 && judging.every((r) => spent[r]! > 0), `the judge's calls spend it too: ${JSON.stringify(spent)}`);
+
+    // Spent: the next trial's samples are refused, and the page says why.
+    await jobs.setBudget!("experiment", 1);
+    ok(await trials.trial({ claim: added.id, n: 1, budgetJob: "experiment" }));
+    const after = await settled(strut, "Tone");
+    assert.match(after.problem ?? "", /job_budget_spent: job "experiment"/);
+    assert.equal(of(after, added.id).samples.length, 2, "nothing more was judged");
   });
 });

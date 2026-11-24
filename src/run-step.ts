@@ -80,6 +80,9 @@ export interface RunStepOptions {
    *  in the job's directory — recorded on `run.start`, never on the job's
    *  run list (a verify-origin run is not a turn), no hold taken. */
   job?: string;
+  /** The job whose budget the run spends (`RunOptions.budgetJob`): a check
+   *  of a run that spent a job's budget spends it too. */
+  budgetJob?: string;
   /** The Concept branch the step runs on (src/branches.ts): the calling run's. */
   branch?: string;
   /** The calling run is a trial (`RunTrial`): so is this step's run. */
@@ -162,6 +165,7 @@ export async function runSingleStep(
     ...(opts.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
     ...(opts.controller ? { controller: opts.controller } : {}),
     ...(opts.job ? { job: opts.job } : {}),
+    ...(opts.budgetJob ? { budgetJob: opts.budgetJob } : {}),
     ...(opts.branch ? { branch: opts.branch } : {}),
     ...(opts.trial ? { trial: opts.trial } : {}),
     ...(opts.app ? { app: opts.app } : {}),

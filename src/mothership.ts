@@ -38,8 +38,9 @@
  *
  * A JOB with a budget (stadeum plans/experiments.md, "A budget on a job";
  * src/jobs.ts `budgetUsd`) gets a link of its own between the delegation and
- * each of its runs' links — the same run id for every run of the job
- * (`jobLinkId`), so the gateway sums the job's spend across them and
+ * the link of each run that spends it (`ctx.budgetJob`: the job's own runs,
+ * and a trial's samples one of them started) — the same run id for every
+ * such run (`jobLinkId`), so the gateway sums the job's spend across them and
  * refuses the call that would go past the budget, in flight or not. A run
  * link under it is capped at no more than what strut's record says the job
  * has left, which holds even after the gateway's counter for the job
@@ -424,9 +425,9 @@ export function createMothership(opts: MothershipOptions): Mothership {
 
   async function runLink(ctx: LlmAuthContext, o: OpenDelegation, principal: string, now: Date): Promise<RunLink> {
     const runId = ctx.runId!;
-    const budget = await jobBudget(ctx.job, runId);
-    if (budget && budget.leftUsd <= 0) throw new Error(budgetSpentMessage(ctx.job!, budget));
-    const jobKey = budget ? `${ctx.job}:${budget.usd}:${budget.leftUsd}` : "";
+    const budget = await jobBudget(ctx.budgetJob, runId);
+    if (budget && budget.leftUsd <= 0) throw new Error(budgetSpentMessage(ctx.budgetJob!, budget));
+    const jobKey = budget ? `${ctx.budgetJob}:${budget.usd}:${budget.leftUsd}` : "";
     const cached = runLinks.get(runId);
     if (cached && cached.delegationId === o.delegationId && cached.jobKey === jobKey && cached.expMs - now.getTime() > RELINK_BEFORE_MS) return cached;
     if (!workspace) throw new Error("createMothership: call mount(strut) before running workflows");
@@ -437,7 +438,7 @@ export function createMothership(opts: MothershipOptions): Mothership {
     const runCap = budget ? Math.min(ctx.maxCostUsd ?? Infinity, budget.leftUsd) : ctx.maxCostUsd;
     const capUsd = capOrThrow(meta?.maxRunCostUsd, o, principal, runCap);
     const exp = expFor(now, o.exp);
-    const parent = budget ? jobLink(o, ctx.job!, budget, now) : o.root;
+    const parent = budget ? jobLink(o, ctx.budgetJob!, budget, now) : o.root;
     const link = parent.extend({ runId, capUsd, iat: now.toISOString(), exp });
     sweep(now.getTime());
     const entry = { link, capUsd, exp, expMs: Date.parse(exp), delegationId: o.delegationId, jobKey };
@@ -480,7 +481,7 @@ export function createMothership(opts: MothershipOptions): Mothership {
       },
       explainError: (err) =>
         explainExhausted(err, d, principal, o.ceilingUsd) ??
-        (ctx.kind === "step" && ctx.job ? explainJobSpent(err, ctx.job) : undefined) ??
+        (ctx.kind === "step" && ctx.budgetJob ? explainJobSpent(err, ctx.budgetJob) : undefined) ??
         explainRefused(err) ??
         explainUnrouted(err, ctx.provider),
       // A provider this gateway does not hold (a Numes nobody set up on it)

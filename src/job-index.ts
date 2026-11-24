@@ -74,9 +74,9 @@ export interface JobListing {
   workflow?: string;
   runs: number;
   holds: number;
-  /** What the job's model calls cost so far, in dollars (`jobSpentUsd`:
-   *  its top-level runs' recorded cost). Absent before a run that called a
-   *  model settled. */
+  /** What the job's model calls cost so far, in dollars (`jobSpentUsd`: its
+   *  `spent` ledger, every run that spends its budget). Absent before a run
+   *  that called a model settled. */
   spentUsd?: number;
   /** The job's budget (src/jobs.ts `budgetUsd`): its cap in dollars, what
    *  it has spent and what is left. Absent with none. */
@@ -223,7 +223,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
   const listing = (rec: JobRecord): JobListing => {
     const busy = jobHolder(rootOf(rec.name));
     const turn = turnOf(rec.runs);
-    const spentUsd = jobSpentUsd(rec.runs);
+    const spentUsd = jobSpentUsd(rec);
     const budget = jobBudgetOf(rec);
     return {
       job: rec.name,

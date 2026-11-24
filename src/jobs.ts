@@ -96,6 +96,16 @@ export interface JobRecord {
    *  each run's) and by strut, which starts no more runs under the job once
    *  its recorded spend reaches it (`jobBudgetProblem`). Absent: no budget. */
   budgetUsd?: number;
+  /** What the job has SPENT on model calls, by run id, in dollars (each
+   *  run's `totals.cost`, aieo's list prices), written when the run settles
+   *  (`recordJobRunCost`); a resumed run's entry is overwritten with its
+   *  whole cost so far. Every top-level run that spends this job's budget
+   *  (`RunOptions.budgetJob`): the job's own, a check of it, and a run of
+   *  ANOTHER job it started — a trial's sample, whose own record is deleted
+   *  once it is judged. A child's cost is in the parent that waited on it,
+   *  so it has no entry. Kept with or without a budget, so one set later
+   *  counts what was spent before. */
+  spent?: Record<string, number>;
 }
 
 /** One automatic fix (`JobRecord.prFixes`). */
@@ -115,12 +125,6 @@ export interface JobRun {
   /** The turn that started this run through `job/start` / `job/continue`
    *  (`RunEvent.startedBy`): which conversation the job belongs to. */
   startedBy?: StartedBy;
-  /** What the run's model calls cost in dollars (its summary's
-   *  `totals.cost`, aieo's list prices), written when it settles
-   *  (`recordJobRunCost`). A top-level run's counts toward the job's spend
-   *  (`jobSpentUsd`); a child's is already in its parent's, which waited on
-   *  it. Absent until a run that called a model settles. */
-  cost?: number;
 }
 
 /**
@@ -150,15 +154,13 @@ export function turnOf(runs: readonly JobRun[] | undefined): JobRun | undefined 
 
 // ── the budget (stadeum plans/experiments.md, "A budget on a job") ────────
 
-/** What a job has spent on model calls, in dollars: the recorded cost of
- *  its top-level runs (`JobRun.cost`) — a child's is in the parent that
- *  waited on it, so it is not counted twice. `except` leaves one run out
- *  (the run asking, whose own spend its gateway link already counts). An
- *  estimate at list prices, as each run's own `totals.cost` is; the gateway
- *  keeps the bill. */
-export function jobSpentUsd(runs: readonly JobRun[] | undefined, except?: string): number {
+/** What a job has spent on model calls, in dollars: the sum of its `spent`
+ *  ledger. `except` leaves one run out (the run asking, whose own spend its
+ *  gateway link already counts). An estimate at list prices, as each run's
+ *  own `totals.cost` is; the gateway keeps the bill. */
+export function jobSpentUsd(rec: Pick<JobRecord, "spent"> | null | undefined, except?: string): number {
   let spent = 0;
-  for (const r of runs ?? []) if (!r.parentRunId && r.runId !== except && typeof r.cost === "number") spent += r.cost;
+  for (const [runId, cost] of Object.entries(rec?.spent ?? {})) if (runId !== except && typeof cost === "number") spent += cost;
   return spent;
 }
 
@@ -170,9 +172,9 @@ export interface JobBudget {
   leftUsd: number;
 }
 
-export function jobBudgetOf(rec: Pick<JobRecord, "budgetUsd" | "runs"> | null | undefined, except?: string): JobBudget | undefined {
+export function jobBudgetOf(rec: Pick<JobRecord, "budgetUsd" | "spent"> | null | undefined, except?: string): JobBudget | undefined {
   if (typeof rec?.budgetUsd !== "number") return undefined;
-  const spentUsd = jobSpentUsd(rec.runs, except);
+  const spentUsd = jobSpentUsd(rec, except);
   return { usd: rec.budgetUsd, spentUsd, leftUsd: Math.max(0, rec.budgetUsd - spentUsd) };
 }
 
@@ -190,7 +192,7 @@ export function budgetSpentMessage(job: string, b: Pick<JobBudget, "usd" | "spen
 
 /** Why no more may start under the job — its budget is spent — or
  *  undefined (`budgetSpentMessage`). */
-export function jobBudgetProblem(job: string, rec: Pick<JobRecord, "budgetUsd" | "runs"> | null | undefined, except?: string): string | undefined {
+export function jobBudgetProblem(job: string, rec: Pick<JobRecord, "budgetUsd" | "spent"> | null | undefined, except?: string): string | undefined {
   const b = jobBudgetOf(rec, except);
   return b && b.leftUsd <= 0 ? budgetSpentMessage(job, b) : undefined;
 }
@@ -216,17 +218,17 @@ export async function setJobBudget(root: string, name: string, usdCap: number | 
   });
 }
 
-/** Write what a run under the job cost on its line (`JobRun.cost`), under
- *  the record's lock. Not a use: `usedAt` stays. A resumed run's line is
- *  overwritten with its whole cost so far. Nothing happens when the job or
- *  the line is not on file. */
+/** Write what a run that spends the job's budget cost on its ledger
+ *  (`JobRecord.spent`), under the record's lock. Not a use: `usedAt` stays.
+ *  The run need not be on the job's list: a trial's sample is another
+ *  job's. A resumed run's entry is overwritten with its whole cost so far.
+ *  Nothing happens when the job is not on file. */
 export async function recordJobRunCost(root: string, runId: string, cost: number): Promise<void> {
   if (!Number.isFinite(cost) || cost < 0) return;
   await withLock(`${root}.json`, async () => {
     const rec = await readJobRecord(root);
-    const line = rec?.runs?.find((r) => r.runId === runId);
-    if (!rec || !line || line.cost === cost) return;
-    line.cost = cost;
+    if (!rec || rec.spent?.[runId] === cost) return;
+    rec.spent = { ...rec.spent, [runId]: cost };
     await writeJobRecord(root, rec);
   });
 }
@@ -703,8 +705,8 @@ export interface JobsCapability extends Partial<JobIndex> {
    *  job (kept until a later launch carries another); its `actor` joins the
    *  job's `actors` (and is `createdBy` when it is the first). */
   recordRun(job: string, run: Omit<JobRun, "at"> & { title?: string; actor?: string }): Promise<void>;
-  /** What a run under the job cost, when it settles — the runner's call
-   *  (`recordJobRunCost`). */
+  /** What a run that spends the job's budget cost, when it settles — the
+   *  runner's call (`recordJobRunCost`). */
   recordCost?(job: string, runId: string, cost: number): Promise<void>;
   /** The job's budget and spend (`jobBudgetOf`), or undefined with none —
    *  what the runner reads before a run starts under the job. */

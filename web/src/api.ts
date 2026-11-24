@@ -1211,8 +1211,6 @@ export interface JobRunView {
   durationMs?: number;
   error?: string;
   sealed?: true;
-  /** What the run's model calls cost, in dollars, once it settled. */
-  cost?: number;
 }
 
 /** `GET /jobs/:id`. */

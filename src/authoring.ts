@@ -554,9 +554,11 @@ export interface AuthoringCapability {
      *  like the run that launched it. `job`: the launching run's job
      *  (plans/jobs.md §4) — stamped on the child, so its `{{ $job }}`,
      *  `job/dir` and `workdir` resolve to the directory the parent holds,
-     *  which it shares (`holdJob`). `mcp`: the launching run's caller's MCP
-     *  servers (`ctx.mcp`), so the child's agents reach the same caller. */
-    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string; mcp?: McpServer[]; branch?: string },
+     *  which it shares (`holdJob`). `budgetJob`: the job whose budget the
+     *  launching run spends (`ctx.budgetJob`), the child's too. `mcp`: the
+     *  launching run's caller's MCP servers (`ctx.mcp`), so the child's
+     *  agents reach the same caller. */
+    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string; budgetJob?: string; mcp?: McpServer[]; branch?: string },
   ): Promise<RunResult | { error: string }>;
   listRuns(name: string, limit?: number): Promise<unknown>;
   getRun(name: string, runId: string, opts?: RunViewOptions): Promise<unknown>;
@@ -988,6 +990,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           ...(opts?.actor ? { actor: opts.actor } : {}),
           ...(opts?.principal ? { principal: opts.principal } : {}),
           ...(opts?.job ? { job: opts.job } : {}),
+          ...(opts?.budgetJob ? { budgetJob: opts.budgetJob } : {}),
           ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
           // The parent's Concept branch, or the one it named from main (trackRun).
           ...((tracked?.controller?.branch ?? opts?.branch) ? { branch: (tracked?.controller?.branch ?? opts?.branch)! } : {}),
