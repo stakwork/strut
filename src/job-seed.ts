@@ -26,6 +26,12 @@ import type { WorkspaceStore } from "./workspace.js";
  * agent passes its DELTA here rather than publishing on top — two seeders
  * over one name would swap the active version at every boot.
  *
+ * How the agent WORKS is not in the template: its instructions are the
+ * `Job` Concept's page (src/concepts/Job.md), which the workflow reads into
+ * the system prompt after `params.system` (context/concept); the template's
+ * own text is the mechanics of a turn (the directory, the checkouts, the
+ * reply's fields).
+ *
  * The delta (`createStrut({ job })`) is the twin of `chatSystem`: strut
  * owns how a job turn works, the host owns what its deployment adds —
  * grants appended to `params.tools` (the lab's `pod/*`), a section appended
@@ -84,7 +90,7 @@ export const JOB_DESCRIPTION =
   "Launch it with `job` on the launch — POST /workflows/job/run { job, input: { prompt }, callback } — and the same job again to revise the same files; without a job it is a one-shot in the run's artifact directory. " +
   "Input: { prompt, workspace? (this strut server's slug — the agent's message starts with it; another server is a peer, @<slug>), session? (the agent's thread: the job id unless given), repos? (repository URLs checked out into the job's directory, kept turn to turn) }. " +
   "Output: { text, artifacts: [{ id, kind?, title, label?, summary?, path | url | content }], ask?: { message }, cost, session }; the callback carries `artifacts` resolved to links. " +
-  "params.tools (registry steps granted on top of the agent's built-ins: graph reads; meta/list-workflows, get-workflow, run-workflow, get-run; strut/run-workflow — a workflow on a peer; job/list, get, read — earlier jobs) and params.system are the evolvable surface; the host adds its own through createStrut({ job }).";
+  "params.tools (registry steps granted on top of the agent's built-ins: graph reads; meta/list-workflows, get-workflow, run-workflow, get-run; strut/run-workflow — a workflow on a peer; job/list, get, read — earlier jobs), params.system (the mechanics: the directory, the reply's fields) and the Job Concept's page (the agent's instructions, read into the system prompt every turn) are the evolvable surface; the host adds its own through createStrut({ job }).";
 
 const JOB_YAML = new URL("./workflows/job.yaml", import.meta.url);
 

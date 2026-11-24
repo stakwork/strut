@@ -14,6 +14,7 @@ import { WorkspaceManager, flowFromYaml } from "./workspace.js";
 import { createStrut } from "./createStrut.js";
 import { MemoryRunStore } from "./store.js";
 import { JOB_WORKFLOW, jobWorkflowYaml } from "./job-seed.js";
+import { STRUT_CONCEPTS, conceptFiles } from "./concept-seed.js";
 
 type Params = { tools: string[]; system: string };
 const paramsOf = (text: string) => (yaml.load(text) as { params: Params }).params;
@@ -60,6 +61,84 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     assert.match(system, /git\/checkout with `workdir`\s+your job id/);
     const work = flowFromYaml(JOB_WORKFLOW, "v1", text).steps.find((s) => s.id === "work") as { config: Record<string, unknown> };
     assert.equal(work.config["secretsEnv"], undefined, "no token in the agent's shell");
+  });
+
+  it("the agent's instructions are the `Job` page, not this file: the YAML keeps the mechanics, and everything the prompt said before is on the page or the `Browser` page under it", async () => {
+    const text = await jobWorkflowYaml();
+    const flat = (t: string) => t.replace(/\s+/g, " ");
+    const system = flat(paramsOf(text).system);
+    // The mechanics stay: the directory, the checkouts, the reply's fields.
+    for (const kept of ["Your working directory is the job's", "A `git clone` in bash has no credentials.", "Your deliverables are FILES in the working directory", "put the question in `ask`; their answer is the next turn's message."]) {
+      assert.ok(system.includes(kept), kept);
+    }
+    assert.ok(system.length < 1200, `the mechanics alone (${system.length} chars)`);
+    assert.doesNotMatch(system, /VERIFIED|browser-explore|captcha|meta\/|job\/(list|get|read|status)/, "how to work is the page's");
+
+    const files = conceptFiles([STRUT_CONCEPTS]);
+    const job = (await files.get("Job"))!;
+    const page = flat(job.docs!);
+    for (const moved of [
+      // The kinds, and a kind's page at the head of a turn.
+      "A message that opens with a kind's page is that kind: follow the page.",
+      "say in `text` which page you followed",
+      "When no kind fits, the work is yours — a plan, a page, notes — as files in your directory.",
+      // Running a workflow, here and on a peer.
+      'Running a workflow (a person may call one a "strut")',
+      "meta/run-workflow runs it as its own run under this job (same job id, same directory)",
+      "Prefer running a workflow that does the work over doing it by hand, and say in `text` which one you ran.",
+      "its files stay there",
+      "also names THIS server (`self`) and its repositories — code there is here",
+      // No browser of its own: the `Browser` page says how.
+      "You have no browser to look around with",
+      "open the `Browser` page under this one and run browser-explore as it says",
+      "Never install or launch a browser yourself (playwright, puppeteer, a headless chrome from bash)",
+      // Earlier jobs.
+      "look before starting over: `job/list { q }` finds earlier jobs by words",
+      "Say in `text` which job you built on.",
+      "never as a path in `text`, which they cannot open",
+      "another job's directory is not yours to write",
+      // Done means verified.
+      "The work is done when it is VERIFIED, not when your last tool call returned.",
+      "meta/add-claim with subject { kind: job, name: <your job id> }",
+      "ONE claim for a change; several only when the ask has separate parts, one per part.",
+      "a page: browser/verify (browser/walkthrough for a flow, a frame per step)",
+      "an endpoint: http/verify",
+      'exec with `cwd: "{{ input.dir }}"`',
+      "an external check ({ description })",
+      "Never a check that reads your own diff or code",
+      "hang your check on their claim rather than writing a second",
+      "call meta/verify-job",
+      "Refuted means not done — fix the work (or a wrong check, meta/edit-check), verify again, and only then answer.",
+      "making something and checking it are two steps",
+    ]) {
+      assert.ok(page.includes(moved), moved);
+    }
+    // The page fits the read's cap, which the workflow raises for it.
+    const concepts = flowFromYaml(JOB_WORKFLOW, "v1", text).steps.find((st) => st.id === "concepts") as { config: Record<string, unknown> };
+    assert.deepEqual(concepts.config, { name: "{{ params.concept }}", max: 10000 });
+    assert.ok(job.docs!.length < 10000, `the Job page fits its cap (${job.docs!.length} chars)`);
+
+    // Looking at a site is a kind under Job: the call, what it answers, the
+    // screenshots, and the captcha a person solves.
+    assert.ok(job.children.some((c) => c.name === "Browser"), "listed under Job");
+    const browser = flat((await files.get("Browser"))!.docs!);
+    for (const moved of [
+      'meta/run-workflow { name: "browser-explore", input: { goal, url } }',
+      "with a goal that stands alone, since it sees nothing of this conversation",
+      "answers { answer, evidence: [{ path, url }], pages }",
+      "shots/NNN.png",
+      "a link to report as an image artifact",
+      "Never install or launch a browser yourself",
+      "A captcha is the person's to solve, never yours.",
+      "run browser-captcha { session }",
+      "list its `artifact` as given and end the turn with `ask`",
+      "`[captcha-answer] {…}`",
+      "run browser-captcha { session, answer: that JSON } at once — a challenge expires",
+      "`solved`: run browser-explore { goal, url, session } at once",
+      "`failed`: say so in `text`.",
+    ]) {
+      assert.ok(browser.includes(moved), moved);
+    }
   });
 
   it("the host's delta is appended — its grants after strut's, its section after strut's prompt — and changes the hash; nothing else does", async () => {
@@ -208,7 +287,15 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       assert.equal(turns[0]!.session, job, "the job's thread");
       assert.equal(turns[0]!.prompt, `This job runs on this server, @acme. Your job id: ${job}. Plan dark mode.`, "the server line, then the job's id");
       assert.deepEqual(turns[0]!.tools, paramsOf(await jobWorkflowYaml()).tools, "params.tools reaches agentTools");
-      assert.equal(turns[0]!.system.trimEnd(), paramsOf(await jobWorkflowYaml()).system.trimEnd(), "no graph: strut's prompt alone, no Concept section");
+      // No graph: the `Job` page all the same, read from the file strut
+      // ships — the agent's instructions, and the kinds under it.
+      const system = turns[0]!.system;
+      assert.ok(system.startsWith(paramsOf(await jobWorkflowYaml()).system.trimEnd()), "the mechanics lead");
+      assert.ok(system.includes('Knowledge on this server — the "Job" Concept'), "then the Job page");
+      assert.ok(system.includes("The work is done when it is VERIFIED") && system.includes("To record a new kind, add a child Concept here"), "its docs, whole");
+      assert.ok(system.includes("- Browser — Looking at a site or a running app") && system.includes("- Plan — "), "and the kinds under it");
+      assert.ok(system.includes('graph_graph_get({ node_type: "Concept", name: "<name>", children: "PARENT_OF" })'), "opened as on a graph");
+      assert.ok(system.includes("`{{ input.urls.pod }}/<path>`"), "a check's own template reaches the agent as text");
       assert.ok(existsSync(join(dir, "jobs", job, "plan.md")));
 
       const links = ((await (await strut.app.request(`/workflows/${JOB_WORKFLOW}/runs/${first.runId}/artifacts`)).json()) as { artifacts: Array<{ id: string; kind?: string; url?: string }> }).artifacts;

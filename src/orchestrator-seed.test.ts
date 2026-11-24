@@ -18,11 +18,14 @@ import { ORCHESTRATOR_PAGE, ORCHESTRATOR_WORKFLOW, orchestratorRules, orchestrat
 import { resolveArtifactRefs } from "./artifact-refs.js";
 import { resolveTemplate } from "./expr.js";
 
-type Params = { tools: string[]; system: string; rules: string; rulesText: string };
+type Params = { tools: string[]; system: string; rules: string; rulesText?: string };
 const paramsOf = (text: string) => (yaml.load(text) as { params: Params }).params;
+/** The `Orchestrator` page's text as strut ships it: what the `rules` step
+ *  reads, from the graph or, where none holds the page, from this file. */
+const RULES = await orchestratorRules();
 /** Strut's own words in the system prompt: the rules (the `Orchestrator`
- *  page's text, as the seed carries it), then the mechanics. */
-const promptOf = (text: string) => `${paramsOf(text).rulesText}\n\n${paramsOf(text).system}`;
+ *  page's text), then the mechanics. */
+const promptOf = (text: string) => `${RULES}\n\n${paramsOf(text).system}`;
 
 const quiet = () => ({ serveUi: false, enableChat: false, scheduler: false as const, stt: false as const, store: new MemoryRunStore() });
 
@@ -36,13 +39,14 @@ describe("the orchestrator workflow strut ships", () => {
     const flow = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text);
     assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "context/concept", "context/concept", "strut/list-peers", "proposal/standing", "if", "pack", "agent", "if", "job/start", "pack"]);
     // The rules are a Concept page (plans/claim-trials.md §1): read as it
-    // is, so the turn opens it and its claims judge the turn; the seed
-    // carries the page's shipped text for a workspace with no graph.
+    // is, so the turn opens it and its claims judge the turn. The workflow
+    // carries no copy of it: where no graph holds the page, the step reads
+    // the file strut ships (graph/graph-get, `conceptFiles`).
     assert.deepEqual(flow.steps.find((st) => st.id === "rules")!.config, { name: "{{ params.rules }}", frame: false, max: 20000 });
     assert.equal(paramsOf(text).rules, ORCHESTRATOR_PAGE);
-    assert.equal(paramsOf(text).rulesText, await orchestratorRules());
-    assert.match(paramsOf(text).rulesText, /^You are a person's assistant, in one long conversation with them\./);
-    assert.ok(paramsOf(text).rulesText.length < 20000, "the page fits the step's max");
+    assert.equal(paramsOf(text).rulesText, undefined, "no copy of the page in the workflow");
+    assert.match(RULES, /^You are a person's assistant, in one long conversation with them\./);
+    assert.ok(RULES.length < 20000, "the page fits the step's max");
     const personalOf = (t: string) => (yaml.load(t) as { params: { personalConcept?: string } }).params.personalConcept;
     assert.equal(personalOf(text), "", "no person's pages unless the host keeps them");
     assert.equal(personalOf(await orchestratorWorkflowYaml({ personalConcept: "Personal" })), "Personal");
@@ -88,8 +92,8 @@ describe("the orchestrator workflow strut ships", () => {
     assert.deepEqual(turn["toolFilter"], ["none"]);
     assert.equal(
       turn["system"],
-      "{{ rules.text || params.rulesText }}\n\n{{ params.system }}\n{{ concepts.text }}\n{{ builds.text }}\n{{ personal.text }}",
-      "the rules (the page, else the text strut shipped), the mechanics, then the two lists and the person's pages",
+      "{{ rules.text }}\n\n{{ params.system }}\n{{ concepts.text }}\n{{ builds.text }}\n{{ personal.text }}",
+      "the rules (the page), the mechanics, then the two lists and the person's pages",
     );
 
     const { tools } = paramsOf(text);

@@ -124,7 +124,7 @@ import { ACTOR_SECRETS_FILE, actorSecretStore, connectRefresher, isValidProvider
 import { packageJobGrants, seedJobWorkflow, strutGrantProblem, withJobGrants, type JobSeedOptions } from "./job-seed.js";
 import { installedSchedules } from "./packages/schedules.js";
 import { installedTriggers, matches, ON_CHAIN_MAX, type InstalledTrigger } from "./packages/on.js";
-import { findConcept, PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
+import { conceptFiles, findConcept, PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { ORCHESTRATOR_WORKFLOW, seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
 import { seedBuilderWorkflow, type BuilderSeedOptions } from "./builder-seed.js";
@@ -1744,6 +1744,11 @@ export async function createStrut<TServices = unknown>(
     // On a host that set `graphReaders`, a view that holds each `graph/*`
     // step to its caller's list (src/graph/scope.ts).
     ...(graph ? { graph: graphView({ ...graph, close: async () => undefined }, opts.graphReaders) } : {}),
+    // The pages strut ships, from their files: what a read of a Concept by
+    // name answers where no graph holds the page (graph/graph-get), so an
+    // agent whose instructions are one (`Job`, `Orchestrator`) has them on
+    // a server with no graph too.
+    conceptFiles: conceptFiles(opts.concepts && opts.concepts.personal ? [STRUT_CONCEPTS, PERSONAL_CONCEPTS] : [STRUT_CONCEPTS]),
     ...(graphChanges ? { graphChanges } : {}),
     // The box's git hosts and their forge steps (src/git-hosts.ts), as the
     // last package write left them.

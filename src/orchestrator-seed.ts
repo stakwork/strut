@@ -53,7 +53,7 @@ export const ORCHESTRATOR_DESCRIPTION =
   "Input: { prompt, session? (the conversation's thread), context?: { line, where?, timeZone? } (put before the prompt: the time, the person's time zone; where the conversation is read) }. " +
   "Launched with wake: true, a turn asks strut to wake the session when a job it started ends: one more turn whose prompt is params.wake (the 202 says wake: true). " +
   "Output: { text, artifacts, ask?: { message }, cost, session }, job's shape. " +
-  "Its rules are the Orchestrator Concept's page, read into the system prompt every turn (params.rulesText is the same text, for a server with no graph). " +
+  "Its rules are the Orchestrator Concept's page, read into the system prompt every turn (from the file strut ships, on a server with no graph). " +
   "That page, params.tools (job/start, continue, list, get, read, strut/list-peers, strut/run-workflow, graph/graph-get — a kind's page) and params.system (the reply's fields) are the evolvable surface; the host adds its own through createStrut({ orchestrator }).";
 
 const ORCHESTRATOR_YAML = new URL("./workflows/orchestrator.yaml", import.meta.url);
@@ -64,18 +64,15 @@ export const ORCHESTRATOR_PAGE = "Orchestrator";
 const ORCHESTRATOR_PAGE_FILE = new URL(`./concepts/${ORCHESTRATOR_PAGE}.md`, import.meta.url);
 
 /** The rules as strut ships them: the `Orchestrator` page's docs, read from
- *  its file. One text, two ways to the prompt: the page in the graph
- *  (context/concept, which a turn opens and a claim judges), and this, the
- *  template's `params.rulesText`, where there is no graph. */
+ *  its file. What the page in the graph holds until someone takes it over,
+ *  and what context/concept reads where no graph holds the page. */
 export async function orchestratorRules(): Promise<string> {
   return parseConceptFile(`${ORCHESTRATOR_PAGE}.md`, await readFile(ORCHESTRATOR_PAGE_FILE, "utf-8"), "").docs ?? "";
 }
 
-/** The `orchestrator` template with the host's delta applied, and the
- *  rules strut ships as its fallback (`params.rulesText`). */
+/** The `orchestrator` template with the host's delta applied. */
 export async function orchestratorWorkflowYaml(opts?: OrchestratorSeedOptions): Promise<string> {
   const doc = yaml.load(await templateWithDelta(ORCHESTRATOR_YAML, opts)) as { params: Record<string, unknown> };
-  doc.params["rulesText"] = await orchestratorRules();
   if (opts?.personalConcept) doc.params["personalConcept"] = opts.personalConcept;
   return yaml.dump(doc, { lineWidth: -1, noRefs: true });
 }
