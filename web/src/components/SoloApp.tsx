@@ -1,8 +1,8 @@
 import { useEffect, useState } from "preact/hooks";
 import { nativeWalletOf } from "@strut/kit/wallet";
 import * as api from "../api";
-import { appPageAddress, appToolInput, namesApp, publicAppHop } from "../app-links";
-import { embedPage, replaceUrl, reportReady } from "../embed";
+import { appPageAddress, appToolInput, namesApp, pageOpen, publicAppHop, soloPageAddress } from "../app-links";
+import { embedPage, openInHost, replaceUrl, reportReady } from "../embed";
 import { useListedApp } from "../use-listed-app";
 import { AppWithPanel } from "./AppWithPanel";
 import { words } from "../words";
@@ -16,7 +16,11 @@ import { words } from "../words";
 // peer (one that does not answer would hold this app at "Loading apps…"),
 // and no poll for as long as the page shows. No `ui/message`, and of the
 // page's links only one to itself opens in place: there is nothing of
-// strut's to open the rest in. A key ending in `@vN` shows that version
+// strut's to open the rest in. A link to another app with `open=page`
+// (../app-links `pageOpen`) asks for that app as the page: framed, the
+// page tells its host (`strut:open`, ../embed `openInHost`), which shows it
+// as its own page; alone (Peel's web view), the page goes there itself, a
+// new entry its Back returns through. A key ending in `@vN` shows that version
 // instead of the live one — how `app/look` sees a draft of a held app — and
 // one ending in `@preview-<hex>` an unpublished build `app/look { path }`
 // hosts, which no listing holds (a new app has none), so it is not read.
@@ -94,12 +98,18 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
   );
   /** A link to this same app (the kit's `appLink`): its input, in place,
    *  with the address bar following (replaced, as the full UI does) — so a
-   *  host that reads it has the link to what is on screen. A file or
-   *  another app never gets here (the panel took it); anything else opens
-   *  in a new tab. */
+   *  host that reads it has the link to what is on screen. Another app as
+   *  the page (`open=page`): the host's to open, or this page's when no
+   *  host frames it. A file or another app beside this one never gets here
+   *  (the panel took it); anything else opens in a new tab. */
   const onNavigate = (params: Record<string, string>) => {
     if (!shown) return false;
     if (!namesApp(params["app"], shown)) {
+      const to = visitor ? null : pageOpen(params);
+      if (to) {
+        if (!openInHost(to)) location.assign(soloPageAddress(location.href, to));
+        return;
+      }
       const hop = visitor && !from ? publicAppHop(params, shown.name, location.href) : null;
       if (!hop) return false;
       location.assign(hop);
