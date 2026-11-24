@@ -25,7 +25,7 @@ A STRUT THAT BUYS (plans/paid-runs.md §10 "Another strut", item 9; the CVE case
 
 ### `src/run-cap.ts`
 
-`resolveRunCap(workflowCap, env, fallback, runCap?)`: a run's cost cap — the workflow's `maxRunCostUsd`, else `STRUT_RUN_MAX_COST_USD`, else $100, and the smaller of that and the run's own (a public run's) — anything not positive an error. Its own module so core counts a public run's cap as the Mothership enforces it (mothership.ts re-exports it; core never imports mothership.ts)
+`workflowRunCap(meta)`: a workflow's own cap — an admin's (`maxRunCostUsd`), else the one its package ships on the active version (`upstream.maxRunCostUsd`, docs/packages.md), else none. `resolveRunCap(workflowCap, env, fallback, runCap?)`: a run's cost cap — the workflow's own (`workflowRunCap`), else `STRUT_RUN_MAX_COST_USD`, else $100, and the smaller of that and the run's own (a public run's) — anything not positive an error. Its own module so core counts a public run's cap as the Mothership enforces it (mothership.ts re-exports it; core never imports mothership.ts)
 
 ### `src/payments/`
 

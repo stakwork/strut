@@ -51,7 +51,7 @@ import type { WorkspaceStore } from "./workspace.js";
 import type { LlmAuth, LlmAuthContext, LlmAuthResult, LlmGrant, LlmGrants } from "./llm.js";
 import { gatewayLacksProvider } from "./llm.js";
 import { bootEnv } from "./env.js";
-import { DEFAULT_RUN_CAP_USD, resolveRunCap } from "./run-cap.js";
+import { DEFAULT_RUN_CAP_USD, resolveRunCap, workflowRunCap } from "./run-cap.js";
 
 /** The one agent name hive authorizes for strut; every lineage starts here. */
 export const STRUT_AGENT = "strut-agent";
@@ -386,7 +386,7 @@ export function createMothership(opts: MothershipOptions): Mothership {
     const meta = ctx.workflow ? await workspace.getWorkflowMetadata(ctx.workflow).catch(() => null) : null;
     // A public run carries a cap of its own (plans/paid-runs.md §7): the
     // link carries the smaller of it and the workflow's.
-    const capUsd = capOrThrow(meta?.maxRunCostUsd, o, principal, ctx.maxCostUsd);
+    const capUsd = capOrThrow(workflowRunCap(meta), o, principal, ctx.maxCostUsd);
     const exp = expFor(now, o.exp);
     const link = o.root.extend({ runId, capUsd, iat: now.toISOString(), exp });
     sweep(now.getTime());

@@ -299,7 +299,7 @@ async function installSet(
 
   /** When this release went in: on every version it writes or stamps. */
   const at = new Date().toISOString();
-  const upstreamOf = (m: Member): Upstream => ({
+  const upstreamOf = (m: Member, item: Pick<PackageItem, "kind" | "name">): Upstream => ({
     ...(m.key ? { key: m.key } : {}),
     ...(m.commit ? { commit: m.commit } : {}),
     package: m.info.manifest.package,
@@ -311,6 +311,8 @@ async function installSet(
     ...(m.info.manifest.requires?.git ? { git: true as const } : {}),
     // What it provides, its forge steps by their full types (format.ts `gitHosts`).
     ...(m.info.manifest.provides ? { provides: { ...m.info.manifest.provides, ...(m.info.gitHosts ? { git: m.info.gitHosts } : {}) } } : {}),
+    // A workflow's run cap (`maxRunCostUsd:`), on its own version.
+    ...(item.kind === "workflow" && m.info.maxRunCostUsd?.[item.name] !== undefined ? { maxRunCostUsd: m.info.maxRunCostUsd[item.name] } : {}),
     at,
   });
   const publish = { source: opts.door, ...(opts.actor ? { actor: opts.actor } : {}) };
@@ -320,9 +322,9 @@ async function installSet(
   const pagesClaims = new Map<string, Array<{ name: string; claims: PageClaim[] }>>(); // package → its pages' claims blocks
   const { warnings } = checked;
   /** What a publish of an item records, and how it is written. */
-  const options = (m: Member, plan: ItemPlan) => ({
+  const options = (m: Member, plan: ItemPlan, item: Pick<PackageItem, "kind" | "name">) => ({
     ...publish,
-    upstream: upstreamOf(m),
+    upstream: upstreamOf(m, item),
     ...(plan.action === "diverge" ? { activate: false } : {}),
     // A known version is stamped the release's, with its time: an older
     // release's content made active again (a branch or channel moved back,
@@ -372,7 +374,7 @@ async function installSet(
           continue;
         }
         const code = await readFile(join(m.info.dir, item.path), "utf-8");
-        const { version } = await deps.workspace.publishStep(item.name, code, undefined, undefined, options(m, plan));
+        const { version } = await deps.workspace.publishStep(item.name, code, undefined, undefined, options(m, plan, item));
         done(m, "step", item.name, plan, version);
       }
     }
@@ -409,7 +411,7 @@ async function installSet(
           typeof head?.description === "string" ? head.description : undefined,
           category,
           undefined,
-          options(m, plan),
+          options(m, plan, item),
         );
         if (plan.action === "new" && opts.actor) await deps.workspace.setWorkflowOwner(item.name, opts.actor);
         done(m, "workflow", item.name, plan, version);
@@ -427,7 +429,7 @@ async function installSet(
     for (const [i, app] of checked.apps.entries()) {
       tell({ phase: "apps", package: app.member.info.manifest.package, done: i, total: checked.apps.length });
       const plan = checked.plan.get(app.name)!;
-      const r = await deps.apps!.publish(app.dir, app.name, { surface: "person", ...options(app.member, plan) });
+      const r = await deps.apps!.publish(app.dir, app.name, { surface: "person", ...options(app.member, plan, { kind: "app", name: app.name }) });
       if (!r.ok) throw new Error(`bad_package: the app ${app.name} — ${r.errors.join("; ")}`);
       done(app.member, "app", app.name, plan, r.version);
     }
@@ -479,7 +481,7 @@ async function installSet(
   // The repo's door: the versions whose content is the commit's, stamped
   // with it in place (`PublishOptions.stamp`) — the package wrote them now.
   for (const { m, item } of stamps) {
-    const opt = options(m, { action: "stamp" });
+    const opt = options(m, { action: "stamp" }, item);
     if (item.kind === "step") await deps.workspace.publishStep(item.name, await readFile(join(m.info.dir, item.path), "utf-8"), undefined, undefined, opt);
     else if (item.kind === "workflow") await deps.workspace.publishWorkflowByContent(item.name, await readFile(join(m.info.dir, item.path), "utf-8"), undefined, undefined, undefined, opt);
     else if (item.kind === "app") {

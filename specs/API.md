@@ -133,13 +133,14 @@ reads.
 
 | Method | Path                            | Response |
 | ------ | ------------------------------- | -------- |
-| GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations?, lastRunAt? }]` |
-| GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor?, upstream? }, … }, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations? }` (`WorkflowMetadata`; `upstream` = `{ package, version, digest, source: { ref }, secrets }`, the package a version was installed from or forked off — every publish carries the active version's forward) |
+| GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, packageMaxRunCostUsd?, disabled?, automations?, lastRunAt? }]` (`maxRunCostUsd` an admin's run cap; `packageMaxRunCostUsd` the one the active version's package ships, the cap while the admin's is unset) |
+| GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor?, upstream? }, … }, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations? }` (`WorkflowMetadata`; `upstream` = `{ package, version, digest, source: { ref }, secrets, maxRunCostUsd? }`, the package a version was installed from or forked off — every publish carries the active version's forward) |
 | GET    | `/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, promotes?, sealed?, peer?, retain?, fleetRetention?, fleetRetentionEnv? }` — the parsed active (or named) version; `retain` is the workflow's own (`1h`, `runs:20`), `fleetRetention` the fleet default (`fleetRetentionEnv` names where it comes from: `STRUT_RETENTION`, its first name `STRUT_RUN_RETENTION`, or `archived first` for the run archive's 7 days) |
 | GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, source?, actor?, runs, success, error, lastRunAt? }], unattributed, scanned, more? }` newest first; counts by the run's recorded `workflowHash`, over the newest `scanned` runs (at most 1,000, `RUN_LIST_SCAN_MAX`); `more: true` = older runs were not read |
 | GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |
 | PUT    | `/workflows/:name/active`       | `{ version }` → `{ ok, workflow, active }` — rollback; publishes nothing |
 | PUT    | `/workflows/:name/disabled`     | `{ disabled: boolean }` → `{ ok, workflow, disabled }` — disable the workflow, or enable it again (below); publishes nothing |
+| PUT    | `/workflows/:name/run-cap`      | `{ maxRunCostUsd: number \| null }` → `{ ok, workflow, maxRunCostUsd }` — the most one run may spend, in dollars, enforced through the Mothership; `null` clears it. An admin's: it wins over the cap a package ships ("A run cap a package ships", §16), and a release never touches it. 400 for anything but a positive number or `null`; 404 for no such workflow; publishes nothing |
 | DELETE | `/workflows/:name`    | `{ ok, workflow }` — every version, metadata, schedules and run records; 409 while a run is in flight |
 
 `?q=` is the sidebar's filter: the query is split into words and every word
@@ -3558,6 +3559,8 @@ provides" below, and the hosts a token it holds serves, "Git credentials
 by host" below; `requires.git: true` — its steps read the run's token for a
 repository's host themselves, the same section — `schedules?: [{ workflow, name?, trigger, input? }]` — workflows of
 the package strut runs on its own, "Schedules a package ships" below;
+`maxRunCostUsd?: { <workflow>: <dollars> }` — the most one run of a
+workflow of the package may spend, "A run cap a package ships" below;
 `on?: [{ created|updated|deleted: <Type>, workflow }]` — workflows of the
 package strut runs when a node of a type is written, "Workflows on graph
 writes" below;
@@ -3623,7 +3626,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | POST   | `/index/requests/:id/refuse` | `{ reason }` → the refusal: the request dropped, and a re-send from that key for that name answered with `reason` for 30 days, without a fetch. Full scope; 404 `listing_unknown` |
 | GET    | `/index/catalog[?digest=]` | The INDEX card as served (RFC 8785 bytes, sealed under `strut-index\n` by the index key; `ETag`, `If-None-Match` → 304; `cache-control: public`): `{ v, key, seq, publishers, urls?, sig }`. **Open to anyone.** A reader checks it with `readCard(bytes, { key, kind: "index" })`; 404 before the first row |
 | GET    | `/index/packages?q=&limit=` | `{ packages: IndexHit[] }` — every listed publisher's public packages, each at its newest release not yanked: `{ package, publisher, key, urls, version, digest, description?, license?, requires?, detail?, source?, commit?, bundle?, installs: { total, recent } }` (`source`/`commit`: a package the row keeps in git, its ref and the commit last read; `bundle`: its packages' refs; `installs`: every install counted, and the last 30 days'); `q` as the sidebar's matcher (every word in the name, description or publisher), at most `limit` (100; ≤ 500). `detail` is the release's archive as the index READ it at the crawl (`src/packages/detail.ts`, below): `{ apps: [{ name, title, description?, icon?, screenshots?, can }], workflows, steps, concepts (counts), secrets, job?: { tools, approve }, can: { spends, acts, code }, readme }` — absent until the archive has been fetched. **Open to anyone**; derived and unsigned — an install re-verifies against the publisher |
-| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError?, source?, commit?, bundle?, installs }` — a package kept in git has one release (the branch's commit, `readAt` when its repository was read) and no channels; `installs`: `{ total, boxes, recent: { days: 30, installs, boxes, daily: [per UTC day, oldest first, today last] } }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, screenshots?: [{ path, caption? }], grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, schedules?, on?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, job?: { tools, approve, strut?: [{ name, effect?, secrets?, description? }] }, can, files, bytes }` (names inside the package; `job` the steps `strut.yaml`'s `job:` gives the job agent and, among them, the ones that ask first (plans/followed-repos.md §3), strut's own by their type and each in `strut` with what the index's strut says of it (stadeum plans/software.md §5 item 16); a workflow's `schedules` when strut runs it on its own, each schedule `strut.yaml`'s `schedules:` ships on it as a sentence (`"Every 15 minutes"`, the zone said only when the schedule names one: else it is the installing server's); `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). `?docs=0` leaves each Concept page's `docs` out (the store's read: a page's text is `/index/concepts/:name`'s). **Open to anyone**; 404 when no listed publisher's catalog has it |
+| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError?, source?, commit?, bundle?, installs }` — a package kept in git has one release (the branch's commit, `readAt` when its repository was read) and no channels; `installs`: `{ total, boxes, recent: { days: 30, installs, boxes, daily: [per UTC day, oldest first, today last] } }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, screenshots?: [{ path, caption? }], grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, schedules?, maxRunCostUsd?, on?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, job?: { tools, approve, strut?: [{ name, effect?, secrets?, description? }] }, can, files, bytes }` (names inside the package; `job` the steps `strut.yaml`'s `job:` gives the job agent and, among them, the ones that ask first (plans/followed-repos.md §3), strut's own by their type and each in `strut` with what the index's strut says of it (stadeum plans/software.md §5 item 16); a workflow's `schedules` when strut runs it on its own, each schedule `strut.yaml`'s `schedules:` ships on it as a sentence (`"Every 15 minutes"`, the zone said only when the schedule names one: else it is the installing server's); `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). `?docs=0` leaves each Concept page's `docs` out (the store's read: a page's text is `/index/concepts/:name`'s). **Open to anyone**; 404 when no listed publisher's catalog has it |
 | GET    | `/index/packages/:publisher/:name/screenshot?path=&digest=` | One of the package's app screenshots (app.yaml `screenshots`, `src/apps/manifest.ts`): `path` one an app of the current release lists in `detail` (`apps/<app>/public/shot.png`), read from the index's cache of the archive, `content-type` by extension (png, jpeg, webp, gif), `x-content-type-options: nosniff`, `content-security-policy: sandbox`, an `ETag`. With `digest` (the store's links carry it) only that release's, `cache-control: public, max-age=31536000, immutable`; without, the current one, `no-cache`. 404 for any path the page does not list, or a `digest` that is no longer the current release. **Open to anyone** |
 | GET    | `/index/concepts?q=` | `{ concepts: IndexConcept[] }` — every Concept page across the crawled packages AND the live rows' public trees, one per name: `{ name, description?, parent?, packages: [{ package, version }], live?: [{ publisher, url }] }` (the first package by name gives the description and parent, then a live tree's; a page only a live view holds has `packages: []`, and its docs are read from `<url>/public/concepts/<name>`; `q` over names and descriptions). **Open to anyone** |
 | GET    | `/index/concepts/:name` | `IndexConceptPage`: the entry plus `docs?` (the first package's text), `children: [{ name, description? }]` (the pages naming this one as parent) and `parents` (nearest first). **Open to anyone**; 404 when no listed package carries it |
@@ -3916,7 +3919,7 @@ the release requires first:
 | Its active version is one the package wrote (any release) | the release's version is published and made active | `updated` |
 | A fork: its active version is one this strut wrote | the release's version is recorded beside it, not active | `diverged` |
 | Already the release's content, stamped that release's | nothing | `present` |
-| Already the release's content, from another release, its active version the package's | stamped this release's in place, no new version — so a release that changes only its `strut.yaml` (`job:`, `provides`, `schedules:`) is what `GET /packages` reads as installed | `stamped` |
+| Already the release's content, from another release, its active version the package's | stamped this release's in place, no new version — so a release that changes only its `strut.yaml` (`job:`, `provides`, `schedules:`, `maxRunCostUsd:`) is what `GET /packages` reads as installed | `stamped` |
 | Already the release's content, put here by another door or source (a person's install, the boot list, a subscription since deleted) | stamped this release's, `source: "distro"` and this source, in place: the subscription follows it from now on | `stamped` |
 | Not in the release, untouched | removed (the runs stay) | `retired` |
 | Not in the release, a fork — or a helper while a step of the package stays forked | kept | `kept` |
@@ -4178,6 +4181,34 @@ schedule drops the automation. On or off is the admin's (`PATCH … {
 enabled }`), and a release keeps it; an edit of anything else, and a
 delete, is refused (§8). The store's detail lists each as a sentence on its
 workflow (`PackageDetail.workflows[].schedules`, as `GET /index/packages/:publisher/:name` serves it).
+
+**A run cap a package ships.** A package sets the most one run of a
+workflow of its own may spend, in dollars, by the workflow's name inside
+the package:
+
+```yaml
+maxRunCostUsd:
+  reply: 1   # workflows/reply.yaml: one dollar a run
+```
+
+It is the cap `PUT /workflows/:name/run-cap` sets, and the Mothership
+enforces it the same way: the run link carries it, and the gateway refuses
+the call that would start past it. `readPackage` refuses (`bad_package:
+strut.yaml: maxRunCostUsd.<name>: …`) a workflow the package does not carry
+and a cap that is not a positive number; a bundle has none. A strut from
+before the key refuses the package (the manifest is strict) instead of
+running it under the box's default cap.
+
+The install records the cap on the workflow version it writes
+(`upstream.maxRunCostUsd` in `GET /workflows/:name`). A run's cap is an
+admin's own when set, else the package's on the active version, else
+`STRUT_RUN_MAX_COST_USD`, else $100. A release follows the package's cap,
+a release that changes only `strut.yaml` included, and one that drops it
+drops it. It never touches the admin's: cleared, the package's is the cap
+again. An uninstall deletes the workflow and its cap with it; a fork it
+keeps keeps its versions as they were, cap included. `GET /workflows`
+says it as `packageMaxRunCostUsd`, and the store's detail as
+`PackageDetail.workflows[].maxRunCostUsd`.
 
 **Workflows on graph writes** (`src/packages/on.ts`, `plans/package-seams.md`
 §2). A package names workflows of its own that strut runs when a node of a

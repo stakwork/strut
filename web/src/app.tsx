@@ -1939,6 +1939,7 @@ function Shell() {
               key={`cap:${wf}`}
               workflow={wf}
               maxRunCostUsd={selectedEntry?.maxRunCostUsd}
+              packageMaxRunCostUsd={selectedEntry?.packageMaxRunCostUsd}
               onSaved={refreshWorkflows}
             />
           )}
@@ -2194,7 +2195,7 @@ function Shell() {
             <RunOverview
               events={events}
               status={runControlStatus}
-              cap={selectedEntry?.maxRunCostUsd}
+              cap={selectedEntry?.maxRunCostUsd ?? selectedEntry?.packageMaxRunCostUsd}
               onOpenRun={openRun}
               onOpenStep={openRunStep}
               onOpenJob={selectJob}

@@ -532,6 +532,8 @@ export interface WorkflowEntry {
    *  (plans/mothership-cost-control.md). */
   owner?: string;
   maxRunCostUsd?: number;
+  /** The cap its package ships: the cap when `maxRunCostUsd` is unset. */
+  packageMaxRunCostUsd?: number;
   /** Disabled: refuses every run until re-enabled. */
   disabled?: boolean;
   /** The workflow's schedules, if any — the sidebar's clock badge. */
@@ -2930,6 +2932,8 @@ export interface WorkflowDetail {
   claims?: number;
   /** When strut runs it on its own: the package's `schedules:` on it, as sentences. */
   schedules?: string[];
+  /** The most one run of it may spend, in dollars (`maxRunCostUsd:`). */
+  maxRunCostUsd?: number;
   error?: string;
 }
 export interface StepDetail {
