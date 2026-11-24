@@ -8,6 +8,9 @@
 // did this week and their newest leases, and, when the server answers for
 // them, their standing (4) and what they earned (5a). Message opens their
 // conversation with Support (plans/support-chat.md §3) where Support answers.
+// A row's Review opens their Review over the list (`reviewing=<actor>`, a
+// place, so the Overview's Needs you opens it too): who they are, what they
+// did, their grants, and Grant (which lets a new one in) or Suspend.
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
@@ -21,7 +24,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
-  balanceCells, fmtSats, fmtWhen, grantedBy, leaseOutcome, OPEN_GRANT_BY, reviewText, standingLow, standingText, STATUS_WORDS, whoElse, whoOf, type Place, type Shown,
+  balanceCells, fmtSats, fmtWhen, grantedBy, leaseOutcome, OPEN_GRANT_BY, reviewText, standingLow, standingText, STATUS_WORDS, whoElse, whoOf, workersInOrder, type Place, type Shown,
 } from "../lib/view";
 import type { TaskType, TypeNumbers, TypeShare, Worker, WorkerActivity, WorkerStatus } from "../lib/types";
 import { Avatar, Back, Empty, ErrorLine, Figure, Loading, Note, ReasonButton, Section, useAct } from "./bits";
@@ -52,16 +55,20 @@ export function Workers(props: Props) {
 
 function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
   const [find, setFind] = useState("");
-  const [reviewWorker, setReviewWorker] = useState<Worker | null>(null);
   const words = find.trim().toLowerCase();
-  const list = words ? props.workers.filter((w) => `${whoOf(w)} ${w.name ?? ""} ${w.actor}`.toLowerCase().includes(words)) : props.workers;
+  const ordered = workersInOrder(props.workers);
+  const list = words ? ordered.filter((w) => `${whoOf(w)} ${w.name ?? ""} ${w.actor}`.toLowerCase().includes(words)) : ordered;
+  // A worker's Review is a place (`reviewing=`), so the Overview's Needs you opens it too.
+  const reviewing = props.place.reviewing ? props.workers.find((w) => w.actor === props.place.reviewing) : undefined;
   const able = props.workers.filter((w) => w.status === "active").length;
+  const fresh = props.workers.filter((w) => w.status === "new").length;
+  const off = props.workers.length - able - fresh;
   return (
     <section className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <h2 className="text-base font-semibold">Workers</h2>
         <span className="text-sm text-muted-foreground">
-          {able.toLocaleString("en-US")} can take tasks{props.workers.length > able ? ` · ${props.workers.length - able} suspended or banned` : ""}
+          {able.toLocaleString("en-US")} can take tasks{fresh ? ` · ${fresh} waiting to be let in` : ""}{off ? ` · ${off} suspended or banned` : ""}
         </span>
         {props.workers.length > 5 && (
           <label className="ml-auto flex h-9 items-center gap-2 rounded-md border px-3 text-muted-foreground focus-within:border-ring">
@@ -145,7 +152,7 @@ function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
                       </TableCell>
                     )}
                     <TableCell className="pl-0">
-                      <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setReviewWorker(w); }}>
+                      <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); props.go({ tab: "workers", reviewing: w.actor }); }}>
                         Review
                       </Button>
                     </TableCell>
@@ -156,7 +163,7 @@ function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
           </Table>
         </div>
       )}
-      {reviewWorker && <ReviewModal worker={reviewWorker} types={props.types} shown={props.shown} go={props.go} onClose={() => setReviewWorker(null)} />}
+      {reviewing && <ReviewModal key={reviewing.actor} worker={reviewing} types={props.types} shown={props.shown} go={props.go} onClose={() => props.go({ tab: "workers" })} />}
     </section>
   );
 }
@@ -168,11 +175,12 @@ function ReviewModal(props: { worker: Worker; types: TaskType[] | undefined; sho
   const [grantType, setGrantType] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const detail = useQuery({ queryKey: ["staff", "worker", w.actor], queryFn: () => client.run<{ worker: Worker } & WorkerActivity>("staff/worker", { actor: w.actor }) });
-  const numbers = useQuery({ queryKey: ["staff", "numbers", 90], queryFn: () => client.run<TypeNumbers[]>("staff/numbers", { days: 90 }) });
+  // Every type's numbers over 90 days (`staff/numbers` answers `{ types }`), for this worker's line.
+  const numbers = useQuery({ queryKey: ["staff", "numbers", { days: 90 }], queryFn: () => client.run<{ types: TypeNumbers[] }>("staff/numbers", { days: 90 }) });
   const live = w.grants.filter((g) => g.revokedAt === undefined);
   const revoked = w.grants.filter((g) => g.revokedAt !== undefined);
   const grantable = (props.types ?? []).filter((t) => !live.some((g) => g.type === t.name));
-  const mine = (numbers.data ?? []).flatMap((t) => {
+  const mine = (numbers.data?.types ?? []).flatMap((t) => {
     const n = t.workers.find((x) => x.worker === w.actor);
     return n ? [{ type: t.type, answered: n.answered }] : [];
   });
@@ -290,7 +298,7 @@ function ReviewModal(props: { worker: Worker; types: TaskType[] | undefined; sho
               Suspend
             </Button>
           )}
-          <button type="button" className="ml-auto text-sm underline underline-offset-2" onClick={() => { props.go({ tab: "workers", worker: w.actor }); props.onClose(); }}>
+          <button type="button" className="ml-auto text-sm underline underline-offset-2" onClick={() => props.go({ tab: "workers", worker: w.actor })}>
             Full page →
           </button>
         </DialogFooter>
@@ -343,7 +351,7 @@ function WorkerDetail(props: Props & { actor: string }) {
       <div className="flex flex-wrap items-center gap-2">
         {(w.status === "new" || w.status === "suspended" || w.status === "banned") && (
           <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => setStatus("active")}>
-            {w.status === "new" ? "Review" : "Lift"}
+            {w.status === "new" ? "Let in" : "Lift"}
           </Button>
         )}
         {w.status !== "suspended" && w.status !== "banned" && (

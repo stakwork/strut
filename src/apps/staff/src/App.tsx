@@ -160,7 +160,7 @@ export default function App() {
               <InvitePanel key={invite.pick ?? ""} types={types.data.types} {...share} {...(invite.pick ? { pick: invite.pick } : {})} onClose={() => setInvite((i) => ({ ...i, open: false }))} />
             </div>
           )}
-          {here.tab === "queue" && <Overview go={go} shown={shown} hasGroups={hasGroups} types={types.data?.types} />}
+          {here.tab === "queue" && <Overview go={go} shown={shown} hasGroups={hasGroups} types={types.data?.types} workers={listed} />}
           {(here.tab === "tasks" || here.tab === "groups") && <Answers go={go} place={here} shown={shown} hasGroups={hasGroups} types={types.data?.types} workers={listed} stats={stats.data} />}
           {here.tab === "types" && (
             <Types go={go} place={here} shown={shown} types={types.data?.types} {...share} workers={listed} error={types.error} invite={(pick) => setInvite({ open: true, pick })} />
