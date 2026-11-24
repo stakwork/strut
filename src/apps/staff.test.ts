@@ -226,7 +226,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
         ["5 answers have not been reviewed.", "Start reviewing", "plain"],
       ],
     );
-    assert.deepEqual(w[4]!.to, { tab: "workers" });
+    assert.deepEqual(w[4]!.to, { tab: "workers", pending: true });
     assert.deepEqual(w[1]!.to, { tab: "tasks", type: "pets" });
     // The review queue: by group once a workflow named one, else one by one.
     assert.deepEqual(w[5]!.to, { tab: "tasks", review: "none" });
@@ -234,7 +234,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.equal(needsYou(stats([row({})], 1))[0]!.text, "1 person signed in and is waiting to be reviewed.");
     // With the list's waiting people known, Review opens the one who waited longest.
     assert.deepEqual(needsYou(stats([row({})], 2), { waiting: [{ actor: "secp:b", firstSeen: 5 }, { actor: "secp:a", firstSeen: 1 }] }), [
-      { text: "2 people signed in and are waiting to be reviewed.", action: "Review", to: { tab: "workers", reviewing: "secp:a" }, tone: "warn" },
+      { text: "2 people signed in and are waiting to be reviewed.", action: "Review", to: { tab: "workers", pending: true }, tone: "warn" },
     ]);
     // What is left to review: every type's, one type's, and nothing said where the server does not count.
     const counted = stats([row({ toReview: 4 }), row({ type: "boxes", toReview: 1 })]);
@@ -287,6 +287,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.deepEqual(placeOf({ task: "t1" }), { tab: "tasks", task: "t1" });
     assert.deepEqual(placeOf({ run: "acme/pets/r9" }), { tab: "tasks", run: "acme/pets/r9" });
     assert.deepEqual(placeOf({ worker: "secp:abc" }), { tab: "workers", worker: "secp:abc" });
+    assert.deepEqual(placeOf({ pending: "true" }), { tab: "workers", pending: true }, "workers tab filtered to pending");
     assert.deepEqual(placeOf({ reviewing: "secp:abc" }), { tab: "workers", reviewing: "secp:abc" }, "their Review over the list");
     assert.deepEqual(placeOf({ type: "pets" }), { tab: "types", type: "pets" });
     assert.deepEqual(placeOf({ tab: "tests", type: "pets" }), { tab: "tests", type: "pets" });
@@ -296,7 +297,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     assert.deepEqual(placeOf({ review: "maybe" }), { tab: "queue" });
     for (const p of [
       { tab: "queue" }, { tab: "workers" }, { tab: "types", type: "a/b" }, { tab: "tasks", task: "x" }, { tab: "tests", test: "y" }, { tab: "tasks", by: "w" }, { tab: "tasks", run: "wf/r" },
-      { tab: "tasks", review: "none" }, { tab: "tasks", review: "ok", by: "w" }, { tab: "workers", reviewing: "secp:abc" },
+      { tab: "tasks", review: "none" }, { tab: "tasks", review: "ok", by: "w" }, { tab: "workers", reviewing: "secp:abc" }, { tab: "workers", pending: true },
     ] as const) {
       assert.deepEqual(placeOf(inputOf(p)), p);
     }
