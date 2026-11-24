@@ -17,7 +17,7 @@ import { Notice, errorText } from "./bits";
 
 type State = { kind: "idle" | "busy" | "sent" } | { kind: "failed"; error: string; already?: boolean };
 
-export function SecretBox({ name, job, workflow, conversation }: { name: string; job: string; workflow: string; conversation?: string }) {
+export function SecretBox({ name, job, workflow, conversation, tell: tellChat }: { name: string; job?: string; workflow?: string; conversation?: string; tell?: (prompt: string) => Promise<void> }) {
   const client = useStrutClient();
   const { sent: model } = useModelPick();
   const [value, setValue] = useState("");
@@ -25,9 +25,11 @@ export function SecretBox({ name, job, workflow, conversation }: { name: string;
 
   const tell = async (already: boolean) => {
     try {
-      await client.run("run/launch", {
-        workflow,
-        job,
+      // Jamie's own conversation: the next message in the thread.
+      if (tellChat) await tellChat(secretPrompt(name, already));
+      else await client.run("run/launch", {
+        workflow: workflow ?? "job",
+        ...(job ? { job } : {}),
         input: { prompt: secretPrompt(name, already) },
         // On the viewer's model, as their message would be.
         ...modelParams(model),
@@ -37,8 +39,9 @@ export function SecretBox({ name, job, workflow, conversation }: { name: string;
       setState({ kind: "sent" });
     } catch (err) {
       const r = sendRefusal(errorText(err));
-      const why = r.kind === "busy" ? "the build is still working — try again in a minute" : r.text;
-      setState({ kind: "failed", error: `${already ? `${name} is already set, but` : `${name} is saved, but`} the build was not told: ${why}`, already: true });
+      const who = tellChat ? "Jamie" : "the build";
+      const why = r.kind === "busy" ? `${who} is still working — try again in a minute` : r.text;
+      setState({ kind: "failed", error: `${already ? `${name} is already set, but` : `${name} is saved, but`} ${who} was not told: ${why}`, already: true });
     }
   };
 
@@ -63,19 +66,19 @@ export function SecretBox({ name, job, workflow, conversation }: { name: string;
     return (
       <p className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-300" data-testid="secret-sent">
         <Check className="size-3.5" />
-        {name} is set. The build goes on.
+        {name} is set.{tellChat ? "" : " The build goes on."}
       </p>
     );
   }
   return (
     <form onSubmit={save} className="space-y-2 rounded-md border bg-muted/30 p-2" data-testid="secret-box">
-      <label className="flex items-center gap-1.5 text-xs font-medium" htmlFor={`secret-${job}-${name}`}>
+      <label className="flex items-center gap-1.5 text-xs font-medium" htmlFor={`secret-${job ?? "chat"}-${name}`}>
         <KeyRound className="size-3.5 text-amber-600" />
         <span className="font-mono">{name}</span>
       </label>
       <div className="flex items-center gap-2">
         <Input
-          id={`secret-${job}-${name}`}
+          id={`secret-${job ?? "chat"}-${name}`}
           type="password"
           autoComplete="off"
           spellCheck={false}
@@ -89,13 +92,13 @@ export function SecretBox({ name, job, workflow, conversation }: { name: string;
           {state.kind === "busy" ? "Saving…" : "Save"}
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">Stored on this server for everyone's workflows. Nobody sees it here again, and the build never sees the value.</p>
+      <p className="text-xs text-muted-foreground">Stored on this server for everyone's workflows. Nobody sees it here again, and {tellChat ? "Jamie" : "the build"} never sees the value.</p>
       {state.kind === "failed" && (
         <div className="space-y-1">
           <Notice tone="error">{state.error}</Notice>
           {state.already && (
             <Button type="button" size="sm" variant="outline" onClick={() => void tell(true)}>
-              Tell the build to go on
+              Tell {tellChat ? "Jamie" : "the build"} to go on
             </Button>
           )}
         </div>

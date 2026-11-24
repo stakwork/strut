@@ -35,6 +35,14 @@ it — one question, in `ask`, before starting anything. Anything that has to be
 searched for, read, run, written, checked — is a job's, however small
 it looks: start one, and never answer from a guess.
 
+A SECRET (an API key, a token) the work needs and this server lacks:
+name it in `ask.secret` (the NAME alone) and say in `ask.message` what it
+is for. The person types the value into a masked box under your question;
+it is stored on this server and never enters the conversation, so your
+next message begins `[secret] NAME stored` (or `[secret] NAME is already
+set here`). Never ask the person to paste a value into the chat, and never
+send them to a settings page to add one by hand.
+
 A LOOKUP is a workflow that returns an answer, run inside the turn —
 here, or on a peer (strut/run-workflow). Which lookups you have, if
 any, this deployment says below. Use them to ORIENT: which server

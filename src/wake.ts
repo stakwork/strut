@@ -106,16 +106,21 @@ export function wakeFilePath(dataDir: string, session: string): string {
 // ── pure ───────────────────────────────────────────────────────────────────
 
 /** The job's reply and question in its output: `output.object ?? output`,
- *  `text`, and `ask` as a string or `{ message }`. */
-export function replyOf(output: unknown): { text?: string; ask?: string } {
+ *  `text`, `ask` as a string or `{ message }`, and `ask.secret` (a secret NAME). */
+export function replyOf(output: unknown): { text?: string; ask?: string; secret?: string } {
   const o = output && typeof output === "object" ? (output as Record<string, unknown>) : undefined;
   const obj = o?.["object"] && typeof o["object"] === "object" ? (o["object"] as Record<string, unknown>) : o;
   const text = typeof obj?.["text"] === "string" ? obj["text"] : typeof output === "string" ? output : undefined;
   const a = obj?.["ask"];
   const ask = typeof a === "string" ? a : a && typeof a === "object" ? (a as Record<string, unknown>)["message"] : undefined;
+  // `ask.secret`: the NAME of a secret the person is asked to type into a
+  // box under the question (never a value; the model never sees one).
+  const named = a && typeof a === "object" ? (a as Record<string, unknown>)["secret"] : undefined;
+  const secret = typeof named === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(named.trim()) ? named.trim() : undefined;
   return {
     ...(text?.trim() ? { text: text.trim() } : {}),
     ...(typeof ask === "string" && ask.trim() ? { ask: ask.trim() } : {}),
+    ...(secret ? { secret } : {}),
   };
 }
 

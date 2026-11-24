@@ -185,6 +185,8 @@ export interface ConversationTurn {
   attachments?: Array<{ name: string; mediaType: string; size: number; path?: string }>;
   text?: string;
   ask?: string;
+  /** The NAME of a secret the reply asks for: a masked box under the question. */
+  secret?: string;
   artifacts?: ArtifactRef[];
   error?: string;
   proposals: ProposalBrief[];
