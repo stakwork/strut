@@ -25,8 +25,13 @@ import graphGet from "../graph/graph-get.js";
  * the page with graph/graph-get, so the run opened it at a version, and a
  * claim on the page judges the run's work.
  *
- * Never fails a run: no graph, no such page, or a read that throws is
- * `{ text: "" }` (the reason logged), and the agent goes on without it.
+ * A page strut SHIPS (`Job`, `Orchestrator`, the pages under them) is always
+ * there: where no graph holds it (a server with none, a graph without the
+ * node) graph/graph-get reads it from its file, so an agent whose
+ * instructions are a page has them on plain files too.
+ *
+ * Never fails a run: no such page, or a read that throws, is `{ text: "" }`
+ * (the reason logged), and the agent goes on without it.
  */
 const DOCS_MAX = 6000;
 
@@ -79,7 +84,7 @@ export default defineStep({
     "Render a Concept of this server's knowledge graph as a section of an agent's system prompt: its docs (capped) and the name + description of each Concept under it (PARENT_OF), with how to open one. " +
     'For a workflow that puts the page in front of its agent — `system: "{{ params.system }}…{{ concepts.text }}"`. ' +
     "`docs: false` renders the kinds under the page alone (the page's docs are another agent's instructions): what the orchestrator routes a request by. " +
-    "`{ text: \"\" }` without a name, a graph or the page: never fails the run.",
+    "A page this server ships is read from its file where no graph holds it. `{ text: \"\" }` without a name or the page: never fails the run.",
   input: z.object({
     name: z
       .string()
@@ -102,9 +107,10 @@ export default defineStep({
   output: z.object({ text: z.string() }),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
     if (!cfg.name) return { text: "" };
-    // No wired graph: nothing to read. graph/graph-get would open a Neo4j
-    // from env instead, a connection attempt per run on a filesystem workspace.
-    if (!ctx?.services?.graph) return { text: "" };
+    // No wired graph: only a page strut ships, from its file. For any other
+    // name graph/graph-get would open a Neo4j from env instead, a connection
+    // attempt per run on a filesystem workspace.
+    if (!ctx?.services?.graph && !(await ctx?.services?.conceptFiles?.get(cfg.name).catch(() => undefined))) return { text: "" };
     let out: unknown;
     try {
       out = await graphGet.run(graphGet.input.parse({ node_type: "Concept", name: cfg.name, children: "PARENT_OF" }), ctx);

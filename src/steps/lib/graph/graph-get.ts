@@ -25,7 +25,8 @@ export default defineStep({
     "Pass `children` (an edge type, e.g. \"PARENT_OF\") to also get the nodes this one points to " +
     "along that edge — each { ref_id, node_type, name, description }, sorted by name: a node and its " +
     "table of contents in one call. " +
-    "To resolve several ref_ids at once, use graph_graph_get_batched instead.",
+    "To resolve several ref_ids at once, use graph_graph_get_batched instead. " +
+    "A Concept page this server ships is always found by name: where no graph holds it, it is read from its file (`source: \"file\"`).",
   graphNotes: { ladybugInputs: ["include_deleted"], ladybug: "Pass `owner: true` instead of a ref_id to get the user themself: the person this graph belongs to (marked is_owner)." },
   input: z.object({
     ref_id: z.string().optional().describe("The ref_id of the node to resolve. Omit to look the node up by node_type + name."),
@@ -93,10 +94,59 @@ async function conceptVersion(b: GraphBackend, raw: { ref_id: string; node_type?
   }
 }
 
-async function resolve(
-  cfg: { ref_id?: string; owner?: boolean; node_type?: string; name?: string; namespace?: string; children?: string; include_deleted?: boolean },
-  ctx: unknown,
-): Promise<unknown> {
+type Lookup = { ref_id?: string; owner?: boolean; node_type?: string; name?: string; namespace?: string; children?: string; include_deleted?: boolean };
+
+const edgeName = (type: string) => type.trim().toUpperCase().replace(/ /g, "_");
+
+/**
+ * A Concept page strut ships, from its FILE (`ctx.services.conceptFiles`), in
+ * this step's own shape: what a read by name answers where no graph holds
+ * the page. So a server with no graph still has the pages its agents'
+ * instructions are (`context/concept` reads through here), and the pages
+ * under them open with the same call. `ref_id` is the file's (`file:…`),
+ * which only this lookup takes.
+ */
+async function shipped(cfg: Lookup, ctx: StepContext<StrutCapabilities> | undefined): Promise<unknown | undefined> {
+  const files = ctx?.services?.conceptFiles;
+  if (!files) return undefined;
+  const byName = !cfg.ref_id && cfg.name && cfg.node_type?.trim().toLowerCase() === "concept" ? cfg.name : undefined;
+  const ask = cfg.ref_id?.startsWith("file:") ? cfg.ref_id : byName;
+  const page = ask ? await files.get(ask).catch(() => undefined) : undefined;
+  if (!page) return undefined;
+  const out = {
+    ref_id: page.ref_id,
+    node_type: "Concept",
+    name: page.name,
+    properties: { name: page.name, ...page.attributes, ...(page.docs ? { docs: page.docs } : {}) },
+    edges: { ...(page.children.length ? { PARENT_OF: page.children.length } : {}), ...(page.parents.length ? { "<-PARENT_OF": page.parents.length } : {}) },
+    source: "file",
+  };
+  if (!cfg.children || edgeName(cfg.children) !== "PARENT_OF") return out;
+  const children = page.children.slice(0, CHILD_CAP).map((c) => ({
+    ref_id: c.ref_id,
+    node_type: "Concept",
+    name: c.name,
+    ...(c.description ? { description: c.description.length > CHILD_DESCRIPTION_MAX ? `${c.description.slice(0, CHILD_DESCRIPTION_MAX)}…` : c.description } : {}),
+  }));
+  return { ...out, children, ...(page.children.length > CHILD_CAP ? { children_truncated: true } : {}) };
+}
+
+async function resolve(cfg: Lookup, ctx: unknown): Promise<unknown> {
+  const c = ctx as StepContext<StrutCapabilities> | undefined;
+  // No graph on this server: a page strut ships is its file, with no
+  // connection attempt (graphCtx would open one from env).
+  if (!c?.services?.graph) {
+    const page = await shipped(cfg, c);
+    if (page) return page;
+  }
+  const out = await fromGraph(cfg, ctx);
+  // Every way the graph read fails is a string: no such node, no `Concept`
+  // type, a read that threw. A page strut ships is still its file.
+  if (typeof out === "string") return (await shipped(cfg, c)) ?? out;
+  return out;
+}
+
+async function fromGraph(cfg: Lookup, ctx: unknown): Promise<unknown> {
   try {
     const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
     let raw;
@@ -144,7 +194,7 @@ async function resolve(
 
     // The table of contents: what this node points to along one edge type.
     const data = await b.reader.neighbors(raw.ref_id, {
-      edge_types: [cfg.children.trim().toUpperCase().replace(/ /g, "_")],
+      edge_types: [edgeName(cfg.children)],
       direction: "forward",
       limit: CHILD_CAP + 1,
       namespace: cfg.namespace,

@@ -52,6 +52,7 @@ import type { KnowledgeCapability } from "./knowledge.js";
 import type { TrialsCapability } from "./trials.js";
 import type { BranchesCapability } from "./branches.js";
 import type { ConceptSources } from "./concept-sources.js";
+import type { ConceptFiles } from "./concept-seed.js";
 import type { NodeFilesCapability } from "./node-files.js";
 
 // ── secrets ────────────────────────────────────────────────────────────────
@@ -641,6 +642,11 @@ export interface StrutCapabilities {
    *  concept-evals.md item e). Set by the standard server on a graph
    *  workspace. */
   conceptSources?: ConceptSources;
+  /** The Concept pages strut ships, read from their files (`conceptFiles`,
+   *  src/concept-seed.ts): what `graph/graph-get` answers a Concept by name
+   *  with where no graph holds the page — a server with no graph, or a graph
+   *  that cannot give it. Set by the standard server, graph or not. */
+  conceptFiles?: ConceptFiles;
   /** The other struts this one may call (peers.ts; plans/federation.md
    *  §2.2): name a peer, make a request with its token injected — the
    *  token itself is readable by nothing. Set by the standard server; a

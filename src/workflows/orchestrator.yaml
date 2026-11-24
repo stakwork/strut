@@ -57,8 +57,8 @@ steps:
   # page is this agent's own rules, shipped by strut, not notes beside them).
   # Read from the graph so the turn OPENS the page: on a Concept branch it
   # reads the branch's wording, and the page's claims judge what the turn
-  # did. No graph, or no page: "", and the system prompt falls back to the
-  # text strut shipped (`params.rulesText`, filled at seed).
+  # did. Where no graph holds the page (a server with none), the step
+  # reads it from the file strut ships: the turn always has its rules.
   - id: rules
     type: context/concept
     config:
@@ -184,11 +184,11 @@ steps:
       # follows them over the run's SSE stream); off, the log holds none.
       stream: "{{ params.stream }}"
       maxSteps: "{{ params.maxSteps }}"
-      # The rules (the `Orchestrator` page, else the text strut shipped),
+      # The rules (the `Orchestrator` page),
       # then the reply's mechanics with the host's section, then the kinds
       # of job, the kinds of build, and the person's own pages.
       system: |-
-        {{ rules.text || params.rulesText }}
+        {{ rules.text }}
 
         {{ params.system }}
         {{ concepts.text }}
@@ -312,11 +312,8 @@ params:
   concept: Job
   buildConcept: Workflow Builder
   # The page the turn's rules are (the `rules` step): strut seeds it
-  # (src/concepts/Orchestrator.md). `rulesText` is that page's shipped text,
-  # filled in when this workflow is seeded (src/orchestrator-seed.ts): what
-  # the turn runs on where there is no graph to read the page from.
+  # (src/concepts/Orchestrator.md).
   rules: Orchestrator
-  rulesText: ""
   # The root of the person's own pages (the `personal` step), when a host
   # keeps one: createStrut names `Personal` with `concepts: { personal: true }`.
   personalConcept: ""

@@ -4,7 +4,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
-import { PERSONAL_CONCEPTS, parseConceptFile, planConceptSeed, renderConceptPage, seedConcepts, stampOf, STRUT_CONCEPTS, type ConceptSet } from "./concept-seed.js";
+import { PERSONAL_CONCEPTS, conceptFiles, parseConceptFile, planConceptSeed, renderConceptPage, seedConcepts, stampOf, STRUT_CONCEPTS, type ConceptSet } from "./concept-seed.js";
+import graphGet from "./steps/lib/graph/graph-get.js";
 import { builderSystem, renderBuilderSystem } from "./ai/builder-system.js";
 import conceptStep, { renderConceptSection } from "./steps/lib/context/concept.js";
 import { accessedNodesOf, defineStep } from "./core.js";
@@ -149,7 +150,14 @@ describe("concept files (pure)", () => {
     assert.deepEqual(STRUT_CONCEPTS.retired, ["Workflow Build.md", "Job App.md"]);
     assert.ok(job.docs!.includes('meta/run-workflow { name: "builder", input: { prompt, session: "<your job id>/build", peer } }'), job.docs);
     assert.ok(job.docs!.includes("an APP published here or on a peer") && job.docs!.includes("`Workflow Builder` Concept"), job.docs);
-    for (const c of [wb, job]) assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|pull request/i, `${c.name} names nothing one deployment has`);
+    // `{{ input.urls.pod }}` is strut's own: the address a job's check
+    // reaches what the job holds at (browser/verify's description has it).
+    for (const c of [wb, job]) assert.doesNotMatch(c.docs!, /hive|@<slug>|(?<!input\.urls\.)\bpod\b|pull request/i, `${c.name} names nothing one deployment has`);
+    // Looking at a site is a kind of job work, with a page of its own.
+    const browser = await read("Browser.md");
+    assert.deepEqual(browser.parents, ["Job"]);
+    assert.ok(browser.description && browser.docs!.includes("browser-explore") && browser.docs!.includes("[captcha-answer]"));
+    assert.doesNotMatch(browser.docs!, /hive|@<slug>|\bpod\b|pull request/i, "Browser names nothing one deployment has");
     // The App page (plans/apps.md §8): the builder's prompt for an app, one
     // of the kinds under Workflow Builder — the layout, the kit's hooks,
     // the grants, routines, the four shapes.
@@ -308,6 +316,45 @@ describe("concept files (pure)", () => {
     const job = renderConceptSection({ name: "Job", children: [{ name: "Explore" }] }, "graph_graph_get");
     assert.ok(job.includes('graph_graph_get({ node_type: "Concept", name: "<name>", children: "PARENT_OF" })'), "the tool the agent calls");
     assert.ok(job.includes("- Explore\n"));
+  });
+
+  it("a page strut ships is read from its file where there is no graph: by name through graph/graph-get, so context/concept renders it and the pages under it open the same way", async () => {
+    const files = conceptFiles([STRUT_CONCEPTS]);
+    const job = (await files.get("Job"))!;
+    assert.equal(job.ref_id, "file:strut/concepts/Job.md", "the file's own ref, never a node's");
+    assert.ok(job.docs!.includes("To record a new kind, add a child Concept here"));
+    assert.deepEqual(job.parents, []);
+    assert.ok(job.children.some((c) => c.name === "Plan" && c.description), "its kinds: the pages that name it as a parent");
+    assert.equal((await files.get("workflow builder"))!.name, "Workflow Builder", "by name as a Concept's key reads it: case and spaces ignored");
+    assert.equal((await files.get(job.ref_id))!.name, "Job", "or by the ref a read gave");
+    assert.equal(await files.get("Nope"), undefined);
+
+    // graph/graph-get, no graph: the page in the step's own shape, with no connection attempt.
+    const services = { conceptFiles: files };
+    const get = (config: Record<string, unknown>) => graphGet.run(graphGet.input.parse(config), { services } as never) as Promise<Record<string, any>>;
+    const read = await get({ node_type: "Concept", name: "Job", children: "PARENT_OF" });
+    assert.deepEqual([read["ref_id"], read["node_type"], read["name"], read["source"]], [job.ref_id, "Concept", "Job", "file"]);
+    assert.equal(read["properties"].docs, job.docs);
+    assert.equal(read["properties"].description, "The kinds of work a job agent has a way to do here, and how to do each.");
+    assert.deepEqual(read["children"].map((c: { name: string }) => c.name), job.children.map((c) => c.name));
+    assert.ok(read["children"].every((c: { node_type: string; ref_id: string }) => c.node_type === "Concept" && c.ref_id.startsWith("file:")));
+    assert.equal(read["edges"].PARENT_OF, job.children.length);
+    assert.equal((await get({ node_type: "Concept", name: "Job" }))["children"], undefined, "no table of contents unless asked");
+    const plan = await get({ ref_id: read["children"].find((c: { name: string }) => c.name === "Plan").ref_id });
+    assert.deepEqual([plan["name"], plan["edges"]["<-PARENT_OF"]], ["Plan", 1], "a child opens by the ref the list gave");
+
+    // context/concept: the same section a graph would give.
+    const run = (config: Record<string, unknown>, sv: Record<string, unknown> = services) => conceptStep.run(conceptStep.input.parse(config), { services: sv } as never);
+    const out = await run({ name: "Job", max: 10000 });
+    assert.ok(out.text.startsWith('Knowledge on this server — the "Job" Concept'), out.text.slice(0, 80));
+    assert.ok(out.text.includes("The work is done when it is VERIFIED") && out.text.includes("To record a new kind, add a child Concept here"), "the page's docs, whole under the cap the job gives it");
+    assert.ok(out.text.includes("- Browser — Looking at a site or a running app"), "its kinds");
+    assert.ok(out.text.includes('graph_graph_get({ node_type: "Concept", name: "<name>"'), "opened with the same tool");
+    assert.equal(accessedNodesOf(out)?.length ?? 0, 0, "no node was read");
+    const rules = await run({ name: "Orchestrator", frame: false, max: 20000 });
+    assert.match(rules.text, /^You are a person's assistant, in one long conversation with them\./, "an agent's rules, as they are");
+    assert.deepEqual(await run({ name: "Nope" }), { text: "" }, "a name strut does not ship: nothing, and no connection attempt");
+    assert.deepEqual(await run({ name: "Job" }, {}), { text: "" }, "no files either: nothing");
   });
 
   it("context/concept with no name renders nothing, graph or not (a template naming no page)", async () => {
@@ -487,7 +534,7 @@ for (const tb of testBackends()) {
       assert.equal(old.action, "create");
       const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
       assert.ok((await props(old.ref_id!))["deleted_at"] != null, "retired");
-      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Plan"]!.ref_id!], "Job keeps only what strut ships under it: Plan, since Job App went too");
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Browser"]!.ref_id!, strut["Plan"]!.ref_id!].sort(), "Job keeps only what strut ships under it: Browser and Plan, since Job App went too");
     });
 
     it("the `Job App` page an earlier strut seeded under Job goes at the next boot", async () => {
@@ -496,7 +543,7 @@ for (const tb of testBackends()) {
       assert.equal(old.action, "create");
       const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
       assert.ok((await props(old.ref_id!))["deleted_at"] != null, "retired");
-      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Plan"]!.ref_id!], "Plan alone, the one kind strut ships under Job");
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Browser"]!.ref_id!, strut["Plan"]!.ref_id!].sort(), "Browser and Plan, the kinds strut ships under Job");
     });
 
     it("strut's pages seed, a host's page hangs under one, and the builder's section reads them", async () => {
@@ -506,7 +553,7 @@ for (const tb of testBackends()) {
         ["create", "create", "create"],
       );
       assert.equal(strut["Job App"], undefined, "no job side of an app ships");
-      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Plan"]!.ref_id!], "strut ships one kind under Job, Plan; a deployment grows that tree");
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Browser"]!.ref_id!, strut["Plan"]!.ref_id!].sort(), "strut ships two kinds under Job, Browser and Plan; a deployment grows that tree");
       await page("Janitor", "How a janitor is built here.", { description: "Cleans something up.", parent: "Workflow Builder" });
       const host = byName(await seedConcepts(b, [set()]));
       const wb = strut["Workflow Builder"]!.ref_id!;
@@ -532,7 +579,7 @@ for (const tb of testBackends()) {
       const run = (config: Record<string, unknown>, services: Record<string, unknown> = { graph: b }) =>
         conceptStep.run(conceptStep.input.parse(config), { services } as never);
 
-      const out = await run({ name: "Job" });
+      const out = await run({ name: "Job", max: 10000 }); // the job workflow's own read: the page is its agent's whole instructions
       assert.ok(out.text.startsWith('Knowledge on this server — the "Job" Concept'), out.text);
       assert.ok(out.text.includes("To record a new kind, add a child Concept here"), "the page's docs");
       assert.ok(out.text.includes("- Explore — Finding out how something works."), "its kinds");
@@ -551,6 +598,15 @@ for (const tb of testBackends()) {
       assert.deepEqual(await run({ name: "Game", docs: false }), { text: "" }, "no kinds under it, nothing");
       assert.deepEqual(await run({ name: "Nope" }), { text: "" }, "no such page");
       assert.deepEqual(await run({ name: "Job" }, {}), { text: "" }, "no graph");
+      // A page strut ships that this graph does not hold is still its file;
+      // one the graph holds is the graph's, whatever the file says.
+      await page("Loner", "Shipped, never seeded here.", { description: "Only in the files." });
+      await page("Job", "THE FILE'S JOB PAGE.", { description: "The file's." });
+      const files = conceptFiles([set()]);
+      assert.deepEqual(await run({ name: "Loner", frame: false }, { graph: b, conceptFiles: files }), { text: "Shipped, never seeded here." });
+      const live = await run({ name: "Job", max: 10000 }, { graph: b, conceptFiles: files });
+      assert.ok(live.text.includes("To record a new kind, add a child Concept here") && !live.text.includes("THE FILE'S JOB PAGE"), "the graph's page wins");
+      assert.deepEqual(accessedNodesOf(live)?.map((n) => n.ref_id), [strut["Job"]!.ref_id]);
       const viaRegistry = await runSingleStep("context/concept", await createRegistry([]), { graph: b }, { config: { name: "Job", tool: "graph_get" } });
       assert.ok((viaRegistry.output as { text: string }).text.includes('graph_get({ node_type: "Concept"'), "discovered as a lib step");
     });
@@ -632,13 +688,13 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     await make({ concepts: false });
     assert.deepEqual(await names(), []);
     await make();
-    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Orchestrator", "Plan", "Worker Tasks", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Browser", "Dream", "Game", "Job", "Orchestrator", "Plan", "Worker Tasks", "Workflow Builder"]);
   });
 
   it("concepts: { personal: true } seeds Personal; an agent walks it with context/concept and graph_get, and the run records both reads", async () => {
     const store = new MemoryRunStore();
     const strut = await make({ concepts: { personal: true }, store });
-    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Dream", "Game", "Job", "Orchestrator", "Personal", "Plan", "Worker Tasks", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Browser", "Dream", "Game", "Job", "Orchestrator", "Personal", "Plan", "Worker Tasks", "Workflow Builder"]);
     const root = (await b.reader.namesLike("Concept", "Personal", 1))[0]!.ref_id;
     // A page the person taught, under the root.
     const cooking = (await b.nodes.write({ type: "Concept", data: { name: "Cooking", description: "How meals are planned", docs: "Plan on Sundays." } })).ref_id;
@@ -686,7 +742,9 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     const [system] = systems;
     assert.ok(system!.startsWith("You are working on a JOB with a person"), "strut's prompt leads");
     const at = system!.indexOf('Knowledge on this server — the "Job" Concept');
-    assert.ok(at > 0 && system!.slice(0, at).endsWith("verifies again.\n\n"), "the page follows the prompt after a blank line");
+    assert.ok(at > 0 && system!.slice(0, at).endsWith("the next turn's message.\n\n"), "the page follows the mechanics after a blank line");
+    assert.ok(system!.slice(at).includes("The work is done when it is VERIFIED"), "the agent's instructions are the page's");
+    assert.ok(system!.includes("To record a new kind, add a child Concept here"), "the page whole: the job's read raises the cap for it");
     assert.ok(!system!.includes("open the `Job` Concept: graph/graph-get"), "no tool call to make for the list");
   });
 

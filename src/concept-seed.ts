@@ -187,6 +187,80 @@ export const PERSONAL_CONCEPTS: ConceptSet = {
   prefix: "strut/concepts/personal/",
 };
 
+/** A page read from its FILE, in the shape a reader of the graph gets one. */
+export interface ConceptFilePage {
+  /** `file:<prefix><file>`: never a node's ref_id, so nothing takes it for one. */
+  ref_id: string;
+  name: string;
+  /** What the page sets besides its name, parents and docs. */
+  attributes: Record<string, unknown>;
+  docs?: string;
+  parents: string[];
+  /** The pages of the same sets that name this one as a parent, by name. */
+  children: Array<{ ref_id: string; name: string; description?: string }>;
+}
+
+/** The pages strut ships, readable from their files (`ctx.services.
+ *  conceptFiles`): what `graph/graph-get` answers a Concept by name with
+ *  where no graph holds the page. */
+export interface ConceptFiles {
+  /** A page by its name (case, spaces and punctuation ignored, as a
+   *  Concept's key is), or by the `ref_id` a read of one gave. */
+  get(nameOrRef: string): Promise<ConceptFilePage | undefined>;
+}
+
+const FILE_REF = "file:";
+
+/**
+ * The pages of `sets`, read from their files: the same text the seeder puts
+ * in a graph, for a server that has none (`STRUT_WORKSPACE_BACKEND=fs`) and
+ * for a graph that cannot give the page (no such node, no `Concept` type, a
+ * read that failed). So an agent whose instructions are a page strut ships
+ * (`Job`, `Orchestrator`) always has them, and opens the pages under it the
+ * same way. Read once, at the first ask. Reads only: a page a person, a
+ * package or the dream writes needs a graph.
+ */
+export function conceptFiles(sets: ConceptSet[]): ConceptFiles {
+  const keyOf = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  let pages: Promise<Map<string, ConceptFilePage>> | undefined;
+  const load = async (): Promise<Map<string, ConceptFilePage>> => {
+    const read: Array<{ ref: string; c: ConceptFile }> = [];
+    for (const set of sets) {
+      let files: string[];
+      try {
+        files = (await readdir(set.dir)).filter((f) => f.endsWith(".md")).sort();
+      } catch (err) {
+        console.warn(`[concepts] could not read ${set.dir}:`, errorText(err));
+        continue;
+      }
+      for (const file of files) {
+        try {
+          read.push({ ref: `${FILE_REF}${set.prefix}${file}`, c: parseConceptFile(file, await readFile(join(set.dir, file), "utf-8"), set.prefix) });
+        } catch (err) {
+          console.warn(`[concepts] ${file} could not be read:`, errorText(err));
+        }
+      }
+    }
+    const out = new Map<string, ConceptFilePage>();
+    for (const { ref, c } of read) {
+      if (out.has(keyOf(c.name))) continue; // the first set to ship a name has it, as a seed does
+      const children = read
+        .filter((o) => o.c.parents.some((p) => keyOf(p) === keyOf(c.name)))
+        .map((o) => ({ ref_id: o.ref, name: o.c.name, ...(o.c.description ? { description: o.c.description } : {}) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      out.set(keyOf(c.name), { ref_id: ref, name: c.name, attributes: c.attributes, ...(c.docs ? { docs: c.docs } : {}), parents: c.parents, children });
+    }
+    return out;
+  };
+  return {
+    async get(nameOrRef) {
+      const all = await (pages ??= load());
+      if (nameOrRef.startsWith(FILE_REF)) return [...all.values()].find((p) => p.ref_id === nameOrRef);
+      return all.get(keyOf(nameOrRef));
+    },
+  };
+}
+
 export function stampOf(file: string, text: string, prefix: string): string {
   return `${prefix}${file}@${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
 }
