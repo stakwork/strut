@@ -125,6 +125,15 @@ Each is explained in its area's doc; these hold in every change.
 - **`input` is the run's subject and `params` are its tunable defaults.** A
   step waits for the steps in its `depends`; with no `depends` it follows the
   step before it, and `depends: []` runs it at once. ([engine](docs/engine.md))
+- **What a model is told lives in Concept pages**, not in a workflow's YAML
+  or a step's code. Concepts are the generic place for instructions. A
+  workflow is the order of its steps, and a step holds the calls and the
+  rules no page may loosen. A page is read into the prompt
+  (`context/concept`), as the orchestrator's and each job kind's are, so a
+  person, the assistant or the dream changes it with no release and no
+  fork. Instructions written into YAML or code tie a workflow to one use: a
+  tight coupling that later turns out to be unneeded.
+  ([knowledge](docs/knowledge.md), [jobs](docs/jobs.md))
 - **Steps reach the world only through `ctx.services`**: `http`, `secrets`,
   `artifacts`, `shell` and the rest. A step never reads `process.env` and
   never spawns a child itself. ([engine](docs/engine.md),
