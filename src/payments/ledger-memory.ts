@@ -503,6 +503,11 @@ export class MemoryLedgerStore implements LedgerStore {
     return this.balanceOf(worker, o.now ?? Date.now()) ?? { ...ZERO_BALANCE };
   }
 
+  async payeeEarned(worker: string): Promise<number> {
+    const p = this.payeeRows.get(worker);
+    return p ? Math.max(0, p.accepted - p.takenBack) : 0;
+  }
+
   async payeeBalances(workers: readonly string[], o: { now?: number } = {}): Promise<Record<string, PayeeBalance>> {
     const now = o.now ?? Date.now();
     const out: Record<string, PayeeBalance> = {};

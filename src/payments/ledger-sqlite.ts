@@ -823,6 +823,11 @@ export class SqliteLedgerStore implements LedgerStore {
     return balanceRow(p, h);
   }
 
+  async payeeEarned(worker: string): Promise<number> {
+    const p = this.live().s.payeeRow.get(worker) as Row | undefined;
+    return p ? Math.max(0, (p.accepted as number) - (p.taken_back as number)) : 0;
+  }
+
   async payeeBalances(workers: readonly string[], o: { now?: number } = {}): Promise<Record<string, PayeeBalance>> {
     if (!workers.length) return {};
     const s = this.live().s;

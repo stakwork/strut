@@ -133,6 +133,7 @@ import { checkRuleOf, gradeRuleOf, openPayProblem, phaseOf, revokeWhy, RuleProbl
 import { COPIES_MAX, copiesRuleOf, decideCopies, decidingRule, groupsOf, groupsOfAsync } from "./task-copies.js";
 import { TEST_FILE_MAX_BYTES, type TestFiles } from "./test-files.js";
 import { answerAttachments, attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
+import { levelOf, type Level } from "./levels.js";
 import { MAX_ATTACHMENTS, type Attachment } from "../ai/attachments.js";
 import { liveGrants, MemoryWorkerStore, noStatuses, WORKER_STATUSES, type Grant, type WorkerRecord, type WorkerStatus, type WorkerStore } from "./worker-store.js";
 
@@ -480,6 +481,16 @@ export interface WorkerView {
   /** Whether they may withdraw now, and how much (§8.2): strut's own
    *  store's (the `task/me` step says `not_here` for a store without it). */
   payout?: PayoutView;
+  /** Their XP and level (plans/worker-progress.md). Absent where there is
+   *  no ledger to read it from. */
+  xp?: WorkerXp;
+}
+
+/** XP is everything a worker ever earned here, in whole sats (the ledger's
+ *  `payeeEarned`: accepted less taken back; withdrawing never lowers it),
+ *  and their level a threshold on it (levels.ts). */
+export interface WorkerXp extends Level {
+  sats: number;
 }
 
 /** A type on the worker's dashboard: what an answer earns now, msat (0:
@@ -1520,6 +1531,15 @@ export function createTasks(deps: TasksDeps): TasksService {
     const ledger = await deps.ledgerIfAny?.();
     return ledger ? ledger.payeeBalance(actor, { now: now() }) : { ...ZERO_BALANCE };
   };
+  /** Their XP and level (plans/worker-progress.md): a ledger not opened yet
+   *  is nothing earned, as the balance reads it; a host's own store, with no
+   *  ledger at all, has none. */
+  const xpOf = async (actor: string): Promise<WorkerXp | undefined> => {
+    if (!deps.ledgerIfAny) return undefined;
+    const ledger = await deps.ledgerIfAny();
+    const sats = Math.floor((ledger ? await ledger.payeeEarned(actor) : 0) / 1000);
+    return { sats, ...levelOf(sats) };
+  };
 
   // ── tests and standing (§7) ───────────────────────────────────────────
   const graderProblem = (step: string): string | undefined =>
@@ -1931,7 +1951,8 @@ export function createTasks(deps: TasksDeps): TasksService {
       const balance = await balanceOf(w.actor);
       const pendingMsat = await s.tasks.pendingPay(w.actor);
       const payout = deps.payouts ? await deps.payouts.view(w.actor, { balance, ...(o.address ? { address: o.address } : {}) }) : undefined;
-      return { actor: w.actor, status: w.status, types, ...(holding ? { holding } : {}), balance, ...(pendingMsat > 0 ? { pendingMsat } : {}), ...(payout ? { payout } : {}) };
+      const xp = await xpOf(w.actor);
+      return { actor: w.actor, status: w.status, types, ...(holding ? { holding } : {}), balance, ...(pendingMsat > 0 ? { pendingMsat } : {}), ...(payout ? { payout } : {}), ...(xp ? { xp } : {}) };
     },
 
     async history(actor, o = {}) {

@@ -822,6 +822,11 @@ export interface LedgerStore {
   restoresOf(lease: string): Promise<PayRestore[]>;
   /** What one worker is owed, held and withdrawable at `now`. */
   payeeBalance(worker: string, o?: { now?: number }): Promise<PayeeBalance>;
+  /** Everything one worker ever earned here, msat: their accepted answers'
+   *  pay less what was taken back (a restore gives it back). Withdrawing
+   *  never lowers it: it is their XP (plans/worker-progress.md). 0 with
+   *  nothing earned. */
+  payeeEarned(worker: string): Promise<number>;
   /** The same for several workers in one grouped read; a worker with
    *  nothing earned is left out. */
   payeeBalances(workers: readonly string[], o?: { now?: number }): Promise<Record<string, PayeeBalance>>;
