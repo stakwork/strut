@@ -133,7 +133,7 @@ export function needsYou(stats: TaskStats, o: { groups?: boolean } = {}): Need[]
     if (t.dueHour > 0) out.push({ text: `${plural(t.dueHour, "task")} of ${t.type} ${t.dueHour === 1 ? "expires" : "expire"} unanswered within the hour.`, action: "See them", to: { tab: "tasks", type: t.type }, tone: "warn" });
   }
   const fresh = stats.workers.new ?? 0;
-  if (fresh > 0) out.push({ text: `${plural(fresh, "person", "people")} signed in and ${fresh === 1 ? "is" : "are"} waiting to be let in.`, action: "Let them in", to: { tab: "workers" }, tone: "warn" });
+  if (fresh > 0) out.push({ text: `${plural(fresh, "person", "people")} signed in and ${fresh === 1 ? "is" : "are"} waiting to be reviewed.`, action: "Review", to: { tab: "workers" }, tone: "warn" });
   const review = toReviewOf(stats) ?? 0;
   if (review > 0) out.push({ text: `${plural(review, "answer")} ${review === 1 ? "has" : "have"} not been reviewed.`, action: "Start reviewing", to: o.groups ? { tab: "groups" } : { tab: "tasks", review: "none" }, tone: "plain" });
   return out;

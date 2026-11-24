@@ -222,7 +222,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
         ["1 task of pets expires unanswered within the hour.", "See them", "warn"],
         ["boxes: no app boxer on this server.", "Open the type", "warn"],
         ["boxes is turned off with 2 open tasks: none is handed out, and each expires when due.", "Open the type", "warn"],
-        ["2 people signed in and are waiting to be let in.", "Let them in", "warn"],
+        ["2 people signed in and are waiting to be reviewed.", "Review", "warn"],
         ["5 answers have not been reviewed.", "Start reviewing", "plain"],
       ],
     );
@@ -231,7 +231,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
     // The review queue: by group once a workflow named one, else one by one.
     assert.deepEqual(w[5]!.to, { tab: "tasks", review: "none" });
     assert.deepEqual(needsYou(stats([row({ toReview: 1 })]), { groups: true }).map((x) => [x.text, x.to]), [["1 answer has not been reviewed.", { tab: "groups" }]]);
-    assert.equal(needsYou(stats([row({})], 1))[0]!.text, "1 person signed in and is waiting to be let in.");
+    assert.equal(needsYou(stats([row({})], 1))[0]!.text, "1 person signed in and is waiting to be reviewed.");
     // What is left to review: every type's, one type's, and nothing said where the server does not count.
     const counted = stats([row({ toReview: 4 }), row({ type: "boxes", toReview: 1 })]);
     assert.deepEqual([toReviewOf(counted), toReviewOf(counted, "boxes"), toReviewOf(stats([row({})])), toReviewOf(undefined)], [5, 1, undefined, undefined]);
