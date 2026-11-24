@@ -187,6 +187,54 @@ index. A change in this area updates this file, not AGENTS.md.
   app" — plans/chained-orchestrators.md §6): a `{ kind: "app", path }`
   entry is an error saying to hand the app over by name.
 
+- **A budget on a job — a cap on its model calls, kept at the gateway**
+  (stadeum plans/experiments.md, "A budget on a job"; `src/jobs.ts`,
+  `src/mothership.ts`). `JobRecord.budgetUsd` is a person's yes to the
+  spending: set by `PUT /jobs/:id/budget { usd | null }` (the deployment key,
+  an admin, or a member who launched a run under the job), or by
+  `job/start { budgetUsd }` — the orchestrator's reply `start.budgetUsd` —
+  carrying the figure the person gave in the conversation. Nothing a job's
+  own agent holds can raise it. **What spends it:** every run whose
+  `budgetJob` is the job (`RunOptions.budgetJob`, `ctx.budgetJob`; it
+  defaults to the run's `job`). That is the job's own runs, their children,
+  their checks (the verify pass hands the source run's budget job to each
+  check), and a trial's samples a run of the job asked for:
+  `knowledge/trial` / `knowledge/test` pass `ctx.budgetJob`, and each sample
+  runs as a job of its own (`trial-…`) still spending the asker's. `run.start`
+  records `budgetJob` when it is not the run's job, so a resume keeps it.
+  **The SPEND** is strut's estimate: the runner writes each top-level run's
+  `totals.cost` on the budget job's ledger when it settles
+  (`JobRecord.spent`, by run id, `recordJobRunCost`; a resume overwrites
+  its entry), so a sample's cost outlives the sample's own record, which
+  goes once it is judged. A child's is already in the parent that waited on
+  it. A step that fails after calling a model counts too: it marks its
+  error with what it spent (`withUsage`; the `agent` step does), and the
+  runner puts that on the `step.error`, with what any retried attempt
+  spent, or on its `onError` fallback's end (`tallyUsage` counts both).
+  `jobSpentUsd` sums the ledger. Two keepers. **Strut** starts nothing more
+  under a job that has spent it: the runner refuses a new run that would
+  spend it (`job_budget_spent: …`, before `run.start`, so it is not one of
+  the job's runs; a resume and a verify check go on), and the launcher
+  refuses `job/start` / `job/continue` at once (a launch naming a budget
+  writes it first, so a raised one lets the job go on). **The gateway**
+  refuses what is in flight: the Mothership puts a link of the job's own
+  (`jobLinkId`, the same run id for every run that spends the job's budget,
+  capped at the budget, living as long as the delegation) between the
+  delegation and each such run's link, which is capped at no more than what
+  the ledger says is left — so the cap holds even after the gateway's
+  counter for the job expired. A grant made in such a run (a pod's model
+  key) sits under the same link (`forPrincipal(p, budgetJob)`). Its 402
+  reads `job_budget_spent:` (`explainJobSpent`). A job turn that ended for
+  want of budget wakes no model turn: its end is a fixed line, the wake's
+  outcome `capped` (src/wake.ts `budgetSpent`), and the host shows it as it
+  is. `GET /jobs[/:id]` carry `spentUsd` and `budget: { usd, spentUsd,
+  leftUsd }`; the web's job view shows "budget $64 of $100" with a button
+  to set it. Not yet: a job started FROM a budgeted job's run with
+  `job/start` is not held to the parent's budget (no job's agent holds
+  `job/start` today); a pod's calls through a grant are counted by the
+  gateway alone, never on the ledger; and with no gateway (no Mothership)
+  only the between-runs refusal holds.
+
 - **Live feeds — what a job and the graph are doing, for a reader that
   cannot be called** (`plans/live-feeds.md`; `src/live-feed.ts`,
   `src/graph-writes.ts`). A host hears a job on its `jobCallback`; an app's
@@ -426,6 +474,7 @@ A STEP SAYS "LOOK AGAIN LATER" (plans/job-follow-ups.md): strut runs a step agai
 - **Looked at** on a timer armed only while one is pending, every `FOLLOW_UP_TICK_MS` (15 s): each follow-up after its own interval (30–3600 s, default 60), outside any run, as a proposal's apply is: the bag bound to the person (`bindPrincipal`), its node files naming the run that asked, the registry, the job. A look that throws is tried again; the last look of each is kept in memory, so a restart looks again at once.
 - **Settled, or past `until`** (1–1440 minutes, default 60): the turn's prompt (`settledPrompt`, `timedOutPrompt`) is written on the record as `ready`, and goes as soon as no run of the job is in flight: the job's own workflow (`turnOf`), as the person, naming the conversation with `wake: true` and carrying the job's `kind` and `peer` as `job/continue` does (`launchJobTurn`), so `wake.ts` relays its end and the kind's claims judge it. Its last line is `FOLLOW_UP_SENT`.
 - **Once:** taken off the record under its lock before the launch, put back when the launch is refused. Ready ones of one job go as one turn.
+- **Within the job's budget:** `launchJobTurn` refuses a job that has spent its budget (`jobBudgetProblem`, `job_budget_spent:`), so the turn waits on the record until a person raises it; the look's bag is bound with the job as its `budgetJob`, so a grant it makes is held to the budget.
 
 ### `src/artifact-refs.ts`
 

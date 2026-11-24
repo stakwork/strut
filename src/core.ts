@@ -302,6 +302,12 @@ export interface StepContext<TServices = unknown> {
    *  job shares, whatever its workflow. `job/dir` hands out its directory;
    *  templates see it as `{{ $job }}`. Absent on a plain run. */
   job?: string;
+  /** The job whose BUDGET the run spends (src/jobs.ts `budgetUsd`): `job`,
+   *  unless the run was started for another job's work — a trial's sample
+   *  run by a job's run spends that job's. What the gateway's link for the
+   *  run and its grants sit under (src/mothership.ts), and where its cost is
+   *  written. Absent with no job. */
+  budgetJob?: string;
   /** The Concept BRANCH the run is on (src/branches.ts), a launch-level
    *  field like `job`: set by whoever launched the root, inherited by every
    *  run it starts, never in `input`. Its Concepts are the branch's (the
@@ -699,6 +705,9 @@ export interface RunEvent {
   /** On `run.start`: the job the run was launched under (plans/jobs.md §1),
    *  read back by a resume like `principal`. */
   job?: string;
+  /** On `run.start`: the job whose budget the run spends, when not `job`
+   *  (`StepContext.budgetJob`), read back by a resume. */
+  budgetJob?: string;
   /** On `run.start`: the Concept branch the run is on (src/branches.ts),
    *  read back by a resume like `job`. */
   branch?: string;
@@ -820,7 +829,9 @@ export interface RunEvent {
   /** On the `step.end` of a step that called a model — an `agent`, an
    *  `llm`, a sub-agent's tool call — or waited on a run that did
    *  (`meta/run-workflow`): what it spent, lifted from the output's
-   *  `withUsage` marker. A run's spend is the sum of these. */
+   *  `withUsage` marker. On a `step.error` too, when the step spent before
+   *  it failed (the error is marked the same way), and on either, what its
+   *  failed attempts before spent. A run's spend is the sum of these. */
   modelCalls?: number;
   usage?: TokenUsage;
   cost?: number;
@@ -1025,6 +1036,8 @@ const USAGE_KEY = "_usage";
  * run's spend is the sum of its `step.end` events. The `agent` and `llm`
  * steps mark their outputs, and `meta/run-workflow` marks its result with
  * the totals of the run it waited on. Non-object outputs are left unmarked.
+ * A step that FAILS after spending marks the error it throws the same way
+ * (the `agent` step does), and the runner puts it on the `step.error`.
  */
 export function withUsage<T>(output: T, spent: ModelUsage | undefined): T {
   if (output === null || typeof output !== "object" || !spent) return output;

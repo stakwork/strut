@@ -143,7 +143,7 @@ export default function App() {
           >
             {NAV_LABELS[t]}
             {t === "tasks" && toReview > 0 && <Count n={toReview} label={`${toReview} to review`} />}
-            {t === "workers" && fresh > 0 && <Count n={fresh} warn label={`${fresh} waiting to be let in`} />}
+            {t === "workers" && fresh > 0 && <Count n={fresh} warn label={`${fresh} waiting to be reviewed`} />}
             {t === "support" && unread > 0 && <Count n={unread} warn label={`${unread} unread`} />}
           </button>
         ))}

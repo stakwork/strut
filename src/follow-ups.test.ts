@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { AnyStepDef, StepContext } from "./core.js";
 import { createStrut } from "./createStrut.js";
 import { FOLLOW_UP_SENT, createFollowUps, settled, settledPrompt, timedOutPrompt, type FollowUpsDeps } from "./follow-ups.js";
-import { jobRoot, jobsCapability, readJobRecord, type FollowUp, type JobsCapability } from "./jobs.js";
+import { jobRoot, jobsCapability, readJobRecord, recordJobRunCost, setJobBudget, type FollowUp, type JobsCapability } from "./jobs.js";
 import { MemoryRunStore } from "./store.js";
 import { buildRegistry } from "./steps/registry.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -246,9 +246,10 @@ describe("follow-ups through a whole strut", () => {
     throw new Error(`${what} never happened`);
   };
 
-  it("a turn's step asks; after a restart strut looks as the turn's person, and its settling sends the job one turn that wakes the conversation", async () => {
-    let answer: unknown = { settled: false };
-    const seen: Array<{ actor?: string; principal?: string; job?: string }> = [];
+  /** A strut whose stand-in `job` turn asks for a follow-up when told to
+   *  bake; the asking turn has run on j-1, as bob, and the process has gone. */
+  const askingTurn = async () => {
+    const state: { answer: unknown; seen: Array<{ actor?: string; principal?: string; job?: string }> } = { answer: { settled: false }, seen: [] };
     const ask: AnyStepDef = {
       type: "test/ask",
       input: { parse: (v: unknown) => v },
@@ -261,8 +262,8 @@ describe("follow-ups through a whole strut", () => {
       type: "test/look",
       input: { parse: (v: unknown) => v },
       async run(_cfg: unknown, ctx?: StepContext<any>) {
-        seen.push({ ...(ctx!.actor ? { actor: ctx!.actor } : {}), ...(ctx!.principal ? { principal: ctx!.principal } : {}), ...(ctx!.job ? { job: ctx!.job } : {}) });
-        return answer;
+        state.seen.push({ ...(ctx!.actor ? { actor: ctx!.actor } : {}), ...(ctx!.principal ? { principal: ctx!.principal } : {}), ...(ctx!.job ? { job: ctx!.job } : {}) });
+        return state.answer;
       },
     } as unknown as AnyStepDef;
     const registry = { ...(await buildRegistry()).registry, "test/ask": ask, "test/look": look };
@@ -285,7 +286,6 @@ describe("follow-ups through a whole strut", () => {
       });
 
     const first = await boot();
-    // A stand-in job: its turn asks for the follow-up when told to bake.
     await first.workspace.publishWorkflow("job", "v1", {
       steps: [
         { id: "ask", type: "test/ask", config: { prompt: "{{ input.prompt }}" } },
@@ -303,16 +303,20 @@ describe("follow-ups through a whole strut", () => {
     const asked = (await readJobRecord(jobRoot(first.dataDir, "j-1")))!.followUps!;
     assert.deepEqual(asked.map((f) => [f.id, f.look, f.by]), [["bake", { type: "test/look", input: { status: true } }, { runId, actor: "bob", principal: "bob", conversation: "bob/c-1" }]]);
     await first.close();
+    return { boot, runId, state, root: jobRoot(join(dir, "data"), "j-1") };
+  };
 
+  it("a turn's step asks; after a restart strut looks as the turn's person, and its settling sends the job one turn that wakes the conversation", async () => {
+    const { boot, state } = await askingTurn();
     // The process went; the next one looks at once, and the build is done.
-    answer = { settled: true, image: 3 };
+    state.answer = { settled: true, image: 3 };
     const second = await boot();
     try {
       const rec = await until(async () => {
         const r = await readJobRecord(jobRoot(second.dataDir, "j-1"));
         return r?.runs?.length === 2 && !r.followUps ? r : undefined;
       }, "the follow-up's turn");
-      assert.deepEqual(seen, [{ actor: "bob", principal: "bob", job: "j-1" }], "looked once, as the turn's person, on the job");
+      assert.deepEqual(state.seen, [{ actor: "bob", principal: "bob", job: "j-1" }], "looked once, as the turn's person, on the job");
       const turn = rec.runs![1]!.runId;
       await until(async () => ((await second.store.getRunEvents("job", turn)).some((e) => e.type === "run.end") ? true : undefined), "the follow-up turn's end");
       const start = (await second.store.getRunEvents("job", turn)).find((e) => e.type === "run.start")!;
@@ -322,6 +326,29 @@ describe("follow-ups through a whole strut", () => {
       assert.equal(start.actor, "bob");
       assert.equal(existsSync(join(second.dataDir, "jobs", ".follow-ups", "j-1")), false);
     } finally {
+      await second.close();
+    }
+  });
+
+  it("a job that has spent its budget starts no turn: the settled follow-up waits on the record", async () => {
+    const { boot, runId, state, root } = await askingTurn();
+    await setJobBudget(root, "j-1", 1);
+    await recordJobRunCost(root, runId, 1.5);
+    state.answer = { settled: true };
+    const warned: string[] = [];
+    const warn = console.warn;
+    console.warn = (m: unknown) => void warned.push(String(m));
+    const second = await boot();
+    try {
+      const rec = await until(async () => {
+        const r = await readJobRecord(root);
+        return r?.followUps?.[0]?.ready && warned.length ? r : undefined;
+      }, "the refused turn");
+      assert.equal(rec.runs?.length, 1, "no turn ran");
+      assert.match(warned.join("\n"), /job j-1: the turn was not launched: job_budget_spent:/);
+      assert.equal(existsSync(join(second.dataDir, "jobs", ".follow-ups", "j-1")), true, "still pending");
+    } finally {
+      console.warn = warn;
       await second.close();
     }
   });

@@ -770,6 +770,7 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
                           {w.peer && <span class="badge" title="Another strut may launch it">peer{w.peer === "person" ? ": person" : ""}</span>}
                           {w.sealed && <span class="badge badge-warning" title="The builder may never run or read it">sealed</span>}
                           {w.schedules?.map((when) => <span class="badge" key={when} title="strut.yaml's schedules: strut runs it on its own, from the install on">{when}</span>)}
+                          {w.maxRunCostUsd != null && <span class="badge" title="The most one run may spend">cap ${w.maxRunCostUsd} a run</span>}
                         </span>
                         {w.description && <span class="store-line-desc">{w.description}</span>}
                       </span>

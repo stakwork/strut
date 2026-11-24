@@ -21,6 +21,8 @@
  *   a person token's turns are a peer's; the head of the chain wakes itself).
  * - **capped**: `max` wake turns since the last person's turn (the session's
  *   turn lines, `wake: true`) — the host shows the job's words as they are.
+ *   The same for a job its BUDGET stopped (`WakeEnd.budgetSpent`): its end
+ *   is a fixed line, and no model turn is spent saying it.
  * - **launched**: queued; a turn follows. While the session is busy (held, or
  *   a run launched on it still in flight) the end waits, and every end that
  *   waited goes as ONE turn.
@@ -84,6 +86,11 @@ export interface WakeEnd {
   /** Who asked for the job: the wake runs as them. */
   actor?: string;
   principal?: string;
+  /** The job stopped because its BUDGET is spent (stadeum
+   *  plans/experiments.md): the fixed line that says so. Such an end wakes
+   *  no model turn — the outcome is `capped`, and the host shows the job's
+   *  end as it is, its error that line. */
+  budgetSpent?: string;
 }
 
 /** What a session's wakes are, on disk. */
@@ -474,6 +481,14 @@ export function createWakes(deps: WakeDeps): Wakes {
       const outcome = await withLock(`wake:${session}`, async (): Promise<WakeOutcome> => {
         const f = await read(session);
         if (f.seen.includes(key)) return "none";
+        // A job its budget stopped is told in a fixed line, never a model's
+        // turn (stadeum plans/experiments.md: "the chat is told in a fixed
+        // line with no model turn"): no wake, as when capped.
+        if (end.budgetSpent) {
+          f.seen = [...f.seen, key].slice(-SEEN_MAX);
+          await write(f);
+          return "capped";
+        }
         let outcome: WakeOutcome = "launched";
         // A new turn is needed only when nothing waits: an end that finds
         // others queued goes with them.

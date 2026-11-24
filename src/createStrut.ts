@@ -229,7 +229,7 @@ import { PROPOSAL_FEED_READ_MAX, createProposalFeed } from "./proposal-feed.js";
 import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, PROPOSAL_LIST_DEFAULT, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobRecord, type JobsCapability } from "./jobs.js";
+import { JOB_WORKFLOWS, deleteJob, jobBudgetOf, jobBudgetProblem, jobFilePath, jobRoot, jobsCapability, listJobFiles, parseBudgetUsd, readJobRecord, recordingJobSessions, releaseWith, setJobBudget, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobRecord, type JobsCapability } from "./jobs.js";
 import { createPrChecks, type Reporter } from "./pr-checks.js";
 import { createFollowUps } from "./follow-ups.js";
 import { createJobIndex, holdUrls } from "./job-index.js";
@@ -268,7 +268,7 @@ export const HOST_CALL_BODY_MAX_BYTES = 36 * 1024 * 1024;
  *  `/people/token`): a challenge, a key, a signature, a name, an address. */
 const PEEL_BODY_MAX_BYTES = 8 * 1024;
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath, PUBLIC_RUN_FILES_BODY_MAX_BYTES } from "./public-runs.js";
-import { resolveRunCap } from "./run-cap.js";
+import { resolveRunCap, workflowRunCap } from "./run-cap.js";
 import { createPublicViewDoor, publicViewNeeds, withNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
 import { nameInPackageAsync, packagePrefixOf } from "./package-lookup.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
@@ -1074,6 +1074,9 @@ export interface StrutRunOptions<TServices = unknown> {
   branch?: string;
   /** The run is a TRIAL (`RunTrial`, src/trials.ts): what it starts is held. */
   trial?: RunTrial;
+  /** The job whose budget the run spends, when not `job`
+   *  (`RunOptions.budgetJob`): a trial's sample started by a job's run. */
+  budgetJob?: string;
 }
 
 // ── Run-output helpers ─────────────────────────────────────────────────────
@@ -1685,12 +1688,16 @@ export async function createStrut<TServices = unknown>(
    *  `wake: true`, so its end wakes it (src/wake.ts). It carries the job's
    *  `kind` and `peer` from its newest turn, as `job/continue` does, so it
    *  opens with the kind's page and that page's claims judge it. Refused
-   *  `job_busy:` while a run of the job is in flight, checked with nothing
-   *  awaited between it and the launch, as `job/start`'s is. */
+   *  `job_budget_spent:` once the job has spent its budget, as every door
+   *  is, and `job_busy:` while a run of the job is in flight, checked with
+   *  nothing awaited between it and the launch, as `job/start`'s is. */
   const launchJobTurn = async (o: { job: string; workflow: string; prompt: string; conversation?: string; actor?: string; principal?: string; model?: string }): Promise<string> => {
     await assertWorkflowEnabled(workspace, o.workflow);
     const flow = await workspace.getWorkflow(o.workflow);
-    const last = turnOf((await readJobRecord(jobRoot(dataDir, o.job)))?.runs);
+    const record = await readJobRecord(jobRoot(dataDir, o.job));
+    const spent = jobBudgetProblem(o.job, record);
+    if (spent) throw new Error(spent);
+    const last = turnOf(record?.runs);
     const was = last ? ((await store.getRunStart(last.workflow, last.runId).catch(() => null))?.input as Record<string, unknown> | undefined) : undefined;
     const carried = Object.fromEntries((["kind", "peer"] as const).flatMap((k) => (typeof was?.[k] === "string" ? [[k, was[k]]] : [])));
     if (jobBusy(o.job)) throw new Error(`job_busy: job "${o.job}" has a run in flight`);
@@ -1735,8 +1742,9 @@ export async function createStrut<TServices = unknown>(
         scope: {},
         input,
         emit: async () => {},
-        // Its node files name the turn that asked.
-        services: bindNodeFiles(bindPrincipal(services, f.by.principal), f.by.runId),
+        // Its node files name the turn that asked; a grant it makes is held
+        // to the job's budget, as one in a run of the job is.
+        services: bindNodeFiles(bindPrincipal(services, f.by.principal, job), f.by.runId),
         registry,
         job,
         ...(f.by.actor ? { actor: f.by.actor } : {}),
@@ -3761,6 +3769,8 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.prepared ? { prepared: p.runStart.prepared } : {}),
         // A trial stays one (src/trials.ts): resumed, it still holds what it starts.
         ...(p.runStart.trial ? { trial: p.runStart.trial } : {}),
+        // And spends the budget it spent (src/jobs.ts `budgetUsd`).
+        ...(p.runStart.budgetJob ? { budgetJob: p.runStart.budgetJob } : {}),
         // Billed to whoever the original launch was billed to — never
         // re-derived, the owner may have changed since (§2).
         ...(p.runStart.actor ? { actor: p.runStart.actor } : {}),
@@ -4691,9 +4701,9 @@ export async function createStrut<TServices = unknown>(
       workflowCap: async (name) => {
         const meta = await workspace.getWorkflowMetadata(name).catch(() => null);
         try {
-          return resolveRunCap(meta?.maxRunCostUsd);
+          return resolveRunCap(workflowRunCap(meta));
         } catch {
-          return meta?.maxRunCostUsd;
+          return workflowRunCap(meta);
         }
       },
       launch: (flow, input, o) => {
@@ -7042,6 +7052,40 @@ export async function createStrut<TServices = unknown>(
     }
   });
 
+  // A job's BUDGET (stadeum plans/experiments.md, "A budget on a job"): a cap
+  // on the model calls of the job and every run under it, kept at the
+  // gateway (src/mothership.ts) and by strut, which starts nothing more
+  // under a job that has spent it. `{ usd }` sets it — a positive number of
+  // dollars, raised or lowered — and `{ usd: null }` removes it. It is a
+  // person's yes to the spending: the deployment's key or an admin's
+  // session, or a member who launched a run under the job. Never a peer,
+  // a host key or a visitor, and no step: a job's agent cannot raise its
+  // own. Answers the budget as `GET /jobs/:id` shows it.
+  app.put("/jobs/:id/budget", async (c) => {
+    const at = jobRoute(c);
+    if (at instanceof Response) return at;
+    const scope = await scopeOf(c);
+    const rec = await readJobRecord(at.root);
+    if (scope !== "full") {
+      const actor = scope === "member" ? await resolveActor(c) : undefined;
+      const actors = rec?.actors ?? (rec?.createdBy ? [rec.createdBy] : []);
+      if (!actor || !actors.includes(actor)) {
+        return c.json({ error: "forbidden: a job's budget is set by an admin or by a person who works in the job" }, 403);
+      }
+    }
+    const body = (await c.req.json().catch(() => null)) as { usd?: unknown } | null;
+    if (!body || !("usd" in body)) return c.json({ error: "body must be { usd: <dollars> | null }" }, 400);
+    let cap: number | null;
+    try {
+      cap = parseBudgetUsd(body.usd);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    const after = await setJobBudget(at.root, at.id, cap);
+    const budget = jobBudgetOf(after);
+    return c.json({ job: at.id, budget: budget ?? null });
+  });
+
   // ── Proposals (plans/proposals.md §3) ──────────────────────────────────
   //
   // A gated tool call's record, and the person's door onto it. Reads list
@@ -8435,6 +8479,9 @@ export async function createStrut<TServices = unknown>(
        *  to launch, never a request's — so here, not on the body. Recorded on
        *  `run.start`; no wake and no callback follow its end. */
       trial?: RunTrial;
+      /** The job whose budget the run spends, when not its own
+       *  (`RunOptions.budgetJob`): never a request's, so here. */
+      budgetJob?: string;
       /** The conversation a person's turn continues (`continuesFor`,
        *  plans/jamie-app.md §2.2): opened as it is. */
       continues?: string;
@@ -8561,6 +8608,7 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.actor ? { actor: extra.actor } : {}),
         ...(principal ? { principal } : {}),
         ...(body.job ? { job: body.job } : {}),
+        ...(extra?.budgetJob ? { budgetJob: extra.budgetJob } : {}),
         ...(body.job && body.title ? { title: body.title } : {}),
         ...(body.branch ? { branch: body.branch } : {}),
         ...(controller.trial ? { trial: controller.trial } : {}),
@@ -8700,8 +8748,15 @@ export async function createStrut<TServices = unknown>(
     res: RunResult,
     info: { job: string; startedBy?: StartedBy; asked?: boolean; actor?: string; principal?: string },
   ): Promise<WakeEnd> {
-    const title = (await readJobRecord(jobRoot(dataDir, info.job)))?.title;
+    const record = await readJobRecord(jobRoot(dataDir, info.job));
+    const title = record?.title;
     const refs = await artifactRefs(res.runId, res.output, info.job).catch(() => undefined);
+    // A turn that did not finish because the job's budget is spent — strut
+    // or the gateway refused a call — ends in a fixed line, no wake turn.
+    const budgetSpent =
+      res.status !== "success" && (res.error?.message.includes("job_budget_spent:") || jobBudgetProblem(info.job, record))
+        ? jobBudgetProblem(info.job, record) ?? res.error!.message.slice(res.error!.message.indexOf("job_budget_spent:"))
+        : undefined;
     return {
       runId: res.runId,
       workflow,
@@ -8715,6 +8770,7 @@ export async function createStrut<TServices = unknown>(
       ...(info.asked ? { asked: true as const } : {}),
       ...(info.actor ? { actor: info.actor } : {}),
       ...(info.principal ? { principal: info.principal } : {}),
+      ...(budgetSpent ? { budgetSpent } : {}),
     };
   }
 
@@ -8878,7 +8934,7 @@ export async function createStrut<TServices = unknown>(
     return typeof session === "string" && session ? session : undefined;
   }
   if (launchCap) {
-    launchCap.launch = async ({ job, title, input, from, actor, principal, mcp, attachments, workflow: wanted }) => {
+    launchCap.launch = async ({ job, title, input, from, actor, principal, mcp, attachments, workflow: wanted, budgetUsd }) => {
       // A trial starts no job (src/trials.ts): job/start and job/continue
       // answer that it was held before they get here; this is the backstop.
       if (controllersByRunId.get(from)?.trial) throw new Error(`trial_held: run ${from} is a trial, and a trial starts no job`);
@@ -8890,7 +8946,15 @@ export async function createStrut<TServices = unknown>(
       // builder turn on a peer carries `input.peer`, a code job its `kind`;
       // a continue inherits each from that turn's `run.start` unless it
       // names its own, so the caller names only the job.
-      const last = wanted ? undefined : turnOf((await readJobRecord(jobRoot(dataDir, job)))?.runs);
+      // The job's budget (stadeum plans/experiments.md): the one the person
+      // named on this launch goes on the record first — raised, it lets a
+      // spent job go on — then a job that has spent its budget starts
+      // nothing more, refused here so the turn that asked hears why at once.
+      if (budgetUsd !== undefined) await setJobBudget(jobRoot(dataDir, job), job, parseBudgetUsd(budgetUsd));
+      const record = await readJobRecord(jobRoot(dataDir, job));
+      const spent = jobBudgetProblem(job, record);
+      if (spent) throw new Error(spent);
+      const last = wanted ? undefined : turnOf(record?.runs);
       const workflow = wanted ?? last?.workflow ?? "job";
       // A kind is a code job's (job/start refuses one on a builder), and a
       // continue keeps the job's workflow: one naming a kind on a builder
@@ -11654,6 +11718,7 @@ export async function createStrut<TServices = unknown>(
         ...(runOpts?.actor ? { actor: runOpts.actor } : {}),
         ...(principal ? { principal } : {}),
         ...(runOpts?.job ? { job: runOpts.job } : {}),
+        ...(runOpts?.budgetJob ? { budgetJob: runOpts.budgetJob } : {}),
         ...(runOpts?.job && runOpts.title ? { title: runOpts.title } : {}),
         ...(runOpts?.mcp?.length ? { mcp: runOpts.mcp } : {}),
         ...(controller.branch ? { branch: controller.branch } : {}),

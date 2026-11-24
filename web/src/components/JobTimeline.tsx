@@ -163,6 +163,7 @@ export function JobTimeline(props: {
         <span><b>{totals.toolCalls}</b> tool calls</span>
         <span><b>{formatTokens(totals.usage.outputTokens)}</b> out · <b>{formatTokens(totals.usage.cacheReadTokens)}</b> cached</span>
         <span><b>{fmtCost(totals.cost)}</b></span>
+        <BudgetChip job={job} onChanged={props.onRefresh} />
         {job.holds.length > 0 && <span>holds: <b>{job.holds.map((h) => `${h.kind} ${h.id}`).join(", ")}</b></span>}
         {job.repos.length > 0 && <span>repos: <b>{job.repos.join(", ")}</b></span>}
         <span><b>{job.files.length}</b> file{job.files.length === 1 ? "" : "s"}</span>
@@ -386,6 +387,40 @@ export function peerArtifactNote(ref: { peer?: string; via?: string; job?: strin
   if (link) return `${link} — on @${ref.peer}`;
   if (ref.content !== undefined) return `Inline, from @${ref.peer}`;
   return `${ref.path ?? ref.url} on @${ref.peer} — this strut server cannot open it yet`;
+}
+
+// A job's budget (stadeum plans/experiments.md, "A budget on a job"): what
+// it has spent of it — "$64 of $100 budget", marked once it is spent — and
+// the person's door to set, raise or remove it (`PUT /jobs/:id/budget`).
+function BudgetChip(props: { job: api.JobView; onChanged?: () => void }) {
+  const { budget } = props.job;
+  const [error, setError] = useState("");
+  const edit = async () => {
+    const was = budget ? String(budget.usd) : "";
+    const answer = window.prompt("The job's budget in dollars: a cap on its model calls. Empty removes it.", was);
+    if (answer === null) return;
+    const usd = answer.trim() === "" ? null : Number(answer.trim().replace(/^\$/, ""));
+    if (usd !== null && !(usd > 0)) return setError("a budget is a positive number of dollars");
+    try {
+      setError("");
+      await api.setJobBudget(props.job.job, usd);
+      props.onChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  const spent = budget && budget.leftUsd <= 0;
+  return (
+    <span class={spent ? "job-budget job-budget-spent" : "job-budget"}>
+      {budget ? (
+        <>budget <b>{fmtCost(budget.spentUsd)} of {fmtCost(budget.usd)}</b>{spent ? " — spent" : ""}</>
+      ) : (
+        <>no budget</>
+      )}{" "}
+      <button class="btn btn-sm job-budget-btn" onClick={edit} title="Set the job's budget">{budget ? "change" : "set"}</button>
+      {error && <span class="job-budget-error"> {error}</span>}
+    </span>
+  );
 }
 
 export function fmtCost(c: number): string {

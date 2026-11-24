@@ -3,8 +3,9 @@
 // Beside the category chip: the workflow's per-run LLM spend cap in dollars
 // (plans/mothership-cost-control.md §3). Rendered only when the deployment
 // routes spend through the Mothership (`GET /llm/mothership`) — without it
-// nothing enforces the number. Empty = the deployment default. Metadata-only
-// on the server: no new workflow version is published.
+// nothing enforces the number. Empty = the cap its package ships, else the
+// deployment default. Metadata-only on the server: no new workflow version is
+// published.
 
 import { useState } from "preact/hooks";
 import * as api from "../api";
@@ -12,8 +13,11 @@ import * as api from "../api";
 export function RunCapEditor(props: {
   workflow: string;
   maxRunCostUsd?: number;
+  /** The cap the workflow's package ships, in force while none is set here. */
+  packageMaxRunCostUsd?: number;
   onSaved: () => void | Promise<void>;
 }) {
+  const pkg = props.packageMaxRunCostUsd;
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState(props.maxRunCostUsd != null ? String(props.maxRunCostUsd) : "");
   const [saving, setSaving] = useState(false);
@@ -29,7 +33,7 @@ export function RunCapEditor(props: {
     const raw = value.trim();
     const next = raw ? Number(raw) : null;
     if (next !== null && !(Number.isFinite(next) && next > 0)) {
-      setError("Enter a positive dollar amount, or leave it empty for the deployment default.");
+      setError(`Enter a positive dollar amount, or leave it empty for ${pkg != null ? `the package's $${pkg}` : "the deployment default"}.`);
       return;
     }
     if (next === (props.maxRunCostUsd ?? null)) { setOpen(false); return; }
@@ -48,11 +52,11 @@ export function RunCapEditor(props: {
   return (
     <span class="cat-anchor">
       <button
-        class={`cat-chip${props.maxRunCostUsd != null ? "" : " is-empty"}`}
-        title="Per-run LLM spend cap, enforced by the Mothership"
+        class={`cat-chip${props.maxRunCostUsd != null || pkg != null ? "" : " is-empty"}`}
+        title={props.maxRunCostUsd == null && pkg != null ? "Per-run LLM spend cap, set by its package" : "Per-run LLM spend cap, enforced by the Mothership"}
         onClick={toggle}
       >
-        {props.maxRunCostUsd != null ? `cap $${props.maxRunCostUsd}` : "+ run cap"}
+        {props.maxRunCostUsd != null ? `cap $${props.maxRunCostUsd}` : pkg != null ? `cap $${pkg}` : "+ run cap"}
       </button>
       {open && (
         <div class="cat-popover">
@@ -61,7 +65,7 @@ export function RunCapEditor(props: {
             min="0"
             step="any"
             value={value}
-            placeholder="Max $ per run (empty = default)"
+            placeholder={pkg != null ? `Max $ per run (empty = $${pkg})` : "Max $ per run (empty = default)"}
             autoFocus
             onInput={(e) => setValue((e.target as HTMLInputElement).value)}
             onKeyDown={(e) => {

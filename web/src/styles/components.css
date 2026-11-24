@@ -4188,6 +4188,9 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .job-id { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
 .job-meta { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); color: var(--text-muted); font-size: 12px; margin-bottom: var(--sp-4); }
 .job-meta b { color: var(--text); font-weight: 500; }
+.job-budget { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.job-budget-spent, .job-budget-spent b, .job-budget-error { color: var(--danger); }
+.job-budget-btn { padding: 0 var(--sp-2); font-size: 11px; }
 .job-section { margin-top: var(--sp-5); }
 .job-section-title {
   font-size: 11px;

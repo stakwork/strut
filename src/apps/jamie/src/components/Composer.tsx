@@ -50,6 +50,60 @@ export function Composer({ placeholder, onSend, running, disabled, sending }: Co
     setFiles(next);
   };
 
+  // A drag of files anywhere over the chat lights the composer; a drop
+  // anywhere in the page lands in it, through the same addFiles as the button.
+  // A file drop never falls to the browser, which would open the file in place
+  // of the chat, even while the composer is disabled.
+  const [dragging, setDragging] = useState(false);
+  const addRef = useRef(addFiles);
+  addRef.current = addFiles;
+  const offRef = useRef(disabled);
+  offRef.current = disabled;
+  useEffect(() => {
+    // Enter and leave pair up per element. An element replaced under the drag
+    // (a reply streaming in) never gets its leave, so the drag also ends once
+    // dragover, which the browser repeats while a drag is over the page, stops.
+    let depth = 0;
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    const end = () => {
+      depth = 0;
+      clearTimeout(idle);
+      setDragging(false);
+    };
+    const hasFiles = (e: DragEvent) => !!e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files");
+    const enter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      depth++;
+      setDragging(true);
+    };
+    const leave = (e: DragEvent) => {
+      if (hasFiles(e) && --depth <= 0) end();
+    };
+    const over = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      clearTimeout(idle);
+      idle = setTimeout(end, 1000);
+    };
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      end();
+      if (!offRef.current) addRef.current(e.dataTransfer!.files);
+    };
+    window.addEventListener("dragenter", enter);
+    window.addEventListener("dragleave", leave);
+    window.addEventListener("dragover", over);
+    window.addEventListener("drop", drop);
+    return () => {
+      clearTimeout(idle);
+      window.removeEventListener("dragenter", enter);
+      window.removeEventListener("dragleave", leave);
+      window.removeEventListener("dragover", over);
+      window.removeEventListener("drop", drop);
+    };
+  }, []);
+
   const send = async () => {
     const t = text.trim();
     if ((!t && files.length === 0) || disabled || sending || running) return;
@@ -73,15 +127,24 @@ export function Composer({ placeholder, onSend, running, disabled, sending }: Co
 
   useEffect(() => setSlashAt(0), [hits.length]);
 
+  const lit = dragging && !disabled;
+
   return (
     <div
-      className="relative rounded-xl border bg-background shadow-sm focus-within:ring-1 focus-within:ring-ring"
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => {
-        e.preventDefault();
-        addFiles(e.dataTransfer.files);
-      }}
+      className={cn(
+        "relative rounded-xl border bg-background shadow-sm focus-within:ring-1 focus-within:ring-ring",
+        lit && "border-primary ring-2 ring-primary",
+      )}
+      data-dragging={lit || undefined}
     >
+      {lit && (
+        <div
+          className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-primary/10 text-sm font-medium text-primary"
+          data-testid="drop-zone"
+        >
+          Drop files to attach
+        </div>
+      )}
       {slash && (
         <div className="absolute inset-x-0 bottom-full z-20 mb-1 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-md" data-testid="slash-menu">
           {concepts.isPending ? (
@@ -131,9 +194,15 @@ export function Composer({ placeholder, onSend, running, disabled, sending }: Co
           setSlash(detectSlash(e.target.value, e.target.selectionStart ?? e.target.value.length));
         }}
         onPaste={(e) => {
-          if (e.clipboardData.files.length) {
+          // A screenshot comes as a file item, often with no name: give it one.
+          const pasted = Array.from(e.clipboardData.items)
+            .filter((i) => i.kind === "file")
+            .map((i) => i.getAsFile())
+            .filter((f): f is File => !!f)
+            .map((f, n) => (f.name && f.name !== "image.png" ? f : new File([f], `pasted-${Date.now()}-${n}.${(f.type.split("/")[1] || "png").replace("jpeg", "jpg")}`, { type: f.type })));
+          if (pasted.length) {
             e.preventDefault();
-            addFiles(e.clipboardData.files);
+            addFiles(pasted);
           }
         }}
         onKeyDown={(e) => {

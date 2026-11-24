@@ -78,6 +78,10 @@ Then the follow-up is gone from the record.
   never fails `job_busy:`.
 - **Once.** The follow-up is taken off the record under the record's lock
   before the launch, and put back if the launch is refused.
+- **Within the job's budget.** A job that has spent its budget starts
+  nothing more (`job_budget_spent:`, as at every door), so its turn waits
+  on the record until a person raises the budget. A look's grants are held
+  to the job's budget, as a run's are.
 - **One turn per job.** Follow-ups of one job that are ready together go
   as one turn.
 

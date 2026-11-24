@@ -216,6 +216,18 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal((await meta())?.maxRunCostUsd, undefined);
     });
 
+    it("the run cap a package ships rides on the active version's upstream; the list says it beside an admin's", async () => {
+      const upstream = { package: "acme/mail", version: "1.0.0", digest: "d1", source: { ref: "file:/tmp/acme-mail" }, secrets: [], maxRunCostUsd: 1 };
+      await ws.publishWorkflow("wf", "v1", { steps }, undefined, undefined, undefined, { upstream, source: "install" });
+      await ws.publishWorkflow("other", "v1", { steps });
+      const listed = async (name: string) => (await ws.listWorkflows()).find((w) => w.name === name)!;
+      assert.equal((await ws.getWorkflowMetadata("wf"))!.versions["v1"]?.upstream?.maxRunCostUsd, 1);
+      assert.deepEqual([(await listed("wf")).maxRunCostUsd, (await listed("wf")).packageMaxRunCostUsd], [undefined, 1]);
+      assert.equal((await listed("other")).packageMaxRunCostUsd, undefined);
+      await ws.setWorkflowRunCap("wf", 5);
+      assert.deepEqual([(await listed("wf")).maxRunCostUsd, (await listed("wf")).packageMaxRunCostUsd], [5, 1]);
+    });
+
     it("disabled is workflow-level metadata: set, survives a publish, clears", async () => {
       await ws.publishWorkflow("wf", "v1", { steps });
       assert.equal((await ws.getWorkflowMetadata("wf"))?.disabled, undefined);

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parsePartialJson } from "ai";
 import agent, { createReplyTap, streamFailure, REPLY_DELTA_MS } from "./agent.js";
+import { usageOf } from "../../core.js";
 
 // `stream: true` (plans/private-voice.md §3.4): the reply as `reply.delta`
 // run events. OFFLINE: a stand-in Anthropic endpoint streams the model's
@@ -169,6 +170,40 @@ describe("agent step: stream: true", () => {
       assert.equal(deltas.filter((d) => d.call === "toolu_3").map((d) => d.text).join(""), "Shall I go with these defaults?");
     } finally {
       s.close();
+    }
+  });
+
+  it("a turn the provider stops after a step was spent fails carrying that step's spend, so the run and its job's budget count it", async () => {
+    // Step one: a final_answer the schema refuses, so the loop asks again.
+    // Step two: the gateway's 402, as when a job's budget runs out mid-turn.
+    let n = 0;
+    const server = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        if (n++ === 0) {
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.end(msgStart + toolPieces("toolu_1", "final_answer", ['{"start":{}}']));
+          return;
+        }
+        res.writeHead(402, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "run job.exp over its cap" } }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${(server.address() as any).port}`;
+    try {
+      const err = await run({ schema }).then(
+        () => assert.fail("the turn should fail"),
+        (e: unknown) => e,
+      );
+      assert.equal(n, 2, "the second call is the one refused");
+      const spent = usageOf(err);
+      assert.ok(spent, `the error carries what was spent: ${(err as Error).message}`);
+      assert.equal(spent.modelCalls, 1);
+      assert.equal(spent.usage.outputTokens, 20);
+      assert.ok(spent.cost > 0);
+    } finally {
+      server.close();
     }
   });
 

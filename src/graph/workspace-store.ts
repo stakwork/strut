@@ -349,6 +349,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     for (const w of workflows.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
       const versions = (byWorkflow.get(w.ref_id) ?? []).filter((v) => v.version_label).sort(byCreation);
       const active = versions.find((v) => v.content_hash === w.active_version);
+      const packageCap = parseJson<Upstream>(active?.upstream)?.maxRunCostUsd;
       out.push({
         name: w.name,
         activeVersion: active?.version_label ?? "",
@@ -359,6 +360,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         ...(active?.version_source ? { activeSource: active.version_source } : {}),
         ...(w.owner ? { owner: w.owner } : {}),
         ...(w.max_run_cost_usd != null ? { maxRunCostUsd: Number(w.max_run_cost_usd) } : {}),
+        ...(packageCap != null ? { packageMaxRunCostUsd: packageCap } : {}),
         ...(w.disabled ? { disabled: true } : {}),
         ...(automationsOf(w).length ? { automations: automationsOf(w) } : {}),
       });

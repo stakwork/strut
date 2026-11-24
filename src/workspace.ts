@@ -276,6 +276,10 @@ export interface Upstream {
    *  (src/packages/fence.ts); `git`, the hosts a token it holds serves
    *  (src/git-hosts.ts). Absent when the package provides nothing. */
   provides?: { secrets?: string[]; git?: GitHost[] };
+  /** The manifest's `maxRunCostUsd` for this workflow: the most one run of
+   *  it may spend, in dollars, unless an admin set a cap of their own
+   *  (`workflowRunCap`, src/run-cap.ts). Workflow versions only. */
+  maxRunCostUsd?: number;
   /** When a package's door wrote this version or, a known one, stamped it
    *  the release's again (ISO; one time for the whole release): what the
    *  installed fold reads to tell which release is here once a fork is
@@ -368,7 +372,9 @@ export interface WorkflowMetadata {
   owner?: string;
   /** Per-run LLM spend cap in dollars, enforced by the Mothership when the
    *  deployment routes through it (§3) — otherwise nothing reads it.
-   *  Operating policy like `category`: metadata-only, no version. */
+   *  Operating policy like `category`: metadata-only, no version. An
+   *  admin's: it wins over the one a package ships (`workflowRunCap`,
+   *  src/run-cap.ts). */
   maxRunCostUsd?: number;
   /** Disabled: refuses every run (API, subflow, schedule) until re-enabled.
    *  Operating policy like `category`: metadata-only, no version. */
@@ -571,6 +577,9 @@ export interface WorkflowListEntry {
   /** The owning actor and run cap, if set (see WorkflowMetadata). */
   owner?: string;
   maxRunCostUsd?: number;
+  /** The run cap the active version's package ships (`Upstream.maxRunCostUsd`):
+   *  the cap when `maxRunCostUsd` is unset. */
+  packageMaxRunCostUsd?: number;
   /** See WorkflowMetadata.disabled. */
   disabled?: boolean;
   /** The workflow's schedules, if any (see WorkflowMetadata.automations) —
@@ -838,6 +847,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
           ...(meta.versions[meta.active]?.source ? { activeSource: meta.versions[meta.active]!.source } : {}),
           ...(meta.owner ? { owner: meta.owner } : {}),
           ...(meta.maxRunCostUsd != null ? { maxRunCostUsd: meta.maxRunCostUsd } : {}),
+          ...(meta.versions[meta.active]?.upstream?.maxRunCostUsd != null ? { packageMaxRunCostUsd: meta.versions[meta.active]!.upstream!.maxRunCostUsd } : {}),
           ...(meta.disabled ? { disabled: true } : {}),
           ...(meta.automations?.length ? { automations: meta.automations } : {}),
         });

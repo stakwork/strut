@@ -55,8 +55,9 @@ export const SINK_FIELDS = [
 ] as const satisfies readonly (keyof RunEvent)[];
 
 /** One event as the sink posts it: the run's store key beside the envelope.
- *  A run's spend is the sum of its `step.end` events' `modelCalls` / `usage`
- *  / `cost`, as `RunSummary.totals` is computed (store.ts `tallyUsage`). */
+ *  A run's spend is the sum of its `step.end` and `step.error` events'
+ *  `modelCalls` / `usage` / `cost`, as `RunSummary.totals` is computed
+ *  (store.ts `tallyUsage`). */
 export type SinkEvent = { workflow: string } & Pick<RunEvent, (typeof SINK_FIELDS)[number]> & {
   /** The message alone — a stack is the server's business. */
   error?: { message: string };

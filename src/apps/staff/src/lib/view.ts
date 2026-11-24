@@ -42,6 +42,8 @@ export interface Place {
   group?: string;
   /** On the Workers tab: one worker's Review, over the list. */
   reviewing?: string;
+  /** On the Workers tab: show only workers pending approval (status "new"). */
+  pending?: boolean;
 }
 
 export type ReviewFilter = "none" | Verdict;
@@ -70,6 +72,7 @@ export function placeOf(input: Record<string, unknown> | null | undefined): Plac
   if (str("run")) return { tab: "tasks", run: str("run")! };
   if (review) return { tab: "tasks", review, ...(str("by") ? { by: str("by")! } : {}) };
   if (str("by")) return { tab: "tasks", by: str("by")! };
+  if (str("pending") === "true") return { tab: "workers", pending: true };
   if (str("reviewing")) return { tab: "workers", reviewing: str("reviewing")! };
   if (str("worker")) return { tab: "workers", worker: str("worker")! };
   if (str("test")) return { tab: "tests", test: str("test")! };
@@ -88,6 +91,7 @@ export function inputOf(p: Place): Record<string, string> {
   if (p.review) return { review: p.review, ...(p.by ? { by: p.by } : {}) };
   if (p.by) return { by: p.by };
   if (p.reviewing) return { reviewing: p.reviewing };
+  if (p.pending) return { tab: "workers", pending: "true" };
   if (p.worker) return { worker: p.worker };
   if (p.test) return { test: p.test };
   if (p.type) return p.tab === "types" ? { type: p.type } : { tab: p.tab, type: p.type };
@@ -139,9 +143,8 @@ export function needsYou(stats: TaskStats, o: { groups?: boolean; waiting?: read
   }
   const fresh = stats.workers.new ?? 0;
   if (fresh > 0) {
-    const first = [...(o.waiting ?? [])].sort((a, b) => a.firstSeen - b.firstSeen)[0];
-    const text = `${plural(fresh, "person", "people")} signed in and ${fresh === 1 ? "is" : "are"} waiting to be let in.`;
-    out.push({ text, action: "Review", to: first ? { tab: "workers", reviewing: first.actor } : { tab: "workers" }, tone: "warn" });
+    const text = `${plural(fresh, "person", "people")} signed in and ${fresh === 1 ? "is" : "are"} waiting to be reviewed.`;
+    out.push({ text, action: "Review", to: { tab: "workers", pending: true }, tone: "warn" });
   }
   const review = toReviewOf(stats) ?? 0;
   if (review > 0) out.push({ text: `${plural(review, "answer")} ${review === 1 ? "has" : "have"} not been reviewed.`, action: "Start reviewing", to: o.groups ? { tab: "groups" } : { tab: "tasks", review: "none" }, tone: "plain" });
