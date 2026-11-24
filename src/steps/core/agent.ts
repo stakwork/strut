@@ -1349,6 +1349,12 @@ export default defineStep({
       .any()
       .optional()
       .describe("if set, a JSON Schema for STRUCTURED output: it becomes the `final_answer` tool's input, and the step returns the object the model called it with. Mutually exclusive with finalAnswer."),
+    reply: z
+      .record(z.string(), z.any())
+      .optional()
+      .describe(
+        "A SCRIPTED turn, with `schema`: no model is called. This object is the answer, as if the model had called final_answer with it — committed to the `session` as that call, after `prompt`, so the thread's next turn reads the exchange — and the step returns it as `object`. strut's prepared turns use it (plans/package-seams.md §7).",
+      ),
     toolFilter: z
       .array(z.string())
       .default([])
@@ -1854,6 +1860,50 @@ export default defineStep({
     const instructions = cachedSystem(system, providerOptions) as any;
     if (session?.system != null && session.system !== cfg.system) {
       console.warn(`[agent] session "${session.id}" keeps its first turn's system prompt; this step's \`system\` is ignored.`);
+    }
+    // A SCRIPTED turn (`reply`): no model call. The thread gets what a
+    // model's final_answer would have left in it — the prompt, the call, its
+    // result — under the system prompt and the route the next turn resolves
+    // too, so that turn replays it like any other.
+    if (cfg.reply !== undefined) {
+      try {
+        if (!useSchema) throw new Error("agent: `reply` scripts a structured answer, so it needs `schema`");
+        const missing = missingRequired(cfg.schema, cfg.reply);
+        if (missing.length) throw new Error(`agent: \`reply\` is missing required field(s): ${missing.join(", ")}`);
+        const id = "toolu_reply";
+        const turn = [
+          { role: "system", content: system },
+          { role: "user", content: cfg.prompt },
+          { role: "assistant", content: [{ type: "tool-call", toolCallId: id, toolName: "final_answer", input: cfg.reply }] },
+          { role: "tool", content: [{ type: "tool-result", toolCallId: id, toolName: "final_answer", output: { type: "json", value: cfg.reply } }] },
+        ];
+        const usage = emptyUsage();
+        let out: Record<string, unknown> = { result: JSON.stringify(cfg.reply), object: cfg.reply, steps: 0, usage, cost: 0 };
+        if (session) {
+          const line = await session.commit({
+            system,
+            messages: turn.slice(1),
+            record: {
+              workflow: ctx ? workflowOf(ctx) : "",
+              runId: ctx?.runId ?? "",
+              path: ctx?.path ?? "",
+              ...(ctx?.actor ? { actor: ctx.actor } : {}),
+              ...(ctx?.principal ? { principal: ctx.principal } : {}),
+              ...(ctx?.job ? { job: ctx.job } : {}),
+              ...(ctx?.wake ? { wake: true as const } : {}),
+              provider: resolved.provider,
+              model: resolved.name,
+              routed: resolved.routed,
+              usage,
+              cost: 0,
+            },
+          });
+          out = { ...out, session: { id: session.id, turn: line.turn, offset: line.offset } };
+        }
+        return withUsage(withMessages(out, turn), { modelCalls: 0, usage, cost: 0 });
+      } finally {
+        session?.release();
+      }
     }
     let closeMcp: (() => Promise<void>) | undefined;
     try {

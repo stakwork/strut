@@ -6,7 +6,7 @@
  * and implements the `from` invalidation ("re-run from this step", §5.2).
  */
 
-import type { AppRef, Flow, OnWriteMark, RunAttachment, RunEvent, RunTrial, StartedBy, Step, WakeMark } from "./core.js";
+import type { AppRef, Flow, OnWriteMark, PreparedJob, RunAttachment, RunEvent, RunTrial, StartedBy, Step, WakeMark } from "./core.js";
 import type { SubflowResolver } from "./runner.js";
 
 /** Completed units: last `step.end` per path wins — a resumed log may carry
@@ -75,6 +75,9 @@ export function readRunStart(
   wakeAsked?: true;
   /** A wake turn's mark — a resume keeps it, so its end is still heard. */
   wake?: WakeMark;
+  /** A prepared turn's job (`conversation/start`) — a resume keeps it, so
+   *  the turn still calls no model. */
+  prepared?: PreparedJob;
   /** A public run's own cost cap (plans/paid-runs.md §7) — a resume keeps
    *  it, so the Mothership's link carries the same cap. */
   maxCostUsd?: number;
@@ -113,6 +116,7 @@ export function readRunStart(
     ...(start.conversation ? { conversation: start.conversation } : {}),
     ...(start.wakeAsked ? { wakeAsked: true as const } : {}),
     ...(start.wake ? { wake: start.wake } : {}),
+    ...(start.prepared ? { prepared: start.prepared } : {}),
   };
 }
 

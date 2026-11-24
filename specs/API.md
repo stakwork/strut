@@ -1062,9 +1062,18 @@ person forks it (`/conversations/fork`) to continue it as their own. The
 deployment key still launches on any id. The host reads it with
 `/conversations/item`, whoever spoke, and no other conversation.
 
+**One a package started** (`conversation/start`, `plans/package-seams.md`
+§7): work a package's workflow or page starts for a person is a new
+conversation of theirs, `<person>/<12 hex>`, its first turn PREPARED — the
+person's message, strut's fixed reply `"On it."` and the job's card, with
+no model (the orchestrator's `$prepared`, a launch-level field strut alone
+sets: no launch body carries one). It asked for the wake, so the job's end
+reports in it. Its record and rows say `about` (the graph node it is about,
+a ref_id) and `from` (the package), and `?about=` finds it.
+
 | Method | Path | Body | Response |
 | ------ | ---- | ---- | -------- |
-| GET    | `/conversations?q=&archived=1&limit=&before=&everyone=1` | | `{ conversations: ConversationListItem[], next? }`, newest first. `q`: every word in the title. `archived=1`: the archived ones alone (default: the rest). `limit` at most 200 (default 50). `next` is the `before` of the next page. `everyone=1` (an admin's, above): every conversation on file, archived or not (`archived` is ignored), `q` matching its title, who started it or its host; 403 to anyone else |
+| GET    | `/conversations?q=&archived=1&limit=&before=&everyone=1&about=` | | `{ conversations: ConversationListItem[], next? }`, newest first. `q`: every word in the title. `archived=1`: the archived ones alone (default: the rest). `limit` at most 200 (default 50). `next` is the `before` of the next page. `everyone=1` (an admin's, above): every conversation on file, archived or not (`archived` is ignored), `q` matching its title, who started it or its host; 403 to anyone else. `about=<ref_id>`: only the ones about that node (`ConversationListItem.about`), archived or not |
 | GET    | `/conversations/item?id=&limit=&before=&wait=&since=&everyone=1` | | `ConversationView`; 404 when there is none, or it is not the viewer's to read. `limit` at most 100 turns (default 20); `before` a turn number (`next`); `wait` (ms, at most 55 000) holds until the conversation's `rev` moves past `since` (default: its rev now), so a turn launched, or one settling, answers it. `everyone=1`: any conversation, read as it is (above); 403 to anyone but an admin |
 | POST   | `/conversations/update` | `{ session, title?, archived?, seen?, shared? }` | the viewer's `ConversationListItem`. `title` renames it for everyone (`""` gives back the first message's); `shared` for everyone; `archived` and `seen` the viewer's own. 404 |
 | POST   | `/conversations/fork` | `{ session, id?, everyone? }` | 201 the new conversation's `ConversationListItem`. A new session with the source's messages copied turn by turn, so the agent remembers, and its finished turns shown; listed for the forker alone. `id` defaults to `<actor>/<12 hex>`; a person token's must be under its own id. `everyone: true`: an admin forks anyone's (403 to anyone else). 404, 409 when `id` exists |

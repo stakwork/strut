@@ -545,6 +545,20 @@ export type RunOrigin = "verify" | "schedule" | "peer" | "app" | "public" | "hos
  *  records on `run.start` as a job run records `job`. A workspace app at a
  *  version. (A JOB's app, a directory in a job's with no versions, is
  *  retired: plans/chained-orchestrators.md §6.) */
+/** The job a PREPARED turn starts (plans/package-seams.md §7): a turn of the
+ *  conversation workflow with no model, launched by `conversation/start`
+ *  alone. job/start's fields: `brief` is its prompt. */
+export interface PreparedJob {
+  title: string;
+  brief: string;
+  kind?: string;
+  repos?: string[];
+  /** The package that started it (`ConversationRecord.from`), which the
+   *  turn names when it says whose words the message is. strut's, never the
+   *  caller's. */
+  from?: string;
+}
+
 /** The turn that started a job (`RunEvent.startedBy`). */
 export interface StartedBy {
   workflow: string;
@@ -763,6 +777,10 @@ export interface RunEvent {
   wakeAsked?: true;
   /** On a WAKE turn's `run.start` (src/wake.ts): the job run it woke on. */
   wake?: WakeMark;
+  /** On a PREPARED turn's `run.start` (`conversation/start`,
+   *  plans/package-seams.md §7): the job it starts with no model. Kept by a
+   *  resume. */
+  prepared?: PreparedJob;
   /** On `step.parked` and `run.waiting`: what the step or the run waits for
    *  (`<prefix>:<id>`, src/park.ts). */
   on?: string[];

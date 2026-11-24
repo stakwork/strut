@@ -5,7 +5,7 @@ import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -107,9 +107,9 @@ import { buildProvenance } from "./provenance.js";
 import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX, capEvents, capTranscript, fileResult, launchedAt, listEntryOf, matchesRunFilter, runsPage, sinceMs, type RunCaller, type RunLaunchBy, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
 import type { AppManifest } from "./apps/manifest.js";
 import type { GraphReader } from "./graph/search.js";
-import { isFirstParty, type AppRef, type StartedBy, type WakeMark } from "./core.js";
-import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, type WakeEnd, type WakeOutcome } from "./wake.js";
-import { createConversations, isConversationFlow, outsideConversations, type ConversationViewer } from "./conversations.js";
+import { isFirstParty, type AppRef, type PreparedJob, type StartedBy, type WakeMark } from "./core.js";
+import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, unmarked, type WakeEnd, type WakeOutcome } from "./wake.js";
+import { createConversations, isConversationFlow, outsideConversations, type ConversationStart, type ConversationViewer } from "./conversations.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { recordCaused } from "./work.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
@@ -126,7 +126,7 @@ import { installedSchedules } from "./packages/schedules.js";
 import { installedTriggers, matches, ON_CHAIN_MAX, type InstalledTrigger } from "./packages/on.js";
 import { findConcept, PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
-import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
+import { ORCHESTRATOR_WORKFLOW, seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
 import { seedBuilderWorkflow, type BuilderSeedOptions } from "./builder-seed.js";
 import { installSystemWorkflows } from "./system-workflows.js";
 import { PEERS_FILE, checkPeer, checkSelf, parsePeersEnv, parseSelfEnv, peerIdProblem, peerInfo, peerStore, peersCapability, type Peer, type SelfInfo } from "./peers.js";
@@ -3689,6 +3689,8 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.origin === "public" && p.runStart.visitor ? { visitor: p.runStart.visitor } : {}),
         ...(p.runStart.startedBy ? { startedBy: p.runStart.startedBy } : {}),
         ...(p.runStart.wake ? { wake: p.runStart.wake } : {}),
+        // A prepared turn stays one: still no model (plans/package-seams.md §7).
+        ...(p.runStart.prepared ? { prepared: p.runStart.prepared } : {}),
         // A trial stays one (src/trials.ts): resumed, it still holds what it starts.
         ...(p.runStart.trial ? { trial: p.runStart.trial } : {}),
         // Billed to whoever the original launch was billed to — never
@@ -8331,6 +8333,16 @@ export async function createStrut<TServices = unknown>(
       savedAttachments?: RunAttachment[];
       /** A wake turn (src/wake.ts): the job run(s) it woke on. */
       wake?: WakeMark;
+      /** A PREPARED turn (`conversation/start`, plans/package-seams.md §7):
+       *  the job it starts with no model — recorded on `run.start`, the
+       *  workflow's `$prepared`. */
+      prepared?: PreparedJob;
+      /** A NEW conversation's facts (`conversation/start`): its title, the
+       *  node it is about, the package that started it — on its record. */
+      opens?: { title?: string; about?: string; from?: string };
+      /** Told how the run ended (its result), once, when it settles — before
+       *  the wake and the callback. `conversation/start` waits on its turn. */
+      onEnd?: (res: RunResult) => void;
       /** The run is a TRIAL (`RunTrial`, src/trials.ts): the Knowledge door's
        *  to launch, never a request's — so here, not on the body. Recorded on
        *  `run.start`; no wake and no callback follow its end. */
@@ -8432,6 +8444,7 @@ export async function createStrut<TServices = unknown>(
             ...(principal ? { principal } : {}),
             ...(extra?.wake ? { wake: true } : {}),
             prompt: (body.input as Record<string, unknown> | undefined)?.["prompt"],
+            ...(extra?.opens ? { opens: extra.opens } : {}),
           })
           .catch((err) => console.error(`[conversations] ${conversation}: recording run ${runId} failed:`, err));
       }
@@ -8467,6 +8480,7 @@ export async function createStrut<TServices = unknown>(
         ...(body.conversation ? { conversation: body.conversation } : {}),
         ...(body.wake === true ? { wakeAsked: true } : {}),
         ...(extra?.wake ? { wake: extra.wake } : {}),
+        ...(extra?.prepared ? { prepared: extra.prepared } : {}),
         ...(callback ? { callback: roomActorOf(callback.url) !== undefined ? { room: true as const } : { origin: callbackOrigin(callback.url) } } : {}),
         ...(mcp ? { mcp } : {}),
         ...(attachments?.length ? { attachments } : {}),
@@ -8503,6 +8517,7 @@ export async function createStrut<TServices = unknown>(
       })
       .then(async (res) => {
         if (res.status === "waiting") return;
+        extra?.onEnd?.(res);
         // A trial's end reaches nobody (src/trials.ts): no wake, no callback.
         if (controller.trial) return;
         // What strut does about the end — a job turn's wake, decided before
@@ -9338,7 +9353,52 @@ export async function createStrut<TServices = unknown>(
     },
   };
   if (!(services as Record<string, unknown>)["runs"]) (services as Record<string, unknown>)["runs"] = runsCap;
-  (services as Record<string, unknown>)["conversations"] ??= conversations;
+  /** `conversation/start` (plans/package-seams.md §7): work a package starts
+   *  for a person shows as a new chat of theirs — the person's message,
+   *  strut's fixed "On it." and the job already running — with no model
+   *  turn. Its first turn is the conversation workflow's PREPARED one
+   *  (`$prepared`), launched as the person, asking for the wake, so the
+   *  job's end reports in that chat; awaited (it calls no model: a moment),
+   *  so the job's id comes back. */
+  const startConversation = async (q: ConversationStart): Promise<{ session: string; job: string }> => {
+    const flow = await workspace.getWorkflow(ORCHESTRATOR_WORKFLOW).catch(() => null);
+    if (!flow || !isConversationFlow(flow)) throw new Error(`conversation/start: this strut server has no "${ORCHESTRATOR_WORKFLOW}" workflow to hold the chat`);
+    await assertWorkflowEnabled(workspace, flow.name);
+    const session = `${q.person}/${randomBytes(6).toString("hex")}`;
+    const problem = idProblem(session) ?? (outsideConversations(session) ? "is not a person's" : undefined);
+    if (problem) throw new Error(`conversation/start: no chat for "${q.person}": "${session}" ${problem}`);
+    // The asking run's `on:` mark goes on to the turn, and from it to the
+    // job: a package's chain stays one chain through the chat it started.
+    const onWrite = onWriteMarkOf(controllersByRunId.get(q.runId));
+    const res = await new Promise<RunResult>((onEnd) => {
+      launchDetached(
+        flow,
+        // The message sits between markers in the turn's prompt (its source
+        // line, orchestrator.yaml `scripted`): its words cannot close them.
+        { input: { prompt: unmarked(q.message), session }, wake: true },
+        {
+          actor: q.person,
+          prepared: {
+            title: q.job.title,
+            brief: q.job.brief,
+            ...(q.job.kind ? { kind: q.job.kind } : {}),
+            ...(q.job.repos ? { repos: q.job.repos } : {}),
+            ...(q.from ? { from: q.from } : {}),
+          },
+          opens: { title: q.job.title, ...(q.about ? { about: q.about } : {}), ...(q.from ? { from: q.from } : {}) },
+          ...(onWrite ? { onWrite } : {}),
+          onEnd,
+        },
+      );
+    });
+    const out = res.output as { job?: unknown; startError?: unknown } | undefined;
+    if (res.status !== "success" || typeof out?.job !== "string") {
+      const why = typeof out?.startError === "string" ? out.startError : (res.error?.message ?? res.status);
+      throw new Error(`conversation/start: the chat "${session}" was started, but its job did not start: ${why}`);
+    }
+    return { session, job: out.job };
+  };
+  (services as Record<string, unknown>)["conversations"] ??= { ...conversations, start: startConversation };
   // The model catalog (`GET /llm/models`), for the `llm/models` step: one
   // list, one default, whether a route or a page reads it.
   const llmModels = () => listModelOptions({ default: chatModel, secrets: secretsCap });
@@ -9582,6 +9642,7 @@ export async function createStrut<TServices = unknown>(
           ...(q["archived"] === "1" || q["archived"] === "true" ? { archived: true } : {}),
           ...(limit ? { limit } : {}),
           ...(q["before"] ? { before: q["before"] } : {}),
+          ...(q["about"] ? { about: q["about"] } : {}),
         },
         by,
       ),

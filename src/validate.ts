@@ -143,8 +143,9 @@ export function validateWorkflowYaml(source: string, opts: ValidateOptions): Val
 
   // ── Pass 3: per-step semantics ──────────────────────────────────────────
   // The runner's fixed scope keys (`executeFlow`): `$job` is always a key —
-  // undefined on a plain run — so `session: "{{ $job }}"` validates.
-  const globals = ["input", "params", "$runId", "$job"];
+  // undefined on a plain run — so `session: "{{ $job }}"` validates; so is
+  // `$prepared` (a prepared turn's job, plans/package-seams.md §7).
+  const globals = ["input", "params", "$runId", "$job", "$prepared"];
   const stepById = new Map(steps.filter((s) => s && typeof s.id === "string").map((s) => [s.id, s]));
   steps.forEach((s, i) => {
     if (!s || typeof s !== "object") return;

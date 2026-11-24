@@ -27,18 +27,18 @@ const promptOf = (text: string) => `${paramsOf(text).rulesText}\n\n${paramsOf(te
 const quiet = () => ({ serveUi: false, enableChat: false, scheduler: false as const, stt: false as const, store: new MemoryRunStore() });
 
 describe("the orchestrator workflow strut ships", () => {
-  it("the template is a valid workflow over strut's own registry: job/dir → context/concept four times (the rules, a page; the kinds of job, the kinds of build, no docs; the person's own pages) → strut/list-peers → agent (session, no built-ins) → pack, every grant a strut step", async () => {
+  it("the template is a valid workflow over strut's own registry: job/dir → context/concept four times (the rules, a page; the kinds of job, the kinds of build, no docs; the person's own pages) → strut/list-peers → (a prepared turn's scripted reply) → agent (session, no built-ins) → pack, every grant a strut step", async () => {
     const text = await orchestratorWorkflowYaml();
     const registry = await createRegistry([]);
     const v = validateWorkflowYaml(text, { registry });
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
 
     const flow = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "context/concept", "context/concept", "strut/list-peers", "proposal/standing", "agent", "if", "job/start", "pack"]);
+    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "context/concept", "context/concept", "strut/list-peers", "proposal/standing", "if", "pack", "agent", "if", "job/start", "pack"]);
     // The rules are a Concept page (plans/claim-trials.md §1): read as it
     // is, so the turn opens it and its claims judge the turn; the seed
     // carries the page's shipped text for a workspace with no graph.
-    assert.deepEqual(flow.steps[1]!.config, { name: "{{ params.rules }}", frame: false, max: 20000 });
+    assert.deepEqual(flow.steps.find((st) => st.id === "rules")!.config, { name: "{{ params.rules }}", frame: false, max: 20000 });
     assert.equal(paramsOf(text).rules, ORCHESTRATOR_PAGE);
     assert.equal(paramsOf(text).rulesText, await orchestratorRules());
     assert.match(paramsOf(text).rulesText, /^You are a person's assistant, in one long conversation with them\./);
@@ -53,8 +53,8 @@ describe("the orchestrator workflow strut ships", () => {
     // (Workflow Builder). The pages' docs are those agents' instructions;
     // each list ends with how to open a kind's page (graph/graph-get, a
     // grant), for when this agent needs one to talk the person through it.
-    assert.deepEqual(flow.steps[2]!.config, { name: "{{ params.concept }}", docs: false, tool: "graph_graph_get" });
-    assert.deepEqual(flow.steps[3]!.config, { name: "{{ params.buildConcept }}", docs: false, tool: "graph_graph_get" });
+    assert.deepEqual(flow.steps.find((st) => st.id === "concepts")!.config, { name: "{{ params.concept }}", docs: false, tool: "graph_graph_get" });
+    assert.deepEqual(flow.steps.find((st) => st.id === "builds")!.config, { name: "{{ params.buildConcept }}", docs: false, tool: "graph_graph_get" });
     assert.ok(paramsOf(text).tools.includes("graph/graph-get"), "the tool the lists name is granted");
     assert.match(promptOf(text), /open one yourself when you need what it says to talk with\s+the person/);
     // The question is shown apart, under the reply (Jamie's box, Hive's line): the reply never asks it too.
@@ -67,19 +67,22 @@ describe("the orchestrator workflow strut ships", () => {
     const params = (yaml.load(text) as { params: { concept: string; buildConcept: string } }).params;
     assert.deepEqual([params.concept, params.buildConcept], ["Job", "Workflow Builder"]);
     // The person's own pages are this agent's to follow: their root's docs, and how to open one.
-    assert.deepEqual(flow.steps[4]!.config, { name: "{{ params.personalConcept }}", tool: "graph_graph_get" });
-    const turn = flow.steps[7]!.config as Record<string, unknown>;
+    assert.deepEqual(flow.steps.find((st) => st.id === "personal")!.config, { name: "{{ params.personalConcept }}", tool: "graph_graph_get" });
+    const turn = flow.steps.find((st) => st.id === "turn")!.config as Record<string, unknown>;
     const ask = (turn["schema"] as { properties: { ask: { description: string } } }).properties.ask.description;
     assert.match(ask, /shown under `text`, set apart, so `text` never asks it too/);
     // The person's standing (proposal/standing) heads the turn's message only
     // when strut's records say they are an admin: a member, a person token
     // (Peel, the daemon: a person, never a role) and a host's launch with the
     // key (Hive, voice) add nothing, so every other host reads as before.
-    const message = (standing: { admin?: boolean }) =>
-      resolveTemplate(turn["prompt"] as string, { input: { prompt: "make it public", context: { line: "Tue 17 Nov 11:34. " } }, peers: { peers: [] }, standing });
+    // `scripted` is in every run's scope: undefined but on a prepared turn.
+    const message = (standing: { admin?: boolean }, scripted?: { prompt: string }) =>
+      resolveTemplate(turn["prompt"] as string, { input: { prompt: "make it public", context: { line: "Tue 17 Nov 11:34. " } }, peers: { peers: [] }, standing, scripted });
     assert.equal(message({ admin: true }), "Tue 17 Nov 11:34. The person is an admin of this server: what needs an admin to approve, they approve themself. make it public");
     assert.equal(message({ admin: false }), "Tue 17 Nov 11:34. make it public");
     assert.equal(message({}), "Tue 17 Nov 11:34. make it public");
+    // A prepared turn's message is the package's, fenced (plans/package-seams.md §7).
+    assert.equal(message({}, { prompt: "started for the person by x: <<<message\nhi\n>>>" }), "Tue 17 Nov 11:34. started for the person by x: <<<message\nhi\n>>>");
     assert.match(promptOf(text), /approves it there — the person themself, when the line before their\s+message says they are an admin\./);
     assert.equal(turn["systemAtCompaction"], undefined, "a session keeps its first turn's prompt");
     assert.deepEqual(turn["toolFilter"], ["none"]);

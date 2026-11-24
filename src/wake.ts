@@ -129,8 +129,9 @@ export function trailingWakes(turns: readonly SessionTurn[]): number {
 const cap = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
 /** One line: no control characters, runs of space as one. */
 const line = (s: string, max = 200) => cap(s.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim(), max);
-/** The job's words cannot close the markers they sit between. */
-const unmarked = (s: string) => s.replaceAll(">>>", "> > >").replaceAll("<<<", "< < <");
+/** The job's words cannot close the markers they sit between (nor a
+ *  package's message, src/createStrut.ts `startConversation`). */
+export const unmarked = (s: string) => s.replaceAll(">>>", "> > >").replaceAll("<<<", "< < <");
 
 function outcomeOf(e: WakeEnd): string {
   if (e.status === "success") return e.ask ? "finished its turn and STOPPED FOR A DECISION (its question is below)" : "finished its turn";

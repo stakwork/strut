@@ -16,7 +16,7 @@ import type {
 } from "./core.js";
 export type { RunEndInfo } from "./core.js";
 import { assertWorkflowEnabled } from "./workspace.js";
-import { accessedNodesOf, messagesOf, takeUsage, TRIAL_HELD, type AccessedNode, type ModelUsage, type OnWriteMark, type RunTrial, type StartedBy, type WakeMark } from "./core.js";
+import { accessedNodesOf, messagesOf, takeUsage, TRIAL_HELD, type AccessedNode, type ModelUsage, type OnWriteMark, type PreparedJob, type RunTrial, type StartedBy, type WakeMark } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import { baseType, parseStepRef } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
@@ -177,6 +177,12 @@ export interface RunOptions<TServices = unknown> {
    *  `run.start`, handed to every step as `ctx.wake`. strut's wake is the
    *  one site that sets it. */
   wake?: WakeMark;
+  /** A PREPARED turn (plans/package-seams.md §7): the job a conversation
+   *  workflow starts with no model — recorded on `run.start`, handed to
+   *  templates as `$prepared` (undefined on every other run). A launch-level
+   *  field, never in `input`: `conversation/start` is the one site that sets
+   *  it, so no host's launch has one. */
+  prepared?: PreparedJob;
   /** The APP the run works for (plans/apps.md §5): set by `run/launch`
    *  under `ctx.app` alone — recorded on `run.start` and the summary,
    *  handed to every step as `ctx.app`, read back by a resume like `job`.
@@ -387,6 +393,8 @@ interface Exec {
   hostCall?: HostRef;
   automation?: { id: string };
   wake?: WakeMark;
+  /** A prepared turn's job (`RunOptions.prepared`): templates' `$prepared`. */
+  prepared?: PreparedJob;
   mcp?: McpServer[];
   attachments?: RunAttachment[];
   /** The run's own cost cap (`RunOptions.maxCostUsd`). */
@@ -725,6 +733,7 @@ async function executeRun<TServices = unknown>(
       ...(opts?.conversation ? { conversation: opts.conversation } : {}),
       ...(opts?.wakeAsked ? { wakeAsked: true as const } : {}),
       ...(opts?.wake ? { wake: opts.wake } : {}),
+      ...(opts?.prepared ? { prepared: opts.prepared } : {}),
       // Recorded so a durable resume re-executes with the same knob values.
       ...(opts?.params ? { params: opts.params } : {}),
       ...(opts?.paramOverrides ? { paramOverrides: opts.paramOverrides } : {}),
@@ -774,6 +783,7 @@ async function executeRun<TServices = unknown>(
     ...(opts?.hostCall ? { hostCall: opts.hostCall } : {}),
     automation: opts?.automation,
     ...(opts?.wake ? { wake: opts.wake } : {}),
+    ...(opts?.prepared ? { prepared: opts.prepared } : {}),
     ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
     ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
     ...(opts?.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
@@ -951,7 +961,9 @@ async function executeFlow(
   // subflow inherits its caller's, which win over the child's own per key, as
   // a subflow step's `params` win over the child's defaults.
   const settings = inheritedSettings ? { ...(workflow.settings ?? {}), ...inheritedSettings } : workflow.settings;
-  const scope: Record<string, unknown> = { input, params, $runId: exec.runId, $job: exec.job, $settings: settings };
+  // `$prepared` = a prepared turn's job (`RunOptions.prepared`), a key on
+  // every run like `$job`, undefined but on that one.
+  const scope: Record<string, unknown> = { input, params, $runId: exec.runId, $job: exec.job, $settings: settings, $prepared: exec.prepared };
   const steps = workflow.steps;
 
   if (steps.length === 0) return undefined;
