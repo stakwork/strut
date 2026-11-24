@@ -120,7 +120,7 @@ import { AUTOMATION_CALLBACKS_FILE } from "./automations.js";
 import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { FileWaitingIndex, MemoryWaitingIndex, createParking, type ParkSource, type ParkWaker } from "./park.js";
-import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
+import { ACTOR_SECRETS_FILE, actorSecretStore, connectRefresher, isValidProvider, type ActorSecretStore, type SecretRefresh } from "./actor-secrets.js";
 import { packageJobGrants, seedJobWorkflow, strutGrantProblem, withJobGrants, type JobSeedOptions } from "./job-seed.js";
 import { installedSchedules } from "./packages/schedules.js";
 import { installedTriggers, matches, ON_CHAIN_MAX, type InstalledTrigger } from "./packages/on.js";
@@ -1478,11 +1478,16 @@ export async function createStrut<TServices = unknown>(
   // a graph-workspace host that keeps `secrets.json` on disk (mcp's lab)
   // gets `actor-secrets.json` beside it, so a pushed credential survives a
   // restart. Memory only when the deployment's secrets are in memory too.
+  // A value pushed with an expiry and a refresh token is renewed through
+  // the connect seam (`CONNECT_URL`, `CONNECT_TOKEN`) when a read finds it
+  // near its end; without them it is handed over as it is.
+  const refresh = connectRefresher();
   const actorSecrets: ActorSecretStore = actorSecretStore(
     opts.actorSecretStore ??
       (secretStore instanceof FileSecretStore
         ? new FileSecretStore(dataDir, ACTOR_SECRETS_FILE)
         : new MemorySecretStore()),
+    refresh ? { refresh } : {},
   );
   // Peers (plans/federation.md §3): the struts this one may call, in a
   // fourth encrypted file beside the deployment's secrets — the actor-secret
@@ -7942,11 +7947,31 @@ export async function createStrut<TServices = unknown>(
         400,
       );
     }
-    const body = await c.req.json<{ value?: unknown }>().catch(() => ({ value: undefined }));
+    const body = await c.req
+      .json<{ value?: unknown; expires_in?: unknown; refresh_token?: unknown; provider?: unknown }>()
+      .catch(() => ({}) as Record<string, undefined>);
     if (typeof body.value !== "string" || body.value.length === 0) {
       return c.json({ error: "value (non-empty string) is required" }, 400);
     }
-    await actorSecrets.set(actor, name, body.value);
+    // A secret that refreshes itself: all three, or none.
+    const missing = (["expires_in", "refresh_token", "provider"] as const).filter((k) => body[k] == null);
+    let refresh: SecretRefresh | undefined;
+    if (missing.length < 3) {
+      if (missing.length) {
+        return c.json({ error: `expires_in, refresh_token and provider come together — ${missing.join(" and ")} missing` }, 400);
+      }
+      if (typeof body.expires_in !== "number" || !Number.isFinite(body.expires_in) || body.expires_in <= 0) {
+        return c.json({ error: "expires_in must be a positive number of seconds" }, 400);
+      }
+      if (typeof body.refresh_token !== "string" || !body.refresh_token) {
+        return c.json({ error: "refresh_token must be a non-empty string" }, 400);
+      }
+      if (!isValidProvider(body.provider)) {
+        return c.json({ error: "provider must be lowercase letters, digits, - or _ (the connect seam's name for it)" }, 400);
+      }
+      refresh = { expiresIn: body.expires_in, refreshToken: body.refresh_token, provider: body.provider };
+    }
+    await actorSecrets.set(actor, name, body.value, refresh);
     return c.json({ ok: true, actor, name });
   });
 

@@ -940,6 +940,57 @@ While draining:
   paused), the verify pass and the graph projection after a run (best
   effort).
 
+### 8.2 Secrets — the deployment's and each person's (`src/secret-store.ts`, `src/actor-secrets.ts`)
+
+A step reads both through `ctx.services.secrets.get(NAME)`: the run's
+person's value first, then the deployment's, then strut's environment. No
+route returns a value. All are 501 when the host injected its own `secrets`.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/secrets` | `{ secrets: [{ name, createdAt, updatedAt }] }`, the deployment's |
+| PUT    | `/secrets/:name` | `{ value }` → `{ ok, name }`. A name is letters, digits and `_`, not starting with a digit; one only the server reads (`STRUT_SECRET_KEY`, `CONNECT_TOKEN`, `LIGHTNING_*`) is a 400 |
+| DELETE | `/secrets/:name` | `{ ok, name }`; 404 |
+| GET    | `/actors/:actor/secrets` | `{ actor, secrets: [{ name, createdAt, updatedAt }] }`, one person's |
+| PUT    | `/actors/:actor/secrets/:name` | `{ value, expires_in?, refresh_token?, provider? }` → `{ ok, actor, name }`. The last three come together or not at all (400) |
+| DELETE | `/actors/:actor/secrets/:name` | `{ ok, actor, name }`; 404 |
+
+**A person's secret that refreshes itself** (stadeum `plans/software.md`
+§5 item 8). The connect seam writes an OAuth access token with its expiry
+and refresh token:
+
+```jsonc
+// PUT /actors/ada-3f9a/secrets/GOOGLE_TOKEN
+{
+  "value": "ya29.a0…",          // the access token: what a step reads
+  "expires_in": 3599,           // seconds it lasts from now, a positive number
+  "refresh_token": "1//0g…",    // never shown again: no step, no GET, no log
+  "provider": "google"          // the connect seam's name for it: lowercase letters, digits, - and _
+}
+```
+
+When a read finds the value within five minutes of its end, and strut has
+`CONNECT_URL` and `CONNECT_TOKEN`, strut first calls the seam:
+
+```
+POST ${CONNECT_URL}/api/connect/${provider}/refresh
+Authorization: Bearer ${CONNECT_TOKEN}
+Content-Type: application/json
+
+{ "refresh_token": "1//0g…" }
+```
+
+| The seam answers | Strut |
+| ---------------- | ----- |
+| `200 { access_token, expires_in, refresh_token? }` | keeps the new pair, the old refresh token when none comes back, and hands over the new value |
+| `400 { error }` (the provider refused the refresh token) | deletes the secret. The read finds none, and the step says to connect again |
+| anything else: `401`, `404`, a `5xx`, a `200` without the pair, a redirect, no answer in 15 s | keeps the secret, and that read fails: `secret_refresh: NAME has expired and the connect service could not refresh it (…). Try again.` |
+
+One (actor, name) refreshes one at a time. Readers that come during a
+refresh wait for its answer, so two runs never spend one refresh token.
+Without `CONNECT_URL` and `CONNECT_TOKEN`, a value is handed over as it
+is. A plain `{ value }` drops any expiry and refresh token kept before.
+
 ## 9. Agent sessions
 
 An `agent` step with `session` set continues a thread instead of starting
