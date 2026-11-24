@@ -105,6 +105,18 @@ describe("strut.yaml's schedules: key (readPackage)", () => {
     ]);
   });
 
+  it("each: names a secret the package provides, and is refused for one it doesn't", async () => {
+    const info = await readPackage(await writeTree(CODE(`${EVERY_15}    each: ACME_TOKEN\n`)));
+    assert.deepEqual(info.schedules, [
+      { name: "check", workflow: CHECK, trigger: { type: "schedule", every: "interval", minutes: 15 }, input: { repo: "hive" }, each: "ACME_TOKEN" },
+    ]);
+    await assert.rejects(
+      readPackage(await writeTree(CODE(`${EVERY_15}    each: GITHUB_TOKEN\n`))),
+      /^Error: bad_package: strut\.yaml: schedules\[0\]\.each: GITHUB_TOKEN is not in provides\.secrets/,
+    );
+    await assert.rejects(readPackage(await writeTree(CODE(`${EVERY_15}    each: ""\n`))), /schedules\[0\]\.each/);
+  });
+
   it("an older-shaped manifest, with no schedules, still loads", async () => {
     const info = await readPackage(await writeTree(CODE("")));
     assert.equal(info.schedules, undefined);
@@ -205,6 +217,42 @@ describe("a package's schedules are automations, made and kept by the packages' 
     assert.deepEqual(s.output, { repo: "hive", principal: "alice", token: "alice", own: true, deployment: false });
     const start = (await store.getRunEvents(CHECK, fired.json.runId)).find((e) => e.type === "run.start")!;
     assert.deepEqual([start.origin, start.automation, start.principal, start.actor, start.input], ["schedule", { id: CHECK_ID }, "alice", undefined, { repo: "hive" }]);
+  });
+
+  it("each: a fire runs once for each person with their own value, as them; the deployment's value is nobody's", async () => {
+    // Nobody behind the install: a schedule for each person needs no owner.
+    const res = await strut.app.request("/packages/install", { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ ref: `file:${await writeTree(CODE(`${EVERY_15}    each: ACME_TOKEN\n`))}` }) });
+    assert.equal(res.status, 201, await res.text());
+    assert.equal((await call("PUT", "/secrets/ACME_TOKEN", { value: "deployment" })).status, 200);
+    const fire = () => call("POST", `/workflows/${encodeURIComponent(CHECK)}/automations/${CHECK_ID}/fire`);
+
+    const [nobody] = await automations();
+    assert.deepEqual([nobody!.each, nobody!.people, nobody!.runsAs, nobody!.nobodyToRunAs], ["ACME_TOKEN", 0, undefined, undefined]);
+    const none = await fire();
+    assert.deepEqual([none.status, none.json], [202, { ok: true, runIds: [] }]);
+    assert.deepEqual(await store.listRuns(CHECK), []);
+
+    for (const [actor, value] of [["alice", "alice-token"], ["bob", "bob-token"]]) {
+      assert.equal((await call("PUT", `/actors/${actor}/secrets/ACME_TOKEN`, { value })).status, 200);
+    }
+    assert.equal((await call("PUT", "/actors/carol/secrets/OTHER_TOKEN", { value: "x" })).status, 200);
+    assert.equal((await automations())[0]!.people, 2);
+
+    const fired = await fire();
+    assert.equal(fired.status, 202, JSON.stringify(fired.json));
+    assert.equal(fired.json.runIds.length, 2);
+    const outputs = [];
+    for (const runId of fired.json.runIds) {
+      const s = await finished(CHECK, runId);
+      assert.equal(s.status, "success", s.error);
+      const start = (await store.getRunEvents(CHECK, runId)).find((e) => e.type === "run.start")!;
+      assert.deepEqual([start.origin, start.automation, start.actor], ["schedule", { id: CHECK_ID }, undefined]);
+      outputs.push(s.output);
+    }
+    assert.deepEqual(outputs, [
+      { repo: "hive", principal: "alice", token: "alice-token", own: true, deployment: false },
+      { repo: "hive", principal: "bob", token: "bob-token", own: true, deployment: false },
+    ]);
   });
 
   it("with nobody behind the install the schedule is made, and a fire launches nothing and says why, until the workflow has an owner", async () => {

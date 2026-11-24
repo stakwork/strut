@@ -16,7 +16,9 @@
  * `syncPackageSchedules`: when one runs, its name and its input are the
  * package's, and on or off is the admin's. Whom a fire runs as is
  * `runsAs` (workspace.ts): the workflow's owner, the one rule for work
- * nobody launched.
+ * nobody launched. A package's schedule may instead run for EACH person
+ * who holds a secret it provides (`each`): one run each, as them, each
+ * from where their own last successful run stopped.
  */
 import { randomUUID } from "node:crypto";
 import type { z } from "zod";
@@ -61,6 +63,9 @@ export interface AutomationsDeps {
   secrets?: Pick<SecretStore, "get" | "set" | "delete">;
   /** Is this run executing in THIS process right now? */
   isInFlight: (workflow: string, runId: string) => boolean;
+  /** The people who hold a secret as their own (`ActorSecretStore.holders`):
+   *  whom a schedule for each person (`each`) runs as. Without it, nobody. */
+  holders?: (secret: string) => Promise<string[]>;
   /** The refusal while the deployment drains (src/drain.ts): fires are
    *  held, like a disabled workflow's — nothing launches, nothing is
    *  recorded as a failure. */
@@ -93,10 +98,16 @@ export interface AutomationView extends Automation {
    *  as (a package's schedule on a workflow with no owner, or any automation
    *  where the deployment requires someone to bill), and what to do. */
   nobodyToRunAs?: string;
+  /** A schedule for each person (`each`): how many people hold the secret
+   *  now, so how many runs a fire launches. */
+  people?: number;
 }
 
 export type AutomationsResult<T> = ({ ok: true } & T) | { error: string };
 type Saved = AutomationsResult<{ automation: AutomationView; next: string[] }>;
+/** What a fire launched: one run, or for a schedule for each person
+ *  (`each`) one run each, none when nobody holds the secret. */
+export type Fired = { runId: string } | { runIds: string[] };
 
 /** A schedule a package ships (`schedules:` in its strut.yaml,
  *  src/packages/schedules.ts): an automation's draft on a workflow of the
@@ -107,6 +118,8 @@ export interface ShippedSchedule {
   workflow: string;
   trigger: TriggerDraft;
   input: Record<string, unknown>;
+  /** Run once for each person who holds this secret as their own. */
+  each?: string;
 }
 
 /** What a sync did, each as `<workflow>: <name>`. */
@@ -126,7 +139,7 @@ export interface Automations {
   /** A trigger's sentence and next five fires, writing nothing. */
   preview(trigger: unknown): AutomationsResult<{ summary: string; next: string[] }>;
   /** "Run now": the scheduler's fire path, off-schedule. */
-  fire(workflow: string, id: string): Promise<AutomationsResult<{ runId: string }>>;
+  fire(workflow: string, id: string): Promise<AutomationsResult<Fired>>;
   /** Drop a workflow's schedules from the tick loop and their callback
    *  secrets (the workflow is being deleted; its metadata goes with it). */
   forget(workflow: string): Promise<void>;
@@ -156,11 +169,26 @@ interface Entry {
   nextRunAt: Date | null;
 }
 
+/** What a run's `run.start` says of it: its automation and its person. */
+interface Stamp {
+  id: string | null;
+  startedAt: string;
+  person?: string;
+}
+
+/** Whom an automation runs as (`whom`): its one person, nobody and why, or
+ *  for a schedule for each person how many there are now. */
+type Whom = { principal?: string } | { error: string } | { people: number };
+
 interface RunFacts {
   last: LastRun;
   lastRun: AutomationView["lastRun"];
   inFlight: string | null;
 }
+
+/** Whose runs a fact counts: an automation's, any person's (its id), or
+ *  one person's runs of a schedule for each person. */
+const factKey = (id: string, person?: string) => (person === undefined ? id : `${id}\n${person}`);
 
 const issues = (err: z.ZodError) => err.issues.map((i) => `${i.path.join(".") || "automation"}: ${i.message}`).join("; ");
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -213,13 +241,13 @@ export function createAutomations(deps: AutomationsDeps): Automations {
    *  unfinished run belongs to instead of re-reading its log every time.
    *  Only once it is written: a launch lists the run (its callback, beside
    *  the log) before then, and `fire` answers before then too. */
-  const stamps = new Map<string, { id: string | null; startedAt: string }>();
-  async function stampOf(workflow: string, runId: string): Promise<{ id: string | null; startedAt: string }> {
+  const stamps = new Map<string, Stamp>();
+  async function stampOf(workflow: string, runId: string): Promise<Stamp> {
     const k = `${workflow}/${runId}`;
     let stamp = stamps.get(k);
     if (!stamp) {
       const start = (await store.getRunEvents(workflow, runId)).find((e) => e.type === "run.start");
-      stamp = { id: start?.automation?.id ?? null, startedAt: start?.ts ?? "" };
+      stamp = { id: start?.automation?.id ?? null, startedAt: start?.ts ?? "", ...(start?.principal ? { person: start.principal } : {}) };
       if (!start) return stamp;
       if (stamps.size > 500) stamps.clear();
       stamps.set(k, stamp);
@@ -231,45 +259,54 @@ export function createAutomations(deps: AutomationsDeps): Automations {
    *  answers first and stamps the run after. Kept until the stamp can be
    *  read or the run is over, so a read or a fire in that gap sees the run
    *  as its automation's, in flight. */
-  const launched = new Map<string, { workflow: string; runId: string; id: string; startedAt: string }>();
+  const launched = new Map<string, { workflow: string; runId: string; id: string; person?: string; startedAt: string }>();
 
-  /** One newest-first pass over a workflow's runs, for several automations
-   *  at once: each one's latest run, latest SUCCESS (the `last` cursor), and
-   *  any run of its that is still executing. */
-  async function runFacts(workflow: string, ids: string[]): Promise<Map<string, RunFacts>> {
-    const facts = new Map<string, RunFacts>(ids.map((id) => [id, { last: NO_LAST_RUN, lastRun: null, inFlight: null }]));
+  /** One newest-first pass over a workflow's runs, for several facts at
+   *  once (`factKey`): each one's latest run, latest SUCCESS (the `last`
+   *  cursor), and any run of its that is still executing. It reads `limit`
+   *  runs at most, and stops once every fact has its success. */
+  async function runFacts(workflow: string, keys: string[], limit = SCAN_LIMIT): Promise<Map<string, RunFacts>> {
+    const facts = new Map<string, RunFacts>(keys.map((k) => [k, { last: NO_LAST_RUN, lastRun: null, inFlight: null }]));
     const settled = new Set<string>();
-    if (ids.length === 0) return facts;
+    if (keys.length === 0) return facts;
+    /** The facts a run of automation `id`, as `person`, counts toward. */
+    const counts = (id: string | null | undefined, person: string | undefined): Array<[string, RunFacts]> =>
+      (id ? [factKey(id), ...(person === undefined ? [] : [factKey(id, person)])] : []).flatMap((k) => {
+        const f = facts.get(k);
+        return f ? [[k, f] as [string, RunFacts]] : [];
+      });
     // The newest run of its automation, whatever the scan below finds.
     for (const [k, run] of launched) {
       if (!deps.isInFlight(run.workflow, run.runId) || (await stampOf(run.workflow, run.runId)).id !== null) {
         launched.delete(k);
         continue;
       }
-      const f = run.workflow === workflow ? facts.get(run.id) : undefined;
-      if (!f) continue;
-      f.inFlight = run.runId;
-      f.lastRun = { runId: run.runId, status: "running", startedAt: run.startedAt };
+      if (run.workflow !== workflow) continue;
+      for (const [, f] of counts(run.id, run.person)) {
+        f.inFlight = run.runId;
+        f.lastRun = { runId: run.runId, status: "running", startedAt: run.startedAt };
+      }
     }
-    for (const runId of (await store.listRuns(workflow)).slice(0, SCAN_LIMIT)) {
-      if (settled.size === ids.length) break;
+    for (const runId of (await store.listRuns(workflow)).slice(0, limit)) {
+      if (settled.size === facts.size) break;
       const summary = await store.getRunSummary(workflow, runId);
       if (!summary) {
         // No summary = executing here, or dead (stale). Only a live one counts.
         if (!deps.isInFlight(workflow, runId)) continue;
         const stamp = await stampOf(workflow, runId);
-        const f = stamp.id ? facts.get(stamp.id) : undefined;
-        if (!f) continue;
-        f.inFlight ??= runId;
-        f.lastRun ??= { runId, status: "running", startedAt: stamp.startedAt };
+        for (const [, f] of counts(stamp.id, stamp.person)) {
+          f.inFlight ??= runId;
+          f.lastRun ??= { runId, status: "running", startedAt: stamp.startedAt };
+        }
         continue;
       }
-      const f = summary.automation ? facts.get(summary.automation.id) : undefined;
-      if (!f || settled.has(summary.automation!.id)) continue;
-      f.lastRun ??= { runId, status: summary.status, startedAt: summary.startedAt };
-      if (summary.status === "success") {
-        f.last = { runId, startedAt: summary.startedAt, finishedAt: summary.finishedAt, output: summary.output ?? {} };
-        settled.add(summary.automation!.id);
+      for (const [k, f] of counts(summary.automation?.id, summary.principal)) {
+        if (settled.has(k)) continue;
+        f.lastRun ??= { runId, status: summary.status, startedAt: summary.startedAt };
+        if (summary.status === "success") {
+          f.last = { runId, startedAt: summary.startedAt, finishedAt: summary.finishedAt, output: summary.output ?? {} };
+          settled.add(k);
+        }
       }
     }
     return facts;
@@ -281,7 +318,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
    *  `now`. The ONE overlap rule: no fire while the previous run is still
    *  going — two overlapping runs would read the same `last` cursor and
    *  process the same window twice. */
-  async function fireOne(workflow: string, automation: Automation, at: Date): Promise<AutomationsResult<{ runId: string }>> {
+  async function fireOne(workflow: string, automation: Automation, at: Date): Promise<AutomationsResult<Fired>> {
     const k = key(workflow, automation.id);
     // Two fires at once (a tick and a Run now) would both pass the check below.
     if (firing.has(k)) return { error: "skipped: a fire of it is already launching" };
@@ -293,6 +330,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       if (disabled) return { error: disabled };
       const draining = deps.draining?.();
       if (draining) return { error: draining };
+      if (automation.each) return await fireEach(workflow, automation, automation.each, at);
       const facts = (await runFacts(workflow, [automation.id])).get(automation.id)!;
       if (facts.inFlight) return { error: `skipped: the previous run (${facts.inFlight}) is still in flight` };
       // Nobody to run as → nothing launches (surfaces as `lastFireError`),
@@ -316,6 +354,53 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       firing.delete(k);
     }
   }
+
+  /**
+   * A schedule for each person (`each`): one run for each person who holds
+   * the secret as their own, as them, each from where their own last
+   * successful run stopped. A person whose previous run is still going is
+   * skipped, and the others run. Nobody holding it launches nothing, and
+   * that is no error. A run that could not start for one person is said in
+   * `lastFireError`; the others still run.
+   */
+  async function fireEach(workflow: string, automation: Automation, secret: string, at: Date): Promise<AutomationsResult<{ runIds: string[] }>> {
+    const k = key(workflow, automation.id);
+    const people = await holdersOf(secret);
+    const facts = await runFacts(workflow, people.map((p) => factKey(automation.id, p)), SCAN_LIMIT * Math.max(1, people.length));
+    const flow = people.length ? await workspace.getWorkflow(workflow) : undefined;
+    const callback = people.length ? await callbackOf(automation) : undefined;
+    const runIds: string[] = [];
+    const failed: string[] = [];
+    let skipped = 0;
+    for (const person of people) {
+      const f = facts.get(factKey(automation.id, person))!;
+      if (f.inFlight) {
+        skipped++;
+        continue;
+      }
+      try {
+        const input = resolveAutomationInput(automation, at, f.last);
+        const runId = deps.launch(flow!, input, { id: automation.id }, callback, person);
+        launched.set(`${workflow}/${runId}`, { workflow, runId, id: automation.id, person, startedAt: clock().toISOString() });
+        runIds.push(runId);
+      } catch (err) {
+        failed.push(message(err));
+      }
+    }
+    // Everyone skipped is the tick's to say, as for one run.
+    if (skipped && skipped < people.length) console.warn(`[automations] "${automation.name}" (${workflow}) skipped for ${skipped} of ${people.length}: their previous run is still in flight`);
+    if (failed.length) {
+      const why = `${failed.length} of ${people.length} runs could not start: ${failed[0]}`;
+      fireErrors.set(k, why);
+      console.error(`[automations] "${automation.name}" (${workflow}) ${why}`);
+      if (!runIds.length) return { error: why };
+    } else fireErrors.delete(k);
+    if (skipped && skipped === people.length) return { error: `skipped: every person's previous run is still in flight` };
+    return { ok: true, runIds };
+  }
+
+  /** Who holds a secret as their own: whom a schedule for each person runs as. */
+  const holdersOf = async (secret: string): Promise<string[]> => (deps.holders ? deps.holders(secret) : []);
 
   let ticking = false;
   async function tick(): Promise<void> {
@@ -343,7 +428,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
 
   // ── Views ────────────────────────────────────────────────────────────────
 
-  function view(workflow: string, automation: Automation, facts: RunFacts | undefined, category?: string, person?: { principal?: string } | { error: string }): AutomationView {
+  function view(workflow: string, automation: Automation, facts: RunFacts | undefined, category?: string, person?: Whom): AutomationView {
     const k = key(workflow, automation.id);
     // Before the first load there is no entry yet: compute rather than show "never".
     const next = entries.get(k)?.nextRunAt ?? (automation.enabled && !loaded ? nextFire(automation.trigger, clock()) : null);
@@ -359,13 +444,22 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       ...(fireError ? { lastFireError: fireError } : {}),
       ...(person && "principal" in person && person.principal ? { runsAs: person.principal } : {}),
       ...(person && "error" in person ? { nobodyToRunAs: person.error } : {}),
+      ...(person && "people" in person ? { people: person.people } : {}),
     };
   }
 
   async function viewsOf(workflow: string, automations: Automation[], category?: string): Promise<AutomationView[]> {
     const facts = await runFacts(workflow, automations.map((a) => a.id));
-    const people = await Promise.all(automations.map((a) => personFor(workflow, a)));
+    const people = await Promise.all(automations.map((a) => whom(workflow, a)));
     return automations.map((a, i) => view(workflow, a, facts.get(a.id), category, people[i]));
+  }
+
+  /** Whom an automation's fires run as, for its view: one person, or for a
+   *  schedule for each person how many hold its secret now. */
+  async function whom(workflow: string, automation: Automation): Promise<Whom> {
+    if (!automation.each) return personFor(workflow, automation);
+    const people = await holdersOf(automation.each).catch(() => []);
+    return { people: people.length };
   }
 
   // ── Callbacks ────────────────────────────────────────────────────────────
@@ -447,6 +541,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       trigger: triggerFrom(s.trigger, existing?.trigger),
       input: s.input,
       package: s.package,
+      ...(s.each ? { each: s.each } : {}),
     };
   }
 
@@ -597,7 +692,8 @@ export function createAutomations(deps: AutomationsDeps): Automations {
         ) {
           return { error: packageOwns(current) };
         }
-        const unowned = await ownerGate(workflow, p.enabled ?? current.enabled);
+        // A schedule for each person runs as them, not as the owner.
+        const unowned = current.each ? null : await ownerGate(workflow, p.enabled ?? current.enabled);
         if (unowned) return { error: unowned };
         if (p.callback && !deps.secrets) return { error: NO_SECRETS };
         // `callback`: absent keeps it, null clears it.
@@ -611,6 +707,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
           input: p.input ?? current.input,
           ...(callback ? { callback } : {}),
           ...(current.package ? { package: current.package } : {}),
+          ...(current.each ? { each: current.each } : {}),
         };
         return save(workflow, list.map((a) => (a.id === id ? automation : a)), automation, meta.category);
       }),

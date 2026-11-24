@@ -591,6 +591,7 @@ export {
   type AutomationsDeps,
   type AutomationsResult,
   type AutomationView,
+  type Fired,
 } from "./scheduler.js";
 export { automationsRoutes } from "./automations-routes.js";
 // The verify pass — how evidence is produced (plans/claims.md §4).

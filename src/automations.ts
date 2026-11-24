@@ -179,6 +179,10 @@ export interface Automation {
    *  door: when it runs, its name and its input are the package's, and on
    *  or off is the admin's (`syncPackageSchedules`, scheduler.ts). */
   package?: string;
+  /** A secret's name: each fire launches one run for each person who holds
+   *  it as their own, as that person, with their own `last` (a package's
+   *  `each:`, set by the packages' sync alone). */
+  each?: string;
 }
 
 /** A package's schedule's id: the same for the same package and schedule

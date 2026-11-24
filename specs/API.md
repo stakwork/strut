@@ -870,22 +870,34 @@ and saying what to do. The list says both before anything fires:
 An automation a person made, on a box that bills nobody, still runs as
 nobody when its workflow has no owner.
 
+A SCHEDULE FOR EACH PERSON (a package's `each: <SECRET>`, below): a fire
+launches one run for each person who holds that secret as their own
+(`PUT /actors/:actor/secrets/:name`; the deployment's value is nobody's),
+as that person, not as the owner: their secrets, their bill, `principal` on
+`run.start`. Each person's `last` is their own last successful run of it,
+and a person whose previous run is still going is skipped while the others
+run. With nobody holding it a fire launches nothing, and that is no error.
+The record carries `each`; the list shows `people`, how many hold it now,
+in place of `runsAs`. `enabled` covers every person's runs.
+
 ```jsonc
 // GET /automations → automations[], a package's schedule on a workflow nobody owns
 { "id": "a-1c2d3e4f", "name": "check", "package": "acme/code", "workflow": "acme/code/check", "enabled": true, "…": "…",
   "nobodyToRunAs": "nobody to run as: the package acme/code's schedule \"check\" runs as the owner of the workflow \"acme/code/check\" — whoever brought it in as a person (their install, subscription or publish), or whom an admin gave it to — and it has no owner, so nothing ran. An admin gives it one (PUT /workflows/acme%2Fcode%2Fcheck/owner { \"owner\": \"<actor>\" }) or a person claims it (POST /actor/claim), and it runs as them, with their own secrets." }
 // … and once it has one
 { "id": "a-1c2d3e4f", "name": "check", "package": "acme/code", "…": "…", "runsAs": "alice" }
+// a schedule for each person
+{ "id": "a-7a8b9c0d", "name": "reply", "package": "stadeum/gmail", "…": "…", "each": "GOOGLE_TOKEN", "people": 3 }
 ```
 
 | Method | Path                                      | Description |
 | ------ | ----------------------------------------- | ----------- |
-| GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running, lastFireError?, runsAs?, nobodyToRunAs? }]` (`AutomationView`, `src/scheduler.ts`) — `…automation` is `{ id, name, enabled, trigger, input, callback?: { origin }, package? }` |
+| GET    | `/automations[?workflow=]`                | `[{ …automation, summary, nextRunAt, lastRun, running, lastFireError?, runsAs?, nobodyToRunAs?, people? }]` (`AutomationView`, `src/scheduler.ts`) — `…automation` is `{ id, name, enabled, trigger, input, callback?: { origin }, package?, each? }`. With `each`, `lastRun` and `running` are any person's |
 | POST   | `/automations/preview`                    | `{ trigger }` → `{ summary, next }` (the next five fires); writes nothing |
 | POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled?, callback?, id? }` (`id`: normally minted, `a-<8 hex>`; a taken one is 400). A trigger with no fire to come (a one-off in the past) is 400 here and on PATCH. No body sets `package` |
 | PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses; `{ callback: null }` clears the callback. On a package's: `enabled` alone — a `name`, `trigger`, `input` or `callback` that would change it is 400 `"<name>" is the package <package>'s schedule: …` |
 | DELETE | `/workflows/:name/automations/:id` | remove. A package's is 400 (`… made again at each release: pause it, or uninstall the package.`) |
-| POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going; 503 while draining (§8.1); 400 with the reason when it launches nothing (a package's with no owner: `nobody to run as: …`) |
+| POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; with `each`, 202 `{ runIds }`, one for each person it ran for (`[]` when nobody holds the secret); 409 while its previous run is going (with `each`: everyone's); 503 while draining (§8.1); 400 with the reason when it launches nothing (a package's with no owner: `nobody to run as: …`) |
 
 `GET /health` → `{ ok, dataDir, stepCount, workspace: { backend, path? }, drain? }` —
 `backend` is `fs`, `neo4j` or `ladybug` (where workflows and steps live;
@@ -4133,14 +4145,23 @@ schedules:
     name: weekly                              # the workflow's name unless given; unique in the package
     trigger: { every: week, on: [mon], at: ["09:00"], tz: UTC }
     input: { since: "{{ last.output.until }}" } # fixed here: now, today and last only
+  - workflow: reply
+    trigger: { every: interval, minutes: 5 }
+    each: GOOGLE_TOKEN                        # once for each person who holds it, as them
 ```
+
+`each: <SECRET>` names a secret the package provides (`provides.secrets`).
+Each fire then runs the workflow once for each person who holds that secret
+as their own, as that person, each from their own `last` (§8, "A schedule
+for each person"). Without it, the schedule runs once, as the workflow's
+owner.
 
 `readPackage` refuses (`bad_package: strut.yaml: schedules[i]…`) a workflow
 the package does not carry (strut's, another package's, its own by its full
 name), a trigger the grammar does not have or a key no shape of it has (it
 is held strict, as the manifest is), a `once` (a release outlives it), two
-schedules of one name, and an input template that reads anything but `now`,
-`today` and `last`. `schedules` takes no other key, so a strut from before
+schedules of one name, an input template that reads anything but `now`,
+`today` and `last`, and an `each` the package does not provide. `schedules` takes no other key, so a strut from before
 it refuses the package instead of installing it without its schedules.
 
 Each is an ordinary automation (§8) on the workflow, `package` on it, its

@@ -51,7 +51,10 @@
  * `workflow` it runs, by its name inside the package. `readPackage`
  * resolves them over the package's OWN workflows and refuses one that is
  * not there, a trigger the automations' grammar does not have, and a
- * `once`; the packages' sync makes the automations (./schedules.ts).
+ * `once`; the packages' sync makes the automations (./schedules.ts). An
+ * entry's `each: <SECRET>` runs it once for each person who holds that
+ * secret as their own, as that person: one the package provides
+ * (`provides.secrets`), else the package is refused.
  *
  * Its `on:` names workflows of the package strut runs when a node of a
  * type is created, updated or deleted (plans/package-seams.md §2): each
@@ -237,6 +240,9 @@ const manifestSchema = z
             name: z.string().trim().min(1).optional(),
             trigger: scheduleTrigger,
             input: z.record(z.string(), z.unknown()).optional(),
+            // Run once for each person who holds this secret as their own,
+            // as them: one the package provides (`provides.secrets`).
+            each: z.string().min(1).optional(),
           })
           .strict(),
       )
@@ -312,6 +318,8 @@ export interface PackageSchedule {
   workflow: string;
   trigger: TriggerDraft;
   input: Record<string, unknown>;
+  /** Run once for each person who holds this secret as their own, as them. */
+  each?: string;
 }
 
 /** What a package gives the `job` workflow's agent: step types — the
@@ -479,7 +487,7 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
     }
     return out;
   });
-  const schedules = manifest.schedules ? resolveSchedules(pkg, manifest.schedules, items, problems) : undefined;
+  const schedules = manifest.schedules ? resolveSchedules(pkg, manifest.schedules, items, manifest.provides?.secrets ?? [], problems) : undefined;
   const on = manifest.on ? resolveOn(pkg, manifest.on, items, problems) : undefined;
   if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);
   return {
@@ -522,9 +530,10 @@ async function readBundle(dir: string, files: string[], manifest: PackageManifes
 
 /** The manifest's `schedules:` over the package's own workflows: each names
  *  one by its name inside the package, so a package never schedules
- *  strut's workflows or another package's. Two with one name, and an input
- *  template that reads anything but `now`, `today` and `last`, are problems. */
-function resolveSchedules(pkg: string, entries: NonNullable<PackageManifest["schedules"]>, items: PackageItem[], problems: string[]): PackageSchedule[] {
+ *  strut's workflows or another package's. Two with one name, an input
+ *  template that reads anything but `now`, `today` and `last`, and an
+ *  `each` the package does not provide are problems. */
+function resolveSchedules(pkg: string, entries: NonNullable<PackageManifest["schedules"]>, items: PackageItem[], provided: string[], problems: string[]): PackageSchedule[] {
   const own = new Set(items.filter((i) => i.kind === "workflow").map((i) => i.name));
   const named = new Set<string>();
   return entries.map((e, i) => {
@@ -536,7 +545,10 @@ function resolveSchedules(pkg: string, entries: NonNullable<PackageManifest["sch
     if (named.has(name)) problems.push(`${at}.name: two schedules are named ${JSON.stringify(name)} — a schedule's name, its workflow's unless given, is its identity in the package`);
     named.add(name);
     for (const p of checkInputTemplates(e.input ?? {})) problems.push(`${at}.input: ${p}`);
-    return { name, workflow: `${pkg}/${e.workflow}`, trigger: e.trigger, input: e.input ?? {} };
+    if (e.each !== undefined && !provided.includes(e.each)) {
+      problems.push(`${at}.each: ${e.each} is not in provides.secrets — a schedule runs for each person who holds a secret the package provides`);
+    }
+    return { name, workflow: `${pkg}/${e.workflow}`, trigger: e.trigger, input: e.input ?? {}, ...(e.each !== undefined ? { each: e.each } : {}) };
   });
 }
 

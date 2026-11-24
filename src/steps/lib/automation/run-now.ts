@@ -14,8 +14,9 @@ export default defineStep({
     const current = await find(cap, cfg.id);
     const prompt = unescaped(String((current.input as { prompt?: unknown }).prompt ?? ""));
     return approvedOnce(ctx, cap, { action: `Run “${current.name}” now`, content: prompt }, async () => {
-      const { runId } = unwrap(await cap.api.fire(cap.workflow, current.id));
-      return { started: { id: current.id, name: current.name, runId } };
+      // One run, or for a schedule for each person one each.
+      const fired = unwrap(await cap.api.fire(cap.workflow, current.id));
+      return { started: { id: current.id, name: current.name, ...("runId" in fired ? { runId: fired.runId } : { runIds: fired.runIds }) } };
     }, cardGrant(cap, undefined, current.id, current.name));
   },
 });
