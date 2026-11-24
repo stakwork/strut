@@ -9442,6 +9442,8 @@ export async function createStrut<TServices = unknown>(
       launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}), ...(principal ? { principal } : {}) }),
     isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
     draining: () => drain.refusal(),
+    // A schedule for each person (`each`) runs once for each holder, as them.
+    holders: (secret) => actorSecrets.holders(secret),
   });
   // The schedules installed packages ship (src/packages/schedules.ts): made
   // exactly, one each, at boot and after every package write (`oneAtATime`),

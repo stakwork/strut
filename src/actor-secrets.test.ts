@@ -52,6 +52,28 @@ describe("actorSecretStore", () => {
     await assert.rejects(() => s.set("a", "bad-name", "x"), /invalid secret name/);
     await assert.rejects(() => s.set("", "GOOD", "x"), /actor is required/);
   });
+
+  it("holders: who holds a name as their own, sorted — never a value, never the deployment's", async () => {
+    const backing = new MemorySecretStore();
+    const s = actorSecretStore(backing);
+    await s.set("evan-123", "GOOGLE_TOKEN", "tok-evan");
+    await s.set("bob-9", "GOOGLE_TOKEN", "tok-bob");
+    await s.set("carol", "MY_GOOGLE_TOKEN", "tok-carol"); // ends the same, another name
+    await s.set("dave", "GOOGLE_TOKEN_2", "tok-dave");
+    // Entries of another kind in the same file are not anyone's value.
+    await backing.set("GOOGLE_TOKEN", "deployment");
+    await backing.set(`AR_${Buffer.from("erin").toString("hex")}_GOOGLE_TOKEN`, "refresh");
+
+    const holders = await s.holders("GOOGLE_TOKEN");
+    assert.deepEqual(holders, ["bob-9", "evan-123"]);
+    assert.ok(!/tok-|deployment|refresh/.test(JSON.stringify(holders)));
+    assert.deepEqual(await s.holders("MY_GOOGLE_TOKEN"), ["carol"]);
+    assert.deepEqual(await s.holders("NOBODY_HAS_IT"), []);
+
+    await s.delete("bob-9", "GOOGLE_TOKEN");
+    assert.deepEqual(await s.holders("GOOGLE_TOKEN"), ["evan-123"]);
+    await assert.rejects(() => s.holders("bad-name"), /invalid secret name/);
+  });
 });
 
 // ── the capability ──────────────────────────────────────────────────────────

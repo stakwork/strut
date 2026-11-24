@@ -27,6 +27,7 @@ interface Launch {
   input: Record<string, unknown>;
   automation: { id: string };
   callback?: { url: string };
+  principal?: string;
   runId: string;
 }
 
@@ -39,6 +40,8 @@ describe("automations: policy layer + scheduler", () => {
   let inFlight: Set<string>;
   let autos: Automations;
   let secrets: MemorySecretStore;
+  /** Who holds a secret as their own, by its name: `each`'s people. */
+  let held: Record<string, string[]>;
 
   /** Settle a launched run the way the runner would. */
   const settle = async (l: Launch, status: RunSummary["status"], output?: unknown) => {
@@ -53,6 +56,7 @@ describe("automations: policy layer + scheduler", () => {
       input: l.input,
       ...(output !== undefined ? { output } : {}),
       automation: l.automation,
+      ...(l.principal ? { principal: l.principal } : {}),
     });
   };
 
@@ -63,12 +67,13 @@ describe("automations: policy layer + scheduler", () => {
       secrets,
       now: () => now,
       isInFlight: (_wf, runId) => inFlight.has(runId),
-      launch: (flow: Flow, input, automation, callback) => {
+      holders: async (secret) => held[secret] ?? [],
+      launch: (flow: Flow, input, automation, callback, principal) => {
         // Run ids sort by start time, like generateRunId's.
         const runId = `${now.getTime()}-${launches.length}`;
-        launches.push({ workflow: flow.name, input, automation, runId, ...(callback ? { callback } : {}) });
+        launches.push({ workflow: flow.name, input, automation, runId, ...(callback ? { callback } : {}), ...(principal ? { principal } : {}) });
         inFlight.add(runId);
-        void store.append(flow.name, runId, { ts: now.toISOString(), runId, path: flow.name, type: "run.start", input, origin: "schedule", automation });
+        void store.append(flow.name, runId, { ts: now.toISOString(), runId, path: flow.name, type: "run.start", input, origin: "schedule", automation, ...(principal ? { principal } : {}) });
         return runId;
       },
     });
@@ -83,6 +88,7 @@ describe("automations: policy layer + scheduler", () => {
     launches = [];
     inFlight = new Set();
     secrets = new MemorySecretStore();
+    held = {};
     autos = make();
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
@@ -351,6 +357,88 @@ describe("automations: policy layer + scheduler", () => {
     now = new Date("2026-09-20T11:00:01Z");
     await autos.tick();
     assert.equal(launches.length, 2, "fires again once the run settles");
+  });
+
+  // ── A schedule for each person (`each`) ──────────────────────────────────
+
+  /** A package's schedule on WF that runs for each person holding MAIL_TOKEN. */
+  const eachPerson = async (input: Record<string, unknown> = { since: "{{ last.output.cursor }}" }) => {
+    const sync = await autos.syncPackageSchedules([
+      { package: "acme/mail", name: "reply", workflow: WF, trigger: { type: "schedule", every: "interval", minutes: 5, anchor: "2026-09-20T08:00:00Z", tz: "UTC" }, input, each: "MAIL_TOKEN" },
+    ]);
+    assert.deepEqual(sync.made, [`${WF}: reply`]);
+    const [view] = await autos.list(WF);
+    return view!;
+  };
+  /** Each launch since `from`, as [person, input.since]. */
+  const ran = (from: number) => launches.slice(from).map((l) => [l.principal, l.input["since"]]);
+
+  it("each: one run for each person who holds the secret, as that person; nobody holding launches nothing and is no error", async () => {
+    const a = await eachPerson();
+    assert.equal(a.each, "MAIL_TOKEN");
+    assert.deepEqual([a.people, a.runsAs, a.nobodyToRunAs], [0, undefined, undefined], "not the owner's, and nobody is no error");
+
+    const none = await autos.fire(WF, a.id);
+    assert.deepEqual(none, { ok: true, runIds: [] });
+    now = new Date("2026-09-20T08:05:01Z");
+    await autos.tick();
+    assert.equal(launches.length, 0);
+    assert.equal((await autos.list(WF))[0]!.lastFireError, undefined);
+
+    held["MAIL_TOKEN"] = ["alice", "bob"];
+    held["OTHER_TOKEN"] = ["carol"];
+    assert.equal((await autos.list(WF))[0]!.people, 2);
+    now = new Date("2026-09-20T08:10:01Z");
+    await autos.tick();
+    assert.deepEqual(launches.map((l) => [l.principal, l.automation.id]), [["alice", a.id], ["bob", a.id]]);
+
+    // An admin's on and off covers the whole schedule.
+    for (const l of launches) await settle(l, "success");
+    assert.ok("ok" in (await autos.update(WF, a.id, { enabled: false })));
+    now = new Date("2026-09-20T08:15:01Z");
+    await autos.tick();
+    assert.equal(launches.length, 2, "paused: nobody's run");
+    const back = await autos.update(WF, a.id, { enabled: true });
+    assert.ok("ok" in back && back.automation.each === "MAIL_TOKEN", "a pause keeps it a schedule for each person");
+  });
+
+  it("each: every person's `last` is their own, and a person whose run is still going is skipped while the others run", async () => {
+    const a = await eachPerson();
+    held["MAIL_TOKEN"] = ["alice", "bob"];
+    const fire = async () => {
+      const from = launches.length;
+      const r = await autos.fire(WF, a.id);
+      return { r, from };
+    };
+
+    const first = await fire();
+    assert.deepEqual(ran(first.from), [["alice", undefined], ["bob", undefined]], "a first run has no cursor");
+    const [alice1, bob1] = launches.slice(first.from);
+    await settle(alice1!, "success", { cursor: "A1" });
+    await settle(bob1!, "success", { cursor: "B1" });
+
+    const second = await fire();
+    assert.deepEqual(ran(second.from), [["alice", "A1"], ["bob", "B1"]]);
+    const [alice2] = launches.slice(second.from);
+    await settle(alice2!, "error"); // bob's run is still going
+
+    const third = await fire();
+    assert.ok("ok" in third.r && "runIds" in third.r && third.r.runIds.length === 1);
+    assert.deepEqual(ran(third.from), [["alice", "A1"]], "bob skipped; alice's failure did not move her cursor");
+
+    // The skip is read from the run store: it holds across a restart.
+    autos = make();
+    const all = await fire();
+    assert.ok("error" in all.r && all.r.error.startsWith("skipped:"), "everyone's run is still going");
+    assert.equal(launches.length, all.from);
+
+    await settle(launches[third.from]!, "success", { cursor: "A3" });
+    await settle(launches[second.from + 1]!, "success", { cursor: "B2" });
+    held["MAIL_TOKEN"] = ["alice", "bob", "carol"];
+    const fourth = await fire();
+    assert.deepEqual(ran(fourth.from), [["alice", "A3"], ["bob", "B2"], ["carol", undefined]]);
+    const [view] = await autos.list(WF);
+    assert.deepEqual([view!.people, view!.running], [3, true]);
   });
 
   it("Run now fires off-schedule without moving the schedule, even when paused", async () => {

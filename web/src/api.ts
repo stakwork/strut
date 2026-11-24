@@ -1962,6 +1962,9 @@ export interface Automation {
    *  runs, its name and its input are the package's, so an admin pauses or
    *  resumes it and nothing else. */
   package?: string;
+  /** A secret's name: each fire runs once for each person who holds it as
+   *  their own, as that person. */
+  each?: string;
 }
 
 /** An automation plus what the server derives for display. */
@@ -1981,6 +1984,8 @@ export interface AutomationView extends Automation {
   runsAs?: string;
   /** Why a fire would launch nothing, said before one does: nobody to run as. */
   nobodyToRunAs?: string;
+  /** With `each`: how many people hold the secret now. */
+  people?: number;
 }
 
 export interface AutomationDraft {
@@ -2009,7 +2014,7 @@ export const deleteAutomation = (workflow: string, id: string) =>
   fetchJSON<{ id: string }>(`${automationsPath(workflow)}/${id}`, json("DELETE"));
 /** Run now, off-schedule. */
 export const fireAutomation = (workflow: string, id: string) =>
-  fetchJSON<{ runId: string }>(`${automationsPath(workflow)}/${id}/fire`, json("POST"));
+  fetchJSON<{ runId: string } | { runIds: string[] }>(`${automationsPath(workflow)}/${id}/fire`, json("POST"));
 
 // ── Proposals (plans/proposals.md) ──────────────────────────────────────────
 // A tool call a person approves before it runs: the record a gated agent

@@ -37,6 +37,10 @@ export interface ActorSecretStore {
   delete(actor: string, name: string): Promise<boolean>;
   /** One actor's secret NAMES + metadata — never values. */
   list(actor: string): Promise<SecretInfo[]>;
+  /** The actors who hold `name` as their own, sorted: never a value, and
+   *  never the deployment's (a store of its own). A schedule for each
+   *  person fires once for each (src/scheduler.ts). */
+  holders(name: string): Promise<string[]>;
 }
 
 const PREFIX = "A_";
@@ -69,6 +73,18 @@ export function actorSecretStore(secrets: SecretStore): ActorSecretStore {
       return (await secrets.list())
         .filter((s) => s.name.startsWith(prefix))
         .map((s) => ({ ...s, name: s.name.slice(prefix.length) }));
+    },
+    async holders(name) {
+      assertValidSecretName(name);
+      // `A_<hex(actor)>_<NAME>`: hex has no `_`, so what lies between is one actor.
+      const suffix = `_${name}`;
+      const out: string[] = [];
+      for (const s of await secrets.list()) {
+        if (!s.name.startsWith(PREFIX) || !s.name.endsWith(suffix)) continue;
+        const hex = s.name.slice(PREFIX.length, -suffix.length);
+        if (/^(?:[0-9a-f]{2})+$/.test(hex)) out.push(Buffer.from(hex, "hex").toString("utf8"));
+      }
+      return out.sort();
     },
   };
 }

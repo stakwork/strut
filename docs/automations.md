@@ -98,6 +98,29 @@ index. A change in this area updates this file, not AGENTS.md.
   Automate tab shows both ("Runs as alice", "It cannot run yet: …"). An
   automation a person made, on a box that bills nobody, still runs as
   nobody when its workflow has no owner, as it always has.
+- **A schedule for each person** (`each`; stadeum plans/gmail.md §7 item
+  2). A package's schedule may name a secret the package provides:
+  `each: GOOGLE_TOKEN`. Each fire then launches one run for each person who
+  holds that secret as their own, as that person, and not as the owner:
+  their secrets, their bill, `principal` on `run.start`, `origin:
+  "schedule"` and the automation's id. Who holds it is
+  `ActorSecretStore.holders(name)` (src/actor-secrets.ts): the actors with
+  an `A_<hex(actor)>_<NAME>` entry, never a value, and never the
+  deployment's value, which is nobody's. With nobody holding it a fire
+  launches nothing, and that is no error. Each person's `last` is their own:
+  their latest successful run of it (the summary's `automation.id` and
+  `principal`). The overlap rule is each person's too: a person whose
+  previous run is still going is skipped, and the others run; Run now is
+  refused (409) only when everyone is. A run that cannot start for one
+  person is said in `lastFireError`, and the others still start. The scan
+  for a person's `last` reads 100 runs for each person, so a cursor looks as
+  far back as a single automation's does. The record carries `each`, set by
+  the packages' sync alone (no door's body takes it). The list shows
+  `people`, how many hold it now, in place of `runsAs`; `lastRun` and
+  `running` are any person's. The Automate tab says "Runs as each person
+  with GOOGLE_TOKEN · 3 now". On or off is still the admin's, for everyone's
+  runs at once, and needs no owner. Nothing here names a domain: a Calendar,
+  Outlook or Slack package uses the same key.
 
 ## Files
 
@@ -109,7 +132,7 @@ automations, the PURE half (plans/automations.md): the record, the closed trigge
 
 ### `src/scheduler.ts`
 
-automations, the STATEFUL half: createAutomations(deps) — the policy layer behind BOTH doors (list / create / update / remove / preview / fire, and `syncPackageSchedules`, the packages' schedules made exactly) + the in-process tick loop; whom a fire runs as is `runsAs` (src/workspace.ts), through `personFor`, and the list shows it (`runsAs`, `nobodyToRunAs`). `nextRunAt` is memory-only (computed from now → missed runs are skipped, never replayed); the `last` cursor and "previous run still in flight" are read from the run store. `strut.automations`
+automations, the STATEFUL half: createAutomations(deps) — the policy layer behind BOTH doors (list / create / update / remove / preview / fire, and `syncPackageSchedules`, the packages' schedules made exactly) + the in-process tick loop; whom a fire runs as is `runsAs` (src/workspace.ts), through `personFor`, and the list shows it (`runsAs`, `nobodyToRunAs`); a schedule for each person (`each`) fires once for each holder of its secret (`deps.holders`, `fireEach`), each with their own `last`, and the list shows how many (`people`). `nextRunAt` is memory-only (computed from now → missed runs are skipped, never replayed); the `last` cursor and "previous run still in flight" are read from the run store. `strut.automations`
 
 ### `src/automations-routes.ts`
 

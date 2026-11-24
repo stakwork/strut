@@ -150,6 +150,11 @@ export function AutomationsPanel(props: {
                 {a.enabled && !props.workflowDisabled && a.nextRunAt && <span title={when(a.nextRunAt)}>Next run {relativeTime(a.nextRunAt)}</span>}
                 {a.enabled && !props.workflowDisabled && !a.nextRunAt && <span>No more runs scheduled</span>}
                 {a.runsAs && <span title="Its runs act as this person, with their own secrets, and are billed to them">Runs as {a.runsAs}</span>}
+                {a.each && (
+                  <span title={`One run for each person with their own ${a.each}, as them`}>
+                    Runs as each person with {a.each} · {a.people ? `${a.people} now` : "nobody yet"}
+                  </span>
+                )}
                 {a.lastRun && (
                   <button class="auto-link" onClick={() => props.onOpenRun(props.workflow, a.lastRun!.runId)}>
                     Last run <span class={`badge badge-${a.lastRun.status === "success" ? "ok" : a.lastRun.status === "running" ? "accent" : a.lastRun.status === "error" ? "danger" : "warning"}`}>{a.lastRun.status}</span>
@@ -159,8 +164,8 @@ export function AutomationsPanel(props: {
               {a.nobodyToRunAs && <div class="auto-error">It cannot run yet: {a.nobodyToRunAs}</div>}
               {a.lastFireError && a.lastFireError !== a.nobodyToRunAs && <div class="auto-error">The last scheduled run could not start: {a.lastFireError}</div>}
               <div class="auto-card-actions">
-                <button class="btn" disabled={a.running || props.workflowDisabled}
-                  title={props.workflowDisabled ? "The workflow is disabled" : a.running ? "Its previous run is still going" : "Run once, right now"}
+                <button class="btn" disabled={(a.running && !a.each) || props.workflowDisabled}
+                  title={props.workflowDisabled ? "The workflow is disabled" : a.running && !a.each ? "Its previous run is still going" : "Run once, right now"}
                   onClick={() => act(() => api.fireAutomation(props.workflow, a.id))}>Run now</button>
                 {!a.package && <button class="btn" onClick={() => setEditing(a)}>Edit</button>}
                 {!a.package && (
