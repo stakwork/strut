@@ -48,16 +48,17 @@ export function Workers(props: Props) {
   return (
     <>
       {props.types && <BringWorkersIn types={props.types} tasks={props.tasks} workers={props.workers} history />}
-      <WorkerList {...props} workers={props.workers} waiting={0} />
+      <WorkerList {...props} workers={props.workers} waiting={0} pending={!!props.place.pending} />
     </>
   );
 }
 
-function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
+function WorkerList(props: Props & { workers: Worker[]; waiting: number; pending?: boolean }) {
   const [find, setFind] = useState("");
   const words = find.trim().toLowerCase();
   const ordered = workersInOrder(props.workers);
-  const list = words ? ordered.filter((w) => `${whoOf(w)} ${w.name ?? ""} ${w.actor}`.toLowerCase().includes(words)) : ordered;
+  const pendingOnly = props.pending ? ordered.filter((w) => w.status === "new") : ordered;
+  const list = words ? pendingOnly.filter((w) => `${whoOf(w)} ${w.name ?? ""} ${w.actor}`.toLowerCase().includes(words)) : pendingOnly;
   // A worker's Review is a place (`reviewing=`), so the Overview's Needs you opens it too.
   const reviewing = props.place.reviewing ? props.workers.find((w) => w.actor === props.place.reviewing) : undefined;
   const able = props.workers.filter((w) => w.status === "active").length;
@@ -66,10 +67,17 @@ function WorkerList(props: Props & { workers: Worker[]; waiting: number }) {
   return (
     <section className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h2 className="text-base font-semibold">Workers</h2>
+        <h2 className="text-base font-semibold">Workers{props.pending ? " — Waiting to be reviewed" : ""}</h2>
         <span className="text-sm text-muted-foreground">
-          {able.toLocaleString("en-US")} can take tasks{fresh ? ` · ${fresh} waiting to be let in` : ""}{off ? ` · ${off} suspended or banned` : ""}
+          {props.pending
+            ? `${fresh} waiting to be let in`
+            : `${able.toLocaleString("en-US")} can take tasks${fresh ? ` · ${fresh} waiting to be let in` : ""}${off ? ` · ${off} suspended or banned` : ""}`}
         </span>
+        {props.pending && (
+          <button type="button" className="ml-auto text-sm underline underline-offset-2 text-muted-foreground" onClick={() => props.go({ tab: "workers" })}>
+            Show all workers
+          </button>
+        )}
         {props.workers.length > 5 && (
           <label className="ml-auto flex h-9 items-center gap-2 rounded-md border px-3 text-muted-foreground focus-within:border-ring">
             <Search className="size-4 shrink-0" />
