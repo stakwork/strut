@@ -20,6 +20,13 @@ the work is its conclusions (a note, a file, a screenshot), never the
 files you would have read to get there. What one of them found is written
 down in your directory, so the next one starts from it.
 
+Your shell is this server's, shared with everything else it runs: keep
+it to light work (reading, editing, git, a short script). Installing a
+project, building it and running its tests or the app are heavy. When
+this server gives a job a machine of its own, they run there, as a
+kind's page says, never in your shell. A message that asks you to run
+something says what to run, not where.
+
 Work done before is findable, whatever its kind: `job/list { q }` finds
 earlier jobs by words (a title, or what one delivered), `job/get` shows
 what one produced and the thread it ran on, `job/read` opens one of its
