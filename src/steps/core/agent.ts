@@ -1280,92 +1280,91 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
   }
 }
 
-/** Quiet tool calls (none of them `job/status`) before a tool's answer on a
- *  job's turn reminds the agent of its checklist; then twice as many, four
- *  times, … while it stays quiet (`wrapToolsWithChecklist`). */
+/** Quiet tool calls (none of them `job/status`) after which strut reminds a
+ *  job's agent of its checklist; then twice as many, four times, … while it
+ *  stays quiet (`trackChecklist`). */
 export const CHECKLIST_EVERY = 10;
 
 type ChecklistItem = { text: string; state: string };
 
+/** What strut tells a job's agent about the checklist the person watching
+ *  sees (`trackChecklist`): user-turn notes, each a `[checklist]` notice. */
+export type Checklist = {
+  /** After the turn's message: set the steps out before any other tool. */
+  readonly first: string;
+  /** A reminder is due: the loop stops after this step's tool results. */
+  due(): boolean;
+  /** The reminder now due, once; none when nothing is due. */
+  take(): string | undefined;
+};
+
 /**
- * The checklist reminder. On a job's turn whose agent holds `job/status`, once
- * CHECKLIST_EVERY tool calls pass with no status call, the next tool answer
- * the model reads ends with one line: the list the person watching sees, or
- * that they see none. Again at 2×, 4×, … quiet calls, so a turn that ignores
- * it hears less of it; any status call starts the count over. Nothing for a
- * list whose every step is done. A description alone gets a first call at
- * best: a Pod Setup turn (2026-11-23) sent its list at second 2 and never
- * again in 26 minutes and 65 calls, and the next one sent none. Claude Code
- * keeps its to-do list the same way: the harness reminds, not the prompt.
+ * The checklist a job's agent keeps for the person watching (`job/status`
+ * with `items`, drawn on the job's card). Only on a job's turn whose agent
+ * holds `job/status`, and never for a sub-agent: the card's list is the
+ * turn's own. Strut says two things, each as a note in the user's turn: after
+ * the turn's message, to set the steps out before any other tool; and after
+ * CHECKLIST_EVERY tool calls with no status call, the list as the person sees
+ * it (or that they see none), again at 2×, 4×, … quiet calls. Any status call
+ * starts the count over; a list whose steps are all done gets nothing.
  *
- * Only what the MODEL reads changes (`toModelOutput`, by the call's id, so
- * the SDK's several conversions of one result agree): the tool's output, its
- * run event and `run.json` stay the tool's own. The line is in the result
- * when it is made, so the recorded history keeps it byte for byte. A call
- * that fails passes a due reminder to the next one that answers.
+ * Where it is said is the point. The job prompt's sentence and the step's
+ * description got a first call in one of three Pod Setup turns (2026-11-23),
+ * and a reminder at the end of a tool's result was read and ignored at calls
+ * 10 and 20 (strut#862, 2026-11-24): a model takes a tool's result as data,
+ * never as instructions. A note after the results, in the user's turn, is
+ * the end of the request, where an instruction moves the model most. Claude
+ * Code keeps its to-do list current the same way. It is a user turn, not a
+ * mid-conversation system message, because every provider and the gateway
+ * take one: strut already sends that shape mid-turn (the stream-error nudge,
+ * a compaction).
  */
-export function wrapToolsWithChecklist(tools: Record<string, any>, ctx: StepContext | undefined): void {
+export function trackChecklist(tools: Record<string, any>, ctx: StepContext | undefined): Checklist | undefined {
   const status = toolNameFor("job/status");
-  if (!ctx?.job || typeof tools[status]?.execute !== "function") return;
+  if (!ctx?.job || ctx.agentTool || typeof tools[status]?.execute !== "function") return undefined;
   let items: ChecklistItem[] | undefined;
+  let sent = false;
   let quiet = 0;
   let owed = false;
-  const lines = new Map<string, string>();
   for (const [name, t] of Object.entries(tools)) {
     if (name === "final_answer" || typeof t?.execute !== "function") continue;
     const run = t.execute;
     t.execute = async (input: unknown, opts: unknown) => {
       if (name === status) {
         items = (input as { items?: ChecklistItem[] } | null)?.items;
+        sent = true;
         quiet = 0;
         owed = false;
-        return run(input, opts);
+      } else {
+        const k = ++quiet / CHECKLIST_EVERY;
+        const finished = !!items?.length && items.every((i) => i.state === "done");
+        if (Number.isInteger(k) && (k & (k - 1)) === 0 && !finished) owed = true;
       }
-      const k = ++quiet / CHECKLIST_EVERY;
-      if (Number.isInteger(k) && (k & (k - 1)) === 0) owed = true;
-      const out = await run(input, opts);
-      const id = (opts as { toolCallId?: unknown } | undefined)?.toolCallId;
-      if (owed && typeof id === "string") {
-        owed = false;
-        const line = checklistLine(items, quiet, status);
-        if (line) lines.set(id, line);
-      }
-      return out;
-    };
-    const own = t.toModelOutput;
-    t.toModelOutput = async (o: { toolCallId: string; output: unknown }) => {
-      const shown: ToolResultOutput = own
-        ? await own(o)
-        : typeof o.output === "string"
-          ? { type: "text", value: o.output }
-          : { type: "json", value: toJsonValue(o.output) };
-      const line = lines.get(o.toolCallId);
-      return line ? withLine(shown, line) : shown;
+      return run(input, opts);
     };
   }
-}
-
-function checklistLine(items: ChecklistItem[] | undefined, quiet: number, status: string): string | undefined {
-  if (!items?.length) {
-    return `[checklist] The person watching this job sees no checklist for this turn. If it has more than one step, send them with ${status} (items), then again as each one moves on.`;
-  }
-  if (items.every((i) => i.state === "done")) return undefined;
-  const list = items.map((i) => `${i.state}: ${i.text}`).join(" · ");
-  return `[checklist] ${quiet} tool calls ago you sent this list, and it is what the person watching sees: ${list}. If a step has moved on, send the whole list again with ${status}.`;
-}
-
-/** A tool's model output with one more line at the end. */
-function withLine(shown: ToolResultOutput, line: string): ToolResultOutput {
-  switch (shown.type) {
-    case "text":
-      return { ...shown, value: `${shown.value}\n\n${line}` };
-    case "json":
-      return { ...shown, type: "text", value: `${JSON.stringify(shown.value)}\n\n${line}` };
-    case "content":
-      return { ...shown, value: [...shown.value, { type: "text", text: line }] };
-    default:
-      return shown;
-  }
+  return {
+    first:
+      `[checklist] The person watching this job sees only its card until the turn ends. ` +
+      `Unless this turn is a single step, set its steps out with ${status} (items) before any other tool, ` +
+      `then send the list again each time a step moves on.`,
+    due: () => owed,
+    take: () => {
+      if (!owed) return undefined;
+      owed = false;
+      if (!items?.length) {
+        return (
+          `[checklist] ${quiet} tool calls ${sent ? `since your last ${status}` : "into this turn"}, and the person watching sees no checklist. ` +
+          `Unless the turn is a single step, send its steps with ${status} (items) now. This note needs no reply.`
+        );
+      }
+      const list = items.map((i) => `${i.state}: ${i.text}`).join(" · ");
+      return (
+        `[checklist] ${quiet} tool calls since your last ${status}. The person watching sees: ${list}. ` +
+        `If a step has moved on, send the whole list again. This note needs no reply.`
+      );
+    },
+  };
 }
 
 const EXAMPLE = `- id: fix
@@ -2085,9 +2084,10 @@ export default defineStep({
         wrapToolsWithEmit(registered.tools, ctx, calls);
         Object.assign(tools, registered.tools);
       }
-      // Every tool is in now: on a job's turn, a tool's answer reminds the
-      // agent of its checklist once it has gone quiet (wrapToolsWithChecklist).
-      wrapToolsWithChecklist(tools, ctx);
+      // Every tool is in now: on a job's turn, the checklist the person sees
+      // (trackChecklist) — its notes go in below, after the message and when
+      // the agent has gone quiet.
+      const checklist = trackChecklist(tools, ctx);
       // Steps that completed BEFORE a mid-stream failure are unreachable through
       // the stream's result promises — `steps`, `responseMessages`, `usage` and
       // `text` all reject with the stream error — so the only way to keep that
@@ -2148,7 +2148,10 @@ export default defineStep({
        *  compaction never falls inside a tool round. */
       const overMarkStop = () => overMark({ used: contextUsed, limit: resolved.contextLimit }, compactAt);
       const toolStopped = () => stoppedBy !== undefined;
-      const stopConditions = (budget: number) => [...(terminal ? [finalAnswered] : []), isStepCount(budget), overMarkStop, toolStopped];
+      /** A checklist reminder is due: the loop stops after this step — its
+       *  tool results are in — and the main loop adds the note. */
+      const checklistStop = () => checklist?.due() ?? false;
+      const stopConditions = (budget: number) => [...(terminal ? [finalAnswered] : []), isStepCount(budget), overMarkStop, toolStopped, checklistStop];
       /** One tool-loop runner over this step's tools, with `budget` steps left. */
       const makeRunner = (budget: number) =>
         new ToolLoopAgent({
@@ -2279,6 +2282,9 @@ export default defineStep({
           : undefined;
       let streamErrorContinuations = 0;
       let res!: { text: any };
+      // The checklist's first note (trackChecklist): right after the turn's
+      // message, the last thing the model reads before it starts.
+      if (checklist) bankedMessages.push({ role: "user", content: checklist.first });
       for (;;) {
         // Budget already spent by banked steps must not be handed out again.
         const remaining = Math.max(1, cfg.maxSteps - bankedSteps.length);
@@ -2318,9 +2324,14 @@ export default defineStep({
         // the conversation into a summary and go on from it. A summarizer
         // that failed leaves the loop uncompacted for one more step, after
         // which it is tried again here.
-        if (!stoppedBy && overMarkStop() && midTask(bankedSteps.at(-1)) && bankedSteps.length < cfg.maxSteps) {
-          await compact("step", contextUsed);
-          continue;
+        // A checklist reminder the stop was for goes after the step's tool
+        // results (and after a summary, so the request keeps it).
+        if (!stoppedBy && midTask(bankedSteps.at(-1)) && bankedSteps.length < cfg.maxSteps) {
+          const compacting = overMarkStop();
+          if (compacting) await compact("step", contextUsed);
+          const note = checklist?.take();
+          if (note) bankedMessages.push({ role: "user", content: note });
+          if (compacting || note) continue;
         }
         res = { text: await attempt.text };
         break;

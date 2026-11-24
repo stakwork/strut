@@ -7,11 +7,11 @@ import { join } from "node:path";
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../core.js";
 import { createRegistry } from "../registry.js";
-import agent, { CHECKLIST_EVERY, wrapToolsWithChecklist } from "./agent.js";
+import agent, { CHECKLIST_EVERY, trackChecklist } from "./agent.js";
 
-// The checklist reminder (wrapToolsWithChecklist, docs/agent-step.md): on a
-// job's turn, a tool's answer reminds the agent of the list the person
-// watching sees, once it has gone quiet.
+// The checklist a job's agent keeps for the person watching (trackChecklist,
+// docs/agent-step.md): strut's notes in the user's turn, after the message
+// and once the agent has gone quiet.
 
 const job = { job: "j1" } as unknown as StepContext;
 const plan = [
@@ -19,117 +19,92 @@ const plan = [
   { text: "Wire the stack", state: "doing" },
   { text: "Bake", state: "todo" },
 ];
-const listLine = (quiet: number) =>
-  `[checklist] ${quiet} tool calls ago you sent this list, and it is what the person watching sees: ` +
-  `done: Claim the pod · doing: Wire the stack · todo: Bake. If a step has moved on, send the whole list again with job_status.`;
+const FIRST =
+  "[checklist] The person watching this job sees only its card until the turn ends. " +
+  "Unless this turn is a single step, set its steps out with job_status (items) before any other tool, " +
+  "then send the list again each time a step moves on.";
+const listNote = (quiet: number) =>
+  `[checklist] ${quiet} tool calls since your last job_status. ` +
+  `The person watching sees: done: Claim the pod · doing: Wire the stack · todo: Bake. ` +
+  `If a step has moved on, send the whole list again. This note needs no reply.`;
+const noneNote = (quiet: number, since: string) =>
+  `[checklist] ${quiet} tool calls ${since}, and the person watching sees no checklist. ` +
+  `Unless the turn is a single step, send its steps with job_status (items) now. This note needs no reply.`;
 
-function setup(more: Record<string, any> = {}) {
+function setup() {
   const tools: Record<string, any> = {
     job_status: { execute: async () => ({ sent: true }) },
     bash: { execute: async (i: { n: number }) => `ran ${i.n}` },
     final_answer: { execute: async (i: unknown) => i },
-    ...more,
   };
-  wrapToolsWithChecklist(tools, job);
-  let id = 0;
-  /** One call as the SDK makes it: execute, then what the model reads. */
-  const call = async (name: string, input: unknown = {}) => {
-    const toolCallId = `c${++id}`;
-    const output = await tools[name].execute(input, { toolCallId });
-    return { output, shown: await tools[name].toModelOutput({ toolCallId, input, output }), toolCallId };
+  const checklist = trackChecklist(tools, job)!;
+  /** `n` quiet calls; the call counts after which a reminder was due. */
+  const quiet = async (n: number) => {
+    const due: number[] = [];
+    for (let i = 1; i <= n; i++) {
+      assert.equal(await tools.bash.execute({ n: i }), `ran ${i}`, "the tool's output is its own");
+      if (checklist.due()) due.push(i);
+      checklist.take();
+    }
+    return due;
   };
-  return { tools, call };
+  return { tools, checklist, quiet };
 }
 
-describe("the checklist reminder", () => {
-  it("is off without a job, and without job/status", () => {
-    const tools: Record<string, any> = { job_status: { execute: async () => ({}) }, bash: { execute: async () => "" } };
-    wrapToolsWithChecklist(tools, {} as StepContext);
-    assert.equal(tools.bash.toModelOutput, undefined, "no job");
-    const bare: Record<string, any> = { bash: { execute: async () => "" } };
-    wrapToolsWithChecklist(bare, job);
-    assert.equal(bare.bash.toModelOutput, undefined, "no job/status");
+describe("the checklist", () => {
+  it("is off without a job, without job/status, and for a sub-agent", () => {
+    const tools = () => ({ job_status: { execute: async () => ({}) }, bash: { execute: async () => "" } });
+    assert.equal(trackChecklist(tools(), {} as StepContext), undefined, "no job");
+    assert.equal(trackChecklist({ bash: { execute: async () => "" } }, job), undefined, "no job/status");
+    assert.equal(trackChecklist(tools(), { job: "j1", agentTool: true } as unknown as StepContext), undefined, "a sub-agent");
   });
 
-  it("reminds at 10 quiet calls, then 20 and 40, and a status call starts over; the tool's own output is untouched", async () => {
+  it("asks for the steps first, then reminds at 10 quiet calls, 20 and 40; a status call starts over", async () => {
     assert.equal(CHECKLIST_EVERY, 10);
-    const { tools, call } = setup();
-    await call("job_status", { title: "Setting up", items: plan });
-    const reminded: number[] = [];
-    for (let n = 1; n <= 50; n++) {
-      const { output, shown } = await call("bash", { n });
-      assert.equal(output, `ran ${n}`);
-      if (shown.value !== `ran ${n}`) reminded.push(n);
-      if (n === 10) assert.deepEqual(shown, { type: "text", value: `ran 10\n\n${listLine(10)}` });
-    }
-    assert.deepEqual(reminded, [10, 20, 40]);
+    const { tools, checklist, quiet } = setup();
+    assert.equal(checklist.first, FIRST);
+    await tools.job_status.execute({ title: "Setting up", items: plan });
+    for (let i = 1; i < 10; i++) await tools.bash.execute({ n: i });
+    assert.equal(checklist.due(), false);
+    await tools.bash.execute({ n: 10 });
+    assert.equal(checklist.due(), true);
+    assert.equal(checklist.take(), listNote(10));
+    assert.equal(checklist.take(), undefined, "once");
+    assert.deepEqual((await quiet(40)).map((n) => n + 10), [20, 40]);
 
-    await call("job_status", { title: "Wiring", items: plan });
-    const after: number[] = [];
-    for (let n = 1; n <= 10; n++) if ((await call("bash", { n })).shown.value !== `ran ${n}`) after.push(n);
-    assert.deepEqual(after, [10]);
-
-    // The SDK converts one result more than once: each conversion agrees.
-    await call("job_status", { title: "Wiring", items: plan });
-    const first = await call("bash", { n: 1 });
-    for (let n = 2; n < 10; n++) await call("bash", { n });
-    const tenth = await call("bash", { n: 10 });
-    assert.equal(tenth.shown.value, `ran 10\n\n${listLine(10)}`);
-    assert.deepEqual(await tools.bash.toModelOutput({ toolCallId: tenth.toolCallId, output: tenth.output }), tenth.shown);
-    assert.deepEqual(await tools.bash.toModelOutput({ toolCallId: first.toolCallId, output: first.output }), { type: "text", value: "ran 1" });
+    await tools.job_status.execute({ title: "Wiring", items: plan });
+    assert.deepEqual(await quiet(10), [10]);
   });
 
-  it("with no list says the person sees none; a finished list gets nothing", async () => {
+  it("a status call in the same round as the due call cancels the reminder", async () => {
+    const { tools, checklist } = setup();
+    for (let i = 1; i <= 10; i++) await tools.bash.execute({ n: i });
+    await tools.job_status.execute({ title: "Setting up", items: plan });
+    assert.equal(checklist.due(), false);
+    assert.equal(checklist.take(), undefined);
+  });
+
+  it("with no list says the person sees none; a finished list gets nothing; final_answer isn't counted", async () => {
     const none = setup();
-    let shown: any;
-    for (let n = 1; n <= 10; n++) shown = (await none.call("bash", { n })).shown;
-    assert.equal(
-      shown.value,
-      "ran 10\n\n[checklist] The person watching this job sees no checklist for this turn. " +
-        "If it has more than one step, send them with job_status (items), then again as each one moves on.",
-    );
+    for (let i = 1; i <= 10; i++) await none.tools.bash.execute({ n: i });
+    assert.equal(none.checklist.take(), noneNote(10, "into this turn"));
+
+    const titleOnly = setup();
+    await titleOnly.tools.job_status.execute({ title: "Looking" });
+    for (let i = 1; i <= 10; i++) await titleOnly.tools.bash.execute({ n: i });
+    assert.equal(titleOnly.checklist.take(), noneNote(10, "since your last job_status"));
 
     const done = setup();
-    await done.call("job_status", { title: "Done", items: plan.map((i) => ({ ...i, state: "done" })) });
-    for (let n = 1; n <= 20; n++) assert.equal((await done.call("bash", { n })).shown.value, `ran ${n}`);
-  });
+    await done.tools.job_status.execute({ title: "Done", items: plan.map((i) => ({ ...i, state: "done" })) });
+    assert.deepEqual(await done.quiet(40), []);
 
-  it("ends a JSON result and a content result too, and a call that fails passes it to the next", async () => {
-    let fail = false;
-    const { call } = setup({
-      look: { execute: async () => ({ a: 1 }) },
-      shot: {
-        execute: async () => {
-          if (fail) throw new Error("no browser");
-          return "png";
-        },
-        toModelOutput: ({ output }: { output: string }) => ({ type: "content", value: [{ type: "text", text: output }] }),
-      },
-    });
-    await call("job_status", { title: "Setting up", items: plan });
-    for (let n = 1; n < 10; n++) await call("bash", { n });
-    assert.deepEqual((await call("look")).shown, { type: "text", value: `{"a":1}\n\n${listLine(10)}` });
-
-    for (let n = 11; n < 20; n++) await call("bash", { n });
-    assert.deepEqual((await call("shot")).shown, {
-      type: "content",
-      value: [{ type: "text", text: "png" }, { type: "text", text: listLine(20) }],
-    });
-
-    for (let n = 21; n < 40; n++) await call("bash", { n });
-    fail = true;
-    await assert.rejects(() => call("shot"), /no browser/);
-    assert.equal((await call("bash", { n: 41 })).shown.value, `ran 41\n\n${listLine(41)}`);
-  });
-
-  it("final_answer is never counted or changed", async () => {
-    const { tools } = setup();
-    for (let n = 1; n <= 10; n++) await tools.final_answer.execute({ n }, { toolCallId: `f${n}` });
-    assert.equal(tools.final_answer.toModelOutput, undefined);
+    const answering = setup();
+    for (let i = 1; i <= 10; i++) await answering.tools.final_answer.execute({ i });
+    assert.equal(answering.checklist.due(), false);
   });
 });
 
-describe("the checklist reminder in a turn", () => {
+describe("the checklist in a turn", () => {
   const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AI_SDK_LOG_WARNINGS"];
   let saved: Record<string, string | undefined> = {};
   let dir = "";
@@ -169,10 +144,17 @@ describe("the checklist reminder in a turn", () => {
     },
   });
 
-  it("the model reads the line after its 10th quiet call, and the person's card got the list", async () => {
+  /** The final user turn: its tool results, then any note after them. */
+  const lastTurn = (body: any) => body.messages.at(-1).content as any[];
+  const texts = (blocks: any[]) => (typeof blocks === "string" ? [blocks] : blocks.filter((b) => b.type === "text").map((b) => b.text));
+  const withoutCache = (v: unknown) => JSON.parse(JSON.stringify(v, (k, x) => (k === "cache_control" ? undefined : x)));
+
+  it("the model reads the steps-first note after the message and a reminder after its 10th quiet call; nothing sent earlier changes", async () => {
+    const looks = (from: number): Array<[string, unknown]> => Array.from({ length: 10 }, (_, i) => ["dev_look", { n: from + i }]);
     const replies: Array<[string, unknown]> = [
+      ...looks(1),
       ["job_status", { title: "Setting up", items: plan }],
-      ...Array.from({ length: 10 }, (_, n): [string, unknown] => ["dev_look", { n }]),
+      ...looks(11),
       ["final_answer", { answer: "done" }],
     ];
     const bodies: any[] = [];
@@ -206,10 +188,22 @@ describe("the checklist reminder in a turn", () => {
     } finally {
       server.close();
     }
-    const lastResult = (body: any) => JSON.stringify((body.messages.at(-1).content as any[]).find((b) => b.type === "tool_result"));
-    assert.equal(bodies.length, 12);
-    for (let i = 1; i < 11; i++) assert.ok(!lastResult(bodies[i]).includes("[checklist]"), `request ${i + 1}`);
-    assert.ok(lastResult(bodies[11]).includes(JSON.stringify(listLine(10)).slice(1, -1)), lastResult(bodies[11]));
+    assert.equal(bodies.length, 22);
+    // The first request: the message, then the note, in the user's turn.
+    assert.deepEqual(texts(bodies[0].messages[0].content), ["go", FIRST]);
+    // After the 10th quiet call: its tool result as the tool gave it, then the note.
+    const tenth = lastTurn(bodies[10]);
+    assert.equal(tenth[0].type, "tool_result");
+    assert.ok(!JSON.stringify(tenth[0]).includes("[checklist]"), "the tool result is the tool's own");
+    assert.deepEqual(texts(tenth), [noneNote(10, "into this turn")]);
+    // Ten quiet calls after the list: the list as the person sees it.
+    assert.deepEqual(texts(lastTurn(bodies[21])), [listNote(10)]);
+    for (const i of [1, 9, 11, 20]) assert.deepEqual(texts(lastTurn(bodies[i])), [], `request ${i + 1}`);
+    // Append-only: each request begins with everything the one before sent.
+    for (let i = 1; i < bodies.length; i++) {
+      const before = withoutCache(bodies[i - 1].messages);
+      assert.deepEqual(withoutCache(bodies[i].messages).slice(0, before.length), before, `request ${i + 1}`);
+    }
     assert.deepEqual(notes.map((n) => n.detail?.items), [plan]);
   });
 });

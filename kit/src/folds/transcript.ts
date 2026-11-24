@@ -14,6 +14,7 @@ export const NOTICE_PREFIXES = {
   "[elicitation-response]": "elicitation",
   "[compaction]": "compaction",
   "[restart-notification]": "restart",
+  "[checklist]": "checklist",
 } as const;
 
 export function isNotice(text: string): boolean {
