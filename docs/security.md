@@ -534,6 +534,37 @@ instead of baked into env at deploy time.
   `list_secrets`. A run's `input` is persisted on `run.start`, so this is
   how a per-user credential reaches a workflow without ever being in it.
 
+- **A person's secret that refreshes itself** (`src/actor-secrets.ts`;
+  stadeum plans/software.md §5 item 8, plans/gmail.md §2). An OAuth access
+  token, Google's, lasts about an hour. The connect seam writes it with
+  `PUT /actors/:actor/secrets/:name { value, expires_in, refresh_token,
+  provider }` (specs/API.md §8.2). The three extras sit in a second entry
+  of the same file, `AR_<hex(actor)>_<NAME>`, which `list` does not show
+  and no reader is handed. When a read finds the value within five minutes
+  of its end, the store first calls `POST
+  ${CONNECT_URL}/api/connect/${provider}/refresh` with `CONNECT_TOKEN`,
+  keeps the new pair, and hands over the new value (`connectRefresher`).
+  - **Every reader at once.** The refresh is in the actor store's `get`,
+    which every read of a person's value goes through: a step's
+    `secrets.get`, a package step's `secrets.own`, `secretsEnv`, git by
+    host. None names a provider or sees a refresh token.
+  - **One at a time.** Writes and refreshes of one (actor, name) take turns,
+    and readers that come during a refresh wait for its answer. A provider
+    that rotates refresh tokens (GitLab, Microsoft) invalidates the old
+    pair, so two runs spending one would cost the person their connection.
+    The turn is per process, which is all strut runs on one data dir.
+  - **Refused** (`400`): the store deletes the secret and logs the
+    provider's error code, never a token. The reader finds it missing and
+    says to connect again.
+  - **Not refreshed this time** (`401`, `404`, a `5xx`, no answer in 15 s):
+    the secret stays, and that read throws `secret_refresh:`. It never
+    falls back to the deployment's value of the same name.
+  - **Off** without `CONNECT_URL` and `CONNECT_TOKEN`: a value is handed
+    over as it is. `CONNECT_TOKEN` is hidden from steps
+    (`hiddenFromSteps`, env.ts), like `STRUT_SECRET_KEY`.
+  - A plain `{ value }`, from the route, `secrets.own.set` or
+    `secret/add`, drops any refresh kept before.
+
 - **A package's steps manage the secrets it provides** (`provides.secrets`
   in `strut.yaml`; src/packages/fence.ts, `own` / `deployment` in
   src/capabilities.ts). Reads stay one merged lookup for every step. Beside
@@ -813,7 +844,7 @@ GIT CREDENTIALS BY HOST (stadeum plans/software.md §5, item 9): `STRUT_GIT_HOST
 
 ### `src/actor-secrets.ts`
 
-per-ACTOR secrets (plans/code-change.md §3.2): ActorSecretStore over any SecretStore (`A_<hex(actor)>_<NAME>` keys; a third encrypted file, actor-secrets.json), behind PUT/DELETE /actors/:actor/secrets/:name + GET /actors/:actor/secrets. The runner binds a run's `secrets` to its principal (`SecretsCapability.forPrincipal`), so `secrets.get(NAME)` resolves the actor's value first — never in /secrets or list_secrets
+per-ACTOR secrets (plans/code-change.md §3.2): ActorSecretStore over any SecretStore (`A_<hex(actor)>_<NAME>` keys; a third encrypted file, actor-secrets.json), behind PUT/DELETE /actors/:actor/secrets/:name + GET /actors/:actor/secrets. The runner binds a run's `secrets` to its principal (`SecretsCapability.forPrincipal`), so `secrets.get(NAME)` resolves the actor's value first — never in /secrets or list_secrets. A value pushed with `expires_in`, `refresh_token` and `provider` refreshes itself: `get` renews it through the connect seam (`connectRefresher`, `CONNECT_URL` + `CONNECT_TOKEN`) when it is within five minutes of its end, one refresh at a time per (actor, name); the refresh is kept under `AR_<hex(actor)>_<NAME>`, never listed or read
 
 ### `src/env.ts`
 
