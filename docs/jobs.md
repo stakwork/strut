@@ -202,10 +202,12 @@ index. A change in this area updates this file, not AGENTS.md.
   description did in two of two. The description did not keep the list up
   to date on long turns: two Pod Setup turns on a real box (2026-11-23, 15
   and 26 minutes, about 60 calls each) sent it once at the start and never
-  again, or never. So the agent step reminds it (`wrapToolsWithChecklist`,
-  docs/agent-step.md): after 10 tool calls with no status call, a tool's
-  answer ends with the list the person sees, again at 20, 40, …. strut/jamie's
-  job card draws the list under the line. Cursors are `<epoch>.<seq>`: a restart
+  again, or never. So the agent step tells it, in the user's turn
+  (`trackChecklist`, docs/agent-step.md): after the turn's message, to set
+  the steps out first; and after 10 tool calls with no status call, the list
+  the person sees, again at 20, 40, …. A reminder at the end of a tool's
+  result (strut#862) was ignored: a tool's result is data to a model.
+  strut/jamie's job card draws the list under the line. Cursors are `<epoch>.<seq>`: a restart
   empties the feeds and the next read says `reset: true` — a feed is a
   notification, never the record. Not heard: raw Cypher, another process's
   writes.

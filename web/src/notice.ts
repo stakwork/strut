@@ -12,6 +12,9 @@
 // of everything before it, where its memory restarts (plans/compaction.md).
 // `[restart-notification]` (src/ai/notifier.ts) is the fifth: the server
 // restarted mid-turn; the builder was woken to go on from the transcript.
+// `[checklist]` (src/steps/core/agent.ts, trackChecklist) is the sixth: a
+// job's agent told to set out, or bring up to date, the steps its card shows.
+// It has no card of its own and shows as written.
 // Which messages are notices at all is the transcript fold's (@strut/kit).
 import { NOTICE_PREFIXES, isNotice } from "@strut/kit/folds";
 
@@ -41,7 +44,7 @@ export interface LedgerClaim {
 export type Ledger = Record<string, LedgerClaim[]>;
 
 export interface ParsedNotice {
-  kind: "run" | "verify" | "elicitation" | "compaction" | "restart";
+  kind: "run" | "verify" | "elicitation" | "compaction" | "restart" | "checklist";
   /** First line, prefix removed. */
   headline: string;
   /** `[restart-notification]` only: the turn that was cut off, and the tool
