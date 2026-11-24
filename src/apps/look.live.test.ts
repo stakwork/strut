@@ -1,5 +1,6 @@
 /**
- * `app/look` against a REAL browser and strut's real UI. Skipped unless
+ * `app/look` against a REAL browser and strut's real UI — and a look that
+ * streams (`GET /apps/look/stream`) over a real socket. Skipped unless
  * STRUT_TEST_APP_LOOK=1; needs the UI built (`cd web && npm run build`) and
  * a browser: the local Chrome by default, or a Playwright server through
  * BROWSER_WS_URL + BROWSER_WS_PATH as in `npm run test:browser`.
@@ -22,6 +23,8 @@ import { runSingleStep } from "../run-step.js";
 import { WorkspaceManager } from "../workspace.js";
 import { MemoryRunStore } from "../store.js";
 import { kitForTests } from "../test-util/app-kit.js";
+import { BrowserService } from "../browser/service.js";
+import { WebSocket } from "ws";
 import { z } from "zod";
 
 const WEB_DIST = join(dirname(new URL(import.meta.url).pathname), "..", "..", "web", "dist");
@@ -53,6 +56,9 @@ export default function App() {
 let root: string;
 let strut: Strut;
 let saved: string | undefined;
+/** The browser, one place for a kept page or a stream and a second's idle
+ *  time — what the stream's test leans on; the looks never keep a page. */
+let browser: BrowserService;
 
 before(async () => {
   if (skip) return;
@@ -60,8 +66,10 @@ before(async () => {
   process.env["STRUT_API_KEY"] = "look-key";
   root = await mkdtemp(join(tmpdir(), "strut-look-live-"));
   const workspace = new WorkspaceManager(join(root, "ws"));
+  browser = new BrowserService({ wsUrl: process.env["BROWSER_WS_URL"] || undefined, wsPath: process.env["BROWSER_WS_PATH"] || undefined, sessionsMax: 1, sessionIdleMs: 1_000 });
   strut = await createStrut({
     workspace,
+    services: { browser },
     store: new MemoryRunStore(),
     registry: await createRegistry([whoami]),
     kit: await kitForTests(),
@@ -94,7 +102,21 @@ before(async () => {
   });
   await publish("look-deep", { "app.yaml": "title: Deep\nicon: link\ngrants:\n  workflows: []\n  steps: []\n", "src/App.tsx": DEEP });
   await publish("look-game", { "app.yaml": "title: Dot\nicon: gamepad\ngrants:\n  workflows: []\n  steps: []\n", "src/App.tsx": GAME });
+  await publish("look-clock", { "app.yaml": "title: Clock\nicon: clock\ngrants:\n  workflows: []\n  steps: []\n", "src/App.tsx": CLOCK });
 });
+
+/** A page that paints every `every` ms (a link's input), until it is closed. */
+const CLOCK = `import { useToolInput } from "@strut/kit";
+import { useEffect, useState } from "react";
+export default function App() {
+  const input = useToolInput<{ every?: string }>();
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setN((x) => x + 1), Number(input?.every ?? 100));
+    return () => clearInterval(t);
+  }, [input?.every]);
+  return <main className="p-6"><h1>Tick {n}</h1></main>;
+}`;
 
 /** A game whose state no text shows: a dot the arrow keys move while they
  *  are HELD (the keys down kept in a set, the dot moved each frame), its
@@ -166,6 +188,7 @@ export default function App() {
 after(async () => {
   if (skip) return;
   await strut?.close?.().catch(() => {});
+  await browser?.close();
   if (saved === undefined) delete process.env["STRUT_API_KEY"];
   else process.env["STRUT_API_KEY"] = saved;
   await rm(root, { recursive: true, force: true });
@@ -346,4 +369,69 @@ test("window.__debug that throws, is too big, is slow or is not set: each said, 
   assert.deepEqual(none.debugReads, [{ step: 2, error: "the page has not set window.__debug" }]);
   assert.equal("debug" in none, false, "left out when the page set none");
   assert.deepEqual(none.errors, []);
+});
+
+// ── A look that streams (GET /apps/look/stream) ───────────────────────────
+
+/** A WebSocket to the stream, with every JPEG frame and when it came, and
+ *  every text message — or the status the upgrade was refused with. */
+const stream = (port: number, query: string, headers: Record<string, string> = { authorization: "Bearer look-key", "x-strut-actor": "evan-1" }) =>
+  new Promise<{ ws: WebSocket; frames: Array<{ at: number; jpeg: Buffer }>; texts: string[]; closed: Promise<{ code: number; reason: string }> }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/apps/look/stream?${query}`, { headers });
+    const frames: Array<{ at: number; jpeg: Buffer }> = [];
+    const texts: string[] = [];
+    ws.on("message", (data, binary) => (binary ? frames.push({ at: Date.now(), jpeg: data as Buffer }) : texts.push(String(data))));
+    const closed = new Promise<{ code: number; reason: string }>((r) => ws.once("close", (code, reason) => r({ code, reason: String(reason) })));
+    ws.once("open", () => resolve({ ws, frames, texts, closed }));
+    ws.once("unexpected-response", (_req, res) => reject(Object.assign(new Error(`refused ${res.statusCode}`), { status: res.statusCode })));
+    ws.once("error", reject);
+  });
+
+const until = async (what: string, ok: () => boolean, ms = 45_000) => {
+  const deadline = Date.now() + ms;
+  while (!ok()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+};
+
+test("a look that streams: the app's frames as 1280×720 JPEG, at most 5 a second, none while nothing paints; open past the idle time; one place, freed when the socket closes", { skip }, async () => {
+  const port = await strut.listen(0, "127.0.0.1");
+  await assert.rejects(stream(port, "app=nope"), (e: { status?: number }) => e.status === 404, "an app that is not there is refused before anything opens");
+
+  // A page that paints ten times a second: the stream sends at most five.
+  const clock = await stream(port, "app=look-clock&input=" + encodeURIComponent("every=100"));
+  await until("the first frame", () => clock.frames.length > 0);
+  const { default: sharp } = await import("sharp");
+  const first = await sharp(clock.frames[0]!.jpeg).metadata();
+  assert.deepEqual([first.format, first.width, first.height], ["jpeg", 1280, 720]);
+  const from = Date.now();
+  await new Promise((r) => setTimeout(r, 3_000));
+  const inWindow = clock.frames.filter((f) => f.at >= from);
+  assert.ok(inWindow.length >= 8 && inWindow.length <= 16, `three seconds of a page painting at 10/s: ${inWindow.length} frames`);
+  const gaps = inWindow.slice(1).map((f, i) => f.at - inWindow[i]!.at);
+  assert.ok(Math.min(...gaps) >= 150, `never two frames closer than a fifth of a second (less the socket's jitter): ${gaps.join(", ")}`);
+  assert.ok(Date.now() - clock.frames.at(-1)!.at < 1_000, "still streaming past the browser's idle time (1 s here): a stream has no idle timer");
+  assert.deepEqual(clock.texts, []);
+
+  // The one place (BROWSER_SESSIONS_MAX 1 here) is the clock's: a second stream is told why, and closed.
+  const refused = await stream(port, "app=look-demo");
+  const { code, reason } = await refused.closed;
+  assert.equal(code, 1011);
+  assert.match(reason, /BROWSER_SESSIONS_MAX/);
+  assert.match(JSON.parse(refused.texts[0]!).error, /1 kept pages and streams are open/);
+
+  // Closing the socket closes the page and frees the place.
+  clock.ws.close();
+  await clock.closed;
+  const still = await stream(port, "app=look-demo");
+  await until("the still page's first frame", () => still.frames.length > 0);
+  await new Promise((r) => setTimeout(r, 2_000)); // the app's reads answer, it draws
+  const settled = still.frames.length;
+  await new Promise((r) => setTimeout(r, 2_000));
+  assert.equal(still.frames.length, settled, "a page that does not paint sends no frames");
+  const last = await sharp(still.frames.at(-1)!.jpeg).metadata();
+  assert.deepEqual([last.format, last.width, last.height], ["jpeg", 1280, 720]);
+  still.ws.close();
+  await still.closed;
 });

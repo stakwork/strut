@@ -116,5 +116,5 @@ index. A change in this area updates this file, not AGENTS.md.
 | `BROWSER_STEP_TIMEOUT_MS` | `10000`   | Per-call cap; a call that overruns it (plus settle's slack) closes the run's context. |
 | `BROWSER_RUN_BUDGET_MS` | `600000`    | Per-run browser budget, spent from the run's first page; `browser/wait`'s default cap is what is left of it. |
 | `BROWSER_SESSION_IDLE_MS` | `720000`  | A page the JOB keeps (`browser/keep`, `browser/open { session }`) closes after this long without a call, and the job's hold on it goes. In place of the run budget. |
-| `BROWSER_SESSIONS_MAX` | `4`          | At most this many kept pages at once; a `keep` or `open { session }` past it is refused. |
+| `BROWSER_SESSIONS_MAX` | `4`          | At most this many kept pages and looks that stream (`GET /apps/look/stream`) at once; a `keep`, an `open { session }` or a stream past it is refused. |
 | `BROWSER_URL_DENY`   | `file:,169.254.0.0/16,fd00::/8` | What a navigation may never reach: URL schemes, IPv4/IPv6 CIDRs (IP literals only — no DNS) and exact hostnames, comma-separated; checked before a navigation and on the landed URL. What the browser container can reach otherwise, a page can. |

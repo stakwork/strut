@@ -206,6 +206,7 @@ import { audioRoutes, speakRoutes } from "./audio/routes.js";
 import { readLexicon } from "./steps/lib/dictation/_shared.js";
 import { onLadybug } from "./steps/lib/dictation/_graph.js";
 import { createAudioUpgradeHandler } from "./audio/ws.js";
+import { driveLookStream, LOOK_STREAM_PATH, type LookTarget } from "./browser/look-stream.js";
 import { roomsFor } from "./rooms.js";
 import { createChannels, type ChannelApp, type Channels, type ChannelTransport } from "./channels.js";
 import { pipeChannelToPeer } from "./channels-peer.js";
@@ -892,12 +893,13 @@ export interface Strut<TServices = unknown> {
   tts: TtsService | null;
 
   /** Strut's WebSocket paths for a Node server's `upgrade` event: `/rooms`
-   *  (plans/chained-orchestrators.md §3, src/rooms.ts) and `/channels`
-   *  (plans/app-channels.md §2, src/channels.ts). The upgrade request runs
-   *  through `app`'s own gate and hooks — `resolveScope` and `resolveActor`
-   *  see `c.env.incoming`, the Node request, as on HTTP — and the socket
-   *  joins the actor's room or the app's channels, or is refused with the
-   *  gate's status. False (nothing touched) for a path that is not strut's.
+   *  (plans/chained-orchestrators.md §3, src/rooms.ts), `/channels`
+   *  (plans/app-channels.md §2, src/channels.ts) and `/apps/look/stream`
+   *  (src/browser/look-stream.ts). The upgrade request runs through `app`'s
+   *  own gate and hooks — `resolveScope` and `resolveActor` see
+   *  `c.env.incoming`, the Node request, as on HTTP — and the socket joins
+   *  the actor's room or the app's channels, or streams an app's page as
+   *  the actor, or is refused with the gate's status. False (nothing touched) for a path that is not strut's.
    *  `listen()` hooks it; a host that owns the server routes its upgrades
    *  here, with its mount prefix as `basePath` (mcp: `/lab`). */
   upgrade: (req: IncomingMessage, socket: Duplex, head: Buffer, opts?: { basePath?: string }) => boolean;
@@ -7965,6 +7967,44 @@ export async function createStrut<TServices = unknown>(
     ws.on("error", () => conn.close(false));
   };
 
+  // ── A look that streams (src/browser/look-stream.ts) ────────────────────
+  //
+  // `GET /apps/look/stream?app=<name>&input=<deep link>` upgrades, through
+  // this app like a room, into the app's page held open in the browser as
+  // the person (BrowserService `streamApp`), its frames sent as JPEG while
+  // the socket is open (stadeum plans/call-canvas.md §6.2).
+
+  const lookWss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
+  const LOOK_SLOT = Symbol("strut.look");
+  type LookSlot = { look?: LookTarget; browser?: BrowserService };
+
+  app.get(LOOK_STREAM_PATH, async (c) => {
+    const slot = (c.env as Record<symbol, LookSlot | undefined> | undefined)?.[LOOK_SLOT];
+    if (!slot) return c.json({ error: `upgrade required: GET ${LOOK_STREAM_PATH} is a WebSocket` }, 426);
+    if ((await scopeOf(c)) === "peer") {
+      return c.json({ error: "forbidden: a strut server's credential names its actor by header; a look runs as a person — use a person's credential, or the deployment key with x-strut-actor" }, 403);
+    }
+    const name = c.req.query("app");
+    if (!name) return c.json({ error: "app=<name> is required" }, 400);
+    const version = c.req.query("version") || undefined;
+    const found = await apps.get(name, version).catch(() => null);
+    if (!found) return c.json({ error: version ? `App "${name}" has no version ${version}` : `App "${name}" not found` }, 404);
+    const browser = (services as Record<string, unknown>)["browser"];
+    if (!(browser instanceof BrowserService) || !serveUi || browser.cdp) {
+      return c.json({ error: "no browser here streams a look: it takes strut's own browser on a Playwright server or a local Chrome, and the UI served" }, 503);
+    }
+    const actor = await resolveActor(c);
+    const input = c.req.query("input");
+    slot.look = {
+      name: found.name,
+      version: found.version,
+      ...(actor ? { actor } : {}),
+      ...(input ? { link: Object.fromEntries(new URLSearchParams(input)) } : {}),
+    };
+    slot.browser = browser;
+    return c.body(null, 204);
+  });
+
   /** A refusal written on a socket the upgrade did not take. */
   const refuseUpgrade = (socket: Duplex, status: number, body: string) => {
     if (socket.destroyed) return;
@@ -7994,7 +8034,8 @@ export async function createStrut<TServices = unknown>(
   function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, opts: { basePath?: string } = {}): boolean {
     const url = new URL(req.url ?? "/", "http://localhost");
     const base = opts.basePath ?? "";
-    const which = url.pathname === `${base}/rooms` ? "rooms" : url.pathname === `${base}/channels` ? "channels" : undefined;
+    const which =
+      url.pathname === `${base}/rooms` ? "rooms" : url.pathname === `${base}/channels` ? "channels" : url.pathname === `${base}${LOOK_STREAM_PATH}` ? "look" : undefined;
     if (!which) return false;
     // A page of another origin — a neighbour box on the same site, whose
     // handshake the browser gives the person's cookie — opens a room or a
@@ -8009,6 +8050,14 @@ export async function createStrut<TServices = unknown>(
         const actor = slot.actor;
         if (!actor) return failed();
         roomsWss.handleUpgrade(req, socket, head, (ws) => rooms.join(actor, ws));
+        return;
+      }
+      if (which === "look") {
+        const slot: LookSlot = {};
+        if (!(await admitUpgrade(req, socket, LOOK_STREAM_PATH, url.search, { [LOOK_SLOT]: slot }))) return;
+        const { look, browser } = slot;
+        if (!look || !browser) return failed();
+        lookWss.handleUpgrade(req, socket, head, (ws) => driveLookStream(ws, browser, look));
         return;
       }
       const slot: ChannelSlot = {};
@@ -11844,6 +11893,8 @@ export async function createStrut<TServices = unknown>(
     for (const ws of roomsWss.clients) ws.terminate();
     // A channel's sockets too; the channels are memory, and go with the process.
     for (const ws of channelsWss.clients) ws.terminate();
+    // A look's socket too: its page closes with it.
+    for (const ws of lookWss.clients) ws.terminate();
     channels.close();
     const s = httpServer;
     if (!s) return;

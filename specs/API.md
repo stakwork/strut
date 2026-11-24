@@ -2128,6 +2128,7 @@ components as an app other apps import (`import { RunTimeline } from
 | PUT    | `/apps/:name/pin` | `{ pinned: boolean }` → `{ ok, name, pinned, live, release? }`: pin the app as a TAB, or unpin it — the record's flag (not a version pin), which a publish and a rollback keep and a delete clears. A host that lists this strut's apps (a portal's sidebar for the workspace this strut belongs to) shows each `pinned` one as a tab at its active version. Pinning an app that follows latest also HOLDS it at that version (§14.5): `release` is the one made, `live` its id; unpinning leaves what is live alone. `400` without a boolean, `404` for an unknown app, `409` when the version to hold no longer builds |
 | GET    | `/apps/:name/screenshots` | `?version=` → `{ name, version, screenshots: [{ file, caption? }] }`: the list the version's `app.yaml` names (the live version without `version`). `404` for an unknown app or version |
 | PUT    | `/apps/:name/screenshots` | `{ version?, screenshots: [{ file, caption? } \| { data, type, caption? }] }` → the publish's answer (`POST /apps`'s, `200`): a person's new list, saved as a NEW VERSION built on `version` (the live one without it) — a draft while the app is held. `{ file }` keeps an image the version has; `{ data, type }` is a new one, base64, `image/png`, `image/jpeg`, `image/webp` or `image/gif`, at most 2 MB, written into `screenshots/` at the app's root. Only `app.yaml`'s `screenshots:` key is rewritten, its comments and order kept; an image taken off the list is deleted only from `screenshots/`. A list that matches an earlier version's files makes no new version: `changed: false` names it. At most 8. `400` for a bad list, a `strut/` app, or one that does not build (the build's errors in `error`); `404` for an unknown app or version. strut's UI: the Versions flyout's Screenshots section |
+| GET    | `/apps/look/stream?app=<name>[&version=vN][&input=…]` | a WebSocket: the version as a person opening it sees it, held open while the socket is, its frames sent as 1280×720 JPEG when the page paints (§14.18) |
 | POST   | `/apps/:name/screenshots/take` | `{ version?, viewport?: { width, height }, input?, fullPage? }` → `{ type: "image/png", data, bytes, width, height }`: a screenshot of the version as a person opening it sees it (`app/look` in this server's browser, as the caller), handed back for a `PUT` to include; nothing is kept. `400` when the look fails (no browser here, an unknown app), `422` when it shows nothing worth keeping (`No screenshot: …` — the host could not show the app, or the page drew nothing) |
 | GET    | `/apps/:name/grants` | `{ name, grants: [{ workflow, at, by?, proposal? }] }` — the SEALED workflows a person granted the app (§14.8), by its name: an app need not be published yet |
 | POST   | `/apps/:name/grants` | `{ workflow }` → 201 `{ ok, name, grant }`: a person grants the app a sealed workflow (the assistant, `orchestrator`); the actor is `by`. `404` for a workflow that is not there, `400` for one that is not sealed (a manifest grants that itself) |
@@ -3379,6 +3380,62 @@ never be sent this way. In the kit, the color is `bg-primary` /
 every `rounded-*`. An app that names a color of its own (`bg-blue-500`)
 keeps it. A visitor's page (§17) is not branded: it has no credential to
 read the brand with.
+
+### 14.18 A look that streams — an app's page as video frames (`src/browser/look-stream.ts`)
+
+An app shown to people who cannot open it, a call's shared screen (stadeum
+`plans/call-canvas.md` §6.2): strut's browser opens the app as a person
+opening it sees it, the way `app/look` does, keeps the page open while a
+WebSocket is, and sends what the page shows as JPEG frames. Any app the
+caller may open; nothing about it is a call's.
+
+```
+GET /apps/look/stream?app=<name>[&version=vN][&input=<deep link>]     (a WebSocket)
+```
+
+- **As the person.** The upgrade passes the one gate, as any route does: a
+  person token (its own actor), the deployment key with `x-strut-actor`
+  (the voice service), or an admin's signed-in session. The plain peer key
+  is a `403`, and so are a host key and a member's or a visitor's
+  session. The page is strut's UI from `https://strut.invalid`, every
+  request it makes answered by strut in this process as that person
+  (§14.3, `app/look`): the browser holds no credential and has no route to
+  strut.
+- **The app:** `app` its name, `version` a published version (the live one
+  without it), `input` what a deep link to it carries (`k=v&k2=v2`,
+  URL-encoded): the query the kit's `appLink(name, input)` writes, so the
+  app opens where that link takes a person.
+- **Refused before the upgrade**, as JSON with the status: `401` no
+  credential, `403` one that may not (above), `400` no `app`, `404` an app
+  or a version that is not there, `503` no browser here that streams one (it
+  takes strut's own browser on a Playwright server, `BROWSER_WS_URL`, or a
+  local Chrome, and the UI served; never a CDP Chrome or a Browser MCP
+  server). A plain `GET` without an upgrade is `426`.
+
+Once open, strut sends and never reads:
+
+| Message | What |
+| ------- | ---- |
+| binary  | One frame: a JPEG, 1280×720, of the page as it is. A frame comes when the page paints (Chrome's screencast), never more than 5 a second; when a burst paints faster, the last of it is the one sent. The first comes as the stream opens, the app as it drew; a page that does not change sends nothing more until something moves. |
+| text    | `{"type":"error","error":"<why>"}`: the stream could not open (the host shows no app, the browser could not be reached, every place is taken) or ended on its own (the page closed or crashed, the browser went away). A close follows at once. |
+
+- **Close:** the client closing the socket closes the page. Strut closes
+  with `1011` and the same `<why>` as the reason (cut to 123 bytes) after
+  an error message. No clock ends a stream: it has no idle timer and no
+  run budget.
+- **Places:** an open stream counts against `BROWSER_SESSIONS_MAX` (4) with
+  the jobs' kept pages (`browser/keep`). One past it is the error message,
+  `… kept pages and streams are open (BROWSER_SESSIONS_MAX)`, then `1011`.
+- A frame the socket cannot take (over 4 MB waiting: a client that stopped
+  reading) is dropped; the next paint sends another. A client that shows
+  the frames as video sends the last one again itself to keep a picture up
+  (the voice service does, every second).
+
+```js
+const ws = new WebSocket("ws://strut:3000/apps/look/stream?app=stadeum%2Fcanvas&input=" + encodeURIComponent("present=job-12"),
+  { headers: { authorization: `Bearer ${STRUT_API_KEY}`, "x-strut-actor": person } });
+ws.on("message", (data, binary) => (binary ? show(data) : console.error(JSON.parse(String(data)).error)));
+```
 
 ## 15. Dictation — speech to text, its models and the user's vocabulary
 

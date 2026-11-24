@@ -93,6 +93,23 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   in-process with the run's actor — so it works over a Playwright server,
   a CDP Chrome or a local one alike, with no route from the browser to
   strut and no credential in it. A session of its own, closed after.
+- **A look that streams** (`streamApp`, `GET /apps/look/stream`,
+  `src/browser/look-stream.ts`; stadeum plans/call-canvas.md §6.2): an app
+  opened as `lookAtApp` opens it (the same `openApp`), at 1280×720, kept
+  open while a WebSocket is, its frames sent as JPEG from Chrome's
+  screencast (`Page.startScreencast` on `context.newCDPSession(page)`,
+  which a Playwright server carries as it carries every call). Chrome sends
+  a frame only when the page paints; each is acked at once, and at most 5 a
+  second go out, the last of a burst always. It counts against
+  `BROWSER_SESSIONS_MAX` with the kept pages, under a key no run has
+  (`\0stream:<n>`), with no budget and no idle timer; closing the socket
+  closes the page, and the page closing, crashing or the browser going
+  away closes the socket (`1011`, the reason in a text message first). The
+  upgrade is admitted through createStrut's one gate as the person
+  (`upgrade`, as `/rooms` and `/channels` are), not with `/audio/stream`'s
+  key check: the page runs as someone. Not over CDP; strut's own
+  `BrowserService` only (a host's browser or `McpBrowser` is a `503`).
+  `npm run test:app-look` runs it against a real browser.
 - **Credentials:** a logged-in session is a Playwright storage state saved
   under Secrets (`browser/state` writes one for a human to paste) and loaded
   by `browser/open { storageStateSecret }` — the value never reaches a model.
@@ -115,4 +132,4 @@ browser/* — one Playwright call per step, each a thin wrapper over one verb of
 
 ### `src/browser/`
 
-the browser behind `ctx.services.browser` (the browser/* steps): mcp.ts — `McpBrowser` (a Browser MCP server over HTTP, `BROWSER_MCP_URL`) and `browserFromEnv`, which createStrut calls to build its own browser; service.ts — `StrutBrowser` (the verbs the steps call: what a host's own browser implements) and `BrowserService`, strut's own: ONE lazy Playwright connection and a context + page per run keyed by runId, closed by createStrut's run-end teardown (`dispose`); three backends from env (`fromEnv`): a Playwright SERVER (`BROWSER_WS_URL` + `BROWSER_WS_PATH`, images/browser), a real Chrome over CDP (`BROWSER_CDP_URL`: one page per run in the profile's own context — no viewport, storage state or state export), else a local headless Chrome; a per-call timeout whose loser closes the context, a per-run budget; a check (verify, walkthrough) in a session of its OWN, signed out, as the verify pass will replay it; a KEPT page (`job:<job>/<session>`) the job holds across runs — runs attach to it, `dispose` only detaches, an idle timer instead of the budget, at most `BROWSER_SESSIONS_MAX`, not over CDP. captcha.ts (the captcha manifest, to hive's parser), settle.ts (network idle → fonts → two frames, each bounded), shot.ts (where a PNG lands — the run's artifacts or the job's directory, `job.update` to a listening host — and the 0.6× model copy via sharp), walkthrough.ts (the recording directory + manifest), verdict.ts (verify's verdict, pure), deny.ts (`BROWSER_URL_DENY`: schemes, CIDRs, hosts — checked before a navigation and on the landed URL), seed.ts (seeds the four browser workflows at boot, `browserWorkflows: false` opts out). `npm run test:browser` runs service.live.test.ts against a real server
+the browser behind `ctx.services.browser` (the browser/* steps): mcp.ts — `McpBrowser` (a Browser MCP server over HTTP, `BROWSER_MCP_URL`) and `browserFromEnv`, which createStrut calls to build its own browser; service.ts — `StrutBrowser` (the verbs the steps call: what a host's own browser implements) and `BrowserService`, strut's own: ONE lazy Playwright connection and a context + page per run keyed by runId, closed by createStrut's run-end teardown (`dispose`); three backends from env (`fromEnv`): a Playwright SERVER (`BROWSER_WS_URL` + `BROWSER_WS_PATH`, images/browser), a real Chrome over CDP (`BROWSER_CDP_URL`: one page per run in the profile's own context — no viewport, storage state or state export), else a local headless Chrome; a per-call timeout whose loser closes the context, a per-run budget; a check (verify, walkthrough) in a session of its OWN, signed out, as the verify pass will replay it; a KEPT page (`job:<job>/<session>`) the job holds across runs — runs attach to it, `dispose` only detaches, an idle timer instead of the budget, at most `BROWSER_SESSIONS_MAX`, not over CDP; a look that STREAMS (`streamApp`: an app's page held open, Chrome's screencast handed on as JPEG, counted with the kept pages, no budget or idle timer). look-stream.ts (`GET /apps/look/stream`'s socket: a frame a binary message, an error a text one then `1011`, the page closed with the socket). captcha.ts (the captcha manifest, to hive's parser), settle.ts (network idle → fonts → two frames, each bounded), shot.ts (where a PNG lands — the run's artifacts or the job's directory, `job.update` to a listening host — and the 0.6× model copy via sharp), walkthrough.ts (the recording directory + manifest), verdict.ts (verify's verdict, pure), deny.ts (`BROWSER_URL_DENY`: schemes, CIDRs, hosts — checked before a navigation and on the landed URL), seed.ts (seeds the four browser workflows at boot, `browserWorkflows: false` opts out). `npm run test:browser` runs service.live.test.ts against a real server
