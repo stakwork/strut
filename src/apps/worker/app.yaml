@@ -10,7 +10,7 @@ description: >-
   fields needs no app built for it: name `strut/worker` as its app. Strut
   ships it and seeds it on every server; nobody outside sees it until an
   admin puts it in the public view.
-icon: hammer
+icon: list-checks
 permissions: [camera]
 # Strut's account widget: who is signed in, what they earned, and Withdraw.
 account:
