@@ -222,7 +222,7 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
         ["1 task of pets expires unanswered within the hour.", "See them", "warn"],
         ["boxes: no app boxer on this server.", "Open the type", "warn"],
         ["boxes is turned off with 2 open tasks: none is handed out, and each expires when due.", "Open the type", "warn"],
-        ["2 people signed in and are waiting to be let in.", "Let them in", "warn"],
+        ["2 people signed in and are waiting to be let in.", "Review", "warn"],
         ["5 answers have not been reviewed.", "Start reviewing", "plain"],
       ],
     );

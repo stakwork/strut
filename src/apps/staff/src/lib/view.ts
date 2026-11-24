@@ -141,7 +141,7 @@ export function needsYou(stats: TaskStats, o: { groups?: boolean; waiting?: read
   if (fresh > 0) {
     const first = [...(o.waiting ?? [])].sort((a, b) => a.firstSeen - b.firstSeen)[0];
     const text = `${plural(fresh, "person", "people")} signed in and ${fresh === 1 ? "is" : "are"} waiting to be let in.`;
-    out.push(first ? { text, action: "Review", to: { tab: "workers", reviewing: first.actor }, tone: "warn" } : { text, action: "Let them in", to: { tab: "workers" }, tone: "warn" });
+    out.push({ text, action: "Review", to: first ? { tab: "workers", reviewing: first.actor } : { tab: "workers" }, tone: "warn" });
   }
   const review = toReviewOf(stats) ?? 0;
   if (review > 0) out.push({ text: `${plural(review, "answer")} ${review === 1 ? "has" : "have"} not been reviewed.`, action: "Start reviewing", to: o.groups ? { tab: "groups" } : { tab: "tasks", review: "none" }, tone: "plain" });
