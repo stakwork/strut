@@ -625,6 +625,7 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
 
   return (
     <div className="flex flex-1 flex-col gap-6 pb-[max(1rem,env(safe-area-inset-bottom))]" data-testid="work-home">
+      {info.xp && <LevelCard xp={info.xp} {...(info.pendingMsat ? { pendingMsat: info.pendingMsat } : {})} />}
       {holding && (
         <InHand
           holding={holding}
@@ -686,6 +687,51 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
           )}
         </section>
       )}
+    </div>
+  );
+}
+
+/**
+ * Their level (plans/worker-progress.md): XP is every sat they ever earned
+ * here, and the bar how far they are from where this level starts to where
+ * the next does. Drawn only when `task/me` says it: a missing XP is not
+ * Level 0. Still, as numbers are: nothing moves on the dashboard.
+ */
+function LevelCard({ xp, pendingMsat }: { xp: NonNullable<WorkerInfo["xp"]>; pendingMsat?: number }) {
+  const w = useWorkerWords();
+  const fmt = useFormats();
+  const to = xp.toSats;
+  const share = to === undefined ? 1 : Math.min(1, Math.max(0, (xp.sats - xp.fromSats) / (to - xp.fromSats)));
+  const pendingSats = Math.floor((pendingMsat ?? 0) / 1000);
+  return (
+    <div className={cn("flex flex-col gap-2.5 rounded-2xl border px-4 py-3.5", ACCENT_EDGE, ACCENT_TINT)} data-testid="level">
+      <div className="flex items-center gap-3">
+        <div className={cn("grid size-11 shrink-0 place-items-center rounded-[14px] text-lg font-bold tabular-nums", ACCENT_FILL)}>{xp.level}</div>
+        <div className="min-w-0">
+          <div className="text-[17px] leading-tight font-semibold">{w.level(xp.level)}</div>
+          <div className="text-[13px] text-muted-foreground tabular-nums">{w.xp(fmt.number(xp.sats))}</div>
+        </div>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={to === undefined ? w.topLevel : w.toLevel(xp.level + 1)}
+        aria-valuemin={xp.fromSats}
+        aria-valuemax={to ?? xp.sats}
+        aria-valuenow={xp.sats}
+        className="h-2 overflow-hidden rounded-full bg-foreground/10"
+      >
+        <div className={cn("h-full rounded-full", ACCENT_FILL)} style={{ width: `${share * 100}%` }} />
+      </div>
+      <div className="flex flex-wrap justify-between gap-x-3 gap-y-0.5 text-[13px] text-muted-foreground">
+        {to === undefined ? (
+          <span>{w.topLevel}</span>
+        ) : (
+          <span>
+            <span className="font-semibold text-foreground tabular-nums">{w.xp(fmt.number(to - xp.sats))}</span> {w.toLevel(xp.level + 1)}
+          </span>
+        )}
+        <span className="tabular-nums">{pendingSats > 0 ? w.xpWaiting(fmt.number(pendingSats)) : w.xpPerSat}</span>
+      </div>
     </div>
   );
 }

@@ -790,6 +790,22 @@ for (const impl of impls) {
       assert.deepEqual(await store.payoutSettings(), saved, "a refused save changes nothing");
     });
 
+    it("earned is everything accepted less what was taken back: a restore gives it back, a payout never lowers it", async () => {
+      assert.equal(await store.payeeEarned("ann"), 0, "nothing earned");
+      await store.setPayoutSettings(ON);
+      await earn("l1", { msat: 5_000_000, hold: HOUR });
+      await earn("l2", { msat: 2_000_000, at: T0 + 1, hold: HOUR });
+      assert.equal(await store.payeeEarned("ann"), 7_000_000, "held earnings count");
+      await store.takeBack({ lease: "l2", why: "not a page", at: T0 + 2 });
+      assert.equal(await store.payeeEarned("ann"), 5_000_000);
+      await store.restore({ lease: "l2", at: T0 + 3 });
+      assert.equal(await store.payeeEarned("ann"), 7_000_000, "restored");
+      const r = await reserve(1, 4_000_000, { at: T0 + 2 * HOUR });
+      assert.ok(r.ok);
+      assert.equal((await store.payeeBalance("ann", { now: T0 + 2 * HOUR })).totalMsat, 3_000_000 - defaultMaxFeeMsat(4_000_000), "the balance drops by the payout and its fee cap");
+      assert.equal(await store.payeeEarned("ann"), 7_000_000, "earned does not");
+    });
+
     it("the reserve takes only what is withdrawable: a held earning is not, one a millisecond past its release is", async () => {
       await store.setPayoutSettings(ON);
       await earn("l1", { msat: 5_000_000, hold: HOUR });

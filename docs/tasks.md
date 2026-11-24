@@ -170,6 +170,20 @@ index. A change in this area updates this file, not AGENTS.md.
   `task/next`'s `payOn`, and WorkerPage's "Waiting for OK" figure, badge
   and sent screen. Staff set it in the type editor ("Paid when"), and
   `task/set-type` takes it (its card says "for each one marked OK").
+- **Levels** (plans/worker-progress.md; `src/tasks/levels.ts`, `xpOf` in
+  tasks.ts, the ledger's `payeeEarned`). A worker's XP is everything they
+  ever earned here, in whole sats: accepted pay less what was taken back (a
+  restore gives it back; a held earning counts; a payout never lowers it;
+  an invite's starting sats are not pay). Their LEVEL is a threshold on it:
+  Level 0 below 10k sats; Level 1 at 10k (about one book of pages), then
+  12k, 15k, 20k, 25k, 30k, 40k, 50k, 60k, 80k, and ten times as much every
+  ten levels (100k at 11, 1M at 21, 1 BTC at 41); the last, 115, at 21M BTC
+  (`LEVEL_SATS`, `levelOf`).
+  `task/me` answers `xp { sats, level, fromSats, toSats? }` (`toSats` absent
+  at the top) wherever the server has a ledger — one not opened yet is
+  Level 0 — and nothing on a host's own store. Shown, never a grant: who
+  takes which type stays grants, tests and standing. Tasks draws it on top
+  of the dashboard (docs/apps.md, `LevelCard`).
 - **Groups of tasks** (`task/reply`'s `group`; `group` on the task,
   `tasks.group_key` in the store with its partial index `tasks_group`,
   `groups` and `reviewGroup` on the service, `src/tasks/task-groups.test.ts`).
