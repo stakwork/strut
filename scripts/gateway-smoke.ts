@@ -14,9 +14,19 @@
  * image a tool returned on the Anthropic turn, (e) an agent run
  * that compacts (plans/compaction.md; the overlay's STRUT_COMPACT_AT), (f) an
  * `image` step that edits a photo the run was launched with (openai), and an
- * xai edit refused, (c) an xai chat turn (OpenAI-compatible route), (d) the
- * gateway's log has the calls under their session dims (the workflow name,
- * the chat id).
+ * xai edit refused, (g) a run under a job with a BUDGET: its chain carries a
+ * link of the job's own, its cost is the job's spend, and a spent job starts
+ * nothing more; with STRUT_TEST_GATEWAY_BUDGETS=1, (g2) the gateway refuses a
+ * call at the job's link and strut reads it as `job_budget_spent:`, (c) an
+ * xai chat turn (OpenAI-compatible route), (d) the gateway's log has the
+ * calls under their session dims (the workflow name, the chat id).
+ *
+ * The delegations here are signed by a throwaway org key, which setup puts
+ * in the gateway's trust registry (`POST /_plugin/trust`, as org_test), so a
+ * gateway that ENFORCES macaroons verifies every chain for real. The overlay
+ * runs it in shadow mode (verify and log, never refuse); to enforce, start
+ * the gateway with BIFROST_PLUGIN_ENFORCE_MACAROONS=true, and for (g2) a
+ * Redis (BIFROST_PLUGIN_REDIS_URL) and BIFROST_PLUGIN_ENFORCE_BUDGETS=true.
  *
  * Routed through a gateway, strut never uses Anthropic's server-executed web
  * tools (`createWebTools({ routed })` → aieo's Exa + HTTP shims), because
@@ -31,11 +41,22 @@
  * sees it — what the delegation records), STRUT_API_KEY (strut-dev-key),
  * BIFROST_ADMIN_USER/PASS (admin / bifrost-dev-password),
  * STRUT_TEST_GATEWAY_MODEL (claude-sonnet-5), STRUT_TEST_GATEWAY_XAI_MODEL
- * (xai/grok-4.7; "off" skips c). (a2) needs EXA_API_KEY in ./.env — the
- * compose overlay hands it to strut.
+ * (xai/grok-4.7; "off" skips c), STRUT_TEST_GATEWAY_PROBE_MODEL
+ * (claude-haiku-4-5, g2's raw calls), BIFROST_PROVISIONING_TOKEN
+ * (dev-provisioning-token, for the trust registry). (a2) needs EXA_API_KEY
+ * in ./.env — the compose overlay hands it to strut.
  */
 import { randomBytes } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
+import { Hono } from "hono";
+import { bytesToHex, ecdsaPublicKey } from "gatekey";
+import { jobRoot, setJobBudget } from "../src/jobs.js";
+import { createMothership, explainJobSpent, jobLinkId } from "../src/mothership.js";
+import { MemorySecretStore } from "../src/secret-store.js";
+import type { WorkspaceStore } from "../src/workspace.js";
 // stakgraph's gateway reads macaroon v1 only (src/mothership-v1.ts).
 import { mintDelegationV1 as mintDelegation } from "../src/test-util/mint-delegation.js";
 
@@ -52,6 +73,8 @@ const KEY = env("STRUT_API_KEY", "strut-dev-key");
 const ADMIN = "Basic " + Buffer.from(`${env("BIFROST_ADMIN_USER", "admin")}:${env("BIFROST_ADMIN_PASS", "bifrost-dev-password")}`).toString("base64");
 const MODEL = env("STRUT_TEST_GATEWAY_MODEL", "claude-sonnet-5");
 const XAI_MODEL = env("STRUT_TEST_GATEWAY_XAI_MODEL", "xai/grok-4.7");
+const PROBE_MODEL = env("STRUT_TEST_GATEWAY_PROBE_MODEL", "claude-haiku-4-5");
+const BUDGETS = env("STRUT_TEST_GATEWAY_BUDGETS", "") === "1";
 
 const tag = Date.now().toString(36);
 const ACTOR = `smoke-${tag}`;
@@ -171,10 +194,19 @@ const vkValue: string = vk?.virtual_key?.value ?? vk?.value;
 if (!vkValue) throw new Error(`no VK value in ${JSON.stringify(vk)}`);
 
 // The gateway ships enforce_macaroons: false (shadow mode), so a macaroon
-// signed by a throwaway org key verifies-and-warns, never rejects.
+// signed by a throwaway org key verifies-and-warns, never rejects. Trusted
+// here, it verifies for real on a gateway that enforces.
 const orgPriv = randomBytes(32);
 orgPriv[0] = 1;
 const d = mintDelegation({ actor: ACTOR, orgPriv, userPriv: randomBytes(32) });
+{
+  const res = await fetch(`${GATEWAY}/_plugin/trust`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${env("BIFROST_PROVISIONING_TOKEN", "dev-provisioning-token")}`, "content-type": "application/json" },
+    body: JSON.stringify({ org_id: "org_test", pubkey: bytesToHex(ecdsaPublicKey(orgPriv)), issuer_url: "", revocation_poll_seconds: 60 }),
+  }).catch((err: unknown) => err as Error);
+  if (res instanceof Error || !res.ok) console.warn(`the gateway's trust registry took no key (${res instanceof Error ? res.message : res.status}): an enforcing gateway will refuse every call`);
+}
 await json(
   await fetch(`${STRUT}/llm/delegations/${encodeURIComponent(ACTOR)}`, {
     method: "PUT",
@@ -503,6 +535,88 @@ steps:
   check("(f) openai edit: kept the source (grok sees red)", /red/i.test(said), JSON.stringify(said).slice(0, 160));
   const refused = errorsOf(await edit("xai/grok-imagine-image")).join(" | ");
   check("(f) xai edit: refused before it is sent", refused.includes("cannot edit a source image through this deployment's LLM gateway"), refused.slice(0, 200));
+}
+
+// ── (g) a job's budget (stadeum plans/experiments.md) ──────────────────────
+// A run under a job with a budget carries a link of the job's own between
+// the delegation and the run's (src/mothership.ts): the gateway takes the
+// chain (verified for real when it enforces macaroons), the run's cost is
+// the job's spend, and a job that has spent its budget starts nothing more.
+
+{
+  const noop = `${WORKFLOW}-noop`;
+  const calls = `${WORKFLOW}-calls`;
+  const call = (id: string) => `  - id: ${id}\n    type: llm\n    config:\n      model: ${MODEL}\n      prompt: Reply with the word OK and nothing else.\n`;
+  await json(await fetch(`${STRUT}/workflows`, { method: "POST", headers: strutHeaders, body: JSON.stringify({ name: noop, yaml: `name: ${noop}\nsteps:\n  - id: none\n    type: pack\n    config: { ok: true }\n` }) }), "publish noop workflow");
+  await json(await fetch(`${STRUT}/workflows`, { method: "POST", headers: strutHeaders, body: JSON.stringify({ name: calls, yaml: `name: ${calls}\nsteps:\n${call("one")}${call("two")}` }) }), "publish calls workflow");
+  const job = `smoke-job-${tag}`;
+  const launch = async (name: string) => {
+    const { runId } = await json(
+      await fetch(`${STRUT}/workflows/${name}/run`, { method: "POST", headers: strutHeaders, body: JSON.stringify({ input: {}, job }) }),
+      `launch ${name} under ${job}`,
+    );
+    return { runId: runId as string, events: await sse(`${STRUT}/workflows/${name}/runs/${runId}/stream`) };
+  };
+  const budgetOf = async () => ((await json(await fetch(`${STRUT}/jobs/${job}?threads=0`, { headers: strutHeaders }), "GET job")) as { budget?: { usd: number; spentUsd: number; leftUsd: number } }).budget;
+  const setBudget = async (usd: number) =>
+    json(await fetch(`${STRUT}/jobs/${job}/budget`, { method: "PUT", headers: strutHeaders, body: JSON.stringify({ usd }) }), "PUT budget");
+
+  // The job on file, nothing spent: its budget is all the gateway's job link has counted.
+  const made = await launch(noop);
+  check("(g) budget: a run with no model call makes the job", made.events.some((e) => e.type === "run.end"), errorsOf(made.events).join(" | "));
+  await setBudget(1);
+  const spent = await launch(calls);
+  const errs = errorsOf(spent.events);
+  check("(g) budget: a run under the budgeted job goes through the gateway", spent.events.some((e) => e.type === "run.end") && !errs.length, errs.join(" | "));
+  const cost = ((await json(await fetch(`${STRUT}/workflows/${calls}/runs/${spent.runId}`, { headers: strutHeaders }), "GET run")) as { totals?: { cost?: number } }).totals?.cost ?? 0;
+  // Written on the job's record just after the run ends.
+  let budget = await budgetOf();
+  for (let i = 0; i < 20 && !budget?.spentUsd; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    budget = await budgetOf();
+  }
+  check("(g) budget: the run's cost is the job's spend", cost > 0 && budget?.spentUsd === cost, JSON.stringify({ cost, budget }));
+  // Lowered to what it has spent: nothing more runs under it.
+  await setBudget(budget?.spentUsd || 0.000001);
+  const refused = String((await launch(calls)).events.find((e) => e.type === "run.error")?.error?.message ?? "");
+  check("(g) budget: a job that has spent its budget starts nothing more", refused.startsWith(`job_budget_spent: job "${job}" has spent`), refused.slice(0, 200));
+}
+
+// ── (g2) the gateway refuses at the job's link ─────────────────────────────
+// Strut's own Mothership, in this process, over a job whose budget is a hair
+// above zero: the first call goes (the cap walk reads past spend), and the
+// next — another run of the same job, its own link untouched — is refused at
+// the job's link, which strut reads as `job_budget_spent:`. Needs a gateway
+// that enforces budgets (STRUT_TEST_GATEWAY_BUDGETS=1).
+
+if (BUDGETS) {
+  const dir = await mkdtemp(join(tmpdir(), "strut-smoke-budget-"));
+  try {
+    const ms = createMothership({ dataDir: dir, store: new MemorySecretStore() });
+    ms.mount({ app: new Hono(), workspace: { getWorkflowMetadata: async () => null } as unknown as WorkspaceStore });
+    await ms.delegations.put(ACTOR, { macaroon: d.macaroon, delegationId: d.delegationId, apiKey: vkValue, baseUrl: GATEWAY, exp: d.exp });
+    const job = `probe-${tag}`;
+    await setJobBudget(jobRoot(dir, job), job, 0.000001);
+    const ask = async (runId: string) => {
+      const auth = (await ms.llmAuth({ kind: "step", provider: "anthropic", runId, workflow: "probe", stepPath: "probe/call", actor: ACTOR, principal: ACTOR, budgetJob: job }))!;
+      const res = await fetch(`${auth.baseUrl}/anthropic/v1/messages`, {
+        method: "POST",
+        headers: { ...auth.headers, "x-api-key": auth.apiKey ?? "", "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({ model: PROBE_MODEL, max_tokens: 5, messages: [{ role: "user", content: "Reply with the word OK." }] }),
+      });
+      const text = await res.text();
+      return { status: res.status, text, explained: auth.explainError?.(Object.assign(new Error(text), { responseBody: text })) };
+    };
+    const first = await ask(`probe-a-${tag}`);
+    check("(g2) gateway budget: the first call of the job goes", first.status === 200, `${first.status} ${first.text.slice(0, 200)}`);
+    const next = await ask(`probe-b-${tag}`);
+    check("(g2) gateway budget: another run's call is refused at the job's link", next.status === 402 && next.text.includes(jobLinkId(job)), `${next.status} ${next.text.slice(0, 300)}`);
+    check("(g2) gateway budget: strut reads it as job_budget_spent:", (next.explained ?? explainJobSpent(new Error(next.text), job) ?? "").startsWith(`job_budget_spent: job "${job}"`), String(next.explained).slice(0, 200));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+} else {
+  console.log("(g2) skipped: set STRUT_TEST_GATEWAY_BUDGETS=1 against a gateway that enforces budgets");
 }
 
 // ── (c) xai chat turn (OpenAI-compatible route; web_fetch is aieo's shim) ──
