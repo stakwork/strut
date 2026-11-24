@@ -88,12 +88,52 @@ export interface JobRecord {
    *  whose checks failed (plans/pr-checks.md), by the pull request's URL:
    *  taken before the turn launches, `runId` once it has. Absent until one. */
   prFixes?: Record<string, PrFix>;
+  /** What steps of the job's turns asked strut to look at again until it
+   *  settles, then send the job one turn (plans/job-follow-ups.md). Absent
+   *  when none is pending. */
+  followUps?: FollowUp[];
 }
 
 /** One automatic fix (`JobRecord.prFixes`). */
 export interface PrFix {
   at: string;
   runId?: string;
+}
+
+/** A step's ask to look again later (`JobRecord.followUps`,
+ *  src/follow-ups.ts): kept until its one turn is sent. */
+export interface FollowUp {
+  /** The asker's name for it: the same id again replaces it. */
+  id: string;
+  /** The step strut runs again, and its input. It has settled when its
+   *  output says `settled: true`. */
+  look: { type: string; input: unknown };
+  everyMs: number;
+  /** When it was asked for, and when strut stops looking. */
+  at: string;
+  until: string;
+  /** The run that asked: the person a look runs as, and the conversation
+   *  the turn's end wakes — read by strut from its `run.start`. */
+  by: { runId: string; actor?: string; principal?: string; conversation?: string; model?: string };
+  /** The turn's prompt, once it settled or timed out: sent when no run of
+   *  the job is in flight. */
+  ready?: string;
+}
+
+/** What a step asks for (`JobsCapability.followUp`). */
+export interface FollowUpAsk {
+  job: string;
+  /** The run asking (`ctx.runId`), one of the job's: the look runs as its
+   *  person, and the turn's end wakes its conversation. */
+  runId: string;
+  /** The same id again replaces the earlier one. Default: the look's type. */
+  id?: string;
+  look: { type: string; input?: unknown };
+  /** How often to look: 30 to 3600 seconds, default 60. */
+  everySeconds?: number;
+  /** When to stop looking and send the job a turn saying so: 1 to 1440
+   *  minutes, default 60. */
+  limitMinutes?: number;
 }
 
 /** One run of a job, as the runner records it at `run.start`. A child run
@@ -258,6 +298,47 @@ export async function editPrFixes<T>(root: string, edit: (fixes: Record<string, 
   });
 }
 
+/**
+ * Change a job's `followUps` under its record's lock
+ * (plans/job-follow-ups.md), `editPrFixes`' twin: `edit` changes the list
+ * in place, and what it returns comes back. A job with one is marked in
+ * `jobs/.follow-ups/` (marked before the record is written, so a crash
+ * leaves at most a mark with nothing behind it, which the next look
+ * drops). Not a use. Undefined, and nothing written, for a job with no
+ * record.
+ */
+export async function editFollowUps<T>(root: string, edit: (list: FollowUp[]) => T): Promise<T | undefined> {
+  return withLock(`${root}.json`, async () => {
+    const rec = await readJobRecord(root);
+    if (!rec) return undefined;
+    const list = [...(rec.followUps ?? [])];
+    const out = edit(list);
+    if (list.length) {
+      await mkdir(dirname(followUpFile(root)), { recursive: true });
+      await writeFile(followUpFile(root), "");
+      rec.followUps = list;
+    } else delete rec.followUps;
+    await writeJobRecord(root, rec);
+    if (!list.length) await rm(followUpFile(root), { force: true });
+    return out;
+  });
+}
+
+/** The records of the jobs marked as having a follow-up. A mark whose
+ *  record has none, or is gone, is dropped. */
+export async function* jobsFollowingUp(dataDir: string): AsyncGenerator<JobRecord> {
+  const base = join(dataDir, "jobs");
+  for (const mark of await readdir(join(base, FOLLOW_UPS_DIR)).catch(() => [] as string[])) {
+    const root = join(base, mark);
+    const rec = await readJobRecord(root);
+    if (rec?.followUps?.length) yield rec;
+    else
+      await withLock(`${root}.json`, async () => {
+        if (!(await readJobRecord(root))?.followUps?.length) await rm(followUpFile(root), { force: true });
+      });
+  }
+}
+
 /** Stamp a job as used now, adding `repo` when given. Returns the record. */
 export async function touchJob(
   root: string,
@@ -292,6 +373,9 @@ export async function touchJob(
 const USED_DIR = ".used";
 const SWEEP_DIR = ".sweep";
 const INDEXED_FILE = ".indexed";
+/** The jobs with a follow-up pending (`editFollowUps`): one empty file each. */
+const FOLLOW_UPS_DIR = ".follow-ups";
+const followUpFile = (root: string): string => join(dirname(root), FOLLOW_UPS_DIR, basename(root));
 
 /** A job's entry in `.used` at `usedAt`. Fixed-width milliseconds, so a
  *  day's names sort by time. */
@@ -642,6 +726,15 @@ export interface JobsCapability extends Partial<JobIndex> {
    *  job-shaped workflow the turn runs: the launch's, or the record's for a
    *  continue. */
   launch?(opts: JobLaunch): Promise<{ runId: string; callback: boolean; workflow: string }>;
+  /** Look at something again later and wake the job once it settles
+   *  (plans/job-follow-ups.md): strut runs `look` every `everySeconds`, as
+   *  the person of the run that asks, until its output says `settled:
+   *  true` or `limitMinutes` pass, then sends the job ONE turn carrying the
+   *  answer, its end waking that run's conversation. For a step whose work
+   *  goes on after it returns (a build), so the agent ends its turn instead
+   *  of waiting. Set by the server; a package's step holds it to its own
+   *  run and its package's own steps. */
+  followUp?(ask: FollowUpAsk): Promise<{ id: string; until: string }>;
 }
 
 /** What `JobsCapability.launch` takes. */

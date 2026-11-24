@@ -36,7 +36,7 @@ import { parseStepRef } from "./step-ref.js";
 import { zodToFields } from "./ai/schemaHelpers.js";
 import { resolveModel, listModelOptions, defaultModel, createWebTools, type LlmAuth } from "./llm.js";
 import type { StepSources } from "./steps/registry.js";
-import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
+import { bindPrincipal, runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { inviteOf, principalRequired } from "./auth.js";
@@ -196,7 +196,7 @@ import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from ".
 import { isStrutType } from "./graph/strut-schemas.js";
 import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
 import { createGraphChangeFeed, GRAPH_FEED_READ_MAX, type NodeValues, type OnWrites } from "./graph-writes.js";
-import { nodeFilesCapability, nodeFileStore } from "./node-files.js";
+import { bindNodeFiles, nodeFilesCapability, nodeFileStore } from "./node-files.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
 import { buildClaimsAuthoring, type ClaimsReconcileOutcome } from "./claims-authoring.js";
@@ -229,8 +229,9 @@ import { PROPOSAL_FEED_READ_MAX, createProposalFeed } from "./proposal-feed.js";
 import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, PROPOSAL_LIST_DEFAULT, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobHolder, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobsCapability } from "./jobs.js";
-import { createPrChecks } from "./pr-checks.js";
+import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, recordingJobSessions, releaseWith, setJobCallback, turnOf, wakeJobFeeds, withLock, type JobRecord, type JobsCapability } from "./jobs.js";
+import { createPrChecks, type Reporter } from "./pr-checks.js";
+import { createFollowUps } from "./follow-ups.js";
 import { createJobIndex, holdUrls } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { ARCHIVE_LOCAL_WINDOW, createRetention, fleetRetentionFromEnv, formatRetention, type Retainer } from "./retention.js";
@@ -1657,6 +1658,48 @@ export async function createStrut<TServices = unknown>(
   let boxHosts: readonly GitHost[] = STRUT_GIT_HOSTS;
   // A person's own machine: with no token, git keeps its own credentials.
   const gitLocal = opts.git?.local ?? bootEnv()["STRUT_GIT_LOCAL"] === "1";
+  /** Who ran one of a job's runs, and where its end went: its `run.start`
+   *  — the conversation its end woke (`startedBy.session`, else the
+   *  launch's `conversation`), its actor and principal, its `params.model`.
+   *  Strut's own read, so a package never names a person (pr-checks,
+   *  follow-ups). */
+  const turnPerson = async (rec: JobRecord, runId: string): Promise<Reporter | undefined> => {
+    const line = rec.runs?.find((r) => r.runId === runId);
+    if (!line) return undefined;
+    const start = await store.getRunStart(line.workflow, runId).catch(() => null);
+    if (!start) return undefined;
+    const conversation = start.startedBy?.session ?? start.conversation;
+    const model = start.params?.["model"];
+    return {
+      ...(conversation ? { conversation } : {}),
+      ...(start.actor ? { actor: start.actor } : {}),
+      ...(start.principal ? { principal: start.principal } : {}),
+      ...(typeof model === "string" ? { model } : {}),
+      ...(start.trial ? { trial: true as const } : {}),
+    };
+  };
+  /** A run of the job is in flight: what `job/start` refuses on. */
+  const jobBusy = (job: string) => [...controllers.values()].some((c) => c.job?.id === job);
+  /** One turn of a job that strut sends as a person (pr-checks,
+   *  follow-ups): the job's own workflow, naming the conversation with
+   *  `wake: true`, so its end wakes it (src/wake.ts). It carries the job's
+   *  `kind` and `peer` from its newest turn, as `job/continue` does, so it
+   *  opens with the kind's page and that page's claims judge it. Refused
+   *  `job_busy:` while a run of the job is in flight, checked with nothing
+   *  awaited between it and the launch, as `job/start`'s is. */
+  const launchJobTurn = async (o: { job: string; workflow: string; prompt: string; conversation?: string; actor?: string; principal?: string; model?: string }): Promise<string> => {
+    await assertWorkflowEnabled(workspace, o.workflow);
+    const flow = await workspace.getWorkflow(o.workflow);
+    const last = turnOf((await readJobRecord(jobRoot(dataDir, o.job)))?.runs);
+    const was = last ? ((await store.getRunStart(last.workflow, last.runId).catch(() => null))?.input as Record<string, unknown> | undefined) : undefined;
+    const carried = Object.fromEntries((["kind", "peer"] as const).flatMap((k) => (typeof was?.[k] === "string" ? [[k, was[k]]] : [])));
+    if (jobBusy(o.job)) throw new Error(`job_busy: job "${o.job}" has a run in flight`);
+    return launchDetached(
+      flow,
+      { input: { prompt: o.prompt, ...carried }, job: o.job, ...(o.conversation ? { conversation: o.conversation, wake: true } : {}), ...(o.model ? { params: { model: o.model } } : {}) },
+      { ...(o.actor ? { actor: o.actor } : {}), ...(o.principal ? { principal: o.principal } : {}) },
+    );
+  };
   // A job's pull request fails its checks (src/pr-checks.ts,
   // plans/pr-checks.md): one turn to fix it, as the person whose turn
   // delivered it, naming that turn's conversation so its end wakes it — the
@@ -1664,32 +1707,42 @@ export async function createStrut<TServices = unknown>(
   const prChecks = createPrChecks({
     dataDir,
     artifacts: async (job) => (await jobIndex.get(job, { threads: false }))?.artifacts ?? [],
-    reporter: async (rec, runId) => {
-      const line = rec.runs?.find((r) => r.runId === runId);
-      if (!line) return undefined;
-      const start = (await store.getRunEvents(line.workflow, runId).catch(() => [])).find((e) => e.type === "run.start");
-      if (!start) return undefined;
-      const conversation = start.startedBy?.session ?? start.conversation;
-      const model = start.params?.["model"];
-      return {
-        ...(conversation ? { conversation } : {}),
-        ...(start.actor ? { actor: start.actor } : {}),
-        ...(start.principal ? { principal: start.principal } : {}),
-        ...(typeof model === "string" ? { model } : {}),
-      };
-    },
+    reporter: turnPerson,
     token: async (principal, url) => {
       const secrets = (services as { secrets?: SecretsCapability }).secrets;
       return (principal && secrets?.forPrincipal ? secrets.forPrincipal(principal) : secrets)?.git?.(url);
     },
-    busy: (job) => jobHolder(jobRoot(dataDir, job)) !== undefined,
-    launch: async (o) => {
-      await assertWorkflowEnabled(workspace, o.workflow);
-      return launchDetached(
-        await workspace.getWorkflow(o.workflow),
-        { input: { prompt: o.prompt }, job: o.job, conversation: o.conversation, wake: true, ...(o.model ? { params: { model: o.model } } : {}) },
-        { ...(o.actor ? { actor: o.actor } : {}), ...(o.principal ? { principal: o.principal } : {}) },
-      );
+    busy: jobBusy,
+    launch: launchJobTurn,
+  });
+  // A step says "look again later" (src/follow-ups.ts,
+  // plans/job-follow-ups.md): strut runs its look as the asking run's
+  // person until it settles, then sends the job one turn the same way.
+  const followUps = createFollowUps({
+    dataDir,
+    person: turnPerson,
+    busy: jobBusy,
+    launch: launchJobTurn,
+    // Outside any run, as a proposal's apply: the bag bound to the person,
+    // the registry, the job. A package's step is fenced by the registry.
+    look: async (job, f) => {
+      const def = registry[f.look.type];
+      if (!def) throw new Error(`the step "${f.look.type}" is not in this strut's registry`);
+      const input = def.input.parse(f.look.input);
+      const ctx: StepContext<unknown> = {
+        runId: `follow-up:${job}/${f.id}`,
+        path: `follow-ups/${f.id}`,
+        scope: {},
+        input,
+        emit: async () => {},
+        // Its node files name the turn that asked.
+        services: bindNodeFiles(bindPrincipal(services, f.by.principal), f.by.runId),
+        registry,
+        job,
+        ...(f.by.actor ? { actor: f.by.actor } : {}),
+        ...(f.by.principal ? { principal: f.by.principal } : {}),
+      };
+      return def.run(input, ctx);
     },
   });
   const services = {
@@ -1711,11 +1764,16 @@ export async function createStrut<TServices = unknown>(
     // each run's status, the session store for the job's threads, the
     // workspace for what is sealed. What `GET /jobs[/:id]` and the
     // `job/*` steps read through.
-    jobs: jobsCapability(dataDir, jobIndex, {
-      // A hold's update names the run that took or let go of it: the
-      // job's top-level run in flight (its turn), when there is one.
-      runOf: (job) => [...controllers.values()].find((c) => c.job?.id === job && !c.parent)?.runId,
-    }),
+    // And `followUp` (plans/job-follow-ups.md), which a package's step
+    // holds to its own run (src/packages/fence.ts).
+    jobs: {
+      ...jobsCapability(dataDir, jobIndex, {
+        // A hold's update names the run that took or let go of it: the
+        // job's top-level run in flight (its turn), when there is one.
+        runOf: (job) => [...controllers.values()].find((c) => c.job?.id === job && !c.parent)?.runId,
+      }),
+      followUp: (a) => followUps.ask(a),
+    } satisfies JobsCapability,
     // What `job/pr-checks` runs: `check` alone, which names no person.
     prChecks: { check: (o?: { url?: string }) => prChecks.check(o) },
     peers: peersCap,
@@ -11678,6 +11736,7 @@ export async function createStrut<TServices = unknown>(
     if (nodeFilesSweepTimer) clearInterval(nodeFilesSweepTimer);
     nodeFilesSweepTimer = undefined;
     await nodeFilesSwept;
+    await followUps.stop();
     tasks.stop();
     publicTools.close();
     withdrawals.stop();
@@ -11772,6 +11831,8 @@ export async function createStrut<TServices = unknown>(
   // The history's first snapshot, cause `boot`: every seed is in. Awaited,
   // so a strut that answers has its boot commit (a failed one is a warning).
   await history?.start();
+  // The follow-ups a dead process left (src/follow-ups.ts): looked at again now.
+  followUps.start();
 
   // The first-boot installs (src/packages/boot.ts), last: after the seeds
   // (strut/views an app may import, the Concept roots a page may hang

@@ -274,7 +274,7 @@ function causeChain(err: Error): string {
 /** The run's view of the services bag: `secrets` and `llm` (the grants it
  *  bills, src/llm.ts) bound to the principal when the capability supports it
  *  (`forPrincipal`), else the bag itself. */
-function bindPrincipal<TServices>(services: TServices, principal: string | undefined): TServices {
+export function bindPrincipal<TServices>(services: TServices, principal: string | undefined): TServices {
   if (!principal || services == null || typeof services !== "object") return services;
   const view: Record<string, unknown> = { ...(services as object) };
   let bound = false;

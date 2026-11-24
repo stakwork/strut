@@ -422,6 +422,22 @@ describe("the fence holds a package's step to its run's person", () => {
     assert.deepEqual(peers, [["peers.fetch", {}]]);
   });
 
+  it("asks for a follow-up on its own run and job, looking with its package's own steps alone", async () => {
+    const asks: unknown[] = [];
+    const jobs = { followUp: async (a: unknown) => (asks.push(a), { id: "x", until: "t" }) };
+    const asking = (look: string): AnyStepDef =>
+      ({
+        type: `${PKG}/ask`,
+        run: async (_c: unknown, ctx?: StepContext<any>) => (ctx!.services as any).jobs.followUp({ job: "other-job", runId: "other-run", look: { type: look, input: { status: true } } }),
+      }) as unknown as AnyStepDef;
+    const ctx = { runId: "r0", path: "s", job: "j-1", actor: "alice", principal: "alice", services: { jobs } } as unknown as StepContext<any>;
+    await fenceStep(asking(`${PKG}/look`), { package: PKG, secrets: [] }).run({}, ctx);
+    assert.deepEqual(asks, [{ job: "j-1", runId: "r0", look: { type: `${PKG}/look`, input: { status: true } } }], "its own run and job, whatever it named");
+    await assert.rejects(fenceStep(asking("git/push"), { package: PKG, secrets: [] }).run({}, ctx), /^Error: follow_up_fenced: .* looks? with its own steps, not git\/push/);
+    await assert.rejects(fenceStep(asking(`${PKG}/look`), { package: PKG, secrets: [] }).run({}, { ...ctx, job: undefined }), /^Error: follow_up_fenced: .* has no job/);
+    assert.equal(asks.length, 1);
+  });
+
   it("holds nothing a step can reach past — a prototype, a property — and leaves what it does not hold working", async () => {
     const calls: unknown[][] = [];
     const as = (who: unknown) => (who as { principal?: string } | undefined)?.principal ?? "nobody";

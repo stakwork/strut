@@ -16,8 +16,8 @@
  *   launch, given back when the launch is refused. A fix that fails again is
  *   a person's click on the card.
  * - **One turn per job:** two failing pull requests are named in one turn.
- * - **Never beside a live turn:** a job with a run in its directory is
- *   passed over, and the next pass is the retry.
+ * - **Never beside a live turn:** a job with a run in flight is passed
+ *   over, and the next pass is the retry.
  * - Merged, closed, still running or all passed: nothing.
  *
  * Strut's half is what acts as a person. When to look is a caller's: the
@@ -90,6 +90,8 @@ export interface Reporter {
   principal?: string;
   /** Its `params.model`. */
   model?: string;
+  /** It is a trial's run (`RunTrial`): nothing it starts outlives it. */
+  trial?: true;
 }
 
 export interface PrChecksDeps {
@@ -103,7 +105,7 @@ export interface PrChecksDeps {
   token(principal: string | undefined, repoUrl: string): Promise<string | undefined>;
   /** Read a pull request with a token. Default: `readPullRequest` over Octokit. */
   read?(token: string, pr: PrRef): Promise<PrStatus>;
-  /** Whether a run holds the job's directory now. */
+  /** Whether a run of the job is in flight now. */
   busy(job: string): boolean;
   /** Launch the job's next turn, naming the conversation; its run id. */
   launch(o: { job: string; workflow: string; prompt: string; conversation: string; actor?: string; principal?: string; model?: string }): Promise<string>;
