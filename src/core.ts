@@ -553,6 +553,10 @@ export interface PreparedJob {
   brief: string;
   kind?: string;
   repos?: string[];
+  /** The package that started it (`ConversationRecord.from`), which the
+   *  turn names when it says whose words the message is. strut's, never the
+   *  caller's. */
+  from?: string;
 }
 
 /** The turn that started a job (`RunEvent.startedBy`). */

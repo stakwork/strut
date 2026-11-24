@@ -108,7 +108,7 @@ import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LI
 import type { AppManifest } from "./apps/manifest.js";
 import type { GraphReader } from "./graph/search.js";
 import { isFirstParty, type AppRef, type PreparedJob, type StartedBy, type WakeMark } from "./core.js";
-import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, type WakeEnd, type WakeOutcome } from "./wake.js";
+import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, unmarked, type WakeEnd, type WakeOutcome } from "./wake.js";
 import { createConversations, isConversationFlow, outsideConversations, type ConversationStart, type ConversationViewer } from "./conversations.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { recordCaused } from "./work.js";
@@ -9373,10 +9373,18 @@ export async function createStrut<TServices = unknown>(
     const res = await new Promise<RunResult>((onEnd) => {
       launchDetached(
         flow,
-        { input: { prompt: q.message, session }, wake: true },
+        // The message sits between markers in the turn's prompt (its source
+        // line, orchestrator.yaml `scripted`): its words cannot close them.
+        { input: { prompt: unmarked(q.message), session }, wake: true },
         {
           actor: q.person,
-          prepared: q.job,
+          prepared: {
+            title: q.job.title,
+            brief: q.job.brief,
+            ...(q.job.kind ? { kind: q.job.kind } : {}),
+            ...(q.job.repos ? { repos: q.job.repos } : {}),
+            ...(q.from ? { from: q.from } : {}),
+          },
           opens: { title: q.job.title, ...(q.about ? { about: q.about } : {}), ...(q.from ? { from: q.from } : {}) },
           ...(onWrite ? { onWrite } : {}),
           onEnd,

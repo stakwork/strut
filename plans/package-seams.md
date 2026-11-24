@@ -416,6 +416,16 @@ this section is proposed.
   and the job it started. `started` and `result` are unchanged: they read
   `start` and `text` as from any reply. A box with no model connected starts
   no chat, since the turn resolves the model it answers under.
+- **The message is data, not the person's words.** The package wrote it, so
+  once it sits in Jamie's session it could steer later turns, the wake's
+  unattended ones included. The session keeps it under a line naming the
+  package and saying the person did not type it, between `<<<message` and
+  `>>>` markers marked as data, not instructions: the wake's fence for a
+  job's reply. strut escapes the markers in it (`unmarked`, src/wake.ts),
+  so its words cannot close the fence; the chat shows it as kept. The line
+  names the package from `$prepared.from`. Not done here: a rule that
+  Jamie starts nothing on those words alone, and refusing
+  `conversation/start` to a workflow outside a package.
 - **The record's field is `from`, not `startedBy`.** A list row's
   `startedBy` is already the person who took the first turn (an admin's
   Everyone searches it), so the package goes on `from`. The chat's title is

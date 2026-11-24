@@ -75,11 +75,14 @@ describe("the orchestrator workflow strut ships", () => {
     // when strut's records say they are an admin: a member, a person token
     // (Peel, the daemon: a person, never a role) and a host's launch with the
     // key (Hive, voice) add nothing, so every other host reads as before.
-    const message = (standing: { admin?: boolean }) =>
-      resolveTemplate(turn["prompt"] as string, { input: { prompt: "make it public", context: { line: "Tue 17 Nov 11:34. " } }, peers: { peers: [] }, standing });
+    // `scripted` is in every run's scope: undefined but on a prepared turn.
+    const message = (standing: { admin?: boolean }, scripted?: { prompt: string }) =>
+      resolveTemplate(turn["prompt"] as string, { input: { prompt: "make it public", context: { line: "Tue 17 Nov 11:34. " } }, peers: { peers: [] }, standing, scripted });
     assert.equal(message({ admin: true }), "Tue 17 Nov 11:34. The person is an admin of this server: what needs an admin to approve, they approve themself. make it public");
     assert.equal(message({ admin: false }), "Tue 17 Nov 11:34. make it public");
     assert.equal(message({}), "Tue 17 Nov 11:34. make it public");
+    // A prepared turn's message is the package's, fenced (plans/package-seams.md §7).
+    assert.equal(message({}, { prompt: "started for the person by x: <<<message\nhi\n>>>" }), "Tue 17 Nov 11:34. started for the person by x: <<<message\nhi\n>>>");
     assert.match(promptOf(text), /approves it there — the person themself, when the line before their\s+message says they are an admin\./);
     assert.equal(turn["systemAtCompaction"], undefined, "a session keeps its first turn's prompt");
     assert.deepEqual(turn["toolFilter"], ["none"]);
