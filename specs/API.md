@@ -1655,8 +1655,9 @@ as an index's store frames it from another server. A strut with no key
 (dev mode, or behind a host's gate as mcp's `/lab`) sends no
 `frame-ancestors`: the gate in front decides. The page is told the same
 origin (`<meta name="strut-embed-origin" content="<host>">`, empty for
-none; no meta with no key), which is where it posts `strut:location` and
-`strut:ready` and the only origin it takes `embed_page` on (§14.3).
+none; no meta with no key), which is where it posts `strut:location`,
+`strut:ready` and `strut:open` and the only origin it takes `embed_page`
+on (§14.3).
 
 **The sockets.** A WebSocket handshake carries no custom header and needs
 no preflight, and a same-site page's carries the cookie. So an upgrade
@@ -2254,10 +2255,16 @@ that passed `&embed_origin=` (on a strut with a key, beside its ticket:
 the app's page is on screen (it initialized, or loaded without the apps
 SDK) or the page says why it cannot be (no such app, a refused ticket): a
 host keeps its frame hidden until then and fades it in, so strut's page
-behind the app never flashes. A link the page opens to itself changes
-`input` in place, the URL following (replaced, as the full UI does); a
-file or another app opens in the side panel inside the page (below); any
-other link opens in a new window. A host that frames the page may name its
+behind the app never flashes. That host is also posted
+`{type: "strut:open", app, input?}` each time the page follows a link to
+ANOTHER app with `&open=page` (below, "Opening another app as the page"):
+`app` is the key as the link names it (`strut/jamie`, `@<peer>/<name>`,
+a pinned `bench@v3`), `input` the link's `input` as it is — the app's
+own query string, absent for a plain open. The host shows that app as its
+own page in place of this one; the frame changes nothing itself. A link
+the page opens to itself changes `input` in place, the URL following
+(replaced, as the full UI does); a file or another app opens in the side
+panel inside the page (below); any other link opens in a new window. A host that frames the page may name its
 OWN page for the app with `&embed_page=<url>` beside `&embed_origin=`
 (Stadeum: `https://<box>/apps/<name>`): where a person opens the app on
 that host, without its `input`. It counts only while the page is framed
@@ -2315,6 +2322,23 @@ navigates, the page alone opens a new window. The panel is not in the
 address bar (a reload closes it), and a visitor's page (`&public=1`) has
 none. The kit's `appLink(name, input)` builds the app link; a file's is
 `?artifact=<encodeURIComponent(path)>`.
+
+**Opening another app as the page.** A link to another app with
+`&open=page` (the kit's `appLink(name, input, { open: "page" })`) asks
+for that app as THE page, not beside it: `panelTarget` leaves it alone
+(`pageOpen` in `web/src/app-links.ts`), so the full UI switches its page
+to that app in place, its address bar and `strut:location` following. The
+page alone, framed by a host it posts to (above), posts that host
+`strut:open` and stays as it is: the host decides what its page becomes
+(Stadeum's frame switches to the app's page — Code's link to its chat
+opens Jamie as the box's page, not in a panel beside Code). Alone with no
+host to tell (Peel's web view), the page goes to its own address with
+that app and `input` in place of its own (`soloPageAddress`: `solo` and
+`theme` kept), a new history entry its Back returns through. From the
+panel, `&open=page` on a link to the panel's own app makes that app the
+page too. A link to the page on screen is its input in place, as without
+it; a file or a job's hold still opens in the panel. A visitor's page
+reads no `open` (below). `open` never reaches the address bar.
 
 **Opening another app from a visitor's page.** On a visitor's page alone
 (`?app=<name>&solo=1&public=1`), a link to ANOTHER app of this server's

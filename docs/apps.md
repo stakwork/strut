@@ -110,7 +110,11 @@ index. A change in this area updates this file, not AGENTS.md.
   token and framed as srcdoc under `sandbox="allow-scripts allow-downloads
   allow-forms"`, ext-apps'
   `AppBridge` over the MCP SDK's client at `/mcp` with the UI's credential,
-  `ui/message` → the builder chat, `ui/open-link` → the SPA, the version
+  `ui/message` → the builder chat, `ui/open-link` → the SPA (a file or
+  another app in the side panel beside the page; another app with
+  `&open=page`, the kit's `appLink(name, input, { open: "page" })`, as the
+  page itself — framed alone, the host is posted `strut:open`; specs/API.md
+  §14.3), the version
   chip and its Versions flyout as the rollback, **Edit with the builder**, an app chip on the
   runs an app launched, the Workflow flyout's "Used by" chips. **The
   builder** gets the `app/*` steps as named tools (`buildTools` through

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deepLinkParams, embedPage, vouchedEmbedOrigin } from "./embed";
+import { deepLinkParams, embedPage, openInHost, vouchedEmbedOrigin } from "./embed";
 
 test("deepLinkParams keeps only the deep-link keys", () => {
   assert.deepEqual(
@@ -57,5 +57,38 @@ test("by default embedPage takes the origin the server vouched for (its meta), n
     assert.equal(embedPage("?app=x&embed_origin=https%3A%2F%2Fhive.test&embed_page=https%3A%2F%2Fhive.test%2F", true), undefined);
   } finally {
     (globalThis as { document?: unknown }).document = saved;
+  }
+});
+
+test("openInHost posts strut:open to the framing host's vouched origin only; false with no host to ask", () => {
+  const g = globalThis as { window?: unknown; document?: unknown };
+  const saved = { window: g.window, document: g.document };
+  const posts: [unknown, string][] = [];
+  const parent = { postMessage: (msg: unknown, origin: string) => posts.push([msg, origin]) };
+  const withMeta = (content: string) => {
+    g.document = { querySelector: (sel: string) => (sel === 'meta[name="strut-embed-origin"]' ? { getAttribute: () => content } : null) };
+  };
+  try {
+    g.window = { parent };
+    withMeta("https://box.test");
+    assert.equal(openInHost({ app: "strut/jamie", input: "session=ann%2Fabc" }), true);
+    assert.equal(openInHost({ app: "strut/jamie" }), true);
+    assert.deepEqual(posts, [
+      [{ type: "strut:open", app: "strut/jamie", input: "session=ann%2Fabc" }, "https://box.test"],
+      [{ type: "strut:open", app: "strut/jamie" }, "https://box.test"],
+    ]);
+    // Framed, but the server vouched for no host: nothing posted.
+    withMeta("");
+    assert.equal(openInHost({ app: "strut/jamie" }), false);
+    // Not framed (Peel's web view): the page goes there itself.
+    const self: { parent?: unknown } = {};
+    self.parent = self;
+    g.window = self;
+    withMeta("https://box.test");
+    assert.equal(openInHost({ app: "strut/jamie" }), false);
+    assert.equal(posts.length, 2);
+  } finally {
+    g.window = saved.window;
+    g.document = saved.document;
   }
 });

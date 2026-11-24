@@ -556,6 +556,9 @@ describe("the host hooks", () => {
     assert.equal(q.get("app"), "acme/bench");
     assert.deepEqual(Object.fromEntries(new URLSearchParams(q.get("input")!)), { view: "/runs", run: "12", live: "true" });
     assert.deepEqual([...q.keys()], ["app", "input"], "the input stays inside its one param");
+    assert.equal(appLink("strut/jamie", { session: "ann/abc" }, { open: "page" }), "?app=strut%2Fjamie&input=session%3Dann%252Fabc&open=page", "as the page, not beside it");
+    assert.equal(appLink("strut/jamie", undefined, { open: "page" }), "?app=strut%2Fjamie&open=page");
+    assert.equal(appLink("strut/jamie", { session: "x" }, {}), appLink("strut/jamie", { session: "x" }), "no option: as before");
 
     const { client } = fakeClient();
     const h = await renderHook(() => useAppLink(), { client: { ...client, app: { name: "bench", version: "v3" } } });

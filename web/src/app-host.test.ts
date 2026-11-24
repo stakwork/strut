@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appKey, appMessage, appPageAddress, appToolInput, frameableHold, holdAddress, holdNavigation, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, publicAppHop, soloTheme, strutLink } from "./app-links";
+import { appKey, appMessage, appPageAddress, appToolInput, frameableHold, holdAddress, holdNavigation, isPreviewVersion, namesApp, pageOpen, panelTarget, parseAppKey, peerAppLink, publicAppHop, soloPageAddress, soloTheme, strutLink } from "./app-links";
 import { appLink } from "../../kit/src/links";
 
 /** The pure parts of the app host's relay (./app-links, what ./app-host
@@ -88,6 +88,31 @@ describe("the app host", () => {
       assert.equal(panelTarget({ artifact: path }, [bench]), null, path);
     }
     assert.equal(panelTarget({ app: "@acme" }, [bench]), null, "a key that names nothing");
+  });
+
+  it("an app link with open=page is the host's to open as the page, never the panel's", () => {
+    const bench = { name: "bench", version: "v3" };
+    const params = strutLink(appLink("strut/jamie", { session: "ann/abc" }, { open: "page" }), here)!;
+    assert.deepEqual(params, { app: "strut/jamie", input: "session=ann%2Fabc", open: "page" }, "the kit's link, read by the host");
+    assert.equal(panelTarget(params, [bench]), null);
+    assert.deepEqual(pageOpen(params), { app: "strut/jamie", input: "session=ann%2Fabc" });
+    assert.deepEqual(pageOpen({ app: "@acme/hive/ui", open: "page" }), { app: "@acme/hive/ui" }, "a peer's, a plain open");
+    // Without it, the same link opens beside the page, as before.
+    assert.deepEqual(panelTarget(strutLink(appLink("strut/jamie", { session: "ann/abc" }), here)!, [bench]), { app: "strut/jamie", input: "session=ann%2Fabc" });
+    for (const p of [{ app: "strut/jamie" }, { app: "strut/jamie", open: "panel" }, { open: "page" }, { app: "@acme", open: "page" }, { wf: "clip", open: "page" }]) {
+      assert.equal(pageOpen(p), null, JSON.stringify(p));
+    }
+    // A file or a job's hold still opens beside the page.
+    assert.deepEqual(panelTarget({ artifact: "/artifacts/1/a.png", open: "page" }, [bench]), { artifact: "/artifacts/1/a.png" });
+    // A peer's page asks the same of its apps.
+    assert.deepEqual(peerAppLink({ app: "bench", open: "page" }, "acme"), { app: "@acme/bench", open: "page" });
+  });
+
+  it("alone with no host to ask, the page goes to that app's page itself", () => {
+    const solo = "https://strut.test/?app=strut%2Fcode&solo=1&theme=light&input=repo%3Dx";
+    assert.equal(soloPageAddress(solo, { app: "strut/jamie", input: "session=ann%2Fabc" }), "https://strut.test/?app=strut%2Fjamie&solo=1&theme=light&input=session%3Dann%252Fabc");
+    assert.equal(soloPageAddress(solo, { app: "strut/jamie" }), "https://strut.test/?app=strut%2Fjamie&solo=1&theme=light", "a plain open");
+    assert.equal(soloPageAddress("https://swarm.test/lab/?app=bench&solo=1", { app: "@acme/hive/ui" }), "https://swarm.test/lab/?app=%40acme%2Fhive%2Fui&solo=1");
   });
 
 

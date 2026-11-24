@@ -7,10 +7,12 @@
 import { isServedFilePath } from "@strut/kit/folds";
 
 /** The deep-link params a strut link may carry (./embed). `input` rides
- *  beside `app`: what the app is opened with. `artifact` is a served file,
- *  and `hold` beside `job` what the job holds at an address, which the app
- *  host opens in its side panel (`panelTarget`). */
-const STRUT_PARAMS = new Set(["wf", "run", "v", "job", "hold", "app", "input", "chat", "artifact"]);
+ *  beside `app`: what the app is opened with, and `open=page` asks for it
+ *  as the page rather than beside it (@strut/kit `appLink`'s option).
+ *  `artifact` is a served file, and `hold` beside `job` what the job holds
+ *  at an address, which the app host opens in its side panel
+ *  (`panelTarget`). */
+const STRUT_PARAMS = new Set(["wf", "run", "v", "job", "hold", "app", "input", "open", "chat", "artifact"]);
 
 /** Where `ui/open-link` leads: the SPA's own navigation for a link to THIS
  *  strut (the same origin and mount, carrying strut's deep-link params —
@@ -68,7 +70,7 @@ export function peerAppLink(params: Record<string, string>, peer: string): Recor
   if (artifact) return isServedFilePath(artifact) ? { artifact: `/peers/${encodeURIComponent(peer)}${artifact}` } : null;
   const app = params["app"];
   if (!app || app.startsWith("@")) return null;
-  return { app: `@${peer}/${app}`, ...(params["input"] ? { input: params["input"] } : {}) };
+  return { app: `@${peer}/${app}`, ...(params["input"] ? { input: params["input"] } : {}), ...(params["open"] ? { open: params["open"] } : {}) };
 }
 
 /** What a hosted app's link shows in the side panel beside it
@@ -85,7 +87,8 @@ export type PanelTarget = { artifact: string } | { app: string; input?: string }
  *  — else `?app=<key>` for an app not on screen. Null for everything else,
  *  which the host follows as it did before the panel: a link to an app
  *  `onScreen` (the page itself — and, from the panel, the panel's own app —
- *  whose input goes to it in place), a workflow, a run, a job alone, a path
+ *  whose input goes to it in place), an app link with `open=page` (that
+ *  app as the page, `pageOpen`), a workflow, a run, a job alone, a path
  *  strut does not serve. `params` as `strutLink` reads them, a peer's
  *  page's mapped first (`peerAppLink`, which keeps no job). */
 export function panelTarget(params: Record<string, string>, onScreen: { name: string; version: string; peer?: string }[]): PanelTarget | null {
@@ -95,7 +98,7 @@ export function panelTarget(params: Record<string, string>, onScreen: { name: st
   const hold = params["hold"];
   if (job && hold) return { job, hold };
   const app = params["app"];
-  if (!app || !parseAppKey(app) || onScreen.some((a) => namesApp(app, a))) return null;
+  if (!app || !parseAppKey(app) || pageOpen(params) || onScreen.some((a) => namesApp(app, a))) return null;
   return { app, ...(params["input"] ? { input: params["input"] } : {}) };
 }
 
@@ -188,6 +191,28 @@ export function publicAppHop(params: Record<string, string>, current: string, hr
   else url.searchParams.delete("input");
   if (o.back === false) url.searchParams.delete("back");
   else url.searchParams.set("back", current);
+  return url.href;
+}
+
+/** A link that asks to open an app as THE PAGE, not in the side panel
+ *  (`open=page`, @strut/kit `appLink(name, input, { open: "page" })`):
+ *  the app's key and what it is opened with. Null for any other link, and
+ *  for one whose key names nothing. */
+export function pageOpen(params: Record<string, string>): { app: string; input?: string } | null {
+  const app = params["app"];
+  if (params["open"] !== "page" || !app || !parseAppKey(app)) return null;
+  return { app, ...(params["input"] ? { input: params["input"] } : {}) };
+}
+
+/** Where the page alone (./components/SoloApp) goes for app `to` as the
+ *  page when no host frames it to ask (Peel's web view): this page's own
+ *  address (`href`) with that app and its input in place of this one's,
+ *  the rest (`solo`, `theme`) kept. */
+export function soloPageAddress(href: string, to: { app: string; input?: string }): string {
+  const url = new URL(href);
+  url.searchParams.set("app", to.app);
+  if (to.input) url.searchParams.set("input", to.input);
+  else url.searchParams.delete("input");
   return url.href;
 }
 

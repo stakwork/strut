@@ -202,9 +202,13 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   one tap, the credit a visitor's page needs on a strut server, and where a
   payment it sent stands. No app identity, no connection, no budget; the
   `host_capabilities`, `credit_purchases` and `credit_replies` vectors.
-- **`src/links.ts`** — `appLink(name, input?)`: a deep link to an app,
+- **`src/links.ts`** — `appLink(name, input?, options?)`: a deep link to an app,
   `?app=<name>&input=<input as a query string>` (plans/apps.md §7.1). A host
-  follows it and hands `input` back as `tool-input`, flat strings.
+  follows it and hands `input` back as `tool-input`, flat strings. Strut's
+  UI opens a link to ANOTHER app beside the page, in its side panel;
+  `{ open: "page" }` (`&open=page`) opens it as the page instead, and a host
+  that frames the page is asked to (`strut:open`, strut `specs/API.md`
+  §14.3).
 - **`src/bootstrap.ts`** (`@strut/kit/bootstrap`) — §2.4: connects the MCP Apps
   client (`@modelcontextprotocol/ext-apps`, never a hand-rolled postMessage),
   which sends `ui/initialize`; applies the host context to the document; reads

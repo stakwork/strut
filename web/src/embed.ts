@@ -41,6 +41,17 @@ export interface ReadyMessage {
   type: "strut:ready";
 }
 
+/** Posted to the host when the page alone (`solo=1`) follows a link that
+ *  asks to open ANOTHER app as the page (`open=page`): the host shows that
+ *  app as its own page in place of this one. `app` is its key as the link
+ *  names it; `input` what it is opened with (the link's `input`, the app's
+ *  own query string), absent for a plain open. */
+export interface OpenMessage {
+  type: "strut:open";
+  app: string;
+  input?: string;
+}
+
 /** The deep-link subset of a query string, empty values dropped. */
 export function deepLinkParams(search: string): Record<string, string> {
   const p = new URLSearchParams(search);
@@ -90,12 +101,14 @@ function embedOrigin(): string | null {
   }
 }
 
-/** Post to the embedding host, if there is one that asked (`embed_origin`). */
-function postToHost(msg: LocationMessage | ReadyMessage): void {
-  if (window.parent === window) return;
+/** Post to the embedding host, if there is one that asked (`embed_origin`).
+ *  False when there is none: not framed, or no origin to post to. */
+function postToHost(msg: LocationMessage | ReadyMessage | OpenMessage): boolean {
+  if (window.parent === window) return false;
   const origin = embedOrigin();
-  if (!origin) return;
+  if (!origin) return false;
   window.parent.postMessage(msg, origin);
+  return true;
 }
 
 /** The query param a host names its own page with, beside `embed_origin`:
@@ -134,6 +147,12 @@ export function reportReady(): void {
   if (readyReported) return;
   readyReported = true;
   postToHost({ type: "strut:ready" });
+}
+
+/** Ask the embedding host to show app `to` as its page (`OpenMessage`).
+ *  False when nothing frames this page to ask: the page goes there itself. */
+export function openInHost(to: { app: string; input?: string }): boolean {
+  return postToHost({ type: "strut:open", app: to.app, ...(to.input ? { input: to.input } : {}) });
 }
 
 /** `history.replaceState` + tell the embedding host, if there is one. The

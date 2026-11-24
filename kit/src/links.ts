@@ -11,15 +11,23 @@
  *  `undefined` one is left out. */
 export type AppLinkInput = Record<string, string | number | boolean | null | undefined>;
 
+/** How a link to ANOTHER app opens. By default strut's UI shows it in a
+ *  side panel beside this page, which stays on screen; `"page"` makes it
+ *  the page in place of this one (`&open=page`), and a host that frames
+ *  the page shows it as its own page. */
+export type AppLinkOptions = { open?: "page" };
+
 /** The link to app `name` opened with `input`, relative to the host's page
  *  (`?app=bench&input=view%3D%252Fruns`): `useHost().openLink(link)` opens it
- *  in place. Without `input`, a plain open. */
-export function appLink(name: string, input?: AppLinkInput): string {
+ *  in place. Without `input`, a plain open. `{ open: "page" }`: as the page,
+ *  not beside it (`AppLinkOptions`). */
+export function appLink(name: string, input?: AppLinkInput, options?: AppLinkOptions): string {
   const q = new URLSearchParams({ app: name });
   const args = new URLSearchParams();
   for (const [k, v] of Object.entries(input ?? {})) if (v != null) args.set(k, String(v));
   const inner = args.toString();
   if (inner) q.set("input", inner);
+  if (options?.open === "page") q.set("open", "page");
   return `?${q}`;
 }
 

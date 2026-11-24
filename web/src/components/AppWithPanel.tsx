@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../api";
-import { appToolInput, frameableHold, holdAddress, holdNavigation, namesApp, panelTarget, type PanelTarget } from "../app-links";
+import { appToolInput, frameableHold, holdAddress, holdNavigation, namesApp, pageOpen, panelTarget, type PanelTarget } from "../app-links";
 import { STATE_LABEL, appVersionRows, isHeld, isSeeded, liveRelease, modeChange, panelChip, panelKey, rowChange, when, type LiveChange } from "../app-versions";
 import { errorMessage } from "../helpers";
 import { ArrowLeftIcon, ArrowRightIcon, CloseIcon, ExternalIcon, ReloadIcon } from "../icons";
@@ -30,7 +30,8 @@ import { WidthResizer } from "./FlyoutResizer";
 // /jobs/:id/urls`), never from the link, and frames it under a browser's
 // bar that never shows the address's token and loads nothing in the frame
 // off the address's own origin.
-// Everything else — a link to the app on screen, a workflow, a run, a job — goes to the
+// Everything else — a link to the app on screen, an app asked for as the
+// page (`open=page`), a workflow, a run, a job — goes to the
 // caller's `onNavigate` as before. The panel's own app links the same way:
 // a file or a third app replaces it, a link to the page beside it is that
 // page's. Used by the canvas area's host (../app.tsx) and the page alone
@@ -247,8 +248,8 @@ function PanelApp(props: {
       return true;
     }
     // A link to itself: its input, in place (the host sends it; the
-    // target follows so a re-render keeps it).
-    if (app && namesApp(params["app"], app)) {
+    // target follows so a re-render keeps it) — unless it asks to be the page.
+    if (app && !pageOpen(params) && namesApp(params["app"], app)) {
       props.onTarget({ app: props.target.app, ...(params["input"] ? { input: params["input"] } : {}) });
       return true;
     }

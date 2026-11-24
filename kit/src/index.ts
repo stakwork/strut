@@ -41,7 +41,7 @@ export {
   ErrorBoundary, createErrorReporter, installWindowErrorReporting, toErrorReport,
   type ErrorBoundaryProps, type ErrorReport, type ErrorReporter,
 } from "./error-boundary.js";
-export { appLink, shareLink, PAGE_CONTEXT, type AppLinkInput } from "./links.js";
+export { appLink, shareLink, PAGE_CONTEXT, type AppLinkInput, type AppLinkOptions } from "./links.js";
 export { applyHostContext } from "./apply-host-context.js";
 export * from "./folds/index.js";
 export * from "./folds/run-graph/layout.js";
