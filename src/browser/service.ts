@@ -66,6 +66,12 @@
  * `window.__debug`, which the look reads (`readDebugInPage`), never
  * arbitrary script.
  *
+ * A look that STREAMS (`streamApp`, `GET /apps/look/stream`) opens an app
+ * the same way and keeps it open while its caller holds it, handing on
+ * Chrome's screencast as JPEG frames: a frame only when the page paints.
+ * It counts against `sessionsMax` with the kept pages, and has no budget
+ * and no idle timer. Not over CDP either.
+ *
  * `playwright-core` is imported lazily, on the first connection, so a strut
  * that never opens a browser never loads it (the lib step convention).
  */
@@ -400,6 +406,26 @@ const STEP_NEEDS: Record<CaptureVerb | LookVerb, { required?: string[]; oneOf?: 
 
 /** The key a check's own session is kept under: `<runId><CHECK_KEY><n>`. */
 const CHECK_KEY = "\u0000check:";
+/** The key a look that streams is kept under: `<STREAM_KEY><n>`, never a run's. */
+const STREAM_KEY = "\u0000stream:";
+
+/** A look that streams (`streamApp`): the page's size, the frames it is
+ *  sent at, at most this many a second, and their JPEG quality (0–100). */
+export const STREAM_VIEWPORT: Viewport = { width: 1280, height: 720 };
+export const STREAM_FPS = 5;
+const STREAM_QUALITY = 80;
+
+/** A look that streams: its frames' size, why it ended when it ends on its
+ *  own, and how to end it. */
+export interface AppStream {
+  width: number;
+  height: number;
+  /** Settles when the stream ends without `close` (the page closed or
+   *  crashed, the browser went away), with why. */
+  ended: Promise<string>;
+  /** Close the page and stop the frames. Idempotent. */
+  close(): Promise<void>;
+}
 
 /** A `wait` step in a `verify`, `walkthrough` or look list with no
  *  `timeoutMs` of its own gives up after this long, not the run's whole
@@ -453,6 +479,9 @@ interface Run {
   /** Set on a kept page: no budget, an idle timer that waits while a call
    *  is `busy`. */
   kept?: KeptSession & { busy: number };
+  /** Set on a look that streams (`streamApp`): no budget, no idle timer —
+   *  open until its caller closes it. Counted with the kept pages. */
+  stream?: true;
 }
 
 /** The pause between two taps: a tile that fades as it is selected. */
@@ -493,6 +522,7 @@ export class BrowserService {
   /** A run attached to a kept page → that page's key (`keptKey`). */
   private readonly attached = new Map<string, string>();
   private checkSeq = 0;
+  private streamSeq = 0;
   /** Strut's own app, for `lookAtApp` (`serveStrut`). */
   private strut?: StrutFetch;
   /** Strut's channel socket, answered in process for `lookAtApp`. */
@@ -658,9 +688,11 @@ export class BrowserService {
     if (this.cdp) throw new Error("browser: a kept page (`session`, browser/keep) does not apply over CDP — the profile's pages are the human's");
   }
 
+  /** A kept page or a look that streams past `sessionsMax` is refused. */
   private roomForOneMore(): void {
-    if (this.kept().length >= this.sessionsMax) {
-      throw new Error(`browser: ${this.sessionsMax} kept pages are open (BROWSER_SESSIONS_MAX) — close one (browser/close { session }) or wait for one to go idle`);
+    const open = [...this.runs.values()].filter((r) => r.kept || r.stream).length;
+    if (open >= this.sessionsMax) {
+      throw new Error(`browser: ${this.sessionsMax} kept pages and streams are open (BROWSER_SESSIONS_MAX) — close one (browser/close { session }) or wait for one to go idle`);
     }
   }
 
@@ -1390,22 +1422,7 @@ export class BrowserService {
     const steps = (input.steps ?? []).map(capWait);
     checkLookSteps(steps);
     return this.inOwnSession(runId, async (key) => {
-      const page = await this.page(key, { viewport: input.viewport });
-      await page.route(`${STRUT_ORIGIN}/**`, (route) => answerFromStrut(route, strut, input.actor));
-      // The app's channel socket: `page.route` sees no WebSocket, and the
-      // origin resolves nowhere. Answered here, so a multiplayer app looks
-      // connected (plans/app-channels.md item 7).
-      const channelSocket = this.channelSocket;
-      if (channelSocket) await page.routeWebSocket(STRUT_CHANNEL_SOCKET, (ws) => answerChannelSocket(ws, channelSocket, input.actor));
-      const q = new URLSearchParams({ app: `${input.name}@${input.version}`, solo: "1" });
-      const link = new URLSearchParams(input.link ?? {}).toString();
-      if (link) q.set("input", link);
-      const { status } = await this.goto(key, { url: `${STRUT_ORIGIN}/?${q}`, timeoutMs: input.timeoutMs });
-      if (status >= 400) {
-        const said = await page.locator("body").innerText().catch(() => "");
-        throw new Error(`browser: strut's UI did not load (HTTP ${status}${said ? `: ${said.slice(0, 200)}` : ""})`);
-      }
-      const shown = await this.call(key, "app", LOOK_READY_MS, (s, ms) => appShown(s.page, ms));
+      const { page, ...shown } = await this.openApp(key, strut, input);
       let stopped: StoppedAt | undefined;
       const debugReads: NonNullable<AppLooked["debugReads"]> = [];
       if (shown.rendered) {
@@ -1438,7 +1455,117 @@ export class BrowserService {
     });
   }
 
+  /**
+   * A look that STREAMS (`GET /apps/look/stream`): the app opened as
+   * `lookAtApp` opens it, at `STREAM_VIEWPORT`, and kept open until
+   * `close`, its frames handed to `onFrame` as JPEG from Chrome's
+   * screencast (`Page.startScreencast` on a CDP session, which a Playwright
+   * server carries too). Chrome sends a frame only when the page paints;
+   * each is acked at once, and at most `STREAM_FPS` a second reach
+   * `onFrame`, the last of a burst always. It counts against `sessionsMax`
+   * with the kept pages, and has no budget and no idle timer. A host that
+   * shows no app throws, as does a full house; not over CDP.
+   */
+  async streamApp(
+    input: { name: string; version: string; actor?: string; link?: Record<string, string> },
+    onFrame: (jpeg: Buffer) => void,
+  ): Promise<AppStream> {
+    if (this.cdp) throw new Error("browser: a look that streams does not apply over CDP — the profile's pages are the human's");
+    const strut = this.strut;
+    if (!strut) throw new Error("browser: this strut server serves no UI to host an app in (createStrut hands it one when serveUi is on)");
+    this.roomForOneMore();
+    const key = `${STREAM_KEY}${++this.streamSeq}`;
+    this.runs.set(key, { startedAt: Date.now(), exhausted: false, stream: true });
+    let closed = false;
+    let timer: NodeJS.Timeout | undefined;
+    let pending: Buffer | undefined;
+    let last = 0;
+    let endWith!: (why: string) => void;
+    const ended = new Promise<string>((r) => (endWith = r));
+    let unwatch = () => {};
+    const close = async () => {
+      if (closed) return;
+      closed = true;
+      clearTimeout(timer);
+      unwatch();
+      await this.dispose(key);
+    };
+    try {
+      const { page, hostError } = await this.openApp(key, strut, { ...input, viewport: STREAM_VIEWPORT });
+      if (hostError) throw new Error(`browser: strut's UI shows no app: ${hostError}`);
+      const gone = (why: string) => () => {
+        if (closed) return;
+        endWith(why);
+        void close();
+      };
+      const onClose = gone("the page closed");
+      const onCrash = gone("the page crashed");
+      const onDrop = gone("the browser went away");
+      const browser = page.context().browser();
+      page.on("close", onClose);
+      page.on("crash", onCrash);
+      browser?.on("disconnected", onDrop);
+      unwatch = () => {
+        page.off("close", onClose);
+        page.off("crash", onCrash);
+        browser?.off("disconnected", onDrop);
+      };
+      const send = (jpeg: Buffer) => {
+        last = Date.now();
+        if (!closed) onFrame(jpeg);
+      };
+      const cdp = await page.context().newCDPSession(page);
+      cdp.on("Page.screencastFrame", ({ data, sessionId }) => {
+        void cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => undefined);
+        if (closed) return;
+        const jpeg = Buffer.from(data, "base64");
+        const wait = last + 1000 / STREAM_FPS - Date.now();
+        if (wait <= 0 && !timer) return send(jpeg);
+        // Too soon after the last: this one waits, and a newer one takes its place.
+        pending = jpeg;
+        timer ??= setTimeout(() => {
+          timer = undefined;
+          const next = pending;
+          pending = undefined;
+          if (next) send(next);
+        }, Math.max(0, wait));
+      });
+      await cdp.send("Page.startScreencast", { format: "jpeg", quality: STREAM_QUALITY, maxWidth: STREAM_VIEWPORT.width, maxHeight: STREAM_VIEWPORT.height });
+      return { ...STREAM_VIEWPORT, ended, close };
+    } catch (err) {
+      await close();
+      throw err;
+    }
+  }
+
   // ── internals ────────────────────────────────────────────────────────────
+
+  /** Open strut's UI hosting the app on the session under `key`, every
+   *  request answered by `strut` in this process as `actor`, and wait for
+   *  it to show the app (`lookAtApp`, `streamApp`). */
+  private async openApp(
+    key: string,
+    strut: StrutFetch,
+    input: { name: string; version: string; actor?: string; link?: Record<string, string>; viewport?: Viewport; timeoutMs?: number },
+  ): Promise<{ page: Page; rendered: boolean; hostError?: string }> {
+    const page = await this.page(key, { viewport: input.viewport });
+    await page.route(`${STRUT_ORIGIN}/**`, (route) => answerFromStrut(route, strut, input.actor));
+    // The app's channel socket: `page.route` sees no WebSocket, and the
+    // origin resolves nowhere. Answered here, so a multiplayer app looks
+    // connected (plans/app-channels.md item 7).
+    const channelSocket = this.channelSocket;
+    if (channelSocket) await page.routeWebSocket(STRUT_CHANNEL_SOCKET, (ws) => answerChannelSocket(ws, channelSocket, input.actor));
+    const q = new URLSearchParams({ app: `${input.name}@${input.version}`, solo: "1" });
+    const link = new URLSearchParams(input.link ?? {}).toString();
+    if (link) q.set("input", link);
+    const { status } = await this.goto(key, { url: `${STRUT_ORIGIN}/?${q}`, timeoutMs: input.timeoutMs });
+    if (status >= 400) {
+      const said = await page.locator("body").innerText().catch(() => "");
+      throw new Error(`browser: strut's UI did not load (HTTP ${status}${said ? `: ${said.slice(0, 200)}` : ""})`);
+    }
+    const shown = await this.call(key, "app", LOOK_READY_MS, (s, ms) => appShown(s.page, ms));
+    return { page, ...shown };
+  }
 
   private async connect(): Promise<Browser> {
     if (this.browser?.isConnected()) return this.browser;

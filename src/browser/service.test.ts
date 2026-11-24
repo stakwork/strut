@@ -414,9 +414,9 @@ test("at most sessionsMax kept pages: open and keep past it are refused; a run's
   const svc = new Service(pw, undefined, { sessionsMax: 4 });
   const e = ended();
   for (const n of ["a", "b", "c", "d"]) await svc.openKept(`r-${n}`, e.kept(n));
-  await assert.rejects(svc.openKept("r-e", e.kept("e")), /4 kept pages are open \(BROWSER_SESSIONS_MAX\)/);
+  await assert.rejects(svc.openKept("r-e", e.kept("e")), /4 kept pages and streams are open \(BROWSER_SESSIONS_MAX\)/);
   await svc.page("r-own");
-  await assert.rejects(svc.keep("r-own", e.kept("e")), /4 kept pages are open/);
+  await assert.rejects(svc.keep("r-own", e.kept("e")), /4 kept pages and streams are open/);
   assert.equal((await svc.openKept("r-again", e.kept("a"))).resumed, true, "an open one is still reachable");
   await svc.closeKept("job-1", "a");
   await svc.openKept("r-e", e.kept("e"));
