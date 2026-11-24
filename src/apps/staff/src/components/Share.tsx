@@ -27,7 +27,7 @@ import { InviteBadge, InviteList, useInvites, WhatsappButton } from "./Invite";
 
 /** The QR, as an image of the step's SVG (no markup of its own on the page). */
 function Qr(props: { svg: string; label: string }) {
-  return <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(props.svg)}`} alt={props.label} className="size-40 shrink-0 self-center rounded-md border bg-white sm:size-44 sm:self-start" data-testid="share-qr" />;
+  return <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(props.svg)}`} alt={props.label} className="size-60 shrink-0 self-center rounded-md border bg-white sm:size-66 sm:self-start" data-testid="share-qr" />;
 }
 
 function CopyLine(props: { label: string; value: string; hint: string }) {
