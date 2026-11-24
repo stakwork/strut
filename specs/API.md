@@ -4134,8 +4134,12 @@ its reporter (a second after its last write, and at its end), one op per
 node: created then updated is `created`, created then deleted nothing. Each
 match is launched detached, as the person of the run that wrote (its actor,
 else its principal — so on their tokens and their bill), with input `{
-ref_id, type, op, by, job? }` (`by` the writing run's id, or
-`proposal:<id>`; `job` the writing run's job, when it has one);
+ref_id, type, op, by, job?, node? }` (`by` the writing run's id, or
+`proposal:<id>`; `job` the writing run's job, when it has one; `node`, on
+a `deleted` only, the node's values as they were before the delete: its
+strings up to 1,000 characters, numbers and booleans, 16,000 characters
+in all — a workflow's `input:` block declares `node: { type: json,
+required: false }` to keep it);
 with no person, nothing runs. Its `run.start` carries `onWrite: { package,
 op, type, ref_id, by, depth }`. A run `on:` started — and a job it starts,
 and a run nested in it — never fires its own package's entries, and a chain

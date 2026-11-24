@@ -167,7 +167,8 @@ on:
   type and one of the package's workflows. Install checks that the
   workflow is the package's own. Uninstall drops the entries with it.
 - **Input:** `{ ref_id, type, op, by: <the writing run's id> }`. The
-  workflow reads the node itself. After `deleted` the node may be gone.
+  workflow reads the node itself. After `deleted` the node may be gone, so
+  a `deleted` also carries `node`: its values as they were (see *Built*).
 - **As whom.** As the person of the run that wrote, which the reporter
   already carries (`actor`):
   - a page's call runs as its viewer;
@@ -220,6 +221,20 @@ on:
 - **`job`.** The input also carries the writing run's job, `{ ref_id,
   type, op, by, job? }`, so a workflow tells a job's write from a
   person's without reading the run (stakwork/pods#30 asked).
+- **`node` on a delete** (2026-11-23). A workflow on `deleted` could not
+  read the node it was about: on a Stadeum box, pods' `drop-images` found
+  the deleted `stakwork` Workspace gone, so it kept its images and the
+  next `stakwork` pod started from the old one. So strut reads the node
+  just before it deletes it, where it already read its type, and hands
+  the workflow `node: { …its values as they were }`, beside `{ ref_id,
+  type, op, by, job? }`. Only small scalar fields are carried, so a
+  Concept's body never bloats a run's input: a string up to 1,000
+  characters, a number or a boolean, and 16,000 characters in all
+  (`lastValues`, src/graph-writes.ts). A list, an object or a longer
+  string is left out; a workflow that needs one keeps it itself before
+  the delete. `created` and `updated` carry no `node`: the node is there
+  to read. A workflow with an `input:` block declares `node: { type:
+  json, required: false }`, since the block drops a key it does not name.
 - **The install card** says each entry on its workflow ("when a Workspace
   is created, as the person whose run did it"): an install lets a package
   run as anyone whose run writes that type.

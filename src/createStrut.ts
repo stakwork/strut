@@ -195,7 +195,7 @@ import { createConceptSources, DEV_CONCEPTS_ENV, devConcepts, type ConceptSource
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
 import { isStrutType } from "./graph/strut-schemas.js";
 import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
-import { createGraphChangeFeed, GRAPH_FEED_READ_MAX, type OnWrites } from "./graph-writes.js";
+import { createGraphChangeFeed, GRAPH_FEED_READ_MAX, type NodeValues, type OnWrites } from "./graph-writes.js";
 import { nodeFilesCapability, nodeFileStore } from "./node-files.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
@@ -9465,7 +9465,7 @@ export async function createStrut<TServices = unknown>(
   // every package write (`oneAtATime`), so an uninstall drops them. Every
   // run's graph view hands this each send's node writes (bindGraph,
   // src/graph-writes.ts); a match launches its workflow detached, as the
-  // person of the run that wrote, with `{ ref_id, type, op, by, job? }`.
+  // person of the run that wrote, with `{ ref_id, type, op, by, job?, node? }`.
   let packageTriggers: InstalledTrigger[] = [];
   const syncOn = async (): Promise<void> => {
     try {
@@ -9476,13 +9476,14 @@ export async function createStrut<TServices = unknown>(
     }
   };
   await syncOn();
-  const launchOn = async (t: InstalledTrigger, mark: OnWriteMark, actor: string, job: string | undefined): Promise<void> => {
+  const launchOn = async (t: InstalledTrigger, mark: OnWriteMark, actor: string, job: string | undefined, node: NodeValues | undefined): Promise<void> => {
     const what = `${mark.op} ${mark.type} ${mark.ref_id}`;
     try {
       await assertWorkflowEnabled(workspace, t.workflow);
       const flow = await workspace.getWorkflow(t.workflow);
       // `job`: the writing run's, so a workflow can tell a job's write from a person's.
-      const input = { ref_id: mark.ref_id, type: mark.type, op: mark.op, by: mark.by, ...(job ? { job } : {}) };
+      // `node`: a deleted node's values as they were — it may be gone for good.
+      const input = { ref_id: mark.ref_id, type: mark.type, op: mark.op, by: mark.by, ...(job ? { job } : {}), ...(node ? { node } : {}) };
       const runId = launchDetached(flow, { input }, { actor, onWrite: mark });
       console.log(`[on] ${what} (by ${mark.by}) started ${t.workflow} run ${runId}`);
     } catch (err) {
@@ -9498,7 +9499,7 @@ export async function createStrut<TServices = unknown>(
       for (const { trigger, write } of stopped) {
         console.warn(`[on] run ${by.runId}: ${write.op} ${write.type} ${write.ref_id} would start ${trigger.workflow}, but its chain of on: runs holds ${ON_CHAIN_MAX} already — nothing started`);
       }
-      for (const { trigger, mark } of launches) void launchOn(trigger, mark, by.actor!, by.job);
+      for (const { trigger, write, mark } of launches) void launchOn(trigger, mark, by.actor!, by.job, write.node);
     },
   };
   // The `automation/*` steps' door (src/steps/lib/automation/), unless the

@@ -41,6 +41,8 @@
  *   - to a package's `on:` (src/packages/on.ts, plans/package-seams.md §2),
  *     when the bag has `onWrites`: each send's node writes folded to one op
  *     per node (`netOps`), with who wrote — never a branch's or a trial's.
+ *     A delete carries the node's small values as they were (`lastValues`,
+ *     read before it): a node gone for good can't be read after.
  *
  * Not heard: a write through raw Cypher (`graph.query`), a write by another
  * process (jarvis, an ingest, a host writing the database itself), and
@@ -153,11 +155,42 @@ export function createGraphChangeFeed(opts: { max?: number; gatherMs?: number } 
 
 // ── what a send's node writes start ──────────────────────────────────────
 
+/** A deleted node's values as they were (`lastValues`). */
+export type NodeValues = Record<string, string | number | boolean>;
+
+/** The longest string a deleted node's values keep… */
+export const NODE_VALUE_MAX = 1_000;
+/** …and the most characters they hold in all, names included. */
+export const NODE_VALUES_MAX = 16_000;
+
+/**
+ * What a delete carries of the node (plans/package-seams.md §2), so an
+ * `on: deleted` workflow can read a node that is gone: its small scalar
+ * fields. A string over `NODE_VALUE_MAX` characters (a Concept's body), a
+ * list (an embedding) or an object is left out, and so is a field that
+ * would take the whole past `NODE_VALUES_MAX`.
+ */
+export function lastValues(props: Record<string, unknown>): NodeValues {
+  const out: NodeValues = {};
+  let size = 0;
+  for (const [k, v] of Object.entries(props)) {
+    const small = typeof v === "string" ? v.length <= NODE_VALUE_MAX : typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v));
+    if (!small) continue;
+    const cost = k.length + String(v).length;
+    if (size + cost > NODE_VALUES_MAX) continue;
+    size += cost;
+    out[k] = v as string | number | boolean;
+  }
+  return out;
+}
+
 /** One node's writes in a send, folded to one op (`netOps`). */
 export interface NodeWrite {
   ref_id: string;
   type: string;
   op: GraphChange["op"];
+  /** On a `deleted`, the node's values as they were (`lastValues`). */
+  node?: NodeValues;
 }
 
 /** Who wrote: the run (or `proposal:<id>`), its person, its job, and the
@@ -182,34 +215,41 @@ export interface OnWrites {
  * created, then updated, is `created`; created and deleted in the same send,
  * nothing; updated, then deleted, `deleted`; deleted and then restored,
  * `updated` — it was there before and is there after. A node whose type
- * the send could not learn is left out.
+ * the send could not learn is left out. A `deleted` keeps the values its
+ * last delete read.
  */
-export function netOps(writes: ReadonlyArray<{ ref_id: string; op: GraphChange["op"]; type?: string | undefined }>): NodeWrite[] {
-  const by = new Map<string, { first: GraphChange["op"]; last: GraphChange["op"]; type?: string }>();
+export function netOps(writes: ReadonlyArray<{ ref_id: string; op: GraphChange["op"]; type?: string | undefined; node?: NodeValues | undefined }>): NodeWrite[] {
+  const by = new Map<string, { first: GraphChange["op"]; last: GraphChange["op"]; type?: string; node?: NodeValues }>();
   for (const w of writes) {
     const had = by.get(w.ref_id);
-    if (!had) by.set(w.ref_id, { first: w.op, last: w.op, ...(w.type ? { type: w.type } : {}) });
+    if (!had) by.set(w.ref_id, { first: w.op, last: w.op, ...(w.type ? { type: w.type } : {}), ...(w.node ? { node: w.node } : {}) });
     else {
       had.last = w.op;
       if (w.type) had.type = w.type;
+      if (w.node) had.node = w.node;
     }
   }
   const out: NodeWrite[] = [];
-  for (const [ref_id, { first, last, type }] of by) {
+  for (const [ref_id, { first, last, type, node }] of by) {
     if (!type) continue;
     const op = first === "created" ? (last === "deleted" ? null : "created") : last === "deleted" ? "deleted" : "updated";
-    if (op) out.push({ ref_id, type, op });
+    if (op) out.push({ ref_id, type, op, ...(op === "deleted" && node ? { node } : {}) });
   }
   return out;
 }
 
-/** What a reporter reads a node's type with: the backend's reader. */
+/** What a reporter reads a node's type with (and a deleted one's values):
+ *  the backend's reader. */
 interface TypeReader {
-  getNode(ref_id: string): Promise<{ node_type?: string | undefined } | null>;
+  getNode(ref_id: string): Promise<{ node_type?: string | undefined; properties?: Record<string, unknown> } | null>;
 }
 
+/** A write as the reporter is told it: a delete carries the node's values
+ *  as they were, for `on:` alone — never the feed's or the job's. */
+export type NotedChange = Omit<GraphChange, "at"> & { node?: NodeValues };
+
 export interface GraphReporter {
-  note(change: Omit<GraphChange, "at">): void;
+  note(change: NotedChange): void;
   /** Send what is gathered now (the run ending, a proposal applied). */
   flush(): Promise<void>;
 }
@@ -255,7 +295,7 @@ export function graphReporter(o: {
 }): GraphReporter {
   const debounce = o.debounceMs ?? GRAPH_REPORT_DEBOUNCE_MS;
   const maxDelay = o.maxDelayMs ?? GRAPH_REPORT_MAX_DELAY_MS;
-  let pending: GraphChange[] = [];
+  let pending: Array<GraphChange & { node?: NodeValues }> = [];
   let firstAt = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   /** Node types this run learned: from its writes, and its lookups. */
@@ -307,7 +347,7 @@ export function graphReporter(o: {
       if (t) typeOf.set(ref, t);
       return t;
     };
-    const out: GraphChange[] = [];
+    const out: Array<GraphChange & { node?: NodeValues }> = [];
     try {
       for (const c of batch) {
         if (c.kind === "node") {
@@ -331,7 +371,7 @@ export function graphReporter(o: {
     // A package's `on:` (plans/package-seams.md §2): what this send did to
     // each node, once. A branch's writes are a try, not a change to the box.
     if (o.onWrites && !o.branch) {
-      const nodes = netOps(out.filter((c) => c.kind === "node").map((c) => ({ ref_id: c.ref_id, op: c.op, type: c.node_type })));
+      const nodes = netOps(out.filter((c) => c.kind === "node").map((c) => ({ ref_id: c.ref_id, op: c.op, type: c.node_type, node: c.node })));
       const by = o.runId ?? o.id;
       if (nodes.length && by) {
         try {
@@ -341,7 +381,8 @@ export function graphReporter(o: {
         }
       }
     }
-    o.feed?.push(out);
+    // A deleted node's values are `on:`'s alone.
+    o.feed?.push(out.map(({ node: _values, ...c }) => c));
     if (!o.job || !o.notify) return;
     writes += out.length;
     for (const c of out) {
@@ -402,8 +443,12 @@ function watchNodes<W extends object>(writer: W, r: GraphReporter, reader: TypeR
     const op = nodeOp(res?.outcome);
     if (res && op) r.note({ kind: "node", op, ref_id: res.ref_id, ...(res.node_type ? { node_type: res.node_type } : {}) });
   };
-  // A deleted node can no longer be read: its type is read first.
-  const typeBefore = async (ref: string) => (reader ? ((await reader.getNode(ref).catch(() => null))?.node_type ?? undefined) : undefined);
+  // A deleted node can no longer be read: its type is read first, and its
+  // values, which an `on: deleted` workflow is handed (`lastValues`).
+  const before = async (ref: string): Promise<{ node_type?: string; node?: NodeValues }> => {
+    const n = reader ? await reader.getNode(ref).catch(() => null) : null;
+    return { ...(n?.node_type ? { node_type: n.node_type } : {}), ...(n?.properties ? { node: lastValues(n.properties) } : {}) };
+  };
   return new Proxy(writer, {
     get(target, prop) {
       const v = Reflect.get(target, prop, target) as unknown;
@@ -433,9 +478,9 @@ function watchNodes<W extends object>(writer: W, r: GraphReporter, reader: TypeR
         case "deleteNode":
           return async (...args: unknown[]) => {
             const ref = typeof args[0] === "string" ? args[0] : undefined;
-            const node_type = ref ? await typeBefore(ref) : undefined;
+            const was = ref ? await before(ref) : {};
             const res = await fn.apply(target, args);
-            if (ref && res) r.note({ kind: "node", op: "deleted", ref_id: ref, ...(node_type ? { node_type } : {}) });
+            if (ref && res) r.note({ kind: "node", op: "deleted", ref_id: ref, ...was });
             return res;
           };
         default:

@@ -10,8 +10,10 @@
  * `onWrites`,
  * which createStrut builds over these entries: each match is launched
  * detached, as the person of the run that wrote, with input
- * `{ ref_id, type, op, by, job? }` (`by` the writing run's id, `job` its
- * job when it has one).
+ * `{ ref_id, type, op, by, job?, node? }` (`by` the writing run's id, `job`
+ * its job when it has one, `node` a deleted node's values as they were —
+ * `lastValues` there: its strings up to 1,000 characters, numbers and
+ * booleans).
  *
  * The guards (`matches`):
  *   - nothing runs without a person — a run that acts for nobody starts

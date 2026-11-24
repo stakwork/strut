@@ -17,7 +17,7 @@ import { createStrut, type Strut } from "../createStrut.js";
 import type { LadybugBackend } from "../graph/backend.js";
 import { createNodeSchema } from "../graph/schema-crud.js";
 import { testBackends } from "../graph/test-util.js";
-import { bindGraph, graphReporter, netOps, type NodeWrite, type OnWrites, type WriteBy } from "../graph-writes.js";
+import { bindGraph, createGraphChangeFeed, graphReporter, lastValues, netOps, NODE_VALUE_MAX, NODE_VALUES_MAX, type NodeWrite, type OnWrites, type WriteBy } from "../graph-writes.js";
 import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
 import { derivePackageDetail } from "./detail.js";
@@ -100,6 +100,46 @@ describe("one op per node per send (netOps)", () => {
       ],
     );
   });
+
+  it("a deleted node keeps the values its last delete read; any other op carries none", () => {
+    const was = (name: string) => ({ name });
+    assert.deepEqual(
+      netOps([
+        { ...w("a", "updated") },
+        { ...w("a", "deleted"), node: was("a1") },
+        { ...w("b", "deleted"), node: was("b1") },
+        { ...w("b", "created") },
+        { ...w("c", "created") },
+        { ...w("c", "deleted"), node: was("c1") },
+      ]),
+      [
+        { ref_id: "a", type: "Workspace", op: "deleted", node: { name: "a1" } },
+        { ref_id: "b", type: "Workspace", op: "updated" },
+      ],
+    );
+  });
+});
+
+describe("what a delete carries of the node (lastValues)", () => {
+  it("its small scalar fields: a long string, a list, an object or a number that is not one is left out", () => {
+    const long = "x".repeat(NODE_VALUE_MAX + 1);
+    assert.deepEqual(
+      lastValues({ name: "stakwork", count: 3, live: false, body: long, embedding: [0.1, 0.2], meta: { a: 1 }, nothing: null, nan: Number.NaN, edge: "y".repeat(NODE_VALUE_MAX) }),
+      { name: "stakwork", count: 3, live: false, edge: "y".repeat(NODE_VALUE_MAX) },
+    );
+  });
+
+  it("and no more than NODE_VALUES_MAX characters in all: a field that would pass it is left out, a smaller one after it kept", () => {
+    const props: Record<string, unknown> = {};
+    // Each field 999 characters with its name: 16 fit, the 17th would pass the whole, "name" (8) still fits.
+    for (let i = 0; i < 20; i++) props[`f${String(i).padStart(2, "0")}`] = "z".repeat(NODE_VALUE_MAX - 4);
+    props["name"] = "kept";
+    const out = lastValues(props);
+    const size = Object.entries(out).reduce((n, [k, v]) => n + k.length + String(v).length, 0);
+    assert.ok(size <= NODE_VALUES_MAX, `${size} characters`);
+    const fit = Math.floor(NODE_VALUES_MAX / (NODE_VALUE_MAX - 1));
+    assert.deepEqual(Object.keys(out), [...Object.keys(props).slice(0, fit), "name"]);
+  });
 });
 
 describe("what a send starts (matches)", () => {
@@ -161,6 +201,25 @@ describe("the reporter tells onWrites", () => {
     r.note({ kind: "node", op: "deleted", ref_id: "n1", node_type: "Workspace" });
     await r.flush();
     assert.deepEqual(fired[1]!.writes, [{ ref_id: "n1", type: "Workspace", op: "deleted" }], "the next send, apart");
+  });
+
+  it("a delete reads the node first: on: is handed its values as they were, the feed never", async () => {
+    const { fired, onWrites } = listener();
+    const graphChanges = createGraphChangeFeed();
+    const props: Record<string, Record<string, unknown>> = { w1: { ref_id: "w1", name: "stakwork", body: "b".repeat(NODE_VALUE_MAX + 1) } };
+    const nodes = {
+      async deleteNode(ref: string) {
+        delete props[ref];
+        return { ref_id: ref, edges: 0 };
+      },
+    };
+    const full = { getNode: async (ref: string) => (props[ref] ? { node_type: "Workspace", properties: props[ref] } : null) };
+    const bound = bindGraph({ graph: { nodes, reader: full }, onWrites, graphChanges }, { runId: "r1", actor: "alice" });
+    await (bound.services.graph.nodes as typeof nodes).deleteNode("w1");
+    await bound.reporter!.flush();
+    assert.deepEqual(fired[0]!.writes, [{ ref_id: "w1", type: "Workspace", op: "deleted", node: { ref_id: "w1", name: "stakwork" } }]);
+    const [fed] = (await graphChanges.read()).changes;
+    assert.deepEqual([fed!.op, fed!.ref_id, fed!.node_type, "node" in fed!], ["deleted", "w1", "Workspace", false]);
   });
 
   it("a branch's writes and a trial's tell nothing; a proposal's apply is `by` its id", async () => {
@@ -308,6 +367,43 @@ describe("on: on a strut with a graph (ladybug)", { skip: lb.skip }, () => {
     await strut.packages.uninstall(PKG);
     await strut.run(make, { name: "two" }, { actor: "bob" });
     assert.equal((await settled(SETUP)).length, 2, "uninstalled: its entries are gone");
+  });
+
+  it("a workflow on deleted is handed the node as it was, read before the delete: it need not read a node that may be gone", async () => {
+    const DROP = `${PKG}/drop`;
+    await strut.packages.install(
+      `file:${await writeTree({
+        "strut.yaml": `package: ${PKG}\nversion: 0.1.0\non:\n  - deleted: Workspace\n    workflow: drop\n`,
+        // An input block drops a key it does not name: `node` is declared, as pods' drop-images does.
+        "workflows/drop.yaml": [
+          `name: ${DROP}`,
+          "input:",
+          "  ref_id: { type: string }",
+          "  type: { type: string }",
+          "  op: { type: string }",
+          "  by: { type: string }",
+          "  node: { type: json, required: false }",
+          "steps:",
+          `  - { id: say, type: log, config: { message: "drop {{ input.node.name }}" } }`,
+          "",
+        ].join("\n"),
+      })}`,
+      { actor: "alice" },
+    );
+    const made = await strut.run(make, { name: "five" }, { actor: "bob" });
+    assert.equal(made.status, "success", JSON.stringify(made.error));
+    const ref = ((await store.getRunEvents("make-workspace", made.runId)).find((e) => e.type === "step.end" && e.path.endsWith("/create"))!.output as { ref_id: string }).ref_id;
+    const gone = await strut.run(flow("drop-it", { input: z.object({}).passthrough(), steps: [step("d", "graph/delete-node", { ref_id: ref, reason: "a test" })] }), {}, { actor: "bob" });
+    assert.equal(gone.status, "success", JSON.stringify(gone.error));
+    const [run, ...more] = await settled(DROP);
+    assert.equal(more.length, 0);
+    const input = (await startOf(DROP, run!)).input as { ref_id: string; type: string; op: string; by: string; node: Record<string, unknown> };
+    assert.deepEqual([input.ref_id, input.type, input.op, input.by], [ref, "Workspace", "deleted", gone.runId]);
+    assert.equal(input.node["name"], "five");
+    assert.equal(input.node["description"], "new", "its values as the delete found them");
+    const said = (await store.getRunEvents(DROP, run!)).find((e) => e.type === "step.end" && e.path.endsWith("/say"));
+    assert.match(JSON.stringify(said?.output), /drop five/, "the workflow reads input.node");
+    assert.equal((await store.getRunSummary(DROP, run!))!.status, "success");
   });
 
   it("a job its workflow starts carries its mark: the job's writes are its work, and start nothing of its own", async () => {
