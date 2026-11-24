@@ -24,7 +24,13 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx: StepContext) {
     requireAdminPage(ctx, "knowledge/trial");
-    const r = await requireTrials(ctx, "knowledge/trial").trial({ claim: cfg.claim, n: cfg.n, ...(ctx.actor ? { by: ctx.actor } : {}) });
+    const r = await requireTrials(ctx, "knowledge/trial").trial({
+      claim: cfg.claim,
+      n: cfg.n,
+      ...(ctx.actor ? { by: ctx.actor } : {}),
+      // The samples spend the asking job's budget (src/jobs.ts `budgetUsd`).
+      ...(ctx.budgetJob ? { budgetJob: ctx.budgetJob } : {}),
+    });
     if (!("ok" in r)) throw new Error(r.error);
     return r;
   },

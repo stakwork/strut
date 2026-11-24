@@ -23,9 +23,10 @@ import { resolveStep } from "./steps/registry.js";
 import { nameInPackageAsync, packagePrefixOf, stepInPackage } from "./package-lookup.js";
 import type { RunStore } from "./store.js";
 import { MemoryRunStore, countSteps, countUsage, generateRunId, tallyStep, tallyUsage } from "./store.js";
+import { addUsage, emptyUsage } from "./pricing.js";
 import { executedWorkflowHash } from "./journal.js";
 import { RunController, isCancelledError } from "./run-control.js";
-import type { JobsCapability } from "./jobs.js";
+import { budgetSpentMessage, type JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
 import { resolveSettings } from "./extensions.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
@@ -38,6 +39,9 @@ import { guardEscapes } from "./escaped-errors.js";
 import { ParkedError, isParkedError, mergeParked, parkPrefix, type ParkingCapability } from "./park.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
+/** The bag's jobs capability, or undefined on a bag with none. */
+const jobsOf = (services: unknown): Partial<JobsCapability> | undefined =>
+  services && typeof services === "object" ? ((services as { jobs?: Partial<JobsCapability> }).jobs ?? undefined) : undefined;
 
 // ── Runner ─────────────────────────────────────────────────────────────────
 
@@ -144,6 +148,12 @@ export interface RunOptions<TServices = unknown> {
    *  with `title`, the launch's name for the job. A resume records nothing:
    *  the run is already on the list. */
   job?: string;
+  /** The job whose BUDGET the run spends (`StepContext.budgetJob`), when
+   *  not `job`: a trial's sample a job's run started spends that job's
+   *  (src/trials.ts). Defaults to `job`. Children inherit it, `run.start`
+   *  records it when it differs, and the runner refuses a new run and
+   *  writes the run's cost by it. */
+  budgetJob?: string;
   title?: string;
   /** The Concept BRANCH the run is on (src/branches.ts, ruling 10): a
    *  launch-level field beside `job`, recorded on `run.start` and the
@@ -252,6 +262,17 @@ function markersOf(output: unknown): { messages?: unknown[]; nodes?: AccessedNod
   return { ...(messages ? { messages } : {}), ...(nodes ? { nodes } : {}), ...takeUsage(output) };
 }
 
+/** Two spends as one, as a step's event carries them (`takeUsage`): what
+ *  earlier attempts spent before they failed, and what this one did. */
+function addSpend(a: Partial<ModelUsage> | undefined, b: Partial<ModelUsage>): Partial<ModelUsage> {
+  if (!a) return b;
+  return {
+    modelCalls: (a.modelCalls ?? 0) + (b.modelCalls ?? 0),
+    ...(a.usage || b.usage ? { usage: addUsage(a.usage ?? emptyUsage(), b.usage ?? emptyUsage()) } : {}),
+    cost: (a.cost ?? 0) + (b.cost ?? 0),
+  };
+}
+
 /** Flatten an Error's `cause` chain into one readable string (`""` when there
  *  is none). Transport failures hide their real diagnosis down this chain —
  *  the thrown message is a bare "terminated" while the socket-level reason
@@ -274,14 +295,15 @@ function causeChain(err: Error): string {
 /** The run's view of the services bag: `secrets` and `llm` (the grants it
  *  bills, src/llm.ts) bound to the principal when the capability supports it
  *  (`forPrincipal`), else the bag itself. */
-function bindPrincipal<TServices>(services: TServices, principal: string | undefined): TServices {
+function bindPrincipal<TServices>(services: TServices, principal: string | undefined, budgetJob?: string): TServices {
   if (!principal || services == null || typeof services !== "object") return services;
   const view: Record<string, unknown> = { ...(services as object) };
   let bound = false;
   for (const name of ["secrets", "llm"]) {
-    const cap = view[name] as { forPrincipal?: (p: string) => unknown } | undefined;
+    const cap = view[name] as { forPrincipal?: (p: string, budgetJob?: string) => unknown } | undefined;
     if (typeof cap?.forPrincipal !== "function") continue;
-    view[name] = cap.forPrincipal(principal);
+    // A grant made in a run that spends a job's budget is held to it (src/mothership.ts).
+    view[name] = name === "llm" && budgetJob ? cap.forPrincipal(principal, budgetJob) : cap.forPrincipal(principal);
     bound = true;
   }
   return bound ? (view as TServices) : services;
@@ -385,6 +407,8 @@ interface Exec {
   actor?: string;
   principal?: string;
   job?: string;
+  /** The job whose budget the run spends (`StepContext.budgetJob`). */
+  budgetJob?: string;
   /** The run's Concept branch (`StepContext.branch`). */
   branch?: string;
   /** The run is a trial (`StepContext.trial`). */
@@ -563,6 +587,9 @@ async function executeRun<TServices = unknown>(
   // The Concept branch: the bag's it was launched with (a step's
   // `ctx.services`, already on one), else the launch's. A launch naming
   // another than its bag's fails below (`branch_fixed:`).
+  // The job whose budget the run spends: its own, unless it was started for
+  // another job's work (`RunOptions.budgetJob`).
+  const budgetJob = opts?.budgetJob ?? opts?.job;
   const onBag = branchOfServices(opts?.services);
   const branch = onBag ?? opts?.branch;
   // On every summary this run can write (see `RunSummary.automation`).
@@ -592,7 +619,7 @@ async function executeRun<TServices = unknown>(
     bindNodeFiles(bindTrial(bindBranch(
       bindApp(
         bindPeer(
-          bindHost(bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, opts?.credit ?? runId), opts?.origin, opts?.host),
+          bindHost(bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal, budgetJob), opts?.origin, opts?.credit ?? runId), opts?.origin, opts?.host),
           opts?.origin,
           opts?.peerPerson ? opts.actor : undefined,
           opts?.continues,
@@ -657,9 +684,19 @@ async function executeRun<TServices = unknown>(
       if (!branches) throw new Error(`no_branch: this strut server keeps no Concept branches (they need a graph) — the run cannot be on "${branch}"`);
       if (!(await branches.get(branch))) throw new Error(`no_branch: there is no Concept branch "${branch}" here (it was dropped, or never made) — GET /branches lists them`);
     }
+    // A job whose budget is spent starts nothing more (stadeum
+    // plans/experiments.md, "A budget on a job"): a new run under it is
+    // refused here, whichever door launched it. A resume goes on — it was
+    // started when there was money, and the gateway's link for the job
+    // refuses its calls past the budget — and a check the verify pass runs
+    // is the job's judging, not its work.
+    if (budgetJob && !opts?.resume && opts?.origin !== "verify") {
+      const budget = await jobsOf(opts?.services)?.budget?.(budgetJob).catch(() => undefined);
+      if (budget && budget.leftUsd <= 0) throw new Error(budgetSpentMessage(budgetJob, budget));
+    }
     parsedInput = workflow.input.parse(input);
   } catch (err) {
-    const branchErr = err instanceof Error && /^(branch_fixed|no_branch):/.test(err.message);
+    const branchErr = err instanceof Error && /^(branch_fixed|no_branch|job_budget_spent):/.test(err.message);
     const error = {
       message: branchErr ? (err as Error).message : `Input validation failed: ${err instanceof Error ? err.message : String(err)}`,
       stack: err instanceof Error ? err.stack : undefined,
@@ -729,6 +766,7 @@ async function executeRun<TServices = unknown>(
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),
+      ...(opts?.budgetJob && opts.budgetJob !== opts.job ? { budgetJob: opts.budgetJob } : {}),
       ...(opts?.startedBy ? { startedBy: opts.startedBy } : {}),
       ...(opts?.conversation ? { conversation: opts.conversation } : {}),
       ...(opts?.wakeAsked ? { wakeAsked: true as const } : {}),
@@ -777,6 +815,7 @@ async function executeRun<TServices = unknown>(
     actor: opts?.actor,
     principal: opts?.principal,
     job: opts?.job,
+    ...(budgetJob ? { budgetJob } : {}),
     ...(branch ? { branch } : {}),
     ...(opts?.trial ? { trial: opts.trial } : {}),
     app: opts?.app,
@@ -897,6 +936,15 @@ async function executeRun<TServices = unknown>(
     // The run's last graph writes, sent now rather than a second from now
     // (never throws: a report is a notification).
     await graphReports?.flush();
+    // What the run cost, on the ledger of the job whose budget it spends:
+    // that job's spend, which its budget is held to (`jobSpentUsd`). A
+    // top-level run's only — a child's is in the parent that waited on it.
+    // Bookkeeping, like `recordRun`: a warning, never a failed run.
+    if (budgetJob && !opts?.controller?.parent && totals.cost > 0) {
+      await jobsOf(services)
+        ?.recordCost?.(budgetJob, runId, totals.cost)
+        .catch((err: unknown) => console.warn(`[runner] the cost of run ${runId} was not recorded on job "${budgetJob}":`, err));
+    }
     // Step-registered disposers (`ctx.onRunEnd`) first, newest first, each
     // guarded — a step's worktree or browser is gone before the consumer's
     // per-run teardown looks. A disposer that throws never blocks the rest.
@@ -1131,6 +1179,9 @@ async function executeStep(
   scope: Record<string, unknown>,
   exec: Exec,
   path: string,
+  /** What the step an `onError` fallback stands in for spent before it
+   *  failed: the fallback's own end carries it. */
+  carried?: Partial<ModelUsage>,
 ): Promise<unknown> {
   // The type as this frame means it: a package's own step first
   // (src/package-lookup.ts). Events record the step that runs.
@@ -1151,6 +1202,11 @@ async function executeStep(
   const retryDelay = step.options?.retry?.delayMs ?? 0;
 
   let lastError: Error | undefined;
+  // What failed attempts spent before they failed (an error marked with
+  // `withUsage`, as the agent step marks one): the event that ends the step
+  // — its `step.end` after a retry, its `step.error`, or its fallback's —
+  // carries it, so the run's totals and its job's budget count that money.
+  let failedSpend = carried;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -1208,13 +1264,15 @@ async function executeStep(
 
       const durationMs = Date.now() - startTime;
 
+      const markers = markersOf(output);
       await exec.emit({
         type: "step.end",
         path,
         stepType: baseType(step.type),
         output,
         durationMs,
-        ...markersOf(output),
+        ...markers,
+        ...(failedSpend ? addSpend(failedSpend, markers) : {}),
       });
 
       return output;
@@ -1230,6 +1288,8 @@ async function executeStep(
       }
 
       lastError = err instanceof Error ? err : new Error(String(err));
+      const spentHere = takeUsage(err);
+      if (spentHere.modelCalls || spentHere.cost || spentHere.usage) failedSpend = addSpend(failedSpend, spentHere);
 
       if (attempt === maxRetries) {
         // All retries exhausted
@@ -1248,11 +1308,14 @@ async function executeStep(
             },
           };
           try {
+            // What this step spent before it failed rides on the
+            // fallback's end (its `step.end`, or its `step.error`).
             const fallbackOutput = await executeStep(
               step.options.onError,
               errorScope,
               exec,
               `${path}/onError`,
+              failedSpend,
             );
             return fallbackOutput;
           } catch (fallbackErr) {
@@ -1283,6 +1346,7 @@ async function executeStep(
             message: lastError.message,
             stack: lastError.stack,
           },
+          ...failedSpend,
         });
         throw lastError;
       }
@@ -1357,6 +1421,7 @@ function stepContext(step: Step, validConfig: unknown, scope: Record<string, unk
     ...(exec.actor ? { actor: exec.actor } : {}),
     ...(exec.principal ? { principal: exec.principal } : {}),
     ...(exec.job ? { job: exec.job } : {}),
+    ...(exec.budgetJob ? { budgetJob: exec.budgetJob } : {}),
     ...(exec.branch ? { branch: exec.branch } : {}),
     ...(exec.trial ? { trial: exec.trial } : {}),
     ...(exec.app ? { app: exec.app } : {}),

@@ -619,6 +619,10 @@ export function createVerifier(deps: VerifierDeps) {
       // The source run's principal: its checks are billed to the same person
       // (plans/mothership-cost-control.md §2).
       principal: undefined as string | undefined,
+      /** The job whose budget the source run spent (its `run.start`'s
+       *  `budgetJob`, else its `job`): its checks spend it too, so a trial's
+       *  judging counts against the experiment that asked for it. */
+      budgetJob: undefined as string | undefined,
       /** The bag checks run with, when not the deployment's: a pass over a
        *  work adds the work (`ctx.services.work`, src/work.ts). */
       services: undefined as unknown,
@@ -841,6 +845,7 @@ export function createVerifier(deps: VerifierDeps) {
       // swept with it. `origin: verify` keeps it off the job's run list; it
       // takes no hold.
       ...(subject.kind === "job" ? { job: subject.id } : {}),
+      ...(pass.budgetJob ? { budgetJob: pass.budgetJob } : {}),
       ...(pass.activeStepHashes[type] ? { stepHashes: { [type]: pass.activeStepHashes[type]! } } : {}),
       ...(pass.principal ? { principal: pass.principal } : {}),
     });
@@ -1032,6 +1037,7 @@ export function createVerifier(deps: VerifierDeps) {
     if (!launch) return { ...pass.result, skipped: "unknown-run" };
     if (launch.origin === "verify" || key.startsWith("check:")) return { ...pass.result, skipped: "verify-origin" };
     pass.principal = launch.principal;
+    pass.budgetJob = launch.budgetJob ?? launch.job;
     setBranch(pass, launch.branch);
     if (!events.some((e) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled")) return { ...pass.result, skipped: "unfinished" };
 
@@ -1130,6 +1136,7 @@ export function createVerifier(deps: VerifierDeps) {
       if (end && end.ts > endedAt) endedAt = end.ts;
       if (m.runId === root.runId) {
         pass.principal = start.principal;
+        pass.budgetJob = start.budgetJob ?? start.job;
         // The work is on its root's branch: every run it starts is (ruling 10).
         setBranch(pass, start.branch);
         if (start.trial) pass.trial = start.trial;
@@ -1225,6 +1232,7 @@ export function createVerifier(deps: VerifierDeps) {
       const events = await store.getRunEvents(key, turn);
       const launch = events.find((e) => e.type === "run.start");
       pass.principal = launch?.principal;
+      pass.budgetJob = launch?.budgetJob ?? launch?.job ?? job;
       setBranch(pass, launch?.branch);
       const output = (await store.getRunSummary(key, turn))?.output ?? [...events].reverse().find((e) => e.type === "run.end")?.output;
       const path = jobSubjectPath(job);

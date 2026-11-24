@@ -157,9 +157,9 @@ describe("the orchestrator workflow strut ships", () => {
     // `start` takes what the job/start tool takes, but a DAG step after the
     // agent sees only THIS turn's files: the agent hands its tools alone the
     // files of the thread's earlier turns.
-    assert.deepEqual(Object.keys((reply.properties["start"] as any).properties), ["brief", "title", "kind", "workflow", "peer", "repos", "attachments"]);
+    assert.deepEqual(Object.keys((reply.properties["start"] as any).properties), ["brief", "title", "kind", "workflow", "peer", "repos", "attachments", "budgetUsd"]);
     const started = flow.steps.find((st) => st.id === "started")!.config as Record<string, unknown>;
-    for (const k of ["peer", "repos", "attachments"]) assert.equal(started[k], `{{ turn.object.start.${k} }}`);
+    for (const k of ["peer", "repos", "attachments", "budgetUsd"]) assert.equal(started[k], `{{ turn.object.start.${k} }}`);
     assert.ok(
       String(p["system"]).replace(/\s+/g, " ").includes("or to hand the job a file from an earlier message: `start` carries only this message's files."),
     );

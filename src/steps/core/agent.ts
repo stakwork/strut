@@ -1993,6 +1993,14 @@ export default defineStep({
       }
     }
     let closeMcp: (() => Promise<void>) | undefined;
+    // What the loop spent, banked step by step (below): out here so a turn
+    // that FAILS still reports it — the error carries it (`withUsage`) and
+    // the runner puts it on the `step.error`, so the run's totals, and the
+    // budget of its job, count the calls made before a gateway or a
+    // provider stopped it.
+    const bankedSteps: any[] = [];
+    let bankedUsage = emptyUsage();
+    let bankedCost = 0;
     try {
       // Web tools — web_search + web_fetch on EVERY provider (aieo: native on
       // anthropic; Exa search + guarded HTTP fetch elsewhere — and everywhere
@@ -2093,10 +2101,7 @@ export default defineStep({
       // `text` all reject with the stream error — so the only way to keep that
       // work is to bank each step as it finishes. Cumulative across resume
       // attempts, which is exactly what a continuation needs to replay.
-      const bankedSteps: any[] = [];
       const bankedMessages: any[] = [];
-      let bankedUsage = emptyUsage();
-      let bankedCost = 0;
       // The context after the latest model call: what it read plus what it wrote.
       let contextUsed = 0;
       // Shared by the main loop and the premature-stop nudge continuation.
@@ -2649,6 +2654,15 @@ export default defineStep({
       }
       console.log(`[agent] completed in ${Date.now() - startTime}ms (${stepsUsed} steps)`);
       return await finish({ result: final, steps: stepsUsed, usage, cost });
+    } catch (e) {
+      if (!isCancelledError(e) && (bankedSteps.length || bankedCost)) {
+        try {
+          withUsage(e, { modelCalls: bankedSteps.length, usage: bankedUsage, cost: bankedCost });
+        } catch {
+          // an error that takes no mark (frozen) fails the step as it is
+        }
+      }
+      throw e;
     } finally {
       session?.release();
       await closeMcp?.();
