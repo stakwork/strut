@@ -45,6 +45,12 @@ history list. The UI shows an actor id's first `-` segment
 (`web/src/actor.ts`); storage and the wire keep the whole id.
 `WorkflowMetadata.maxRunCostUsd` (`PUT /workflows/:name/run-cap`, the
 topbar's cap chip) is the run's cap when routed; nothing else reads it. A
+package may ship one for its own workflows (`maxRunCostUsd:` in strut.yaml,
+docs/packages.md): the install records it on the workflow's version
+(`upstream.maxRunCostUsd`). The cap is the admin's when set, else the
+package's on the active version, else `STRUT_RUN_MAX_COST_USD`, else $100
+(`workflowRunCap`, src/run-cap.ts). A release never touches the admin's.
+The cap chip shows the package's while the admin's is unset. A
 PUBLIC run (plans/paid-runs.md §7) carries a cap of its own below it, the
 smallest of its item's `capUsd`, the workflow's and what is left of its
 daily cap: `RunOptions.maxCostUsd` → `run.start` → `ctx.maxCostUsd` →

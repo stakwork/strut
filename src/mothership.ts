@@ -62,7 +62,7 @@ import type { WorkspaceStore } from "./workspace.js";
 import type { LlmAuth, LlmAuthContext, LlmAuthResult, LlmGrant, LlmGrants } from "./llm.js";
 import { gatewayLacksProvider } from "./llm.js";
 import { bootEnv } from "./env.js";
-import { DEFAULT_RUN_CAP_USD, resolveRunCap } from "./run-cap.js";
+import { DEFAULT_RUN_CAP_USD, resolveRunCap, workflowRunCap } from "./run-cap.js";
 import { budgetSpentMessage, jobBudgetOf, jobRoot, readJobRecord, type JobBudget } from "./jobs.js";
 import { idProblem } from "./session-store.js";
 
@@ -436,7 +436,7 @@ export function createMothership(opts: MothershipOptions): Mothership {
     // link carries the smaller of it and the workflow's. A run under a job
     // with a budget, the smaller of that and what the job has left.
     const runCap = budget ? Math.min(ctx.maxCostUsd ?? Infinity, budget.leftUsd) : ctx.maxCostUsd;
-    const capUsd = capOrThrow(meta?.maxRunCostUsd, o, principal, runCap);
+    const capUsd = capOrThrow(workflowRunCap(meta), o, principal, runCap);
     const exp = expFor(now, o.exp);
     const parent = budget ? jobLink(o, ctx.budgetJob!, budget, now) : o.root;
     const link = parent.extend({ runId, capUsd, iat: now.toISOString(), exp });

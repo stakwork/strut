@@ -56,6 +56,12 @@
  * secret as their own, as that person: one the package provides
  * (`provides.secrets`), else the package is refused.
  *
+ * Its `maxRunCostUsd:` caps a run of one of its OWN workflows, by its name
+ * inside the package, in dollars (`{ reply: 1 }`): the cap an admin sets
+ * with `PUT /workflows/:name/run-cap`, shipped by the package. The install
+ * records it on the version it writes (`upstream.maxRunCostUsd`), and an
+ * admin's own cap wins over it (`workflowRunCap`, src/run-cap.ts).
+ *
  * Its `on:` names workflows of the package strut runs when a node of a
  * type is created, updated or deleted (plans/package-seams.md §2): each
  * entry one op, one graph type and one of the package's OWN workflows, by
@@ -74,7 +80,7 @@
  * A package may be a BUNDLE instead (stadeum plans/software.md §3.3):
  * `bundle:` lists other packages by the `git+` branch each is followed at,
  * with no digest, and the bundle holds nothing else — no folder, and no
- * `requires`, `job`, `provides` or `schedules`. A subscription to it follows
+ * `requires`, `job`, `provides`, `schedules` or `maxRunCostUsd`. A subscription to it follows
  * each listed package as a part of its own (./subscriptions.ts); nothing
  * installs a bundle (`package_is_bundle`, ./install.ts). Each entry is a
  * `git+https://host/org/repo[@<branch>][#<folder>]` ref that names a branch
@@ -247,6 +253,14 @@ const manifestSchema = z
           .strict(),
       )
       .optional(),
+    // The most a run of one of the package's own workflows may spend, in
+    // dollars, by its name inside the package: a workflow's
+    // `maxRunCostUsd` (src/run-cap.ts), recorded on the version the install
+    // writes. Strict like the rest: an older strut refuses the package
+    // instead of running it under the box's default cap.
+    maxRunCostUsd: z
+      .record(z.string().min(1), z.number().finite().positive("a run's cap is a positive number of dollars"))
+      .optional(),
     // The package's own workflows strut runs when a node of a type is
     // created, updated or deleted (plans/package-seams.md §2, ./on.ts): one
     // op, one type, one workflow an entry. Strict like the rest: an older
@@ -261,7 +275,7 @@ const manifestSchema = z
 export type PackageManifest = z.infer<typeof manifestSchema>;
 
 /** What a bundle may not carry: what belongs to a package's own items. */
-const NOT_IN_A_BUNDLE = ["requires", "job", "provides", "schedules", "on"] as const;
+const NOT_IN_A_BUNDLE = ["requires", "job", "provides", "schedules", "maxRunCostUsd", "on"] as const;
 
 /** Every secret a package's steps may read: `requires.secrets` and
  *  `requires.optional` — its fence. */
@@ -295,6 +309,8 @@ export interface PackageInfo {
   job?: JobGrant;
   /** The manifest's `schedules:`, each on a workflow of the package. */
   schedules?: PackageSchedule[];
+  /** The manifest's `maxRunCostUsd:`, by the workflow's full name. */
+  maxRunCostUsd?: Record<string, number>;
   /** The manifest's `on:`, each on a workflow of the package. */
   on?: PackageTrigger[];
   /** The manifest's `provides.git`, each forge step resolved to its full
@@ -489,6 +505,7 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
   });
   const schedules = manifest.schedules ? resolveSchedules(pkg, manifest.schedules, items, manifest.provides?.secrets ?? [], problems) : undefined;
   const on = manifest.on ? resolveOn(pkg, manifest.on, items, problems) : undefined;
+  const caps = manifest.maxRunCostUsd ? resolveCaps(pkg, manifest.maxRunCostUsd, items, problems) : undefined;
   if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);
   return {
     manifest,
@@ -497,6 +514,7 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
     items,
     ...(job ? { job } : {}),
     ...(schedules ? { schedules } : {}),
+    ...(caps ? { maxRunCostUsd: caps } : {}),
     ...(on ? { on } : {}),
     ...(gitHosts.length ? { gitHosts } : {}),
   };
@@ -550,6 +568,19 @@ function resolveSchedules(pkg: string, entries: NonNullable<PackageManifest["sch
     }
     return { name, workflow: `${pkg}/${e.workflow}`, trigger: e.trigger, input: e.input ?? {}, ...(e.each !== undefined ? { each: e.each } : {}) };
   });
+}
+
+/** The manifest's `maxRunCostUsd:` over the package's own workflows, each
+ *  by its name inside the package, so a package never caps strut's
+ *  workflows or another package's. By the workflow's full name. */
+function resolveCaps(pkg: string, caps: Record<string, number>, items: PackageItem[], problems: string[]): Record<string, number> {
+  const own = new Set(items.filter((i) => i.kind === "workflow").map((i) => i.name));
+  const out: Record<string, number> = {};
+  for (const [name, usd] of Object.entries(caps)) {
+    if (own.has(`${pkg}/${name}`)) out[`${pkg}/${name}`] = usd;
+    else problems.push(`${MANIFEST_FILE}: maxRunCostUsd.${name}: ${JSON.stringify(name)} is not a workflow of the package — a cap names one of the package's own workflows (workflows/<name>.yaml) by <name>`);
+  }
+  return out;
 }
 
 /** The manifest's `on:` over the package's own workflows: each names one

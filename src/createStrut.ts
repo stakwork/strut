@@ -267,7 +267,7 @@ export const HOST_CALL_BODY_MAX_BYTES = 36 * 1024 * 1024;
  *  `/people/token`): a challenge, a key, a signature, a name, an address. */
 const PEEL_BODY_MAX_BYTES = 8 * 1024;
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath, PUBLIC_RUN_FILES_BODY_MAX_BYTES } from "./public-runs.js";
-import { resolveRunCap } from "./run-cap.js";
+import { resolveRunCap, workflowRunCap } from "./run-cap.js";
 import { createPublicViewDoor, publicViewNeeds, withNeeds, type PublicViewDeps, type PublicViewSave } from "./public-view.js";
 import { nameInPackageAsync, packagePrefixOf } from "./package-lookup.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
@@ -4638,9 +4638,9 @@ export async function createStrut<TServices = unknown>(
       workflowCap: async (name) => {
         const meta = await workspace.getWorkflowMetadata(name).catch(() => null);
         try {
-          return resolveRunCap(meta?.maxRunCostUsd);
+          return resolveRunCap(workflowRunCap(meta));
         } catch {
-          return meta?.maxRunCostUsd;
+          return workflowRunCap(meta);
         }
       },
       launch: (flow, input, o) => {

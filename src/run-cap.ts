@@ -6,12 +6,21 @@
  * src/mothership.ts.
  */
 import { bootEnv } from "./env.js";
+import type { WorkflowMetadata } from "./workspace.js";
+
+/** A workflow's own cap in dollars: an admin's (`maxRunCostUsd`, `PUT
+ *  /workflows/:name/run-cap`), else the one its package ships on the active
+ *  version (`maxRunCostUsd:` in strut.yaml, on its `upstream`). Undefined
+ *  leaves the deployment's (`resolveRunCap`). */
+export function workflowRunCap(meta: Pick<WorkflowMetadata, "active" | "versions" | "maxRunCostUsd"> | null | undefined): number | undefined {
+  return meta?.maxRunCostUsd ?? meta?.versions[meta.active]?.upstream?.maxRunCostUsd;
+}
 
 /** The cap when neither the workflow nor `STRUT_RUN_MAX_COST_USD` sets one. */
 export const DEFAULT_RUN_CAP_USD = 100;
 
 /**
- * A run's cost cap: the workflow's `maxRunCostUsd`, else
+ * A run's cost cap: the workflow's own (`workflowRunCap`), else
  * `STRUT_RUN_MAX_COST_USD`, else the built-in default — and, when the run
  * carries a cap of its own (`runCap`: a public run's, the smallest of the
  * item's per-run cap, the workflow's and what is left of its daily cap), the
