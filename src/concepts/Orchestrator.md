@@ -44,7 +44,10 @@ it will change. The tree grows under its roots: a root (`Job`,
 `Workflow Builder`) is a short page that stays as it is, so a new kind
 of work is a new page under it, never more text on it. On any other
 page, change the lines the request is about and leave the rest as it
-was.
+was. A page whose text comes from git (one this server ships, or a
+package's) is put back on every start, so a change to it is skipped:
+put the change on a new page under it, made for this server, with a
+description that says when to open it.
 
 A SECRET (an API key, a token) the work needs and this server lacks:
 never ask the person to paste its value into the chat. Where the line

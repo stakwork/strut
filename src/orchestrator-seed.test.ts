@@ -146,6 +146,13 @@ describe("the orchestrator workflow strut ships", () => {
       system.includes("The tree grows under its roots: a root (`Job`, `Workflow Builder`) is a short page that stays as it is, so a new kind of work is a new page under it, never more text on it. On any other page, change the lines the request is about and leave the rest as it was."),
       system,
     );
+    // A page from git: asked to change `Plan`, the assistant offered a pull
+    // request to strut's repository (a real model, 2026-11-25). The dream's
+    // rule again: the change goes on a page under it.
+    assert.ok(
+      system.includes("A page whose text comes from git (one this server ships, or a package's) is put back on every start, so a change to it is skipped: put the change on a new page under it, made for this server, with a description that says when to open it."),
+      system,
+    );
     for (const t of ["knowledge/edit-page", "knowledge/add-page"]) {
       assert.ok(tools.includes(t), `the assistant holds ${t}`);
       assert.ok((yaml.load(text) as { params: { approve: string[] } }).params.approve.includes(t), `and asks before ${t}`);

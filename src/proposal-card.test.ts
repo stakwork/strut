@@ -16,6 +16,8 @@ import deleteEdge from "./steps/lib/graph/delete-edge.js";
 import deleteNode from "./steps/lib/graph/delete-node.js";
 import appGrant from "./steps/lib/app/grant.js";
 import pkgInstall from "./steps/lib/package/install.js";
+import addPage from "./steps/lib/knowledge/add-page.js";
+import editPage from "./steps/lib/knowledge/edit-page.js";
 
 const ctx = {} as StepContext<any>;
 const describeOf = async (def: AnyStepDef, cfg: unknown) => {
@@ -53,6 +55,21 @@ describe("proposal card", () => {
     assert.equal(c.title, "Add Concept: Tea");
     assert.deepEqual(c.fields.map((f) => f.label), ["name", "n"]);
     assert.equal((await describeOf(createNode, { node_type: "Thing", node_data: { x: 1 } })).title, "Add Thing: Thing");
+  });
+
+  it("knowledge/add-page and knowledge/edit-page: a card about a PAGE, in the person's words, where the graph steps under them say link and node", async () => {
+    // A new page: its name, the page it goes under, and what it says.
+    const added = await describeOf(addPage, { source_type: "Concept", source_data: { name: "Job" }, edge_type: "PARENT_OF", target_type: "Concept", target_data: { name: "Release Notes", description: "Writing release notes.", docs: "One line per change." } });
+    assert.equal(added.title, "Add page: Release Notes");
+    assert.deepEqual(added.fields.map((f) => [f.label, f.value]), [["Under", "Job"], ["Description", "Writing release notes."], ["Text", "One line per change."]]);
+    // The same call as the graph's own step is a link between two nodes.
+    assert.match((await describeOf(createTriplet, { source_type: "Concept", source_data: { name: "Job" }, edge_type: "PARENT_OF", target_type: "Concept", target_data: { name: "Release Notes" } })).title, /^Add link: /);
+    // An existing page put under a parent is no new page: the link's card.
+    assert.match((await describeOf(addPage, { source_ref_id: "p1", edge_type: "PARENT_OF", target_ref_id: "c1" })).title, /^Add link: /);
+    // An edit: the same fields as graph/edit-node's, titled as a page's.
+    const edited = await describeOf(editPage, { ref_id: "abc", edits: [{ old: "a", new: "b" }], node_data: { description: "d" } });
+    assert.equal(edited.title, "Edit page: abc");
+    assert.deepEqual(edited.fields.map((f) => f.label), ["description", "Change text"]);
   });
 
   it("graph/edit-node", async () => {
