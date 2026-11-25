@@ -147,6 +147,37 @@ describe("the app build", () => {
     assert.ok(html.includes("OrbitControls"));
   });
 
+  it("every file of public/ is the page's by path, once each, imported or not; a .json by path is its bytes; a listed screenshot and a dotfile stay out; no public/, no table", async () => {
+    const dir = await writeApp(fresh(), {
+      "app.yaml": "title: By path\nscreenshots: [public/shot.png]\n",
+      "src/App.tsx":
+        'import fox from "../public/models/fox.vox";\nimport data from "../public/level.json";\n' +
+        "export default function App() { return <p>{[fox, data.answer].join(\"|\")}</p>; }\n",
+      "public/level.json": '{ "answer": "forty-two" }\n',
+      "public/.notes": "draft",
+    });
+    // Bytes base64 keeps whole (esbuild percent-encodes text that is shorter so).
+    await mkdir(join(dir, "public", "models"), { recursive: true });
+    await writeFile(join(dir, "public", "models", "fox.vox"), Buffer.from([0xf0, 0x0f, 0xf0, 0x0f, 0x01]));
+    await writeFile(join(dir, "public", "models", "wolf.vox"), Buffer.from([0xa1, 0x1a, 0xa1, 0x1a, 0x02]));
+    await writeFile(join(dir, "public", "shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const r = await build(dir);
+    assert.ok(r.ok, errorsOf(r).join("\n"));
+    assert.deepEqual(r.warnings, []);
+    const html = await readFile(join(dir, "dist", "index.html"), "utf8");
+    for (const path of ["/models/fox.vox", "/models/wolf.vox", "/level.json"]) assert.ok(html.includes(`"${path}"`), `${path} is in the table`);
+    for (const path of ["/shot.png", "/.notes"]) assert.ok(!html.includes(`"${path}"`), `${path} is not`);
+    assert.equal(html.split(Buffer.from([0xf0, 0x0f, 0xf0, 0x0f, 0x01]).toString("base64")).length - 1, 1, "fox.vox, imported AND by path, is in the document once");
+    assert.equal(html.split(Buffer.from([0xa1, 0x1a, 0xa1, 0x1a, 0x02]).toString("base64")).length - 1, 1, "wolf.vox, imported by nobody, is in it too");
+    assert.ok(html.includes("data:application/json"), "level.json by path is its bytes");
+    assert.match(html, /answer:"forty-two"/, "and its import is still its value");
+    // The table installs the kit's fetch; an app with no public/ carries neither.
+    const wrapper = "[a-z0-9+.-]*:";
+    assert.ok(html.includes(wrapper), "the kit's fetch of a path is in the document");
+    await build(await writeApp(fresh(), minimal()));
+    assert.ok(!(await readFile(join(root, `app-${n}`, "dist", "index.html"), "utf8")).includes(wrapper), "with no public/ it is not");
+  });
+
   it("a kit import resolves, an alias too, and a kit stylesheet rides along raw", async () => {
     const dir = await writeApp(fresh(), {
       "app.yaml": "title: Kit imports\n",
@@ -244,14 +275,19 @@ describe("the app build", () => {
     }
   });
 
-  it("a fetch of a written-out URL, XMLHttpRequest or WebSocket is a WARNING naming the hook; the build goes through", async () => {
-    const r = await build(await writeApp(fresh(), minimal('async function load() { const r = await fetch("/api/x"); new WebSocket("ws://x"); return r; }')));
+  it("a fetch of a written-out URL, or of a path that is no file of public/, XMLHttpRequest or WebSocket is a WARNING naming the hook; the build goes through", async () => {
+    const r = await build(await writeApp(fresh(), minimal('async function load() { const r = await fetch("https://api.test/x"); await fetch("/api/x"); new WebSocket("ws://x"); return r; }')));
     assert.ok(r.ok, errorsOf(r).join("\n"));
-    assert.equal(r.warnings.length, 2);
-    assert.match(r.warnings[0]!, /src\/App\.tsx:1: fetches a URL — .*connect-src data: blob:.*useStep.*useLaunch/);
-    assert.match(r.warnings[1]!, /opens a WebSocket/);
-    // What a page may fetch: an imported file's data: URL, a blob it made.
-    const fine = await build(await writeApp(fresh(), minimal('async function load(model: string) { await fetch(model); await fetch(`data:,x`); return fetch("blob:x"); }', using("load"))));
+    assert.equal(r.warnings.length, 3, r.warnings.join("\n"));
+    assert.ok(r.warnings.some((w) => /^src\/App\.tsx:1: fetches a URL — .*public\/ by path.*connect-src data: blob:.*useStep.*useLaunch/.test(w)), "the URL");
+    assert.ok(r.warnings.some((w) => /^src\/App\.tsx:1: fetches "\/api\/x", which is not a file in public\/ — .*\(public\/api\/x\).*useStep/.test(w)), "the path no file answers");
+    assert.ok(r.warnings.some((w) => /opens a WebSocket/.test(w)));
+    // What a page may fetch: a file of public/ by path, written any way; an
+    // imported file's data: URL; a blob it made; a path it builds (unknown here).
+    const fine = await build(await writeApp(fresh(), {
+      ...minimal('async function load(model: string, n: number) { await fetch("/level.json"); await fetch("level.json?v=2"); await fetch(`/levels/${n}.json`); await fetch(model); await fetch(`data:,x`); return fetch("blob:x"); }', using("load")),
+      "public/level.json": "{}\n",
+    }));
     assert.ok(fine.ok, errorsOf(fine).join("\n"));
     assert.deepEqual(fine.warnings, []);
     assert.deepEqual((await readBuildInfo(await writeApp(fresh(), minimal())))?.warnings, undefined, "a fresh dir has no build yet");

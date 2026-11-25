@@ -19,7 +19,7 @@ apps/<name>/
   src/pages/*.tsx     # anything else the app is made of
   src/components/ui/  # optional: overrides of the kit's shadcn components (shadcn's own model)
   src/styles.css      # optional: @theme, @layer, custom utilities (Tailwind 4)
-  public/             # images, fonts, models, sounds, JSON fixtures, imported by path (inlined at build)
+  public/             # the app's own files: images, fonts, models, sounds, data — by path (/x is public/x) or imported (all inlined at build)
   db/                 # SQL migrations (a later release; keep it empty for now)
 ```
 
@@ -168,7 +168,7 @@ caption. Each is a file in the app's directory (`.png`, `.jpg`, `.webp` or
 a path that is not a file there is a build error. The app never loads
 them, and they are not in its document. An app with none shows its
 initials. Make them with `app/look { name, path, saveAs:
-"public/screenshots/home.png" }`: the look's shot is also written into
+"screenshots/home.png" }`: the look's shot is also written into
 the directory there (with `input`, `steps` and `viewport` to show the page
 that matters), and nothing is saved when the page drew nothing or the look
 stopped. Then list the file under `screenshots:`. A person sets them
@@ -198,12 +198,18 @@ library — import what you draw. A GAME — a canvas, 2D or 3D — has a page o
 its own under this one, `Game`, and a starter: `app/init { path, template:
 "game" }`.
 
-**Files are imports.** An image, font, sound, video, 3D model or texture in
-the app's folder is imported by path and becomes a data URL inlined in the
-document — `import logo from "../public/logo.svg"`, `<img src={logo}>`,
-`useGLTF(ship)`; `.md`, `.txt`, `.csv` and `.html` import as their text,
-`.json` as its value. The page may `fetch` such a data URL, or a blob: URL
-it made, and nothing else: nothing is served beside the document.
+**Files are the app's own.** A file in `public/` is the page's by path, as
+on any static host: `fetch("/data/levels.json")` reads
+`public/data/levels.json`, and `appFileUrl("/logo.svg")` (from
+`@strut/kit`) is its URL for what does not fetch — `<img src>`,
+`new Audio()`. Any file in the app's folder can also be imported, and
+becomes a data URL — `import logo from "../public/logo.svg"`,
+`<img src={logo}>`, `useGLTF(ship)`; `.md`, `.txt`, `.csv` and `.html`
+import as their text, `.json` as its value. Both are inlined in the
+document, and everything in `public/` ships whether the page reads it or
+not, so keep there only what it reads. The page may `fetch` its own files
+and a blob: URL it made, and nothing else: nothing is served beside the
+document.
 
 **The look is the server's.** A person sets a brand on the server (a color,
 a corner radius, a font) and the host hands it to every page, so draw the

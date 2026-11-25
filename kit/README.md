@@ -202,6 +202,14 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   one tap, the credit a visitor's page needs on a strut server, and where a
   payment it sent stands. No app identity, no connection, no budget; the
   `host_capabilities`, `credit_purchases` and `credit_replies` vectors.
+- **`src/files.ts`** — the app's `public/` BY PATH (plans/app-files-by-path.md):
+  the build's table module calls `installAppFiles(table)` (re-exported from
+  `@strut/kit/bootstrap`) before the app's own modules run; it keeps path →
+  data URL and wraps the page's `fetch`, so a GET or HEAD of a path in the
+  table (a string as written, a `Request` or `URL` by its pathname) fetches
+  its data URL and anything else goes to the real `fetch`. `appFileUrl(path)`
+  (`/x`, `x` or `./x`; a query or hash ignored) is the data URL for what does
+  not fetch.
 - **`src/links.ts`** — `appLink(name, input?, options?)`: a deep link to an app,
   `?app=<name>&input=<input as a query string>` (plans/apps.md §7.1). A host
   follows it and hands `input` back as `tool-input`, flat strings. Strut's

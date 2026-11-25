@@ -494,7 +494,9 @@ Its input is:
 
 ### 2.3 Assets
 
-Files under `public/` and anything imported by path are inlined: images,
+Files under `public/` and anything imported by path are inlined (`public/`
+by path since plans/app-files-by-path.md: `/x` is `public/x` in `fetch` and
+the kit's `appFileUrl`): images,
 fonts, sounds, video, 3D models and textures (`.glb`, `.obj`, `.fbx`,
 `.vox`, `.hdr`, `.exr`, `.ktx2`, `.bin`, `.wasm`, …; `ASSET_LOADERS` in
 build.ts) as data URLs, JSON and text as values. The document stays one

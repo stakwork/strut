@@ -19,12 +19,15 @@
  * refused. The source checks (§2.1) refuse `dangerouslySetInnerHTML`, `eval`
  * and `new Function`, and warn on a global `fetch`, `XMLHttpRequest` or
  * `WebSocket` naming the hook to use instead — over imported apps' sources
- * too. Lazy-imported by whoever builds (the publish, `app/build`), as a lib
+ * too. Every file under `public/` is also the page's BY PATH
+ * (plans/app-files-by-path.md): the entry imports a table module, path →
+ * data URL, before the app, and the kit's `fetch` and `appFileUrl` answer
+ * those paths. Lazy-imported by whoever builds (the publish, `app/build`), as a lib
  * step's SDK is, so the registry build never loads esbuild.
  */
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { dirname, extname, join, posix, relative, resolve, sep } from "node:path";
 import type { Message, OnResolveResult } from "esbuild";
 import { treeFiles, treeHash } from "../version.js";
 import { packagePrefixOf } from "../package-lookup.js";
@@ -121,16 +124,22 @@ const REFUSED: Array<[RegExp, string]> = [
   [/\bnew\s+Function\s*\(/, "calls new Function — an app's code is what the build compiled, nothing else runs"],
 ];
 const WARNED: Array<[RegExp, string]> = [
-  // A URL written out: an imported file's data: URL and a blob: URL the page
-  // made are what `fetch` may read, and those come from variables.
-  [/(?<![.\w$])fetch\s*\(\s*["'`](?!data:|blob:)/, "fetches a URL — the page can fetch only a file it imports (its data: URL) or a blob: URL it made (connect-src data: blob:), so this fails at runtime; call a granted step with useStep, or launch a workflow with useLaunch"],
+  // A URL written out: what `fetch` may read is a file of `public/` by path
+  // (below), an imported file's data: URL or a blob: URL the page made, and
+  // those last two come from variables.
+  [/(?<![.\w$])fetch\s*\(\s*["'`](?:\/\/|(?!data:|blob:)[a-z][a-z0-9+.-]*:)/i, "fetches a URL — the page can fetch only its own files: one in public/ by path, one it imports (its data: URL), or a blob: URL it made (connect-src data: blob:), so this fails at runtime; call a granted step with useStep, or launch a workflow with useLaunch"],
   [/\bXMLHttpRequest\b/, "uses XMLHttpRequest — the page can connect nowhere (connect-src data: blob:); call a granted step with useStep, or launch a workflow with useLaunch"],
   [/\bnew\s+WebSocket\s*\(/, "opens a WebSocket — the page can connect nowhere (connect-src data: blob:); read a run live with useRun({ live }), or talk to the app's other viewers with useChannel"],
 ];
 
+/** A path written out in a fetch: `fetch("/models/fox.vox")`. */
+const FETCH_PATH = /(?<![.\w$])fetch\s*\(\s*(["'`])([^"'`]*)\1/g;
+
 /** The source checks over one file's text: refusals and warnings, each
- *  naming the file and line. */
-export function lintAppSource(text: string, file: string): { errors: string[]; warnings: string[] } {
+ *  naming the file and line. `publicPaths` are the paths the page reads by
+ *  path (`/models/fox.vox` for `public/models/fox.vox`): a fetch of a path
+ *  written out that is not one of them is a warning. */
+export function lintAppSource(text: string, file: string, publicPaths: ReadonlySet<string> = new Set()): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
   stripComments(text)
@@ -138,6 +147,11 @@ export function lintAppSource(text: string, file: string): { errors: string[]; w
     .forEach((line, i) => {
       for (const [re, msg] of REFUSED) if (re.test(line)) errors.push(`${file}:${i + 1}: ${msg}`);
       for (const [re, msg] of WARNED) if (re.test(line)) warnings.push(`${file}:${i + 1}: ${msg}`);
+      for (const [, , path] of line.matchAll(FETCH_PATH)) {
+        if (/^(?:\/\/|[a-z][a-z0-9+.-]*:)/i.test(path!) || path!.includes("${")) continue;
+        const key = "/" + path!.replace(/[?#].*$/, "").replace(/^\.?\/+/, "");
+        if (!publicPaths.has(key)) warnings.push(`${file}:${i + 1}: fetches "${path}", which is not a file in ${PUBLIC_DIR}/ — the page reads its own files by path (${PUBLIC_DIR}${key}), so this fails at runtime; for anything else call a granted step with useStep, or launch a workflow with useLaunch`);
+      }
     });
   return { errors, warnings };
 }
@@ -194,6 +208,39 @@ export const ASSET_LOADERS: Record<string, "dataurl" | "text"> = Object.fromEntr
   ].map((ext) => [ext, "dataurl" as const]),
   ...[".md", ".txt", ".csv", ".html"].map((ext) => [ext, "text" as const]),
 ]);
+
+// ── The app's files by path (plans/app-files-by-path.md) ────────────────────
+
+/** The folder whose files the page reads by path: `/x` is `public/x`. */
+export const PUBLIC_DIR = "public";
+/** What the entry imports the table by, before the app. */
+const PUBLIC_FILES = "strut:public-files";
+const PUBLIC_NS = "strut-public-files";
+/** A table entry read as its bytes: a file whose import is a value (`.json`,
+ *  text) or that has no loader. Only the table module may name one. */
+const BYTES_PREFIX = "strut-public-bytes:";
+const BYTES_NS = "strut-public-bytes";
+
+/** The files of `public/` the page reads by path (`files` is the build's
+ *  tree, dotfiles already left out): all but the screenshots `app.yaml`
+ *  lists, which the store shows and the page never uses. */
+export function publicFiles(files: readonly string[], manifest: Pick<AppManifest, "screenshots">): string[] {
+  const shots = new Set((manifest.screenshots ?? []).map((s) => posix.normalize(s.file)));
+  return files.filter((f) => f.startsWith(`${PUBLIC_DIR}/`) && !shots.has(f)).sort();
+}
+
+/** The table module: each path → its data URL, kept by the kit, whose
+ *  `fetch` then answers the paths. A file the data URL loader takes is
+ *  imported as the app would import it, so one the app also imports is in
+ *  the document once. */
+function publicFilesModule(list: readonly string[]): string {
+  const spec = (f: string) => (ASSET_LOADERS[extname(f)] === "dataurl" ? `./${f}` : `${BYTES_PREFIX}${f}`);
+  return (
+    `import { installAppFiles } from "@strut/kit/bootstrap";\n` +
+    list.map((f, i) => `import f${i} from ${JSON.stringify(spec(f))};\n`).join("") +
+    `installAppFiles({ ${list.map((f, i) => `${JSON.stringify(f.slice(PUBLIC_DIR.length))}: f${i}`).join(", ")} });\n`
+  );
+}
 
 // ── The document ────────────────────────────────────────────────────────────
 
@@ -433,6 +480,9 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
   if (!entryAbs || !inside(root, entryAbs)) errors.push(`entry: "${manifest.entry}" is not a file in the app (its default export is the root component)`);
   if (errors.length || !entryAbs) return { ok: false, errors, warnings };
 
+  const byPath = publicFiles(files, manifest);
+  const byPathSet = new Set(byPath.map((f) => f.slice(PUBLIC_DIR.length)));
+
   let kit: Kit;
   try {
     kit = kitOf(deps.kit);
@@ -520,6 +570,13 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
       build.onResolve({ filter: /.*/ }, async (args): Promise<OnResolveResult | undefined> => {
         if (args.kind === "entry-point") return undefined;
         const spec = args.path;
+        // The table of `public/` (the entry's import), and its entries read as bytes.
+        if (spec === PUBLIC_FILES) return { path: join(root, `${PUBLIC_DIR}.files.js`), namespace: PUBLIC_NS };
+        if (spec.startsWith(BYTES_PREFIX) && args.namespace === PUBLIC_NS) {
+          const abs = resolve(root, spec.slice(BYTES_PREFIX.length));
+          if (!inside(join(root, PUBLIC_DIR), abs)) return err(`"${spec}": not a file of ${PUBLIC_DIR}/`);
+          return { path: abs, namespace: BYTES_NS };
+        }
         if (/^https?:/i.test(spec)) return err(`"${spec}": URL imports are refused — every library is the kit's, compiled in`);
         // Inside the kit's module tree every import was resolved by the kit's
         // own build; nothing is resolved again, nothing leaves the tree.
@@ -559,6 +616,9 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
         if (app) return app;
         return err(notInKit(spec, kit, deps.installedApps ? await deps.installedApps() : []));
       });
+      // First: a `.css` or `.js` in `public/` read by path is its bytes, not a stylesheet or a module.
+      build.onLoad({ filter: /.*/, namespace: PUBLIC_NS }, () => ({ contents: publicFilesModule(byPath), loader: "js", resolveDir: root }));
+      build.onLoad({ filter: /.*/, namespace: BYTES_NS }, async (args) => ({ contents: await readFile(args.path), loader: "dataurl" }));
       // zod's namespace, whoever imports it (the app, an imported app, the kit's tree).
       build.onLoad({ filter: /\.(m?[jt]sx?|cjs)$/ }, async (args) => {
         const text = await readFile(args.path, "utf8");
@@ -580,10 +640,17 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
   let js: string;
   /** Every module the document holds, by absolute path. */
   const bundled = new Set<string>();
+  /** What the files of `public/` put in the document. */
+  let publicBytes = 0;
   try {
     const result = await esbuild.build({
       stdin: {
-        contents: `import { bootstrap } from "@strut/kit/bootstrap";\nimport App from ${JSON.stringify(`./${entryRel}`)};\nbootstrap(App);\n`,
+        // The table first: the app's own modules run after it, so a fetch of a
+        // path at a module's top level reads it too.
+        contents:
+          `import { bootstrap } from "@strut/kit/bootstrap";\n` +
+          (byPath.length ? `import ${JSON.stringify(PUBLIC_FILES)};\n` : "") +
+          `import App from ${JSON.stringify(`./${entryRel}`)};\nbootstrap(App);\n`,
         resolveDir: root,
         sourcefile: "<stdin>",
         loader: "tsx",
@@ -611,7 +678,11 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     js = result.outputFiles.find((f) => f.path.endsWith(".js"))?.text ?? "";
     // What the document holds: the modules that put bytes in it, not every one visited.
     for (const output of Object.values(result.metafile.outputs)) {
-      for (const [input, info] of Object.entries(output.inputs)) if (info.bytesInOutput > 0 && !input.includes(":") && input !== "<stdin>") bundled.add(resolve(root, input));
+      for (const [input, info] of Object.entries(output.inputs)) {
+        if (info.bytesInOutput > 0 && !input.includes(":") && input !== "<stdin>") bundled.add(resolve(root, input));
+        const file = input.startsWith(`${BYTES_NS}:`) ? input.slice(BYTES_NS.length + 1) : input.includes(":") ? undefined : resolve(root, input);
+        if (file && inside(join(root, PUBLIC_DIR), file)) publicBytes += info.bytesInOutput;
+      }
     }
     // A warning inside the kit's modules is not the app author's to act on
     // (esbuild says nothing about code under a node_modules; the tree is not one).
@@ -638,7 +709,7 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
       if (SOURCE_RE.test(f)) {
         const text = await readFile(abs, "utf8");
         if (r === main || bundled.has(abs)) sources.push(text);
-        const lint = lintAppSource(text, rel(r, abs));
+        const lint = lintAppSource(text, rel(r, abs), byPathSet);
         errors.push(...lint.errors);
         warnings.push(...lint.warnings);
       } else if (f.endsWith(".css")) {
@@ -665,7 +736,10 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
 
   const html = document(manifest.title, cspFor(manifest.csp?.resourceDomains ?? []), css, js);
   const bytes = Buffer.byteLength(html, "utf8");
-  if (bytes > LARGE_DOCUMENT_BYTES) warnings.push(`the document is ${(bytes / 1e6).toFixed(1)} MB (over ${LARGE_DOCUMENT_BYTES / 1024 / 1024} MB): three and mathjs tree-shake poorly; a large dataset belongs in a run's output`);
+  if (bytes > LARGE_DOCUMENT_BYTES) {
+    const fromPublic = publicBytes ? `, ${(publicBytes / 1e6).toFixed(1)} MB of it the files of ${PUBLIC_DIR}/ (all of them ship: keep only what the page reads)` : "";
+    warnings.push(`the document is ${(bytes / 1e6).toFixed(1)} MB (over ${LARGE_DOCUMENT_BYTES / 1024 / 1024} MB${fromPublic}): three and mathjs tree-shake poorly; a large dataset belongs in a run's output`);
+  }
 
   const hash = await treeHash(root);
   const imports = roots

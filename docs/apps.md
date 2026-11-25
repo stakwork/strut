@@ -26,7 +26,18 @@ index. A change in this area updates this file, not AGENTS.md.
   anything else an error naming the set and the kits. `dangerouslySetInnerHTML`,
   `eval` and `new Function` are refused; a `fetch` of a written-out URL is a
   WARNING naming the hook (the document's CSP allows `connect-src data: blob:`
-  alone, no host: the page reaches strut only through its bridge). **Versions are TREE HASHES**
+  alone, no host: the page reaches strut only through its bridge), and so is
+  a `fetch` of a written-out path that no file of `public/` answers. **The
+  app's files by path** (plans/app-files-by-path.md): every file under
+  `public/` but the screenshots `app.yaml` lists is in the document as a
+  table, path → data URL (`publicFiles`; a type the data URL loader takes
+  imported as the app would, so a file also imported is there once, any
+  other read as its bytes in the `strut-public-bytes` namespace), in a
+  module the entry imports BEFORE the app; it calls the kit's
+  `installAppFiles`, which wraps the page's `fetch` (a GET or HEAD of a path
+  in the table fetches its data URL, kit/src/files.ts) and backs
+  `appFileUrl`. `/x`, `x` and `./x` all mean `public/x`. No `public/`, no
+  table and no wrapper; the 6 MB warning names what `public/` added. **Versions are TREE HASHES**
   (`treeHash`, `src/version.ts`: `<path>\0<sha256>\n` per file, sorted;
   `dist/` and `data.db` left out, the kit never in it — the same function
   `marketplace.md` uses for a package digest): `publishApp` follows

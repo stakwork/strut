@@ -78,31 +78,40 @@ is a data URL — `new Audio(hit).play()`, or `fetch(hit)` →
 
 ## Models, textures and other files
 
-A file in the app's folder (`public/` by convention) is imported by path,
-and the import is a data URL inlined into the document:
+A file in `public/` is the game's by path, as on a static host, so a level
+file can name its models (`"model": "/models/ship.glb"`) and the code loads
+whatever it names:
 
 ```ts
-import ship from "../public/ship.glb";
-const { scene } = useGLTF(ship);            // drei
-new GLTFLoader().load(ship, (gltf) => …);  // three's loader, the same
-const bytes = await (await fetch(ship)).arrayBuffer();
+const { scene } = useGLTF("/models/ship.glb");      // drei
+new GLTFLoader().load("/models/ship.glb", (g) => …); // three's loader, the same
+const bytes = await (await fetch("/models/ship.glb")).arrayBuffer();
 ```
+
+`fetch` and every loader built on it (`GLTFLoader`, `FileLoader`,
+`AudioLoader`) read these paths. Three's `TextureLoader` draws through an
+`<img>`, which does not fetch: one line at startup covers it and every other
+three loader — `THREE.DefaultLoadingManager.setURLModifier((u) =>
+appFileUrl(u) ?? u)`, `appFileUrl` from `@strut/kit`. A file can also be
+imported, and the import is the same data URL:
+`import ship from "../public/models/ship.glb"`.
 
 Models (`.glb`, `.obj`, `.fbx`, `.stl`, `.ply`, `.vox`), textures and maps
 (`.png`, `.jpg`, `.webp`, `.hdr`, `.exr`, `.ktx2`), sounds (`.mp3`, `.ogg`,
 `.wav`, `.m4a`), fonts and `.bin` all import this way. Use `.glb` — one
 file — not a `.gltf` with buffers beside it.
 
-The page can `fetch` only a data: URL (an imported file) or a blob: URL it
-made. Nothing is served beside the document, so `"/models/ship.glb"`
-fails, and so does anything on the internet. That rules out drei pieces
+The page can `fetch` only its own files (each a data: URL in the document)
+and a blob: URL it made. Nothing else is served beside the document, so
+anything on the internet fails. That rules out drei pieces
 that download: `<Environment preset="…">` (pass `files={hdr}`, an imported
 `.hdr`), `<Text>` with no `font` (import a `.ttf` or `.woff` and pass it),
 and Draco- or Meshopt-compressed models (their decoders are downloaded;
 export the model uncompressed).
 
-Everything imported is in the one document: under 20 MB of files, and a
-document over 6 MB is slow to open. Keep models low-poly and textures
+Everything in `public/` and everything imported is in the one document,
+whether the game uses it or not: under 20 MB of files, and a document over
+6 MB is slow to open. Keep models low-poly and textures
 small; a few MB in all.
 
 A file the game did not ship with comes in at run time. One a run made
