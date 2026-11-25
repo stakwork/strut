@@ -138,9 +138,12 @@ steps:
   # then what else the server has. At the head of THIS turn's prompt, and
   # only when it changed since this conversation last saw it: the turn keeps
   # its hash (`tags`), and the step reads the last one back. Read every turn,
-  # since a shared conversation has several people.
+  # since a shared conversation has several people. It needs nothing above,
+  # so it runs beside them: its page steps (2 s each) add nothing to a turn
+  # the steps above take as long.
   - id: recent
     type: context/recent
+    depends: []
     config:
       name: "{{ params.recentConcept }}"
       session: "{{ input.session }}"
@@ -181,7 +184,7 @@ steps:
         artifacts: []
   - id: turn
     type: agent
-    depends: [recent, scripted]
+    depends: [standing, recent, scripted]
     config:
       # A prepared turn's answer, scripted: no model call (above).
       reply: "{{ scripted?.reply }}"
