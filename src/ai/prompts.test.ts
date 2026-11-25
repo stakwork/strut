@@ -4,7 +4,8 @@ import { readFile } from "node:fs/promises";
 import { createRegistry } from "../steps/registry.js";
 import { WorkspaceManager } from "../workspace.js";
 import { MemoryRunStore } from "../store.js";
-import { BUILDER_PROCEDURE, CHAT_TOOLS, JOB_TOOLS, SYSTEM, buildSystem, builderRules, type AiDeps } from "./prompts.js";
+import { STRUT_CONCEPTS, conceptFiles, parseConceptFile } from "../concept-seed.js";
+import { BUILDER_PROCEDURE, BUILD_APP_ARTIFACT, BUILD_VERIFIED, CHAT_TOOLS, JOB_TOOLS, PAGE_TOOLS, SYSTEM, WORKFLOW_LANGUAGE, buildSystem, builderRules, workflowLanguagePage, type AiDeps } from "./prompts.js";
 
 // The builder chat's system prompt heads every chat's cached prefix
 // (docs/builder.md, "History is append-only"): rendering it from the one source
@@ -66,5 +67,67 @@ describe("the builder chat's prompt, rendered from the one source", () => {
     assert.equal(chat, false);
     for (const [role, type] of Object.entries(names)) assert.ok(registry[type], `${role}: ${type}`);
     for (const verb of ["list", "get", "init", "checkout", "build", "publish", "look"]) assert.ok(registry[`${app}${verb}`], `${app}${verb}`);
+  });
+});
+
+// The same rules as a Concept page, for the `job` agent to open
+// (plans/one-job-agent.md §2): the third rendering.
+describe("the Workflow Language page, rendered from the same source", () => {
+  const FILE = `${WORKFLOW_LANGUAGE}.md`;
+
+  it("the file strut ships is the rendering: change the rules, then `npm run render:concepts`", async () => {
+    const shipped = await readFile(new URL(`../concepts/${FILE}`, import.meta.url), "utf-8");
+    assert.equal(shipped, workflowLanguagePage(), `src/concepts/${FILE} is behind src/ai/prompts.ts: run \`npm run render:concepts\``);
+  });
+
+  it("is the builder job's rules but for two lines: the job agent's shell, and where the App page is", () => {
+    const job = builderRules(JOB_TOOLS).split("\n");
+    const page = builderRules(PAGE_TOOLS).split("\n");
+    assert.equal(page.length, job.length);
+    const changed = page.flatMap((line, i) => (line === job[i] ? [] : [[job[i]!, line] as const]));
+    assert.equal(changed.length, 2, changed.map(([, line]) => line.slice(0, 60)).join(" | "));
+
+    // The shell: the chat's line, in the job's directory and the job's names.
+    const [[noShell, bash], [appAtEnd, appUnder]] = changed as [readonly [string, string], readonly [string, string]];
+    assert.ok(noShell.startsWith("- No shell here:"));
+    assert.ok(bash.startsWith("- bash(command): BUILD-TIME shell in the job's directory (when offered) — probe an API's real response shape with curl"), bash);
+    const chatBash = builderRules(CHAT_TOOLS).split("\n").find((l) => l.startsWith("- bash("))!;
+    const asChat = bash
+      .replace("bash(command)", "bash(command, timeoutMs?)")
+      .replace("the job's directory", "the server's data directory")
+      .replace("clone a repo to", "clone a repo into scratch/ to")
+      .replace("inspect the files a run left there", "inspect a run's file outputs under artifacts/<runId>/")
+      .replace("meta/run-step", "run_step");
+    assert.equal(asChat, chatBash, "every other word is the chat's");
+
+    // The App page: read by name, since no prompt ends with a list here.
+    assert.ok(appAtEnd.includes("Follow the App page listed at the end of this prompt (when this server has one)"));
+    assert.equal(appUnder, appAtEnd.replace("listed at the end of this prompt", "under Workflow Builder"));
+  });
+
+  it("parses as a page with no parent yet, the rules whole, then what a build owes, word for word", async () => {
+    const c = parseConceptFile(FILE, workflowLanguagePage(), STRUT_CONCEPTS.prefix);
+    assert.equal(c.name, "Workflow Language");
+    // Under `Workflow Builder` it would be listed as a kind to open in the
+    // chat's, the builder job's and the orchestrator's prompts.
+    assert.deepEqual(c.parents, [], "no prompt lists it until a page says to open it");
+    assert.deepEqual(Object.keys(c.attributes), ["description"]);
+    assert.ok(c.docs!.startsWith(`${c.description}\n\nA workflow is YAML with this shape:`));
+    assert.ok(c.docs!.includes(builderRules(PAGE_TOOLS)));
+    assert.ok(c.docs!.endsWith(`Be concise. Don't over-explain.\n\n${BUILD_VERIFIED}\n\n${BUILD_APP_ARTIFACT}`));
+    assert.doesNotMatch(c.docs!, /No shell here|at the end of this prompt|<<strut:/);
+
+    // Never the chat's names or mechanics.
+    for (const chat of ["list_steps", "get_step", "run_step", "create_workflow", "run_workflow", "ask_user", "request_secret", "graph_query", "set_automation", "app_build", "bash(command, timeoutMs?)", "scratch/", "this chat", "[run-notification]"]) {
+      assert.ok(!c.docs!.includes(chat), `the chat's ${chat}`);
+    }
+    // Every authoring step it names is one the registry has.
+    const registry = await createRegistry([]);
+    for (const type of new Set(c.docs!.match(/\b(?:meta|app|job|graph)\/[a-z][a-z-]*/g))) assert.ok(registry[type], `a step strut has: ${type}`);
+
+    // Read from its file where there is no graph, as every shipped page is.
+    const read = (await conceptFiles([STRUT_CONCEPTS]).get("workflow language"))!;
+    assert.equal(read.docs, c.docs);
+    assert.ok(!(await conceptFiles([STRUT_CONCEPTS]).get("Workflow Builder"))!.children.some((k) => k.name === c.name), "not among the kinds the builder's prompt lists");
   });
 });

@@ -1,6 +1,6 @@
 import type { WorkspaceStore } from "./workspace.js";
 import { templateWithDelta, type JobSeedOptions } from "./job-seed.js";
-import { builderRules, JOB_TOOLS } from "./ai/prompts.js";
+import { BUILD_APP_ARTIFACT, BUILD_VERIFIED, builderRules, JOB_TOOLS } from "./ai/prompts.js";
 import type { BuilderReach } from "./reach.js";
 
 /**
@@ -64,12 +64,25 @@ const BUILDER_YAML = new URL("./workflows/builder.yaml", import.meta.url);
  *  in the meta/* names (`builderRules(JOB_TOOLS)`, src/ai/prompts.ts): the
  *  one source the builder chat's prompt is rendered from too
  *  (plans/builder-job.md §1). The YAML keeps what is the JOB's — who the
- *  agent is, claims, the kinds, the reply — around it. */
+ *  agent is, the kinds, the reply — around it. */
 export const BUILDER_RULES_MARKER = "<<strut: the builder's rules>>";
 
+/** Each marker of builder.yaml's `params.system` and the text of
+ *  src/ai/prompts.ts the seed puts there: the rules, then what a build
+ *  owes beyond them, which the `Workflow Language` page says from the
+ *  same source (plans/one-job-agent.md §2). */
+const FILLS: ReadonlyArray<readonly [marker: string, text: () => string]> = [
+  [BUILDER_RULES_MARKER, () => builderRules(JOB_TOOLS)],
+  ["<<strut: a build is verified>>", () => BUILD_VERIFIED],
+  ["<<strut: a published app>>", () => BUILD_APP_ARTIFACT],
+];
+
 function withRules(system: string): string {
-  if (!system.includes(BUILDER_RULES_MARKER)) throw new Error(`builder.yaml: params.system has no "${BUILDER_RULES_MARKER}" line for strut's rules`);
-  return system.replace(BUILDER_RULES_MARKER, () => builderRules(JOB_TOOLS));
+  for (const [marker, text] of FILLS) {
+    if (!system.includes(marker)) throw new Error(`builder.yaml: params.system has no "${marker}" for strut's text`);
+    system = system.replace(marker, text);
+  }
+  return system;
 }
 
 /** The `builder` template with strut's rules rendered in and the host's
