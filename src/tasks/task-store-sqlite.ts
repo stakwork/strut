@@ -37,6 +37,9 @@
  * (null: none), with the partial index `tasks_group`.
  * A type's title, what workers call it (plans/i18n.md), adds
  * `task_types.title` the same way (null: none).
+ * A group's status adds the table `task_group_status`, one row a change
+ * (`create table if not exists`): a file from before has none, so every
+ * group in it is open.
  */
 import type { StatementSync } from "node:sqlite";
 import { opt, type Row, type TaskDb } from "./db.js";
@@ -69,6 +72,7 @@ import {
   type StandingRule,
   type LimitRule,
   type LeaseTotals,
+  type GroupStatusChange,
   type TaskGroup,
   type TaskGroupQuery,
   type TaskListQuery,
@@ -195,6 +199,15 @@ create table if not exists reviews (
   at integer not null,
   primary key (task, worker)
 ) strict, without rowid;
+
+create table if not exists task_group_status (
+  type text not null,
+  group_key text not null,
+  status text not null check (status in ('open', 'done')),
+  why text,
+  by text,
+  at integer not null
+) strict;
 `;
 
 /** Columns added to a table that has the rest: pay's (§8.1, #664, version 1
@@ -247,6 +260,7 @@ create index if not exists leases_worker_taken on leases(worker, taken);
 create index if not exists reviews_rejected on reviews(worker) where verdict = 'rejected';
 create index if not exists tasks_unlaunched on tasks(settled_at) where standing = 1 and status = 'settled' and launched_at is null;
 create index if not exists tasks_group on tasks(group_key, type) where group_key is not null;
+create index if not exists task_group_status_key on task_group_status(type, group_key);
 `;
 
 /** The task side's tables brought to version 2, inside the file's one
@@ -453,6 +467,7 @@ export class SqliteTaskStore implements TaskStore {
       ),
       launched: p("update tasks set launched_at = ? where id = ? and standing = 1 and launched_at is null"),
       unlaunched: p("select * from tasks where standing = 1 and status = 'settled' and launched_at is null order by settled_at limit ?"),
+      setGroupStatus: p("insert into task_group_status (type, group_key, status, why, by, at) values (?, ?, ?, ?, ?, ?)"),
       reply: p("update tasks set reply = coalesce(?, reply), group_key = coalesce(?, group_key) where id = ? and status = 'settled' and test is null"),
       // §7.2's takeTest: the tests this worker may be served, least-served first.
       servable: p(
@@ -931,26 +946,38 @@ export class SqliteTaskStore implements TaskStore {
 
   async groups(q: TaskGroupQuery = {}): Promise<TaskGroup[]> {
     // One row a task and answer (of `worker`'s alone, when asked), with the
-    // answer's verdict; folded by type and group.
+    // answer's verdict; folded by type and group, then each group's newest
+    // status change (`rowid`: the order they were added).
     const args: Array<string | number> = [];
     const whose = q.worker ? "and l.worker = ?" : "";
     if (q.worker) args.push(q.worker);
     const types = q.types ? "and t.type in (select value from json_each(?))" : "";
     if (q.types) args.push(JSON.stringify(q.types));
-    const sql = `select t.type as type, t.group_key as grp, count(distinct t.id) as tasks, count(l.id) as answers,
-        coalesce(sum(r.verdict = 'ok'), 0) as ok, coalesce(sum(r.verdict = 'rejected'), 0) as rejected,
-        json_group_array(distinct l.worker) filter (where l.worker is not null) as workers,
-        min(t.created) as first, max(coalesce(t.settled_at, t.created)) as last, max(t.seq) as seq
-      from tasks t
-      ${q.worker ? "join" : "left join"} leases l on l.task = t.id and l.status = 'submitted' ${whose}
-      left join reviews r on r.task = l.task and r.worker = l.worker
-      where t.group_key is not null and t.test is null ${types}
-      group by t.type, t.group_key
-      order by seq desc limit ?`;
+    const named = q.group !== undefined ? "and t.group_key = ?" : "";
+    if (q.group !== undefined) args.push(q.group);
+    const status = q.status ? "where coalesce(s.status, 'open') = ?" : "";
+    if (q.status) args.push(q.status);
+    const sql = `select g.*, s.status as status, s.at as status_at, s.by as status_by, s.why as why from (
+        select t.type as type, t.group_key as grp, count(distinct t.id) as tasks, count(l.id) as answers,
+          coalesce(sum(r.verdict = 'ok'), 0) as ok, coalesce(sum(r.verdict = 'rejected'), 0) as rejected,
+          json_group_array(distinct l.worker) filter (where l.worker is not null) as workers,
+          min(t.created) as first, max(coalesce(t.settled_at, t.created)) as last, max(t.seq) as seq
+        from tasks t
+        ${q.worker ? "join" : "left join"} leases l on l.task = t.id and l.status = 'submitted' ${whose}
+        left join reviews r on r.task = l.task and r.worker = l.worker
+        where t.group_key is not null and t.test is null ${types} ${named}
+        group by t.type, t.group_key
+      ) g
+      left join task_group_status s on s.rowid = (select max(rowid) from task_group_status where type = g.type and group_key = g.grp)
+      ${status}
+      order by g.seq desc limit ?`;
     return (this.db.prepare(sql).all(...args, pageLimit(q.limit)) as Row[]).map((r) => {
       const answers = Number(r.answers);
       const ok = Number(r.ok);
       const rejected = Number(r.rejected);
+      const at = opt<number>(r.status_at);
+      const by = opt<string>(r.status_by);
+      const why = opt<string>(r.why);
       return {
         group: r.grp as string,
         type: r.type as string,
@@ -962,8 +989,16 @@ export class SqliteTaskStore implements TaskStore {
         workers: JSON.parse(r.workers as string) as string[],
         first: Number(r.first),
         last: Number(r.last),
+        status: (opt<string>(r.status) ?? "open") as TaskGroup["status"],
+        ...(at !== undefined ? { statusAt: Number(at) } : {}),
+        ...(by !== undefined ? { statusBy: by } : {}),
+        ...(why !== undefined ? { why } : {}),
       };
     });
+  }
+
+  async setGroupStatus(c: GroupStatusChange): Promise<void> {
+    this.db.tx(() => this.s.setGroupStatus.run(c.type, c.group, c.status, c.why ?? null, c.by ?? null, c.at));
   }
 
   async putTest(t: NewTest): Promise<TestRecord> {

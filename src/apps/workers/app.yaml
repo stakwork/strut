@@ -39,6 +39,7 @@ grants:
     - staff/review
     - staff/groups
     - staff/review-group
+    - staff/group-status
     - staff/tests
     - staff/test
     - staff/save-test

@@ -7534,7 +7534,7 @@ export async function createStrut<TServices = unknown>(
     // A person's take-back of an earning in its hold (§8.1), a verdict on
     // an answer (§9.6) and the tests (§7.1): the service's, never a
     // capability's. None with a host's own store.
-    ...(hostTasks ? {} : { takeBack: tasks.takeBack, review: tasks.review, reviewGroup: tasks.reviewGroup, tests: tasks.tests }),
+    ...(hostTasks ? {} : { takeBack: tasks.takeBack, review: tasks.review, reviewGroup: tasks.reviewGroup, setGroupStatus: tasks.setGroupStatus, tests: tasks.tests }),
     // Withdraw's settings and payouts (§8.2): the payer's, whatever task
     // store the routes hold.
     payouts,

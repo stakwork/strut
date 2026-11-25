@@ -193,22 +193,37 @@ and `strut/worker` until 2026-11-25 (docs/apps.md, `src/apps/renamed.ts`).
   of the dashboard (docs/apps.md, `LevelCard`).
 - **Groups of tasks** (`task/reply`'s `group`; `group` on the task,
   `tasks.group_key` in the store with its partial index `tasks_group`,
-  `groups` and `reviewGroup` on the service, `src/tasks/task-groups.test.ts`).
+  the table `task_group_status`, `groups`, `reviewGroup` and
+  `setGroupStatus` on the service, `src/tasks/task-groups.test.ts`).
   A deliverable is often many tasks: a book is its pages, one standing task
   each. The run that asked names the task's group once the answer is in
   (`task/reply { task, group }`, at most `GROUP_MAX` 200 characters on one
   line, trimmed; a reply with only a group leaves what was told as it was,
   and a later reply without one keeps it). Staff: `GET /tasks?group=` (a
-  group's tasks), `GET /tasks/groups[?type=]` (each type and group with its
-  tasks, answers, `ok`, `rejected`, `unreviewed` and `workers`, the one with
-  the newest task first) and `POST /tasks/groups/review { group, type?,
-  verdict, why? }`, one `review` for each answer in it with no verdict yet
-  (a verdict given stays; `more` past `TASK_LIST_MAX` tasks) — the staff
-  app's Answers by group, shown once a workflow named a group. The worker:
+  group's tasks), `GET /tasks/groups[?type=&group=&status=]` (each type and
+  group with its tasks, answers, `ok`, `rejected`, `unreviewed`, `workers`
+  and its status, the one with the newest task first) and `POST
+  /tasks/groups/review { group, type?, verdict, why? }`, one `review` for
+  each answer in it with no verdict yet (a verdict given stays; `more` past
+  `TASK_LIST_MAX` tasks) — the staff app's Answers by group, shown once a
+  workflow named a group. A group's STATUS is staff's alone: `open` (the
+  default, no record) or `done`, set with `POST /tasks/groups/status {
+  type, group, status, why? }` (`staff/group-status`; `404 unknown_group`
+  for a group with no task of that type). Every change is a row of
+  `task_group_status (type, group_key, status, why, by, at)`, added and
+  never changed; the newest (by `rowid`) is the status. The groups read
+  joins it in its one query, and `status=` filters there, before the page's
+  `limit`. Each group carries `status`, and from the newest change
+  `statusAt`, `statusBy` and `why`. A file from before has no table:
+  `create table if not exists` adds it and every group in it is open. It
+  is a mark: nothing refuses a task, a reply or a review of a done group.
+  The Workers app shows Done on a group, filters Open / Done, and a group's
+  page has Mark done or Reopen with an optional reason. The worker:
   `task/history` items carry `group` and staff's `review { verdict, why?, at
   }` on their answers (never who gave it), `{ group }` reads every answer of
   theirs in one group (past the newest 50), and `{ groups: true }` adds their
-  groups, counting only their own answers and never naming other workers.
+  groups, counting only their own answers and never naming other workers;
+  each with its `status`, `statusAt` and `why`, never who set it.
   So a worker's app can list what they handed in and what was sent back,
   with why. The verdict is staff's message to the worker, so §7.2's "never
   why anything was taken back" now has this exception; tests are never

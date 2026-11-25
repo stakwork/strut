@@ -782,6 +782,8 @@ describe("strut/workers — seeded, an admin's, and its page's calls", () => {
     assert.deepEqual((await admin("staff/tasks", { group: "Book one" })).result.tasks, []);
     assert.deepEqual((await admin("staff/review-group", { group: "Book one", verdict: "ok" })).result, { reviewed: 0, more: false });
     assert.match((await admin("staff/review-group", { group: "Book one", verdict: "rejected" })).error ?? "", /bad_request: a rejection says why/);
+    assert.deepEqual((await admin("staff/groups", { status: "done" })).result, { groups: [] });
+    assert.match((await admin("staff/group-status", { type: "pets", group: "Book one", status: "done" })).error ?? "", /unknown_group/);
     assert.equal((await strut.store.getRunEvents("pets", runId)).length, events, "the run is not touched");
     assert.deepEqual(await strut.store.getRunSummary("pets", runId), summary);
   });
@@ -822,8 +824,14 @@ describe("strut/workers — seeded, an admin's, and its page's calls", () => {
 
   it("a member's session on the same page, a visitor and a peer are refused every staff/* step", async () => {
     const member = page(signIn("bo", "member"));
-    const configs: Record<string, Record<string, unknown>> = { "staff/grant": { actor: "x", type: "pets" }, "staff/save-type": { name: "x", app: "workers", answer: MATCH }, "staff/review": { task: "t1", verdict: "ok" }, "staff/review-group": { group: "g", verdict: "ok" } };
-    for (const type of ["staff/stats", "staff/types", "staff/workers", "staff/tests", "staff/save-type", "staff/grant", "staff/review", "staff/groups", "staff/review-group"]) {
+    const configs: Record<string, Record<string, unknown>> = {
+      "staff/grant": { actor: "x", type: "pets" },
+      "staff/save-type": { name: "x", app: "workers", answer: MATCH },
+      "staff/review": { task: "t1", verdict: "ok" },
+      "staff/review-group": { group: "g", verdict: "ok" },
+      "staff/group-status": { type: "pets", group: "g", status: "done" },
+    };
+    for (const type of ["staff/stats", "staff/types", "staff/workers", "staff/tests", "staff/save-type", "staff/grant", "staff/review", "staff/groups", "staff/review-group", "staff/group-status"]) {
       const r = await member(type, configs[type] ?? {});
       assert.ok(r.error, type);
       assert.match(r.error, /admin/, type);
@@ -847,6 +855,14 @@ describe("strut/workers — seeded, an admin's, and its page's calls", () => {
     }
     assert.equal((await strut.app.request("/tasks/t1/review", { ...put, headers: { "content-type": "application/json" } })).status, 401, "no key");
     assert.equal((await strut.app.request("/tasks/t1/review", { ...put, headers: { ...auth, "content-type": "application/json" } })).status, 404, "the key reaches it: no task t1");
+    // A group's status: the same gate.
+    const post = { method: "POST", body: JSON.stringify({ type: "pets", group: "g", status: "done" }) };
+    for (const headers of [peer, { cookie: await signIn("bo", "member"), "x-strut-ui": "1" }]) {
+      assert.equal((await strut.app.request("/tasks/groups/status", { ...post, headers: { ...headers, "content-type": "application/json" } })).status, 403, JSON.stringify(Object.keys(headers)));
+    }
+    assert.equal((await strut.app.request("/tasks/groups/status", { ...post, headers: { "content-type": "application/json" } })).status, 401, "no key");
+    const reached = await strut.app.request("/tasks/groups/status", { ...post, headers: { ...auth, "content-type": "application/json" } });
+    assert.deepEqual([reached.status, ((await reached.json()) as { code: string }).code], [404, "unknown_group"], "the key reaches it: no group g");
   });
 
   it("an expected answer and a grader's note never reach a run, an event or the monitor", async () => {

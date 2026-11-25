@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { createTasks, memoryTaskStores, openTaskStores, tasksPath, TaskError, type TaskErrorCode, type TasksService, type WorkerTask } from "./tasks.js";
 import { MemoryLedgerStore } from "../payments/ledger-memory.js";
 import { RunController } from "../run-control.js";
@@ -13,8 +14,9 @@ import { RunController } from "../run-control.js";
  * `task/reply`'s `group` (a book its pages); staff read a group's tasks and
  * counts and mark its unreviewed answers at once; a worker reads their own
  * groups and every answer of one, each with staff's verdict and why — what
- * to fix. One suite over the SQLite file and the memory twin, through the
- * service; the routes and steps are in src/apps/workers.test.ts.
+ * to fix. Staff mark a group done or open again. One suite over the SQLite
+ * file and the memory twin, through the service; the routes and steps are
+ * in src/apps/workers.test.ts.
  */
 
 const T0 = Date.parse("2026-11-19T20:00:00Z");
@@ -159,6 +161,40 @@ for (const impl of ["SQLite", "memory"] as const) {
       assert.deepEqual((await tasks().history("ann", { app: "other", groups: true })).groups, [], "another app's types are not this app's");
     });
 
+    it("staff mark a group done or open again, the newest change with who, when and why; the list filters by it", async () => {
+      await page("ann", "Taliesin");
+      await page("ann", "Wild Game");
+      await page("ann", "Wild Game", "label");
+      const of = async (group: string, type = "page") => (await tasks().groups!({ type, group }))[0]!;
+      assert.deepEqual([(await of("Taliesin")).status, "statusAt" in (await of("Taliesin"))], ["open", false], "open until set");
+
+      clock += MIN;
+      const done = await svc.setGroupStatus({ type: "page", group: " Taliesin ", status: "done", why: " all pages in ", by: "ada" });
+      assert.deepEqual([done.group, done.tasks, done.status, done.statusAt, done.statusBy, done.why], ["Taliesin", 1, "done", T0 + 4 * MIN, "ada", "all pages in"]);
+      assert.deepEqual(await of("Taliesin"), done, "the list reads it so");
+      assert.equal((await of("Wild Game", "label")).status, "open");
+      assert.deepEqual((await tasks().groups!({ status: "done", limit: 1 })).map((g) => g.group), ["Taliesin"], "filtered before the page: the oldest group, at a limit of 1");
+      assert.deepEqual((await tasks().groups!({ status: "open" })).map((g) => [g.type, g.group]), [["label", "Wild Game"], ["page", "Wild Game"]]);
+
+      clock += MIN;
+      const open = await svc.setGroupStatus({ type: "page", group: "Taliesin", status: "open", by: "bea" });
+      assert.deepEqual([open.status, open.statusAt, open.statusBy, "why" in open], ["open", T0 + 5 * MIN, "bea", false], "the newest change's why, not an earlier one's");
+      assert.deepEqual(await tasks().groups!({ status: "done" }), []);
+
+      await assert.rejects(svc.setGroupStatus({ type: "page", group: "Taliesin", status: "closed" as never }), refused("bad_request", /status is open or done/));
+      await assert.rejects(svc.setGroupStatus({ type: "page", group: "Nope", status: "done" }), refused("unknown_group"));
+      await assert.rejects(svc.setGroupStatus({ type: "label", group: "Taliesin", status: "done" }), refused("unknown_group"), "a group is of one type");
+      await assert.rejects(svc.setGroupStatus({ type: "page", group: " ", status: "done" }), refused("bad_request", /group is a name/));
+      await assert.rejects(tasks().groups!({ status: "closed" as never }), refused("bad_request", /status is open or done/));
+    });
+
+    it("a worker's groups carry the status staff set and why, never who set it", async () => {
+      await page("ann", "Taliesin");
+      await svc.setGroupStatus({ type: "page", group: "Taliesin", status: "done", why: "all pages in", by: "ada" });
+      const g = (await tasks().history("ann", { app: "scanner", groups: true })).groups![0]!;
+      assert.deepEqual([g.status, g.statusAt, g.why, "statusBy" in g, "workers" in g], ["done", T0 + MIN, "all pages in", false, false]);
+    });
+
     it("a group's answers past the newest 50 are all read", async () => {
       const first = await page("ann", "Long book");
       for (let i = 0; i < 54; i++) await page("ann", "Long book");
@@ -170,3 +206,38 @@ for (const impl of ["SQLite", "memory"] as const) {
     });
   });
 }
+
+describe("groups of tasks: a tasks.db from before a group's status", () => {
+  it("opens with every group open, gains the table and keeps every change", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "strut-task-groups-old-"));
+    try {
+      const make = () => createTasks({ open: () => openTaskStores({ dataDir: dir }), exists: () => existsSync(tasksPath(dir)), now: () => T0 });
+      let svc = make();
+      await svc.capability.setType("page", { app: "scanner", answer: NONE, open: false }, "staff");
+      await svc.capability.grant("ann", "page", "staff");
+      const t = (await svc.capability.ensure({ type: "page", workflow: "scan", runId: "r1", path: "scan/ask" })).task;
+      const l = (await svc.capability.next("ann", { app: "scanner", type: "page" })) as WorkerTask;
+      await svc.capability.submit("ann", { lease: l.lease, answer: {} });
+      await svc.capability.reply({ task: t.id, group: "Taliesin" }, { control: new RunController("r1", "scan").forUnit() });
+      await svc.close();
+      // As a strut before this one left it: no `task_group_status` table.
+      const db = new DatabaseSync(tasksPath(dir));
+      db.exec("drop index task_group_status_key; drop table task_group_status");
+      db.close();
+      svc = make();
+      assert.deepEqual((await svc.capability.groups!()).map((g) => [g.group, g.status]), [["Taliesin", "open"]]);
+      await svc.setGroupStatus({ type: "page", group: "Taliesin", status: "done", why: "all in", by: "ada" });
+      await svc.setGroupStatus({ type: "page", group: "Taliesin", status: "open", by: "bea" });
+      await svc.close();
+      const again = new DatabaseSync(tasksPath(dir));
+      const rows = again.prepare("select type, group_key, status, why, by, at from task_group_status order by rowid").all().map((r) => ({ ...r }));
+      again.close();
+      assert.deepEqual(rows, [
+        { type: "page", group_key: "Taliesin", status: "done", why: "all in", by: "ada", at: T0 },
+        { type: "page", group_key: "Taliesin", status: "open", why: null, by: "bea", at: T0 },
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

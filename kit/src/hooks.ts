@@ -1025,6 +1025,11 @@ export interface WorkerTaskGroup {
   /** When its first task was made, and its newest answered; epoch ms. */
   first: number;
   last: number;
+  /** Staff's status of it, `open` until they set one; when (epoch ms) and
+   *  why, from their newest change. Absent: a server from before. */
+  status?: "open" | "done";
+  statusAt?: number;
+  why?: string;
 }
 
 /** What a workflow tells the workers who answered a task, after the answer

@@ -300,13 +300,36 @@ export interface TaskGroup {
   /** When its oldest task was made, and when its newest was answered. */
   first: number;
   last: number;
+  /** What staff set it to, `open` until they did; when, who (staff's read
+   *  alone) and why, from the newest change. */
+  status: GroupStatus;
+  statusAt?: number;
+  statusBy?: string;
+  why?: string;
 }
 
-/** Which groups: of these types, and only those `worker` answered in. */
+/** A group's status as staff set it (`POST /tasks/groups/status`). */
+export const GROUP_STATUSES = ["open", "done"] as const;
+export type GroupStatus = (typeof GROUP_STATUSES)[number];
+
+/** Which groups: of these types, of one name, with one status, and only
+ *  those `worker` answered in. */
 export interface TaskGroupQuery {
   types?: string[];
+  group?: string;
+  status?: GroupStatus;
   worker?: string;
   limit?: number;
+}
+
+/** One change of a group's status: every one is kept, the newest is it. */
+export interface GroupStatusChange {
+  type: string;
+  group: string;
+  status: GroupStatus;
+  why?: string;
+  by?: string;
+  at: number;
 }
 
 /** A run's reply to the workers who answered its task (`task/reply`): a
@@ -711,6 +734,8 @@ export interface TaskStore {
   /** The groups of tasks (`TaskRecord.group`), the one with the newest task
    *  first, `TASK_LIST_PAGE` at a time. Never a test instance. */
   groups(q?: TaskGroupQuery): Promise<TaskGroup[]>;
+  /** A change of a group's status, added to those before. */
+  setGroupStatus(c: GroupStatusChange): Promise<void>;
 
   putTest(t: NewTest): Promise<TestRecord>;
   test(id: string): Promise<TestRecord | undefined>;
@@ -784,6 +809,7 @@ export class MemoryTaskStore implements TaskStore {
   private readonly notes = new Map<string, string>();
   /** The verdicts (§9.6), by task and worker. */
   private readonly reviewRows = new Map<string, ReviewRecord>();
+  private readonly groupStatusRows: GroupStatusChange[] = [];
   private seq = 0;
 
   async types(): Promise<TaskType[]> {
@@ -1257,13 +1283,19 @@ export class MemoryTaskStore implements TaskStore {
   async groups(q: TaskGroupQuery = {}): Promise<TaskGroup[]> {
     const types = q.types ? new Set(q.types) : undefined;
     const rows = new Map<string, TaskGroup & { seq: number; who: Set<string> }>();
+    const statuses = new Map(this.groupStatusRows.map((c) => [`${c.type}\0${c.group}`, c]));
     for (const t of this.tasks.values()) {
-      if (t.group === undefined || t.test !== undefined || (types && !types.has(t.type))) continue;
+      if (t.group === undefined || t.test !== undefined || (types && !types.has(t.type)) || (q.group !== undefined && t.group !== q.group)) continue;
+      const c = statuses.get(`${t.type}\0${t.group}`);
+      if (q.status && (c?.status ?? "open") !== q.status) continue;
       const answers = [...this.leases.values()].filter((l) => l.task === t.id && l.status === "submitted" && (!q.worker || l.worker === q.worker));
       if (q.worker && !answers.length) continue;
       const key = `${t.type}\0${t.group}`;
       let g = rows.get(key);
-      if (!g) rows.set(key, (g = { group: t.group, type: t.type, tasks: 0, answers: 0, ok: 0, rejected: 0, unreviewed: 0, first: t.created, last: 0, seq: t.seq, who: new Set() }));
+      if (!g) {
+        const status = c ? { status: c.status, statusAt: c.at, ...(c.by !== undefined ? { statusBy: c.by } : {}), ...(c.why !== undefined ? { why: c.why } : {}) } : { status: "open" as const };
+        rows.set(key, (g = { group: t.group, type: t.type, tasks: 0, answers: 0, ok: 0, rejected: 0, unreviewed: 0, first: t.created, last: 0, ...status, seq: t.seq, who: new Set() }));
+      }
       g.tasks++;
       g.first = Math.min(g.first, t.created);
       g.last = Math.max(g.last, t.settledAt ?? t.created);
@@ -1281,6 +1313,10 @@ export class MemoryTaskStore implements TaskStore {
       .sort((a, b) => b.seq - a.seq)
       .slice(0, pageLimit(q.limit))
       .map(({ seq: _seq, who, ...g }) => ({ ...g, workers: [...who] }));
+  }
+
+  async setGroupStatus(c: GroupStatusChange): Promise<void> {
+    this.groupStatusRows.push(clone(c));
   }
 
   async putTest(t: NewTest): Promise<TestRecord> {

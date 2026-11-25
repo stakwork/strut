@@ -6,7 +6,9 @@
 // left to review. A group's page: its tasks oldest first, each a tile with
 // its picture (the reply's first, else the answer's; an answer with none,
 // its fields in a line) and its verdict (OK, Reject with why); Mark the
-// others OK gives every answer with no verdict the same one.
+// others OK gives every answer with no verdict the same one. Staff mark a
+// group done (or reopen it) with a reason if they like (`staff/group-status`);
+// the list shows Done on it and filters by it.
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, ChevronRight } from "lucide-react";
@@ -16,7 +18,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { answerLine, captionOf, fmtWhen, GROUP_TASKS, pictureOf, reviewable, type Place } from "../lib/view";
 import type { Task, TaskGroup } from "../lib/types";
-import { Chip, Crumbs, Empty, ErrorLine, Loading, Note, useAct } from "./bits";
+import { Chip, Crumbs, Empty, ErrorLine, Loading, Note, ReasonButton, useAct } from "./bits";
 import type { AnswersProps } from "./Answers";
 import { AnswersHead, TypeSelect } from "./AnswersHead";
 import { ReviewControl, Thumb, useSeen, useWho } from "./review";
@@ -26,6 +28,9 @@ const STRIP = 3;
 
 /** Which answers show: the ones with no verdict, the rejected, the OK, all. */
 type Show = "none" | "rejected" | "ok" | "all";
+
+/** Which groups show by their status: open, done, or either (""). */
+type Status = "" | "open" | "done";
 
 interface Verdicts {
   ok: number;
@@ -77,9 +82,10 @@ export function GroupList(props: AnswersProps) {
   const [type, setType] = useState(props.place.type ?? "");
   /** What shows; until picked, what is left to review when there is any. */
   const [picked, setPicked] = useState<Show | null>(null);
+  const [status, setStatus] = useState<Status>("");
   const q = useQuery({
-    queryKey: ["staff", "groups", type],
-    queryFn: () => client.run<{ groups: TaskGroup[] }>("staff/groups", { ...(type ? { type } : {}), limit: 500 }),
+    queryKey: ["staff", "groups", type, status],
+    queryFn: () => client.run<{ groups: TaskGroup[] }>("staff/groups", { ...(type ? { type } : {}), ...(status ? { status } : {}), limit: 500 }),
   });
   const who = useWho(props.workers);
   const groups = q.data?.groups ?? [];
@@ -99,6 +105,13 @@ export function GroupList(props: AnswersProps) {
       </AnswersHead>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         {props.shown.review && <ShowChips show={show} set={setPicked} n={n} />}
+        <div className="flex flex-wrap items-center gap-2">
+          {(["open", "done"] as const).map((s) => (
+            <Chip key={s} on={status === s} onClick={() => setStatus(status === s ? "" : s)}>
+              {s === "open" ? "Open" : "Done"}
+            </Chip>
+          ))}
+        </div>
         <Note className="ml-auto">A group is a set of answers a workflow put together, to review as one. Newest first.</Note>
       </div>
       {q.error ? (
@@ -106,7 +119,7 @@ export function GroupList(props: AnswersProps) {
       ) : !q.data ? (
         <Loading>Reading the groups…</Loading>
       ) : groups.length === 0 ? (
-        <Empty>No group yet. A workflow names one with its task/reply step's group.</Empty>
+        <Empty>{status ? "No group here." : "No group yet. A workflow names one with its task/reply step's group."}</Empty>
       ) : shown.length === 0 ? (
         <Empty>{show === "none" ? "Nothing left to review: every answer in a group has its verdict." : "No group here."}</Empty>
       ) : (
@@ -120,7 +133,10 @@ export function GroupList(props: AnswersProps) {
               >
                 <Strip group={g} />
                 <span className="flex min-w-0 flex-1 basis-64 flex-col gap-0.5">
-                  <span className="font-semibold break-words">{g.group}</span>
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold break-words">{g.group}</span>
+                    {g.status === "done" && <Badge variant="secondary">Done</Badge>}
+                  </span>
                   <span className="text-sm text-muted-foreground">
                     {g.answers} answer{g.answers === 1 ? "" : "s"}
                     {g.workers.length ? ` · ${g.workers.slice(0, 3).map(who).join(", ")}${g.workers.length > 3 ? ` +${g.workers.length - 3}` : ""}` : ""} · {fmtWhen(g.last)}
@@ -180,6 +196,13 @@ export function GroupPage(props: AnswersProps & { group: string }) {
     queryKey: ["staff", "group", props.group, type ?? ""],
     queryFn: () => client.run<{ tasks: Task[] }>("staff/tasks", { group: props.group, ...(type ? { type } : {}), limit: GROUP_TASKS }),
   });
+  // Its status: one row, unless the name is in groups of several types.
+  const sq = useQuery({
+    queryKey: ["staff", "group-status", props.group, type ?? ""],
+    queryFn: () => client.run<{ groups: TaskGroup[] }>("staff/groups", { group: props.group, ...(type ? { type } : {}), limit: 2 }),
+  });
+  const row = sq.data?.groups.length === 1 ? sq.data.groups[0] : undefined;
+  const done = row?.status === "done";
   const who = useWho(props.workers);
   const list: Place = { tab: "groups", ...(type ? { type } : {}) };
   const crumbs = <Crumbs go={props.go} to={[["Answers", list]]} here={props.group} />;
@@ -212,13 +235,31 @@ export function GroupPage(props: AnswersProps & { group: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-xl font-semibold break-words">{props.group}</h2>
             {type && <Badge variant="outline">{type}</Badge>}
+            {done && <Badge variant="secondary">Done</Badge>}
           </div>
           <p className="text-sm text-muted-foreground">
             {answers.length} answer{answers.length === 1 ? "" : "s"}
             {workers.length ? ` by ${workers.map(who).join(", ")}` : ""}
             {tasks.length ? ` · ${fmtWhen(tasks[0]!.created)} to ${fmtWhen(Math.max(...tasks.map((t) => t.settledAt ?? t.created)))}` : ""}
           </p>
+          {row?.statusAt !== undefined && (
+            <p className="text-sm text-muted-foreground">
+              {done ? "Done" : "Reopened"} {fmtWhen(row.statusAt)}
+              {row.statusBy ? ` by ${who(row.statusBy)}` : ""}
+              {row.why ? `: ${row.why}` : ""}
+            </p>
+          )}
         </div>
+        {row && (
+          <ReasonButton
+            label={done ? "Reopen" : "Mark done"}
+            placeholder="Why (optional)"
+            variant="outline"
+            confirm="default"
+            disabled={busy !== null}
+            onAct={(why) => void act("group-status", () => client.run("staff/group-status", { type: row.type, group: row.group, status: done ? "open" : "done", ...(why ? { why } : {}) }))}
+          />
+        )}
         {props.shown.review && n.unreviewed > 0 && (
           <Button disabled={busy !== null} onClick={() => void act("group-ok", () => client.run("staff/review-group", { group: props.group, ...(type ? { type } : {}), verdict: "ok" }))}>
             <Check strokeWidth={2.5} /> {n.ok + n.rejected > 0 ? `Mark the other ${n.unreviewed} OK` : `Mark all ${n.unreviewed} OK`}
