@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import yaml from "js-yaml";
@@ -18,7 +18,7 @@ import { JOB_WORKFLOW } from "./job-seed.js";
 import { ORCHESTRATOR_WORKFLOW } from "./orchestrator-seed.js";
 import type { AuthoringCapability } from "./authoring.js";
 import { BUILDER_RULES_MARKER, BUILDER_WORKFLOW, builderWorkflowYaml, seedBuilderWorkflow } from "./builder-seed.js";
-import { JOB_TOOLS, builderRules } from "./ai/prompts.js";
+import { BUILD_APP_ARTIFACT, BUILD_VERIFIED, JOB_TOOLS, builderRules } from "./ai/prompts.js";
 
 type Params = { tools: string[]; builtins: string[]; system: string; concept: string };
 type Doc = { peer?: boolean; params: Params };
@@ -78,6 +78,15 @@ describe("the builder workflow strut ships", () => {
     assert.ok(system.indexOf(rules) < system.indexOf("meta/add-claim with subject"), "then the job's claims, kinds and reply");
     const loaded = (flowFromYaml(BUILDER_WORKFLOW, "v1", text).params as Params).system;
     assert.equal(loaded, system, "loaded as written: the rules' {{ params.name }} examples are not param references");
+
+    // Pinned, as the chat's prompt is (src/ai/prompts.test.ts): the rules
+    // have a third rendering now (the `Workflow Language` page) and what a
+    // build owes is rendered from src/ai/prompts.ts into two more markers
+    // (plans/one-job-agent.md §2). Neither moves a byte of this prompt.
+    assert.equal(system, await readFile(new URL("./ai/fixtures/builder-system.txt", import.meta.url), "utf-8"));
+    assert.doesNotMatch(system, /<<strut:/, "every marker is replaced");
+    assert.ok(system.includes(`${rules}\n\n${BUILD_VERIFIED}\n\nThe kinds of thing this server builds`), "the claim and its verified run, after the rules");
+    assert.ok(system.includes(`and what is left. ${BUILD_APP_ARTIFACT} Otherwise \`artifacts\` stays empty`), "a published app, in the reply's paragraph");
 
     // The dialect the chat has always had.
     for (const rule of [

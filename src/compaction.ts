@@ -84,9 +84,14 @@ export const CHAT_RETAIN =
   "the workflows and steps published, by name and version; the runs launched, by id, with their status and what they returned; " +
   "the claims left pending and their checks; what the user asked for, in their words";
 
-/** What an agent's summary must keep: the working directory and the files. */
+/** What an agent's summary must keep: the working directory and the files,
+ *  and the pages it opened. A page read as a tool result (a kind's
+ *  convention, the `Workflow Language` rules) goes with the messages, where
+ *  a system prompt stays, so the summary names it and the agent opens it
+ *  again (plans/one-job-agent.md §2). */
 export const AGENT_RETAIN =
   "the working directory and the files read, created or changed, by path; the commands run and what they returned that still matters; " +
+  "the Concept pages opened, by name, and which of them the work still follows (their text goes with this conversation, so they are opened again); " +
   "what was verified and what was not";
 
 /** The one instruction appended to the conversation for the summarizer. The

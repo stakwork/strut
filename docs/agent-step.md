@@ -46,7 +46,9 @@ index. A change in this area updates this file, not AGENTS.md.
   by the first turn (a later step's `system` is ignored, one warn line) and
   the messages are replayed as stored, so every request begins with the
   previous one byte for byte. `retain` replaces what a
-  compaction's summary is told to keep (`AGENT_RETAIN`: files, commands) with
+  compaction's summary is told to keep (`AGENT_RETAIN`: files, commands, and
+  the Concept pages opened, by name: a page read as a tool result goes with
+  the messages, so the agent opens it again) with
   the caller's own references. `tags` (small strings) are kept on the
   turn's line for a later step of the workflow to read back; the agent
   never reads them (`context/recent` keeps its section's hash there, so an

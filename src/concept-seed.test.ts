@@ -688,7 +688,7 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     await make({ concepts: false });
     assert.deepEqual(await names(), []);
     const strut = await make();
-    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Browser", "Dream", "Game", "Job", "Orchestrator", "Plan", "Recent Apps", "Recent Jobs", "Recent Work", "Recent Workflows", "Worker Tasks", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Browser", "Dream", "Game", "Job", "Orchestrator", "Plan", "Recent Apps", "Recent Jobs", "Recent Work", "Recent Workflows", "Worker Tasks", "Workflow Builder", "Workflow Language"]);
     // Each Recent Work page keeps the read step it names (`Concept.step`),
     // and context/recent renders the pages under the root from the graph.
     for (const [page, step] of [["Recent Apps", "app/recent"], ["Recent Jobs", "job/recent"], ["Recent Workflows", "meta/recent-workflows"]] as const) {
@@ -703,7 +703,7 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
   it("concepts: { personal: true } seeds Personal; an agent walks it with context/concept and graph_get, and the run records both reads", async () => {
     const store = new MemoryRunStore();
     const strut = await make({ concepts: { personal: true }, store });
-    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Browser", "Dream", "Game", "Job", "Orchestrator", "Personal", "Plan", "Recent Apps", "Recent Jobs", "Recent Work", "Recent Workflows", "Worker Tasks", "Workflow Builder"]);
+    assert.deepEqual(await names(), ["App", "Assistant Conversations", "Browser", "Dream", "Game", "Job", "Orchestrator", "Personal", "Plan", "Recent Apps", "Recent Jobs", "Recent Work", "Recent Workflows", "Worker Tasks", "Workflow Builder", "Workflow Language"]);
     const root = (await b.reader.namesLike("Concept", "Personal", 1))[0]!.ref_id;
     // A page the person taught, under the root.
     const cooking = (await b.nodes.write({ type: "Concept", data: { name: "Cooking", description: "How meals are planned", docs: "Plan on Sundays." } })).ref_id;

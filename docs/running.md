@@ -19,6 +19,7 @@ cd strut
 npm install
 npm test                    # ~4,800 tests
 STRUT_TEST_SHARD=1/3 npm test   # one shard of the files (node's --test-shard), as CI's unit job runs three
+npm run render:concepts     # after changing the builder's rules (src/ai/prompts.ts): rewrites src/concepts/Workflow Language.md, which a test holds to them
 npm run dev                 # starts Hono server on :3000 (workspace in Neo4j — see Environment)
 STRUT_WORKSPACE_BACKEND=ladybug npm run dev   # the workspace on one LadybugDB file instead, <workspace>/graph/graph.lbug (the desktop's default; a filesystem workspace there is imported at this boot)
 

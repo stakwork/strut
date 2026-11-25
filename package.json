@@ -29,6 +29,7 @@
     "package:desktop": "node scripts/package-desktop.mjs",
     "dev": "npm run build:web && tsx --env-file=.env src/server.ts",
     "dev:fake-daemon": "tsx scripts/fake-sphinx-daemon.ts",
+    "render:concepts": "tsx scripts/render-concepts.ts",
     "start": "node build/server.js",
     "test": "STRUT_PACKAGE_INDEXES='[]' tsx --test ${STRUT_TEST_SHARD:+--test-shard=$STRUT_TEST_SHARD} \"src/**/*.test.ts\" \"kit/src/**/*.test.ts\" \"web/src/**/*.test.ts\" \"scripts/*.test.ts\" \"scripts/*.test.mjs\"",
     "test:stt": "STRUT_TEST_STT=1 tsx --test src/audio/stt.live.test.ts",

@@ -75,6 +75,9 @@ describe("compaction: the message", () => {
   it("the instruction names what to keep and ends by forbidding tool calls", () => {
     const s = summarizeInstruction(AGENT_RETAIN);
     assert.ok(s.includes(AGENT_RETAIN));
+    // A page opened as a tool result is summarized away with the rest: the
+    // summary names it, so the agent opens it again.
+    assert.match(AGENT_RETAIN, /the Concept pages opened, by name, and which of them the work still follows/);
     assert.ok(s.endsWith("Do not call any tools while writing this summary; respond with text only."));
   });
 });

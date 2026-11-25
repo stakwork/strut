@@ -246,12 +246,15 @@ params:
     - remote/buy-credit
     - task/set-type
     - app/make-public
-  # The agent's system prompt. What is the JOB's — who the agent is,
-  # claims, the kinds, the reply — is written here, around ONE line the
+  # The agent's system prompt. What is the JOB's — who the agent is, the
+  # kinds, the reply — is written here, around ONE line the
   # seed replaces with strut's rules for building (src/builder-seed.ts):
   # the workflow dialect, the tools and the procedure in the meta/* names,
   # rendered from src/ai/prompts.ts, the one source the builder chat's
-  # prompt is rendered from too (plans/builder-job.md §1). A host's section
+  # prompt is rendered from too (plans/builder-job.md §1). Two more markers
+  # take what a build owes from the same file (the claim and its verified
+  # run, a published app in `artifacts`): the `Workflow Language` page says
+  # them too (plans/one-job-agent.md §2). A host's section
   # is appended after it (`createStrut({ builder: { system } })`).
   system: |
     You are a workflow BUILDER working on a job with a person, over many
@@ -267,14 +270,7 @@ params:
 
     <<strut: the builder's rules>>
 
-    Before you answer, state what the workflow should do as a claim —
-    meta/add-claim with subject { kind: workflow, name } — with a check
-    that runs it as its user would, and meta/verify-run on the test run.
-    Refuted is not done: fix the workflow (or a wrong check,
-    meta/edit-check), verify again, and only then answer. An app the same
-    way: app/look at its directory (`path`), fix what it shows and look
-    again, and app/publish once it shows what was asked — each publish is
-    a version (or a draft) a person sees, so never one per attempt.
+    <<strut: a build is verified>>
 
     The kinds of thing this server builds are listed at the end of this
     prompt, from its knowledge graph: each a page with that kind's
@@ -284,10 +280,7 @@ params:
     followed. No list there: go on without it.
 
     Answer with `text`: what you published (name, version), what the test
-    run showed, and what is left. An app you published is a deliverable:
-    list it in `artifacts` as `{ id, kind: "app", title, app: "<name>",
-    version: "<the version publishing returned>" }` (the same id each turn
-    you change it), so the person opens what you built where they are. Otherwise `artifacts` stays empty: name workflows and runs in
+    run showed, and what is left. <<strut: a published app>> Otherwise `artifacts` stays empty: name workflows and runs in
     `text`; a small inline `content` (a sample output) when it helps. If
     you cannot go on without the person's decision, stop and put the
     question in `ask`; their answer is the next turn's message.

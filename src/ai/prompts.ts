@@ -191,9 +191,19 @@ export interface AiDeps {
  * and has no shell. The chat's rendering is the prompt the chat
  * always had, byte for byte (prompts.test.ts pins it): it heads every
  * chat's cached prefix, so a change to it is a change to every chat's.
+ *
+ * A third rendering is a PAGE (`PAGE_TOOLS`, plans/one-job-agent.md §2):
+ * the `Workflow Language` Concept, the same rules for the `job` agent to
+ * open. It is the job's rendering but for two lines (`page`): that agent
+ * has a shell, in the job's directory, and it reads the rules as a page it
+ * opened, so no other page is "listed at the end of this prompt". The
+ * builder job's rendering is pinned as the chat's is
+ * (builder-seed.test.ts).
  */
 export interface BuilderTools {
   chat: boolean;
+  /** The `Workflow Language` page's rendering, for the `job` agent. */
+  page?: boolean;
   listSteps: string;
   searchSteps: string;
   getStep: string;
@@ -277,6 +287,9 @@ export const JOB_TOOLS: BuilderTools = {
   graphGet: "graph/graph-get",
   app: "app/",
 };
+
+/** The job's names, as the `Workflow Language` page says them. */
+export const PAGE_TOOLS: BuilderTools = { ...JOB_TOOLS, page: true };
 
 /** The builder's PROCEDURE — the "Workflow:" steps that end its rules (how
  *  a session goes: reuse first, read a step before using it, validate,
@@ -430,6 +443,17 @@ Authoring custom steps (${t.createStep} / ${t.editStep}):
  *  is, and where the job's line says it has no shell. */
 const EXEC_SCRIPT = "To run a CLI or a script from a WORKFLOW, use the exec step (cmd + args; or cmd: uv, args: [run] + an inline Python script with a PEP 723 dependency header — uv installs the packages on the fly).";
 
+/** The line on `bash`, for an agent that has one: the chat's, in the data
+ *  directory, and on the page the job agent's, in the job's directory
+ *  (where a run under the job leaves its files). */
+function bashLine(t: BuilderTools): string {
+  const [args, where, clone, files] = t.chat
+    ? ["command, timeoutMs?", "the server's data directory", "clone a repo into scratch/", "inspect a run's file outputs under artifacts/<runId>/"]
+    : ["command", "the job's directory", "clone a repo", "inspect the files a run left there"];
+  return `- bash(${args}): BUILD-TIME shell in ${where} (when offered) — probe an API's real response shape with curl before authoring a step, ${clone} to study a format, check a CLI exists, ${files}. Env is scrubbed (no server API keys — probe authed APIs via ${t.runStep} with a real secret instead). NEVER a substitute for ctx.services.http/secrets/shell inside a step: a step that uses the global fetch, process.env, or child_process directly is wrong — it breaks cassette record/replay and secret scrubbing. ${EXEC_SCRIPT}
+`;
+}
+
 /** The "Tools" section: one line per tool, in the surface's names. A
  *  line only the chat has is the chat's text, behind `t.chat`; where the
  *  job works differently it has its own line. */
@@ -442,10 +466,9 @@ function builderToolsSection(t: BuilderTools): string {
 ${t.chat ? `- ask_user(message, requestedSchema) (when offered): ask the user a STRUCTURED question when you cannot proceed without their answer — a choice (string with enum, or oneOf [{ const, title }]), yes/no (boolean), a number/integer, a short text (string; minLength/maxLength/pattern/format email|uri|date|date-time), or a multi-select (array whose items have enum|anyOf; minItems/maxItems). requestedSchema is { type: "object", properties: { <name>: <one of those> }, required?: [...] } — FLAT, no nested objects. YOUR TURN ENDS AT THIS CALL: write nothing after it. The answer arrives as the next message, "[elicitation-response] <elicitationId> accept|decline|cancel" (accept carries the content as JSON on the next line). A select always offers the user an "Other" text box too, so a value may be outside your options: it is their own answer — use it as written. decline = the user chose not to answer: NEVER pick an option for them; say in one line what you need and stop, so they can reply in their own words, and don't put the same form up again. cancel = the user dismissed it, asking once more later is fine. Only the newest question is open (a new ask replaces it); an answer naming a replaced id is still the user's answer to that question. NEVER collect a password, API key, token, private key or any credential this way, nor in prose — that is request_secret.
 - request_secret(name, reason) (when offered): ask the user to add secret NAME (letters, digits, underscore) through a page on the strut server that writes the secret store directly — you never see the value and it never enters this chat. Call list_secrets first; request a name only when it is missing (or must be replaced). YOUR TURN ENDS AT THIS CALL, like ask_user. The next message says "secret NAME stored" (then use it via ctx.services.secrets.get("NAME")) or that it was declined.
 ` : ""}- ${t.createStep} / ${t.editStep}: author or revise a custom step (see above).
-${t.chat ? `- bash(command, timeoutMs?): BUILD-TIME shell in the server's data directory (when offered) — probe an API's real response shape with curl before authoring a step, clone a repo into scratch/ to study a format, check a CLI exists, inspect a run's file outputs under artifacts/<runId>/. Env is scrubbed (no server API keys — probe authed APIs via run_step with a real secret instead). NEVER a substitute for ctx.services.http/secrets/shell inside a step: a step that uses the global fetch, process.env, or child_process directly is wrong — it breaks cassette record/replay and secret scrubbing. ${EXEC_SCRIPT}
-` : `- No shell here: probe an API's real response with ${t.runStep} — the http step, cassette "record" — and read the files a run left with ${t.getRun} and job/read. ${EXEC_SCRIPT}
+${t.chat || t.page ? bashLine(t) : `- No shell here: probe an API's real response with ${t.runStep} — the http step, cassette "record" — and read the files a run left with ${t.getRun} and job/read. ${EXEC_SCRIPT}
 `}- str_replace_based_edit_tool(command, path, …) (when offered): view, create, str_replace and insert on text files under ${t.chat ? "the data directory (where bash runs)" : "the job's directory"} — for a FRONT-END project, an APP: a directory of TSX, CSS and an app.yaml that ${t.app}build compiles and ${t.app}publish publishes. A workflow or a step is still one document and travels as a tool argument (${t.createWorkflow}, ${t.createStep}); the editor is for the files of an app.
-- ${t.app}list / ${t.app}get / ${t.app}init / ${t.app}checkout / ${t.app}build / ${t.app}publish / ${t.app}look / ${t.app}pin: the app/* steps${t.chat ? " as tools (the same steps a job agent gets)" : ""} — an APP is a front-end project over workflows (plans/apps.md): ${t.app}init scaffolds one at ${t.chat ? "scratch/apps/<name>" : "apps/<name> in the job's directory"}, the editor writes its files, ${t.app}build compiles it and returns the errors to fix, ${t.app}publish records it as a version, ${t.app}look opens that version as a person sees it (strut's own host, as you), at a deep link (input) and after a person's clicks and typing (steps) when the page to see is not the first, and shows you the page, its text and its errors, ${t.app}pin makes a published app a tab in the host that shows this server's apps (only when the person asks). Follow the App page listed at the end of this prompt (when this server has one) for the layout, the kit's hooks, the grants and the rules.
+- ${t.app}list / ${t.app}get / ${t.app}init / ${t.app}checkout / ${t.app}build / ${t.app}publish / ${t.app}look / ${t.app}pin: the app/* steps${t.chat ? " as tools (the same steps a job agent gets)" : ""} — an APP is a front-end project over workflows (plans/apps.md): ${t.app}init scaffolds one at ${t.chat ? "scratch/apps/<name>" : "apps/<name> in the job's directory"}, the editor writes its files, ${t.app}build compiles it and returns the errors to fix, ${t.app}publish records it as a version, ${t.app}look opens that version as a person sees it (strut's own host, as you), at a deep link (input) and after a person's clicks and typing (steps) when the page to see is not the first, and shows you the page, its text and its errors, ${t.app}pin makes a published app a tab in the host that shows this server's apps (only when the person asks). Follow the App page ${t.page ? "under Workflow Builder" : "listed at the end of this prompt"} (when this server has one) for the layout, the kit's hooks, the grants and the rules.
 ${t.chat ? `- graph_query(cypher, params?, maxRows?) (when offered): READ-ONLY raw Cypher against this server's graph — for VERIFYING what a workflow's graph/* steps actually wrote (counts by type, exact properties, edge fan-out) or inspecting what this server keeps in its graph. Writes are rejected; go through the graph/* steps to write. How nodes and edges are laid out depends on the backend — the "Graph backend" line below says which. Output is capped (rows/strings/vectors) — aggregate or LIMIT rather than dumping. In a workflow, the graph/query step runs the same read.
 ` : ""}- ${t.graphGet}({ ref_id } | { node_type, name }, children?) (when offered): read ONE node of the knowledge graph — its properties, plus the nodes it points to along one edge type when you pass children (e.g. "PARENT_OF"). For reading a page you know by name or ref_id (a Concept's docs and what is under it); ${t.chat ? "use graph_query to count or to search. It is the graph/graph-get step, so call it directly rather than through run_step." : "use graph/graph-search to search."}
 ${t.chat && GRAPH_WALK_TOOL_ENABLED ? `- graph_walk(goal, query) (when offered): walk the graph for evidence about a workflow or step — for "does X work?", "why does X fail?", "what do X's claims say?", call it BEFORE answering, with goal = the user's question and query = the workflow/step name. It returns the kept nodes (versions, runs, claims, checks, supporting/refuting evidence); answer from them and cite node names. The user watches the walk as a live graph.
@@ -483,6 +506,61 @@ export function builderRules(t: BuilderTools): string {
 ${builderToolsSection(t)}
 
 ${builderProcedure(t)}`;
+}
+
+/**
+ * What a BUILD owes beyond the rules, in the job's names (plans/
+ * one-job-agent.md §2): a claim on the workflow and its test run verified,
+ * an app looked at before it is published, and a published app listed in
+ * the reply. One source for two readers: builder.yaml's prompt takes each
+ * at its marker (src/builder-seed.ts), and the `Workflow Language` page
+ * ends with them. The line breaks are builder.yaml's, so its prompt keeps
+ * its bytes (builder-seed.test.ts pins it).
+ */
+export const BUILD_VERIFIED = `Before you answer, state what the workflow should do as a claim —
+meta/add-claim with subject { kind: workflow, name } — with a check
+that runs it as its user would, and meta/verify-run on the test run.
+Refuted is not done: fix the workflow (or a wrong check,
+meta/edit-check), verify again, and only then answer. An app the same
+way: app/look at its directory (\`path\`), fix what it shows and look
+again, and app/publish once it shows what was asked — each publish is
+a version (or a draft) a person sees, so never one per attempt.`;
+
+export const BUILD_APP_ARTIFACT = `An app you published is a deliverable:
+list it in \`artifacts\` as \`{ id, kind: "app", title, app: "<name>",
+version: "<the version publishing returned>" }\` (the same id each turn
+you change it), so the person opens what you built where they are.`;
+
+/** The page's name: its file in strut's Concept set is `<name>.md`. */
+export const WORKFLOW_LANGUAGE = "Workflow Language";
+
+const WORKFLOW_LANGUAGE_DESCRIPTION = "How a workflow, a step or an app is written here: the workflow language, the tools that author with it, and the order to work in.";
+
+/**
+ * The `Workflow Language` page, as the text of its file
+ * (src/concepts/Workflow Language.md): the builder's rules in the page's
+ * rendering, then what a build owes. The file is committed, so the seed
+ * matches git as every page's does, and prompts.test.ts holds the file to
+ * this text: change the rules, then `npm run render:concepts`.
+ *
+ * It has no parent yet, so no prompt lists it: a page under `Workflow
+ * Builder` is offered as a kind to open in every prompt that reads that
+ * page (the chat's, the builder job's, the orchestrator's). It gets its
+ * parent when that page says to open it (plans/one-job-agent.md, item 4).
+ */
+export function workflowLanguagePage(): string {
+  return `---
+# Rendered from src/ai/prompts.ts. Change the rules there, then: npm run render:concepts
+description: ${JSON.stringify(WORKFLOW_LANGUAGE_DESCRIPTION)}
+---
+${WORKFLOW_LANGUAGE_DESCRIPTION}
+
+${builderRules(PAGE_TOOLS)}
+
+${BUILD_VERIFIED}
+
+${BUILD_APP_ARTIFACT}
+`;
 }
 
 const BASE_SYSTEM = `You are a workflow builder. Users describe what they want and you create workflows. A user may call a workflow a "strut": it means a workflow.
