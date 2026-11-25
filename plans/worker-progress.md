@@ -11,8 +11,9 @@ Source: the "Stack Play" brief (a gamified worker experience) and its mockup.
 ## The decision
 
 **XP is a worker's lifetime earnings in sats on this server.** Earn 500
-sats, have 500 XP. Levels are a ladder of round numbers: Level 1 at 10k
-sats, ×10 every ten levels, the last at all 21M bitcoin. Then friendly
+sats, have 500 XP. Quick first levels (1k, 2.5k, 5k sats), then a ladder
+of round numbers from 10k, ×10 every ten levels, the last at all 21M
+bitcoin. Then friendly
 rejections.
 
 The foundation lives in strut's task layer; Tasks is the central place to see
@@ -42,28 +43,30 @@ because a `pay` row is unique on task + worker.
 
 ## Levels
 
-Round numbers on a ladder (`src/tasks/levels.ts`, the same on every
-server). Level 1 at 10k sats, about one book of pages. Within each ten
-levels the steps are 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, then ×10. Below
-10k a worker is Level 0. The last level is all 21M bitcoin: out of reach.
+`src/tasks/levels.ts`, the same on every server. The first levels come
+quickly: 1k, 2.5k and 5k sats, so a new worker levels up in their first
+sessions. Then a ladder of round numbers from 10k at Level 4 (about one
+book of pages): within each ten levels the steps are 1, 1.2, 1.5, 2, 2.5,
+3, 4, 5, 6, 8, then ×10. Below 1k a worker is Level 0. The last level is
+all 21M bitcoin: out of reach.
 
 | Level | Sats | Level | Sats |
 | --- | --- | --- | --- |
-| 1 | 10,000 | 14 | 200,000 |
-| 2 | 12,000 | 15 | 250,000 |
-| 3 | 15,000 | 16 | 300,000 |
-| 4 | 20,000 | 17 | 400,000 |
-| 5 | 25,000 | 18 | 500,000 |
-| 6 | 30,000 | 19 | 600,000 |
-| 7 | 40,000 | 20 | 800,000 |
-| 8 | 50,000 | 21 | 1,000,000 |
-| 9 | 60,000 | 22 | 1,200,000 |
-| 10 | 80,000 | 23 | 1,500,000 |
-| 11 | 100,000 | 24 | 2,000,000 |
-| 12 | 120,000 | 25 | 2,500,000 |
-| 13 | 150,000 | … | … |
+| 1 | 1,000 | 14 | 100,000 |
+| 2 | 2,500 | 15 | 120,000 |
+| 3 | 5,000 | 16 | 150,000 |
+| 4 | 10,000 | 17 | 200,000 |
+| 5 | 12,000 | 18 | 250,000 |
+| 6 | 15,000 | 19 | 300,000 |
+| 7 | 20,000 | 20 | 400,000 |
+| 8 | 25,000 | 21 | 500,000 |
+| 9 | 30,000 | 22 | 600,000 |
+| 10 | 40,000 | 23 | 800,000 |
+| 11 | 50,000 | 24 | 1,000,000 |
+| 12 | 60,000 | 25 | 1,200,000 |
+| 13 | 80,000 | … | … |
 
-Then 10M at 31, 1 BTC at 41, and 21M BTC at 115.
+Then 10M at 34, 1 BTC at 44, and 21M BTC at 118.
 
 Why this shape: each level costs about 25% more than the last, so later
 levels slow down, but numbers stay round. A curve with 10% steps stays

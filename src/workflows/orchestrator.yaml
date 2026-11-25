@@ -371,6 +371,13 @@ params:
     # two lists that close the prompt (their `tool`), when what it says is
     # needed to talk the person through a request of that kind. A read.
     - graph/graph-get
+    # A page of this server's knowledge (a Concept), changed or added when
+    # the person asks: the two steps the dream tends the tree with. Each
+    # call is a proposal the person accepts on a card (below), since a page
+    # is what an agent here is told. A page whose text comes from git
+    # answers for itself: its own proposal into the checkout, or skipped.
+    - knowledge/edit-page
+    - knowledge/add-page
     # The package STORE's reads (plans/marketplace.md §7, §8): "is there a
     # package for that?" answered inside the turn — searched, a hit's page
     # read, the Concept tree browsed. Reads: an install is proposed with
@@ -419,6 +426,8 @@ params:
     - package/commit
     - remote/buy-credit
     - task/grant
+    - knowledge/edit-page
+    - knowledge/add-page
   # The WAKE (src/wake.ts, plans/jamie-app.md §1): when a job this
   # conversation started ends, strut runs one more turn on its session with
   # this as the prompt, so the reply — and the question — reaches this agent

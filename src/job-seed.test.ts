@@ -243,6 +243,8 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     const concepts = flowFromYaml(JOB_WORKFLOW, "v1", text).steps.find((st) => st.id === "concepts") as { config: Record<string, unknown> };
     assert.deepEqual(concepts.config, { name: "{{ params.concept }}", max: 10000 });
     assert.ok(job.docs!.length < 10000, `the Job page fits its cap (${job.docs!.length} chars)`);
+    // A page is added or changed with a tool of the job's own, on the person's yes.
+    assert.ok(flat(job.docs!).includes("knowledge/add-page adds a page and knowledge/edit-page changes one; each waits for the person's yes on a card, so say in `text` what you proposed."), "how a new kind is recorded");
 
     // Looking at a site is a kind under Job: the call, what it answers, the
     // screenshots, and the captcha a person solves.

@@ -4,7 +4,9 @@ import createTriplet from "../graph/create-triplet.js";
 import { requireTree } from "./_shared.js";
 
 /**
- * The dream's way to ADD a page to the tree it tends: `graph/create-triplet`
+ * The way to ADD a page to the Concept tree — the dream's, which tends it,
+ * and since 2026-11-25 the person's assistant's and a job's, each as a
+ * proposal the person accepts: `graph/create-triplet`
  * (the same input, so a person reviewing the tree sees the same page under
  * its parent), with the rule for a page whose text comes from git
  * (plans/concept-evals.md item e, src/concept-sources.ts). A new page is
@@ -38,7 +40,7 @@ export default defineStep({
   effect: "write",
   sealed: true,
   description:
-    "Add ONE new page to the tree you tend, under its parent: source_ref_id the parent's (from knowledge_page), edge_type PARENT_OF, target_type Concept, target_data { name, description, docs }. " +
+    "Add ONE new page to the Concept tree, under its parent: source_ref_id the parent's (as knowledge_page or graph_graph_get gave it), edge_type PARENT_OF, target_type Concept, target_data { name, description, docs }. " +
     "A new page is yours whatever its parent. A call that would change a page whose text comes from git (naming it, or moving it under another parent) is refused: change such a page with knowledge_edit_page.",
   input: createTriplet.input,
   output: createTriplet.output,

@@ -220,6 +220,13 @@ params:
     - graph/graph-get
     - graph/graph-neighbors
     - graph/get-ontology
+    # A page of this server's knowledge (a Concept), changed or added: the
+    # two steps the dream tends the tree with, so a job that records a new
+    # kind, or is asked to change a page, does it as a tool call of its own
+    # that carries the job and its person. Each is a proposal the person
+    # accepts on a card (below), since a page is what an agent here is told.
+    - knowledge/edit-page
+    - knowledge/add-page
     # A raw read of the graph, under this job's reader scope as every job
     # read is: what a workflow's graph/* steps wrote, counted and read back.
     - graph/query
@@ -296,6 +303,8 @@ params:
     - remote/buy-credit
     - task/set-type
     - app/make-public
+    - knowledge/edit-page
+    - knowledge/add-page
   # The MECHANICS of a turn: the directory, the checkouts, the reply's
   # fields. How to work — the kinds of work, running a workflow, looking at
   # a site, earlier jobs, when the work is done — is the `Job` page, which

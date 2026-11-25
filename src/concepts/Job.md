@@ -157,4 +157,6 @@ makes the ledger `stale` until someone verifies again. On the checklist
 the person watches, making something and checking it are two steps.
 
 To record a new kind, add a child Concept here with how to do it as its
-docs.
+docs. knowledge/add-page adds a page and knowledge/edit-page changes
+one; each waits for the person's yes on a card, so say in `text` what
+you proposed.
