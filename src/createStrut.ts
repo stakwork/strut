@@ -2417,6 +2417,9 @@ export async function createStrut<TServices = unknown>(
       // Its migrations, applied at publish and tried at build (src/apps/data.ts).
       appDb,
       manifests: appVersions,
+      // Whether an app's package is opened here as a repository: what
+      // `origin` says of it (the repos are built further down).
+      repoOf: (pkg) => repos.get(pkg),
       // Each new version's one-line summary, by a small model (src/apps/summary.ts).
       summarize: llmSummarizer({ ...(secretsCap ? { secrets: secretsCap } : {}), ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}) }),
       // An app's declared graph types are registered here, on Neo4j.

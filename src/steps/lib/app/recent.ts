@@ -13,7 +13,7 @@ import { requireApps } from "./_shared.js";
 export default defineStep({
   type: "app/recent",
   description:
-    "The apps you most likely mean: { items: [{ name, what (its title, whose it is — you opened it, you made it, on this server — and its description), at? }] }, the ones you opened in the last hour first, then yours, then the rest. " +
+    "The apps you most likely mean: { items: [{ name, what (its title, whose it is — you opened it, you made it, on this server —, where it comes from when not made here — strut's own, package <name>, repo <address>, opened here — and its description), at? }] }, the ones you opened in the last hour first, then yours, then the rest. " +
     "app/get for one, app/look to see it.",
   effect: "read",
   input: z.object({}),
@@ -24,7 +24,7 @@ export default defineStep({
     const rows = await Promise.all(
       all.map(async (a) => {
         const log = ctx.actor ? await apps.calls(a.name, ctx.actor, { limit: 1 }).catch(() => null) : null;
-        return { a, opened: log?.calls.at(-1)?.at, mine: !!ctx.actor && a.owner === ctx.actor };
+        return { a, opened: log?.calls.at(-1)?.at, mine: !!ctx.actor && a.owner === ctx.actor, origin: await apps.origin?.(a.name) };
       }),
     );
     const rank = (r: (typeof rows)[number]) => (r.opened ? 0 : r.mine ? 1 : 2);
@@ -32,11 +32,12 @@ export default defineStep({
     return {
       // An admin's app (`admin: true`) only when it is theirs: the rest of
       // the list is what anyone here may mean.
-      items: rows.filter((r) => r.opened || r.mine || !r.a.admin).map(({ a, opened, mine }) => ({
+      items: rows.filter((r) => r.opened || r.mine || !r.a.admin).map(({ a, opened, mine, origin }) => ({
         name: a.name,
-        // Its title, whose it is, then what it is (cut with the line), so
-        // "the app that shows trials" can match too.
-        what: `${[a.title, opened ? "you opened it" : mine ? "you made it" : "on this server"].filter(Boolean).join(", ")}${a.description ? `: ${a.description}` : ""}`,
+        // Its title, whose it is, where it comes from (where a change to it
+        // goes: none for one made here), then what it is (cut with the
+        // line), so "the app that shows trials" can match too.
+        what: `${[a.title, opened ? "you opened it" : mine ? "you made it" : "on this server", origin].filter(Boolean).join(", ")}${a.description ? `: ${a.description}` : ""}`,
         ...(opened ? { at: opened } : {}),
       })),
     };

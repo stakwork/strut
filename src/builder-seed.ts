@@ -16,9 +16,11 @@ import type { BuilderReach } from "./reach.js";
  * → `pack` in the job's reply shape. A workflow lives on one strut, so a
  * build runs on the strut it belongs to (here, or a peer through its
  * `input.peer` branch), while code is checked out wherever a job runs:
- * `job` never carries these tools, the orchestrator starts a builder job
- * for a build, and a job agent that meets one runs this workflow itself
- * (the `Job` page's docs). The missing shell is focus, not a boundary
+ * `job` carries these tools too since plans/one-job-agent.md and builds
+ * what is published here itself, so this workflow is the door for another
+ * server: a job agent that meets a build on a peer runs it (the `Job`
+ * page's docs), and the orchestrator still starts one for a build until
+ * that plan's item 6. The missing shell is focus, not a boundary
  * (builder.yaml's header).
  *
  * Its system prompt is the builder chat's rules — strut's workflow dialect,

@@ -329,8 +329,9 @@ params:
   # The Concepts whose children close the system prompt: the kinds of work
   # a job does here (`Job`, src/concepts/Job.md, the tree the job agent
   # reads) and the kinds of thing the builder builds (`Workflow Builder`,
-  # the tree the builder reads). Strut seeds both roots; each deployment
-  # grows the trees under them.
+  # the tree the builder reads, itself under `Job` since
+  # plans/one-job-agent.md). Strut seeds both; each deployment grows the
+  # trees under them.
   concept: Job
   buildConcept: Workflow Builder
   # The page the turn's rules are (the `rules` step): strut seeds it

@@ -106,6 +106,15 @@ package a bare name means the package's own item first, so a new bare
 name is outside the package, and no commit carries it. The package's
 items still call each other by their bare names.
 
+The edit ends on this server. Say that the change is here and not yet in
+the repository, and stop there. A commit is the person's to ask for:
+`package/commit` when you hold it (they approve it on a card: a new
+branch with a pull request, or straight to the followed branch when they
+say so), else theirs from Packages → Repos. Never check the repository
+out to change the app there and open a pull request of your own: this
+server's copy would not have the change, and the next commit from here
+would be cut from a tree without it.
+
 ## The manifest
 
 ```yaml
@@ -581,7 +590,7 @@ type and waits, out of memory, until a worker answers it. A WORKER APP is
 the page they answer in. The task type — the app that draws it and the
 answer's schema — is an admin's (the server's `/tasks` routes); a workflow
 names a type, never its shape, and you ask an admin for a new one with
-`task/set-type` (the `Workflow Builder` page). One app usually draws several types, a view
+`task/set-type` (the `Worker Tasks` page). One app usually draws several types, a view
 each.
 
 Every server has a worker app already, `strut/worker`: it draws any task
@@ -733,7 +742,7 @@ from the run's REPLY: each `useTaskHistory()` item they answered carries
 the workflow's `reply`, its `show` (the book, the page, a flag) and its
 `files`, opened with `useTaskFileUrl(item, file.path)` (a thumbnail). So
 the workflow replies with what the page draws (`task/reply`, the
-`Workflow Builder` page). What workers share (who took which book,
+`Worker Tasks` page). What workers share (who took which book,
 closing a book) stays in the workflow. When the page needs it, grant a
 workflow that spends nothing and start it with `useLaunch` on a tap,
 never on load: a step of yours in it reads the worker as `ctx.actor` and

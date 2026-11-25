@@ -54,6 +54,16 @@ describe("app/recent", () => {
       ["strut/knowledge", "Knowledge, on this server: Concepts, claims and their trials", undefined],
     ]);
   });
+
+  it("an app not made here says where it comes from, before its description: where a change to it goes", async () => {
+    const origins: Record<string, string> = { "strut/jamie": "strut's own", "strut/knowledge": "strut's own", "acme/board": "repo https://github.com/acme/board, opened here" };
+    const out = await appRecent.run({}, ctxOf({ apps: { ...services.apps, origin: async (name: string) => origins[name] } }, "bob"));
+    assert.deepEqual(out.items, [
+      { name: "acme/board", what: "Board, on this server, repo https://github.com/acme/board, opened here" },
+      { name: "strut/jamie", what: "Jamie, on this server, strut's own" },
+      { name: "strut/knowledge", what: "Knowledge, on this server, strut's own: Concepts, claims and their trials" },
+    ]);
+  });
 });
 
 describe("meta/recent-workflows", () => {

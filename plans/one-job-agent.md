@@ -18,6 +18,10 @@ Work items 1 to 3 are built (strut#891, #892, #893). Building item 3
 changed two things, written back here on 2026-11-25: the page is a file
 in git, and it has no parent yet (§2, open questions 2 and 8).
 
+Item 4 is built on `feature/one-job-agent` (2026-11-25), on the defaults
+of open questions 6 to 8, with one thing folded in at the owner's word:
+an app says where it is changed (§7). It does not merge before item 5.
+
 It reverses a ruling: on 2026-10-20 the owner ruled that building workflows
 is separate work, and the authoring tools are never granted to a regular
 job (`plans/builder-job.md`). This plan grants them.
@@ -264,6 +268,43 @@ What stays as it is today:
   writes step code reaches the same API with the same secret, and only a
   reach (`builder.reach`) stops that.
 
+### 7. An app says where it is changed
+
+The owner's question, 2026-11-25: an app that is published here and is
+also in a repository. Does the job edit it here, or open a pull request?
+
+Before this it depended on the page the request landed on. The `App` page
+says a package opened here as a repository is edited in place. The Code
+package's `Code Change` page and the orchestrator's rule ("code in a
+repository is a code change, even when the person calls it an app") say
+checkout, branch, pull request. One agent with both pages and both sets
+of tools had nothing to choose by, and the Recent Work list showed the
+app and its repository as two unrelated lines.
+
+So an app's line says where it comes from, which is where a change to it
+goes (`appOrigin`, `src/apps/apps.ts`). Strut already keeps the facts.
+
+| The line says | The app is | A change to it |
+| --- | --- | --- |
+| nothing | made here | is made here |
+| `repo <address>, opened here` | its package is opened as a repository (Packages → Repos) | is made here, in place, and reaches the repository by `package/commit` when the person asks |
+| `package <name>` | an installed package's | made here is this server's own copy |
+| `strut's own` | seeded | is put back by the next boot, so it is a code change to strut |
+
+- **Where it shows:** `app/recent` (the Recent Work list), each row of
+  `app/list`, and `app/get`, as `origin`. The `Recent Apps` page says
+  what each means.
+- **The repository's address is on the line,** so "the moonlander repo"
+  matches the app as well as the repository.
+- **Three pages say to follow it,** in a few lines each: `Job` (in every
+  job's prompt, so it holds for a job that started as a code change), the
+  orchestrator's rule (its one exception), and `App`'s "An app in a
+  repo": the edit ends on this server, and a commit is the person's to
+  ask for.
+
+Not built: a refusal in `git/push` for a repository opened here. A pod's
+own `git push` goes around it.
+
 ## Decided
 
 | # | Question | Answer | Status |
@@ -308,13 +349,18 @@ What stays as it is today:
    the workflow after the job. The job's own ledger then shows nothing
    for a pure build. The alternative is one claim on both subjects
    (`meta/add-claim` takes several), so `meta/verify-job` shows it on the
-   job too.
+   job too. Built as the default: the `Job` page says a build's claim is
+   on the workflow, not on the job.
 7. **`Workflow Builder` under the cap.** It is 6,176 characters and gains
    a line. Default: its three sections on `human` steps move, word for
    word, to a page under it that the agent opens when a workflow asks a
    person. The chat builder and `builder` read the same page, so they
    open it too. The alternative is a higher `max` on `kindPage`, which
    the owner declined on 2026-11-23, when `Code Change` reached the cap.
+   Built: they moved to `Worker Tasks`, the page under it for work by
+   people, which the builders already open for that kind. A page of
+   their own would be one more kind in three prompts' lists. `Workflow
+   Builder` is now 844 characters.
 8. **Where `Workflow Language` hangs, and which page says to open it.**
    Default: no parent, opened by name, and the `Job` page's paragraph on
    building (§2) says to open it. `Job` is the job agent's page alone, so
@@ -323,7 +369,14 @@ What stays as it is today:
    `Dream`. The alternative is under `Workflow Builder`, with a
    description that says whose it is. The three prompts then list it as a
    kind, and the `builder` job, which has no shell, may open rules that
-   say it has one.
+   say it has one. Built as the default.
+9. **The job builds in its own thread.** The `Job` page still says "You
+   coordinate; other agents do the heavy work", and a build is now the
+   job's own work: a 28k page of rules, then cycles of build and look.
+   Default: leave that paragraph as it is, and read item 5's numbers (what
+   a build costs and how many turns it takes; whether a job that builds
+   nothing drifts). The alternative is a sub-agent that builds, which is
+   the split again inside one workflow.
 
 ## Work items, in order
 
@@ -342,8 +395,9 @@ What stays as it is today:
 4. On one branch, together: `Workflow Builder` under `Job` and under its
    cap (open question 7), `Job.md`'s paragraph, where `Workflow Language`
    hangs (open question 8), `job.yaml`'s tools and approvals (§3),
-   `src/job-seed.ts` tests. Any one of them changes what
-   every job does, so the branch does not merge before item 5.
+   `src/job-seed.ts` tests, and where an app is changed (§7). Any one of
+   them changes what every job does, so the branch does not merge before
+   item 5. Built 2026-11-25 on `feature/one-job-agent`.
 5. **Measure the branch before it merges:** on a scratch strut with a
    real model, the same asks through the two agents as they are and
    through the one, each ask twice (one run of an agent says little):
@@ -351,6 +405,8 @@ What stays as it is today:
    - two app changes;
    - two mixed asks (a repository and the app over it);
    - one look at an installed app;
+   - one change to an app that is also in a repository, asked by the
+     app's name and by the repository's (§7);
    - three jobs that build nothing: a code change, a page of research, a
      plan.
 
@@ -359,6 +415,9 @@ What stays as it is today:
    nothing, count any authoring call (`meta/publish-workflow`,
    `meta/create-step`, `app/publish`): there should be none.
 6. The orchestrator (§5) and `job/start`: `workflow` with no `peer`,
-   `peer` with no `workflow`.
+   `peer` with no `workflow`. It merges with item 4, not after it. With
+   `Workflow Builder` under `Job`, the orchestrator's first list names it
+   as a kind of job, while its page still sends a build to `builder`,
+   and `job/start` refuses a `kind` beside `workflow: builder`.
 7. Docs: `docs/jobs.md`, `docs/builder.md`, `docs/security.md` (§6); a
    status line on `plans/builder-job.md` naming this plan.

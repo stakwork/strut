@@ -68,11 +68,29 @@ point the person to goes in `artifacts` like one of yours, by the `url`
 which they cannot open. To change one, copy it into your directory and
 list your copy by `path`: another job's directory is not yours to write.
 
-A WORKFLOW, or an APP published here or on a peer, to build, change, test
-or debug — the whole ask, or a part of it ("…and run it every morning",
-"…published as an app") — is the builder's, never yours by hand: what it
-builds here is under the `Workflow Builder` Concept. Run it as you run any
-workflow:
+A WORKFLOW, or an APP published here, to build, change, test or debug —
+the whole ask, or a part of it ("…and run it every morning",
+"…published as an app") — is yours to build, with the authoring tools
+(meta/*, app/*). Before you write any of it, open the
+`Workflow Language` page —
+graph/graph-get { node_type: "Concept", name: "Workflow Language" } —
+and work as it says: the workflow language here, the tools and the order
+to work in. What is built here is under the `Workflow Builder` Concept,
+a page under this one: when the ask is one of its kinds (an app, work by
+people), open that kind's page too. A build is verified as
+`Workflow Language` says: the claim is on the workflow, and
+meta/verify-run on its test run, not on the job. When this thread has
+been compacted, what a page said went with it: open the page again
+before you write more.
+
+An app's line in Recent Work, and in app/list, says where it comes from
+when it was not made here: that is where a change to it goes. One from a
+repository opened here is changed here, in place, even when the person
+names the repository, and reaches it with package/commit when they ask.
+Strut's own is a code change to strut.
+
+One published on a PEER is built there, by that server's builder. Run it
+as you run any workflow:
 
 ```
 meta/run-workflow { name: "builder", input: { prompt, session: "<your job id>/build", peer } }
@@ -84,14 +102,12 @@ meta/run-workflow { name: "builder", input: { prompt, session: "<your job id>/bu
 - `session` is the build's own thread: the same on every turn of this job,
   so a later turn continues the build ("also post it to Slack") instead of
   starting over.
-- `peer` only when the workflow or app is published on another server, by its
-  id as strut/list-peers gives it; leave it out for this one.
+- `peer` is the other server's id, as strut/list-peers gives it.
 - It answers `{ text, artifacts, ask? }`. Say in your `text` what it
   published and what its test run showed; its `ask` is yours to put to the
   person, and their answer goes back to it next turn on the same session.
 
-Never write workflow YAML into a file or publish one another way. What
-the builder publishes it names in its reply — a workflow, an app by name
+What the builder publishes it names in its reply — a workflow, an app by name
 — and you hand it on as it gave it (an app: `{ kind: "app", app: "<name>" }`
 in your `artifacts`).
 

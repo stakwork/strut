@@ -134,22 +134,26 @@ describe("concept files (pure)", () => {
     assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "pkg/acme/x/Job.md@aaaaaaaaaaaa" }, moved, [], file, true), "skip", "only a package's set reads another file as its own");
   });
 
-  it("ships Workflow Builder and Job as roots and App under Workflow Builder: one tree per agent, workspace-general, the legacy lab stamps named, Workflow Build and Job App retired", async () => {
+  it("ships Job as a root, Workflow Builder under it and App under Workflow Builder: building is a kind of job, workspace-general, the legacy lab stamps named, Workflow Build and Job App retired", async () => {
     const read = async (file: string) => parseConceptFile(file, await readFile(join(STRUT_CONCEPTS.dir, file), "utf-8"), STRUT_CONCEPTS.prefix);
     const wb = await read("Workflow Builder.md");
     const job = await read("Job.md");
-    for (const c of [wb, job]) {
-      assert.deepEqual(c.parents, [], `${c.name} is a root`);
-      assert.ok(c.description && c.docs?.includes("PARENT_OF"), c.name);
-    }
-    // One tree per agent: `Workflow Build` — the builder's entry under Job,
-    // there only while the orchestrator read Job alone — is retired, and a
-    // job agent's way to the builder is in Job's own docs: a workflow or an
-    // app published here or on a peer, met on a job, it runs the builder for,
-    // on a thread of its own, rather than bouncing it back to the person.
+    assert.deepEqual(job.parents, [], "Job is a root");
+    // One agent (plans/one-job-agent.md §1): what is built here is a kind
+    // of job, its kinds (App, Worker Tasks, a deployment's own) under it.
+    assert.deepEqual(wb.parents, ["Job"], "Workflow Builder is a kind of job");
+    for (const c of [wb, job]) assert.ok(c.description && c.docs?.includes("PARENT_OF"), c.name);
+    // `Workflow Build` — the builder's entry under Job while the
+    // orchestrator read Job alone — stays retired. A workflow or an app
+    // published HERE the job builds itself, by its own docs; one on a peer
+    // is that server's builder's, run on a thread of its own.
     assert.deepEqual(STRUT_CONCEPTS.retired, ["Workflow Build.md", "Job App.md"]);
     assert.ok(job.docs!.includes('meta/run-workflow { name: "builder", input: { prompt, session: "<your job id>/build", peer } }'), job.docs);
-    assert.ok(job.docs!.includes("an APP published here or on a peer") && job.docs!.includes("`Workflow Builder` Concept"), job.docs);
+    assert.ok(job.docs!.includes("an APP published here, to build, change, test or debug") && job.docs!.includes("`Workflow Builder` Concept"), job.docs);
+    // The page is a kind's page in a job's prompt, cut at 6,000 characters
+    // (context/concept): what a `human` step needs moved to Worker Tasks.
+    assert.ok(wb.docs!.length < 6000, `Workflow Builder is read whole as a job's kind: ${wb.docs!.length}`);
+    assert.ok(wb.docs!.includes("Before you write one, open the `Worker Tasks` page under this one"), "and says where they went");
     // `{{ input.urls.pod }}` is strut's own: the address a job's check
     // reaches what the job holds at (browser/verify's description has it).
     for (const c of [wb, job]) assert.doesNotMatch(c.docs!, /hive|@<slug>|(?<!input\.urls\.)\bpod\b|pull request/i, `${c.name} names nothing one deployment has`);
@@ -186,9 +190,35 @@ describe("concept files (pure)", () => {
     // Ruling 12: open paid work needs no qualifying test first.
     assert.doesNotMatch(work.docs!, /first needs a short qualifying test/, "open paid work is not held for a test");
     assert.doesNotMatch(work.docs!, /hive|@<slug>|\bpod\b|coffee/i, "names nothing one deployment has");
+    // What a `human` step needs was on Workflow Builder until that page
+    // became a kind's page (cut at 6,000): moved here word for word, where
+    // the builder already opens for work by people.
+    assert.ok(work.docs!.includes('The conventions are below ("When a workflow asks a person", "When the\nworker starts the work") and on `App` ("Worker apps").'));
+    for (const moved of [
+      "## When a workflow asks a person",
+      "A `human` step asks a PERSON: it names a TASK TYPE in `task`",
+      "Read the types here with\n`task/types` before writing the step, and use one that fits.",
+      "It is a proposal an\nadmin accepts on a card; you never make a type yourself.",
+      "`strut/worker`: it draws any task whose answer is plain fields",
+      "ask for it with `app/make-public` and say so in your reply",
+      "A type is OPEN unless you ask for `open: false`",
+      "ask for the type with `attachments: { max, min, types }`",
+      'ask for the type with `check: { step:\n"grade/judge", config: { rubric: "<what a good answer shows>" } }`',
+      "ask for the type with `payOn: \"ok\"` and give the verdict on the reply",
+      "a later step replies: `type: task/reply`",
+      "## One task for each item: a round",
+      "ask for it with `round: { workflow: \"<name>\" }`",
+      "A type is\nstanding or sent in rounds, never both.",
+      "## When the worker starts the work",
+      "ask for it with `standing: { workflow: \"<name>\" }`",
+      "leaves nothing behind: no run starts until they answer.",
+    ]) {
+      assert.ok(work.docs!.includes(moved), `moved to Worker Tasks: ${moved}`);
+      if (!moved.startsWith("## When a workflow asks a person")) assert.ok(!wb.docs!.includes(moved), `and gone from Workflow Builder: ${moved}`);
+    }
     // A worker app's links are shared from Workers, which opens with
     // them (a QR code, Invite): every page points there, none pastes a link.
-    for (const c of [wb, app, work]) {
+    for (const c of [app, work]) {
       assert.ok(c.docs!.includes("strut/staff"), `${c.name} points to Workers`);
       assert.match(c.docs!, /never\s+paste\s+a\s+link/, `${c.name}: no link pasted in a reply`);
       assert.doesNotMatch(c.docs!, /hand the person `peelLink`|give the person the `peelLink`/, `${c.name}: no pasted peelLink`);
@@ -534,7 +564,7 @@ for (const tb of testBackends()) {
       assert.equal(old.action, "create");
       const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
       assert.ok((await props(old.ref_id!))["deleted_at"] != null, "retired");
-      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Browser"]!.ref_id!, strut["Plan"]!.ref_id!].sort(), "Job keeps only what strut ships under it: Browser and Plan, since Job App went too");
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Browser"]!.ref_id!, strut["Plan"]!.ref_id!, strut["Workflow Builder"]!.ref_id!].sort(), "Job keeps only what strut ships under it: Browser, Plan and Workflow Builder, since Job App went too");
     });
 
     it("the `Job App` page an earlier strut seeded under Job goes at the next boot", async () => {
@@ -543,7 +573,7 @@ for (const tb of testBackends()) {
       assert.equal(old.action, "create");
       const strut = byName(await seedConcepts(b, [STRUT_CONCEPTS]));
       assert.ok((await props(old.ref_id!))["deleted_at"] != null, "retired");
-      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Browser"]!.ref_id!, strut["Plan"]!.ref_id!].sort(), "Browser and Plan, the kinds strut ships under Job");
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Browser"]!.ref_id!, strut["Plan"]!.ref_id!, strut["Workflow Builder"]!.ref_id!].sort(), "Browser, Plan and Workflow Builder, the kinds strut ships under Job");
     });
 
     it("strut's pages seed, a host's page hangs under one, and the builder's section reads them", async () => {
@@ -553,7 +583,7 @@ for (const tb of testBackends()) {
         ["create", "create", "create"],
       );
       assert.equal(strut["Job App"], undefined, "no job side of an app ships");
-      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Browser"]!.ref_id!, strut["Plan"]!.ref_id!].sort(), "strut ships two kinds under Job, Browser and Plan; a deployment grows that tree");
+      assert.deepEqual(await children(strut["Job"]!.ref_id!), [strut["Browser"]!.ref_id!, strut["Plan"]!.ref_id!, strut["Workflow Builder"]!.ref_id!].sort(), "strut ships three kinds under Job: Browser, Plan and Workflow Builder; a deployment grows that tree");
       await page("Janitor", "How a janitor is built here.", { description: "Cleans something up.", parent: "Workflow Builder" });
       const host = byName(await seedConcepts(b, [set()]));
       const wb = strut["Workflow Builder"]!.ref_id!;

@@ -80,7 +80,10 @@ workflow, or an app published here or on a peer, start the job with
 `workflow: builder`, where it is published (`peer` when that is not
 here). Code in a repository is a code change, even when the person
 calls it an app (a phone, desktop or web app, a service, a library): a
-job here with its repositories, whichever peer holds them. Several
+job here with its repositories, whichever peer holds them. The one
+exception is an app whose line in Recent Work says `repo …, opened
+here`: it is changed on this server, in place, so it is a build, even
+when the person names its repository. Several
 jobs may run at once.
 Never wait on a job: say in a line that you are looking into it and
 end your turn. Its result (a reply, files, or a question) reaches the
