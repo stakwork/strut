@@ -14,11 +14,16 @@
  *   Commit  the workspace's EDITS of the package — every item whose active
  *           version is not the one the repo door installed at the commit on
  *           file, and every item deleted here — written into the working
- *           copy (`packageFiles(…, { under })`), committed with the actor's
+ *           copy, its package folder first put back to HEAD
+ *           (`packageFiles(…, { under })`), committed with the actor's
  *           identity and pushed: a new branch and a pull request, or the
  *           followed branch when asked. Then the commit is applied through
  *           the repo door, which stamps each version with it: no item is a
  *           fork any more.
+ *           A page goes back to the file it has, in that file's form; only
+ *           a page renamed here moves, and only a new page takes its key.
+ *   Diff    what a Commit would write, staged in a scratch worktree at HEAD:
+ *           viewing it never writes to the working copy or its index.
  *   Pull    the edits committed locally first (nothing is lost, git has both
  *           sides), then git merges the remote's branch. A conflict stops
  *           there, names the files and installs nothing; the person resolves
@@ -34,17 +39,19 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { shellCapability, type HttpCapability, type SecretsCapability, type ShellCapability } from "../capabilities.js";
 import { cachePath, commitOf, fetchCache, git, gitOk, parseRepo, remoteDefaultBranch, withLock, type GitAuth, type RepoRef } from "../steps/lib/git/_shared.js";
 import { strutGitSecret, tokenHost, type GitSecretOf } from "../git-hosts.js";
 import { packagePrefixOf, type VersionSource } from "../workspace.js";
+import { parseConceptFile } from "../concept-seed.js";
+import { fileText } from "../concept-sources.js";
 import { packageFiles, type BuildRequest, type WholeDeps } from "./build.js";
 import type { CachedPackage, PackageCache } from "./cache.js";
 import { PACKAGE_NAME } from "./format.js";
 import { exportGitTree, parseGitRef, type GitPackageRef } from "./git-source.js";
 import type { InstallResult } from "./install.js";
-import { listInstalledPackages } from "./installed.js";
+import { listInstalledPackages, packageConcepts } from "./installed.js";
 
 /** The repos on file, beside the package cache: `<dataDir>/packages/repos.json`. */
 export const REPOS_FILE = "repos.json";
@@ -296,6 +303,19 @@ export function createRepos(deps: ReposDeps): Repos {
     }
   };
 
+  /** The package's folder in the working copy put back to HEAD, index and
+   *  files, before the workspace's edits are written into it: a Commit holds
+   *  HEAD and those edits, nothing an earlier write left behind (Diff wrote
+   *  and staged its edits here before it used a scratch worktree, which
+   *  left a renamed page beside the file it was renamed from). An accepted
+   *  page proposal's file is lost by none of this: the page was reloaded
+   *  from it, so it reads as an edit and is written again from the graph.
+   *  Never while a merge waits: the person's resolution is there. */
+  const toHead = async (rec: RepoRecord, work: string) => {
+    await ok(["restore", "--source=HEAD", "--staged", "--worktree", "--", pathspec(rec)], work);
+    await ok(["clean", "-fdq", "--", pathspec(rec)], work);
+  };
+
   /** Files a merge left unmerged. */
   const unmerged = async (work: string): Promise<string[]> => (await ok(["diff", "--name-only", "--diff-filter=U"], work)).split("\n").filter(Boolean);
   const merging = async (work: string): Promise<boolean> => {
@@ -346,7 +366,9 @@ export function createRepos(deps: ReposDeps): Repos {
       for (const c of pkg?.items.filter((i) => i.kind === "concept") ?? []) {
         here.add(`concept:${c.name}`);
         pages.add(c.name);
-        if (c.modified !== false) forked.push({ kind: "concept", name: c.name });
+        // A page the commit holds under no such name was renamed here: new under this one.
+        if (!inCommit.has(`concept:${c.name}`)) added.push({ kind: "concept", name: c.name });
+        else if (c.modified !== false) forked.push({ kind: "concept", name: c.name });
       }
     }
     const deleted: RepoItem[] = [];
@@ -357,17 +379,17 @@ export function createRepos(deps: ReposDeps): Repos {
     return { added, forked, deleted, baseline, pages };
   };
 
-  /** Write the workspace's edits into the working copy's package folder:
-   *  each added or edited item's files (a step's claims beside it), an app's
-   *  folder whole, a page under its key (its old file gone when that was
-   *  another) — a page the package does not hold yet, under one of its
-   *  pages, is added — and a deleted item's files removed. Returns what it
-   *  found. */
-  const writeEdits = async (rec: RepoRecord): Promise<{ added: RepoItem[]; forked: RepoItem[]; deleted: RepoItem[]; warnings: string[] }> => {
+  /** Write the workspace's edits into a package folder (default: the
+   *  working copy's): each added or edited item's files (a step's claims
+   *  beside it), an app's folder whole, and a deleted item's files removed.
+   *  A page is written back to the file it already has (`pageFile`), in that
+   *  file's form (`fileText`, as an accepted page proposal writes it); a page
+   *  the package does not hold yet, under one of its pages, is added under
+   *  its key. Returns what it found. */
+  const writeEdits = async (rec: RepoRecord, dir = pkgDirOf(rec)): Promise<{ added: RepoItem[]; forked: RepoItem[]; deleted: RepoItem[]; warnings: string[] }> => {
     const found = await edits(rec);
-    const dir = pkgDirOf(rec);
     const changed = new Set([...found.added, ...found.forked].map((i) => `${i.kind}:${i.name}`));
-    const pageFiles = new Map((found.baseline?.items ?? []).filter((i) => i.kind === "concept").map((i) => [i.name, i.path]));
+    const pageFile = await pageFiles(rec, found.baseline);
     const remove = async (rel: string) => rm(join(dir, ...rel.split("/")), { recursive: true, force: true });
     const out = await packageFiles(deps.files, { under: rec.package });
     const added = [...found.added];
@@ -379,23 +401,54 @@ export function createRepos(deps: ReposDeps): Repos {
     }
     // An app is written whole: a file it dropped goes.
     for (const i of [...found.added, ...found.forked].filter((x) => x.kind === "app")) await remove(`apps/${i.name.slice(rec.package.length + 1)}`);
+    const written = new Set<string>();
     for (const [rel, body] of out.files) {
       const item = out.items!.get(rel);
       if (!item || !changed.has(`${item.kind}:${item.name}`)) continue;
+      let to = rel;
+      let text = body;
       if (item.kind === "concept") {
-        const old = pageFiles.get(item.name);
-        if (old && old !== rel) await remove(old);
+        const at = pageFile(item.name, rel);
+        to = at.path;
+        const existing = await readFile(join(dir, ...(at.from ?? at.path).split("/")), "utf8").catch(() => undefined);
+        text = fileText(basename(to), parseConceptFile(basename(rel), String(body), ""), existing);
       }
-      const to = join(dir, ...rel.split("/"));
-      await mkdir(dirname(to), { recursive: true });
-      await writeFile(to, body);
+      const into = join(dir, ...to.split("/"));
+      await mkdir(dirname(into), { recursive: true });
+      await writeFile(into, text);
+      written.add(to);
     }
     for (const i of found.deleted) {
       const at = found.baseline!.items.find((x) => x.kind === i.kind && x.name === i.name)!;
-      await remove(at.path);
+      // A renamed page's new file may be its old one (a key that did not change).
+      if (!written.has(at.path)) await remove(at.path);
       if (at.claims) await remove(at.claims);
     }
     return { added, forked: found.forked, deleted: found.deleted, warnings: out.warnings };
+  };
+
+  /** Where each page's file goes, given the key-based name a build would
+   *  give it (`keyed`): the file the commit holds it in; else, for a page
+   *  stamped from a file the commit holds under ANOTHER name — a page
+   *  renamed here — a new file (`from` is the old one), named after the page
+   *  as the old one was after the old name, else by its key; else the file
+   *  its stamp names; else, a page new to the package, `keyed`. */
+  const pageFiles = async (rec: RepoRecord, baseline: CachedPackage | undefined): Promise<(name: string, keyed: string) => { path: string; from?: string }> => {
+    const pages = (baseline?.items ?? []).filter((i) => i.kind === "concept");
+    const byName = new Map(pages.map((i) => [i.name, i.path]));
+    const byPath = new Map(pages.map((i) => [i.path, i.name]));
+    const stamped = new Map((await packageConcepts(deps.files.graph, rec.package)).map((c) => [c.name, `concepts/${c.file}`]));
+    return (name, keyed) => {
+      const own = byName.get(name);
+      if (own) return { path: own };
+      const was = stamped.get(name);
+      if (!was) return { path: keyed };
+      const oldName = byPath.get(was);
+      if (oldName === undefined) return { path: was };
+      const namedByPage = basename(was).replace(/\.md$/i, "") === oldName && /^[^/\\.][^/\\]*$/.test(name);
+      const path = namedByPage ? `concepts/${name}.md` : keyed;
+      return path === was ? { path } : { path, from: was };
+    };
   };
 
   const diffOf = async (work: string, range: string[], spec: string): Promise<RepoDiff> => {
@@ -586,9 +639,20 @@ export function createRepos(deps: ReposDeps): Repos {
       const cacheDir = cachePath(deps.dataDir, parsedOf(rec).repo);
       return withLock(cacheDir, async () => {
         if (rec.merge || (await merging(work))) throw refusal("package_repo_merging", `a pull's merge waits in the working copy (${(await unmerged(work)).join(", ") || "resolved"}) — resolve it and Pull`);
-        await writeEdits(rec);
-        await ok(["add", "-A", "--", pathspec(rec)], work);
-        return diffOf(work, ["--cached", "HEAD"], pathspec(rec));
+        // Read-only: the edits are written into a scratch worktree at HEAD,
+        // which is where a Commit starts too (`toHead`), and staged there.
+        // The working copy and its index are never touched.
+        const scratch = join(deps.cache.root, ".scratch", `diff-${randomBytes(8).toString("hex")}`);
+        await ok(["worktree", "add", "--quiet", "--detach", scratch, "HEAD"], work);
+        try {
+          await writeEdits(rec, rec.path ? join(scratch, ...rec.path.split("/")) : scratch);
+          await ok(["add", "-A", "--", pathspec(rec)], scratch);
+          return await diffOf(scratch, ["--cached", "HEAD"], pathspec(rec));
+        } finally {
+          await run(["worktree", "remove", "--force", "--force", scratch], work);
+          await rm(scratch, { recursive: true, force: true });
+          await run(["worktree", "prune"], work);
+        }
       });
     },
 
@@ -604,6 +668,7 @@ export function createRepos(deps: ReposDeps): Repos {
       return masked(auth?.token, async () => {
         const done = await withLock(cacheDir, async () => {
           if (rec.merge || (await merging(work))) throw refusal("package_repo_merging", `a pull's merge waits in the working copy (${(await unmerged(work)).join(", ") || "resolved"}) — resolve it and Pull first`);
+          await toHead(rec, work);
           const found = await writeEdits(rec);
           await ok(["add", "-A", "--", pathspec(rec)], work);
           const staged = await run(["diff", "--cached", "--quiet"], work);
@@ -674,6 +739,7 @@ export function createRepos(deps: ReposDeps): Repos {
           // and the merge (concluded above, or by hand) is what goes on.
           let local: string | undefined;
           if (!rec.merge) {
+            await toHead(rec, work);
             await writeEdits(rec);
             await ok(["add", "-A", "--", pathspec(rec)], work);
             if ((await run(["diff", "--cached", "--quiet"], work)).code === 1) {

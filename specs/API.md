@@ -4529,7 +4529,7 @@ proposal only an admin accepts (below).
 | POST   | `/packages/repos` | **Open repo**: `{ url, ref?, path? }` (a `tokenSecret` is 400) → 201 `RepoView` + `install` (an `InstallResult`). The repository fetched into `git/checkout`'s bare cache; `ref` a BRANCH (default the remote's default branch), followed from then on; a KEPT working copy at `<dataDir>/packages/work/<publisher>/<name>/`, a worktree of the cache on a branch of its own (`repo/<publisher>/<name>`) tracking the remote's; the package at the branch's commit installed through the `repo` door — every item checked before the first write, missing secrets reported, each version stamped `source: "repo"` with `upstream: { …, source: { ref }, commit }`. 409 `package_repo_open` when the package is a repo here already; `package_conflict` when it is installed by another door (uninstall it first), when workflows, steps or apps made here are already under its name, or when a Concept page made here has the name of one of its pages — a first Open takes nothing it did not bring, as an ordinary install; 400 `package_repo_branch` for a ref that is no branch; 502 `package_repo_unreachable` |
 | POST   | `/packages/repos/create` | **Create repo**: a `BuildRequest` (`package`, `version`, the picks — as `POST /packages/build`) + `{ url, branch?, path? }` (a `tokenSecret` is 400) → 201 `RepoView` + `install` + `originals`. The picks built, written as the first commit of the EMPTY remote at `url` on `branch` (default `main`), in the folder `path` when given, with the person's identity, pushed, then opened as above. `originals` are the bare workflows, steps and apps the package was built from: they stay until the person retires them (below). 409 `package_repo_not_empty` when the remote has any branch or tag, `package_conflict` when the package is installed here already or items made here are under its name — each refused before anything is pushed; 400 a build's refusal. Its open takes the Concept pages the package was built from as the package's (the same nodes) |
 | GET    | `/packages/repos/:publisher/:name` | One `RepoView`; 404 when the package is not a repo here |
-| GET    | `/packages/repos/:publisher/:name/diff` | What a Commit would push: the workspace's edits written into the working copy and staged → `RepoDiff`: `{ files: [{ path, status: added \| modified \| deleted }], stat, patch, truncated? }` (the patch cut at 200,000 characters). 409 `package_repo_merging` while a pull's merge waits |
+| GET    | `/packages/repos/:publisher/:name/diff` | What a Commit would push: the workspace's edits written into a scratch worktree at the working copy's HEAD and staged there, the working copy and its index untouched → `RepoDiff`: `{ files: [{ path, status: added \| modified \| deleted }], stat, patch, truncated? }` (the patch cut at 200,000 characters). 409 `package_repo_merging` while a pull's merge waits |
 | POST   | `/packages/repos/:publisher/:name/commit` | **Commit**: `{ message, branch?, pr? }` → 201 `CommitResult` `{ package, committed: true, commit, branch, pushed, pr?, prSkipped?, diff, stamped, install }`, or 200 `{ committed: false, … }` when nothing changed here and nothing waits to be pushed. Below. 409 `package_repo_merging` while a pull's merge waits, `push_rejected` when the remote refused the push (a straight push to a branch that moved: Pull, then Commit again); 403 `no_push_permission` |
 | POST   | `/packages/repos/:publisher/:name/pull` | **Pull** → 200 `{ package, commit, local?, install }`, or 409 `{ error: "package_repo_conflict: …", package, commit, local?, conflict: [files] }` with nothing installed. Below |
 | POST   | `/packages/repos/:publisher/:name/retire` | `{ items: [{ kind: workflow \| step \| app, name }] }` → `{ retired, failed }`: Create repo's bare originals deleted, on the person's word — only those Create named (any other is `failed`); a workflow with a run in flight is `failed` |
@@ -4556,12 +4556,17 @@ proposal only an admin accepts (below).
   added and not committed stays, a local item that runs and can be edited
   but takes no new name beside it, and is written by the first Commit
   after the repo is opened again.
-- **Commit** writes the edited items' files — `packageFiles(…, { under })`
-  (`src/packages/build.ts`): each workflow's and step's active version as
-  published, a step's live claims, an app's active sources whole, a page
-  under its key (its old file gone when that was another) — and removes the
-  deleted items' files; `strut.yaml`, `serve.yaml`, `graph/`, a README and
-  anything else stay as the repository has them. Then `git add` in the
+- **Commit** puts the package's folder in the working copy back to HEAD
+  (anything left there uncommitted goes), then writes the edited items'
+  files — `packageFiles(…, { under })` (`src/packages/build.ts`): each
+  workflow's and step's active version as published, a step's live claims,
+  an app's active sources whole, a page back to the file the repository
+  holds it in, in that file's form (its front matter byte for byte when
+  only the docs changed; a page renamed here moves to a file named after it
+  when the old file was named after the old name, else under its key; a
+  page new to the package under its key) — and removes the deleted items'
+  files; `strut.yaml`, `serve.yaml`, `graph/`, a README and anything else
+  stay as the repository has them. Then `git add` in the
   package's folder, a commit with the person's identity (on GitHub, the
   token's account, as `git/push`; elsewhere the actor's name at
   `strut@strut.invalid`), and a push with the token: to a new branch
