@@ -37,7 +37,7 @@ describe("the orchestrator workflow strut ships", () => {
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
 
     const flow = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "context/concept", "context/concept", "strut/list-peers", "proposal/standing", "if", "pack", "agent", "if", "job/start", "pack"]);
+    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "context/concept", "context/concept", "strut/list-peers", "proposal/standing", "context/recent", "if", "pack", "agent", "if", "job/start", "pack"]);
     // The rules are a Concept page (plans/claim-trials.md §1): read as it
     // is, so the turn opens it and its claims judge the turn. The workflow
     // carries no copy of it: where no graph holds the page, the step reads
@@ -80,13 +80,19 @@ describe("the orchestrator workflow strut ships", () => {
     // (Peel, the daemon: a person, never a role) and a host's launch with the
     // key (Hive, voice) add nothing, so every other host reads as before.
     // `scripted` is in every run's scope: undefined but on a prepared turn.
-    const message = (standing: { admin?: boolean }, scripted?: { prompt: string }) =>
-      resolveTemplate(turn["prompt"] as string, { input: { prompt: "make it public", context: { line: "Tue 17 Nov 11:34. " } }, peers: { peers: [] }, standing, scripted });
+    const message = (standing: { admin?: boolean }, scripted?: { prompt: string }, recent = { text: "", hash: "" }) =>
+      resolveTemplate(turn["prompt"] as string, { input: { prompt: "make it public", context: { line: "Tue 17 Nov 11:34. " } }, peers: { peers: [] }, standing, scripted, recent });
     assert.equal(message({ admin: true }), "Tue 17 Nov 11:34. The person is an admin of this server: what needs an admin to approve, they approve themself. make it public");
     assert.equal(message({ admin: false }), "Tue 17 Nov 11:34. make it public");
     assert.equal(message({}), "Tue 17 Nov 11:34. make it public");
     // A prepared turn's message is the package's, fenced (plans/package-seams.md §7).
     assert.equal(message({}, { prompt: "started for the person by x: <<<message\nhi\n>>>" }), "Tue 17 Nov 11:34. started for the person by x: <<<message\nhi\n>>>");
+    // What the person most likely means (plans/recent-work.md) heads the
+    // message when it changed, and the turn keeps its hash on its line.
+    assert.equal(message({}, undefined, { text: "RECENT\n\n", hash: "h" }), "RECENT\n\nTue 17 Nov 11:34. make it public");
+    assert.deepEqual(flow.steps.find((st) => st.id === "recent")!.config, { name: "{{ params.recentConcept }}", session: "{{ input.session }}" });
+    assert.deepEqual(turn["tags"], { recent: "{{ recent.hash }}" });
+    assert.equal((yaml.load(text) as { params: { recentConcept: string } }).params.recentConcept, "Recent Work");
     assert.match(promptOf(text), /approves it there — the person themself, when the line before their\s+message says they are an admin\./);
     assert.equal(turn["systemAtCompaction"], undefined, "a session keeps its first turn's prompt");
     assert.deepEqual(turn["toolFilter"], ["none"]);

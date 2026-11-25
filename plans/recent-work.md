@@ -1,6 +1,7 @@
 # Recent Work: what a person has been working on, in every prompt
 
-Status: proposed (2026-11-24). The owner ruled four points that day: the
+Status: strut's part built (2026-11-24, stakwork/strut#886); the packages'
+pages are next, in their repos. The owner ruled four points that day: the
 idea (a Concept root whose pages are injected), that the lists are the
 PERSON's (whoever is speaking), the root's name, `Recent Work`, and that a
 list starts with the person's own and fills from what else they can see,
@@ -100,11 +101,14 @@ The contract of the step:
 
   Strut drops an item without a `name` and cuts long fields.
 
-The attribute is declared on `Concept` in `src/graph/seed-types.ts`, with
-a conformance case and `npm run test:graph`, since the graph writer
-refuses an undeclared attribute. It is called `step`, not `source`:
-`src/concept-sources.ts` already uses "source" for a page whose text comes
-from git.
+The attribute is declared on `Concept` in `src/graph/seed-types.ts`, since
+the graph writer refuses an undeclared attribute. Neo4j's seed made a seed
+type only when it was missing, so a deployed graph would never have had it:
+the seed now adds a seed type's new attributes to its row, add-only, on a
+graph strut holds alone (`schema-seed.ts`, as a Strut type's). A swarm's
+`Concept` is jarvis's and is left as it is: there a page renders its docs
+with no items. It is called `step`, not `source`: `src/concept-sources.ts`
+already uses "source" for a page whose text comes from git.
 
 ### 3. One step renders the section: `context/recent`
 
@@ -113,18 +117,21 @@ from git.
 1. Reads the root and its children with `graph/graph-get`
    (`children: PARENT_OF`), then each child's page.
 2. Runs each page's `step` as the person, all at once. Each run gets 2 s;
-   a slow or failing one is left out, and its page still shows its docs.
-   Results are kept 5 minutes per person and step, so a busy chat does not
-   rerun them every turn.
+   a slow or failing one is left out, and its page still shows its docs. A
+   slow one goes on, and its answer is kept for the next turn. Results,
+   and failures as no items, are kept 5 minutes per person and step, so a
+   busy chat does not rerun them every turn.
 3. Renders one section: the root's docs, then each page's name, its docs
    (cut at 600 characters) and its items, one line each:
-   `- stakwork/stadeum: your PR #109 merged (Nov 24) <link>`. Dates are
-   absolute, never "2 d ago", so the text does not change from turn to
-   turn by itself.
+   `- stakwork/stadeum: your PR #109 merged (2026-11-24) <link>`. Dates
+   are absolute, never "2 d ago", so the text does not change from turn
+   to turn by itself.
 4. Caps it: at most 8 items a page and 20 in all. A page keeps its step's
    order. Past 20, the last item of the longest page goes first, so a
    page's fill goes before its person's own.
-5. Returns `{ text, hash }`. `hash` is the hash of the text.
+5. Returns `{ text, hash }`. `hash` is the hash of the text, which ends
+   with a blank line so a template puts it first as it is (a template
+   expression cannot hold a newline).
 
 The renderer never names a package, a type or a domain. Apps (strut's) and
 repositories (a package's) are both pages under one root, which is the
@@ -136,10 +143,10 @@ History sent to a model is append-only, and an orchestrator session lasts
 for days, so the section goes in the TURN's prompt, never the frozen system
 prompt:
 
-- **Orchestrator** (`src/workflows/orchestrator.yaml`): a step beside
-  `peers`. Its text goes before the person's message, after the peers line.
-- **Job** (`src/workflows/job.yaml`): the same step. Its text goes after
-  "Your job id", before the kind's page.
+- **Orchestrator** (`src/workflows/orchestrator.yaml`): a step after
+  `standing`. Its text heads the turn's prompt, before the host's line.
+- **Job** (`src/workflows/job.yaml`): the same step, after the kind's
+  page. Its text heads the prompt, before the server line.
 
 It is sent only when it changed since that session last saw it:
 
@@ -159,13 +166,14 @@ their list.
 ### 5. Strut's own pages
 
 Three small pages under the root (the new page form, for `step`), each with
-a read step:
+a read step. They are named `Recent …`: a Concept's name is its identity,
+and a deployment may have a page of its own called `Apps`.
 
 | Page | Step | Items | Docs: find more with |
 | --- | --- | --- | --- |
-| Apps | `app/recent` | Apps the person published (`StrutAppVersion.actor`) or opened (the monitor's call log, `plans/app-calls.md`), then the server's other apps, newest published first. Each with the address a person opens it at | `app/list`, `app/get`; `app/look` to see one |
-| Workflows | `meta/recent-workflows` | Workflows the person published (`StrutWorkflowVersion.actor`) or ran (`StrutRun.actor`), then the ones run most on this server in the last 14 days | `meta/list-workflows` |
-| Jobs | `job/recent` | The person's recent jobs: title, kind, repositories, whether it is still working. Never another person's, so a new person's list is empty | `job/list { q }`, `job/get` |
+| Recent Apps | `app/recent` | Apps the person opened in the last hour (the monitor's call log keeps an hour, `plans/app-calls.md`), then the ones they made (`owner`), then the rest by name. An `admin: true` app only when it is theirs. `what` is its title, whose it is and its description, so "the knowledge app" and "the app with the trials" match | `app/list`, `app/get`; `app/look` to see one |
+| Recent Workflows | `meta/recent-workflows` | Workflows the person owns, then the rest, newest run first. Strut's own seeds are left out. Who ran a workflow is not indexed, so "ran" is not a signal of its own | `meta/list-workflows` |
+| Recent Jobs | `job/recent` | The person's recent jobs: title, id, repositories (`host/owner/name`, now on `GET /jobs` too), whether it is working now. Never another person's, so a new person's list is empty | `job/list { q }`, `job/get`, `git/checkout` |
 
 The Jobs page also covers repositories worked on through strut, since a
 job records its `repos`. Work done anywhere else comes from a package's
@@ -218,14 +226,21 @@ neither strut nor any other package changes.
    step that declares `effect: "read"`. It runs as the reader, so it shows
    them only what they may see, and 2 s caps its cost. The alternative is only the
    page's own package's steps (strut's steps for strut's pages).
-3. **A launch with no person** (a host's key, an automation). Default: no
-   section.
+3. **A launch with no person** (a host's key, an automation). Built: the
+   server's lists, each step's fill, and no jobs.
 4. **The builder.** Default: none until `plans/one-job-agent.md` folds it
    into the job, which then has the section.
 
 ## Work items, in order
 
-1. `Concept.step` on the type, a conformance case, `test:graph`.
+Items 1 to 5 are built (stakwork/strut#886). Item 6 was checked for apps
+only, on a scratch strut with `claude-sonnet-5-5` (2026-11-24): the first
+turn of a thread got the section, the second got none (same hash), and a
+job turn got it too; asked which app shows trials, both named Knowledge
+once each line carried the app's description. The repository case needs a
+package's page (or a job with a checkout) and is not checked yet.
+
+1. `Concept.step` on the type, the seed's add-only extend, `test:graph`.
 2. `context/recent` and the agent step's `tags`, with tests: refusal of a
    write step, the timeout, the caps, the unchanged-hash skip, the resend
    after a compaction.

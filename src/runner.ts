@@ -322,6 +322,7 @@ function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined,
   const view: SessionsCapability = {
     open: (id, holder) => sessions.open(peerSessionId(id, person, continues), holder),
     holder: (id) => sessions.holder(peerSessionId(id, person, continues)),
+    turns: (id) => sessions.turns(peerSessionId(id, person, continues)),
   };
   return { ...(services as object), sessions: view } as TServices;
 }
@@ -337,6 +338,7 @@ function bindHost<TServices>(services: TServices, origin: RunOrigin | undefined,
   const view: SessionsCapability = {
     open: (id, holder) => sessions.open(hostSessionId(id, host), holder),
     holder: (id) => sessions.holder(hostSessionId(id, host)),
+    turns: (id) => sessions.turns(hostSessionId(id, host)),
   };
   return { ...(services as object), sessions: view } as TServices;
 }
@@ -352,6 +354,7 @@ function bindApp<TServices>(services: TServices, app: AppRef | undefined, actor?
   const view: SessionsCapability = {
     open: (id, holder) => sessions.open(appSessionId(id, app.name, actor, job, app.firstParty, continues), holder),
     holder: (id) => sessions.holder(appSessionId(id, app.name, actor, job, app.firstParty, continues)),
+    turns: (id) => sessions.turns(appSessionId(id, app.name, actor, job, app.firstParty, continues)),
   };
   return { ...(services as object), sessions: view } as TServices;
 }
@@ -370,6 +373,7 @@ function bindPublic<TServices>(services: TServices, origin: RunOrigin | undefine
   const view: SessionsCapability = {
     open: (id, holder) => sessions.open(publicSessionId(id, scope), holder),
     holder: (id) => sessions.holder(publicSessionId(id, scope)),
+    turns: (id) => sessions.turns(publicSessionId(id, scope)),
   };
   return { ...bag, sessions: view } as TServices;
 }

@@ -67,6 +67,15 @@ steps:
     type: context/concept
     config:
       name: "{{ input.kind }}"
+  # What the person most likely means (plans/recent-work.md): the pages under
+  # the `Recent Work` Concept, each listing the top few as the job's person,
+  # at the head of the turn's prompt, and only when it changed since the
+  # job's thread last saw it (the turn keeps its hash in `tags`).
+  - id: recent
+    type: context/recent
+    config:
+      name: "{{ params.recentConcept }}"
+      session: "{{ input.session || $job }}"
   # strut's own agent, unless the launch names a local one.
   - id: own
     type: if
@@ -87,12 +96,15 @@ steps:
       system: |-
         {{ params.system }}
         {{ concepts.text }}
-      # The server line, then the job's id (what a claim's subject and the
-      # builder's thread are named by), then the checkouts, then the kind's
-      # page, then the message.
-      prompt: "{{ input.workspace ? 'This job runs on this server, @' + input.workspace + '. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ kindPage.text ? params.kindLead + kindPage.text + params.kindEnd : '' }}{{ input.prompt }}"
+      # The Recent Work section when it changed, the server line, then the
+      # job's id (what a claim's subject and the builder's thread are named
+      # by), then the checkouts, then the kind's page, then the message.
+      prompt: "{{ recent.text }}{{ input.workspace ? 'This job runs on this server, @' + input.workspace + '. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ kindPage.text ? params.kindLead + kindPage.text + params.kindEnd : '' }}{{ input.prompt }}"
       # The message alone, what the graph keeps as this turn's text.
       message: "{{ input.prompt }}"
+      # The Recent Work section's hash, what the next turn's `recent` reads.
+      tags:
+        recent: "{{ recent.hash }}"
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
       # The person's SSH key, signed with by an agent in strut's process:
@@ -161,6 +173,9 @@ params:
   # it close the agent's system prompt: strut seeds `Job`
   # (src/concepts/Job.md), and each deployment grows the tree under it.
   concept: Job
+  # The root of what the person most likely means (the `recent` step): strut
+  # seeds it (src/concepts/Recent Work.md); a package hangs pages under it.
+  recentConcept: Recent Work
   # Around the page of the job's KIND (`input.kind`) at the head of a turn's
   # prompt. Text, so the framing evolves like `system`.
   kindLead: "\n\nThis job is the kind of work below, and its page is how that work is done here:\n\n"

@@ -1011,6 +1011,12 @@ function threadAttachments(turns: SessionTurn[]): RunAttachment[] {
   return [...turns].reverse().flatMap((t) => (t.attachments ?? []).map((a) => ({ ...a, runId: t.runId })));
 }
 
+/** The `tags` a turn's line keeps: the non-empty ones, or nothing. */
+function turnTags(tags: Record<string, string> | undefined): Record<string, string> | undefined {
+  const kept = Object.entries(tags ?? {}).filter(([, v]) => typeof v === "string" && v !== "");
+  return kept.length ? Object.fromEntries(kept) : undefined;
+}
+
 /** `ctx` without the caller's MCP servers — what an agent with `mcp: false`
  *  hands its tools. */
 function withoutMcp(ctx: StepContext): StepContext {
@@ -1427,6 +1433,12 @@ export default defineStep({
       .optional()
       .describe(
         "What a compaction's summary must keep, word for word, in place of the default (the working directory, the files by path, the commands run, what was verified). Name the caller's own references — e.g. \"the chats read, by chat id; message uuids and links, verbatim\".",
+      ),
+    tags: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe(
+        "With a `session`: small strings kept on this turn's line in the thread, for a later step of the workflow to read back (`context/recent` keeps the hash of the section it sent, so an unchanged one is not sent again). The agent never reads them. Empty values are dropped.",
       ),
     finalAnswer: z
       .string()
@@ -1978,6 +1990,7 @@ export default defineStep({
               ...(ctx?.principal ? { principal: ctx.principal } : {}),
               ...(ctx?.job ? { job: ctx.job } : {}),
               ...(ctx?.wake ? { wake: true as const } : {}),
+              ...(turnTags(cfg.tags) ? { tags: turnTags(cfg.tags) } : {}),
               provider: resolved.provider,
               model: resolved.name,
               routed: resolved.routed,
@@ -2391,6 +2404,7 @@ export default defineStep({
               ...(ctx?.job ? { job: ctx.job } : {}),
               ...(files.length ? { attachments: listed ? listed.files : ctx!.attachments } : {}),
               ...(ctx?.wake ? { wake: true as const } : {}),
+              ...(turnTags(cfg.tags) ? { tags: turnTags(cfg.tags) } : {}),
               provider: resolved.provider,
               model: resolved.name,
               routed: resolved.routed,

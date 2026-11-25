@@ -199,7 +199,7 @@ describe("agent sessions", () => {
       answer("toolu_3", "fixed"),
     ]);
     try {
-      const first = await run({ session: "abc", system: "you are careful", prompt: "why is login slow?" }, { runId: "r1", principal: "ann" });
+      const first = await run({ session: "abc", system: "you are careful", prompt: "why is login slow?", tags: { recent: "h1", empty: "" } }, { runId: "r1", principal: "ann" });
       assert.equal(first.result, "it is slow");
       assert.deepEqual(first.session, { id: "abc", turn: 0, offset: 0 });
 
@@ -241,6 +241,10 @@ describe("agent sessions", () => {
         [[0, "r1", "wf/work", "ann", "anthropic", false], [1, "r2", "wf/work", "bob", "anthropic", false]],
       );
       assert.ok(thread!.turns[1]!.context!.used > 0);
+      // `tags` are kept on the turn's line, the empty ones dropped, and read
+      // back without holding the thread (context/recent's hash).
+      assert.deepEqual(thread!.turns.map((t) => t.tags), [{ recent: "h1" }, undefined]);
+      assert.deepEqual((await sessions.turns("abc")).map((t) => t.tags), [{ recent: "h1" }, undefined]);
       assert.equal(sessions.holder("abc"), undefined);
     } finally {
       s.close();

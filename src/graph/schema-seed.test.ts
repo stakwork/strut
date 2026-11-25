@@ -156,6 +156,17 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.deepEqual(snap2, snap1);
   });
 
+  it("standalone: a seed type's row from before an attribute was added gains it at the next boot, add-only", async () => {
+    await seedStrutDomain(bolt);
+    // A graph seeded before `Concept.step` (plans/recent-work.md §2).
+    await bolt.run(`MATCH (s:Schema {type: 'Concept'}) REMOVE s.step`);
+    const r = await seedStrutDomain(bolt);
+    assert.deepEqual(r.reconciled, { Concept: ["step"] });
+    const [row] = await bolt.run(`MATCH (s:Schema {type: 'Concept'}) RETURN s.step AS step`);
+    assert.equal(row!["step"], "?string");
+    assert.deepEqual((await seedStrutDomain(bolt)).reconciled, {});
+  });
+
   it("shared: tolerates a jarvis DB whose Data_Bank(ref_id) is a plain index, not a constraint", async () => {
     await bolt.run(`CREATE INDEX data_bank_ref_id_plain IF NOT EXISTS FOR (n:Data_Bank) ON (n.ref_id)`);
     const r = await seedStrutDomain(bolt);

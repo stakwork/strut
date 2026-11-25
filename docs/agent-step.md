@@ -47,7 +47,10 @@ index. A change in this area updates this file, not AGENTS.md.
   the messages are replayed as stored, so every request begins with the
   previous one byte for byte. `retain` replaces what a
   compaction's summary is told to keep (`AGENT_RETAIN`: files, commands) with
-  the caller's own references. Tools, output mode and `maxSteps` are the
+  the caller's own references. `tags` (small strings) are kept on the
+  turn's line for a later step of the workflow to read back; the agent
+  never reads them (`context/recent` keeps its section's hash there, so an
+  unchanged section is not sent again). Tools, output mode and `maxSteps` are the
   current step's. Whether calls are routed through the gateway is fixed
   by the first turn (`session_mismatch:`); the model and the provider may
   change — each provider's converter drops thinking it cannot verify —
@@ -328,7 +331,7 @@ What each file and folder in this area is, in the order of the tree.
 
 ### `src/session-store.ts`
 
-agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit; `turns(id)` reads the lines alone; `list({ limit })` reads the newest sessions' turn lines alone, by turns.jsonl's mtime — `newestWritten`, store.ts — and without `limit` all, for the conversation index's one-time build) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`)
+agent sessions (plans/agent-sessions.md): SessionStore iface + FileSessionStore (sessions/<encoded id>/: system.md + messages.jsonl + turns.jsonl — a turn line is the commit; `turns(id)` reads the lines alone; `list({ limit })` reads the newest sessions' turn lines alone, by turns.jsonl's mtime — `newestWritten`, store.ts — and without `limit` all, for the conversation index's one-time build) + MemorySessionStore, idProblem (the id format, shared with git/checkout's `workdir`), and `sessionsCapability` — `ctx.services.sessions`, whose `open` takes the session's in-process lock (`session_busy:`) and whose `turns(id)` reads the turn lines without it (what `context/recent` reads before the agent runs; every per-run view — a peer's, a host's, an app's, a public run's, a branch's — maps the id for `turns` as it does for `open`). A turn line's `tags` are the agent step's `tags` input, kept as given (empty ones dropped) and read by nothing in the step
 
 ### `src/ssh-agent.ts`
 

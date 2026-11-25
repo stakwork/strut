@@ -188,7 +188,8 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
   //     the type and whenever, with no index per domain. Before 4b, so the
   //     seed types get no per-domain fulltext index (`createNodeSchema`).
   const resolver = new SchemaResolver(engine);
-  if (!(await resolver.hiddenSets()).jarvis) {
+  const alone = !(await resolver.hiddenSets()).jarvis;
+  if (alone) {
     await ddl(
       `CREATE FULLTEXT INDEX \`${SEARCH_TEXT_INDEX}\` IF NOT EXISTS FOR (n:Data_Bank) ON EACH [n.Data_Bank]
        OPTIONS { indexConfig: { \`fulltext.analyzer\`: 'english' } }`,
@@ -197,9 +198,22 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
 
   // 4b. The types both engines seed (Claim, Check, Evidence, Concept): each
   //     created only when no Schema has its name — a soft-deleted one too, as
-  //     above. One already there (jarvis's) is left exactly as it is.
+  //     above. On a graph strut holds alone the row is strut's, so an
+  //     attribute added in code since (`Concept.step`) is added to it,
+  //     add-only, as a Strut type's is. One jarvis seeded is left exactly as
+  //     it is.
   for (const t of SEED_TYPES) {
-    if (await src.schemaRow(t.type)) continue;
+    const hit = await src.schemaRow(t.type);
+    if (hit) {
+      if (!alone) continue;
+      const missing: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(t.attributes)) if (!(k in hit.props)) missing[k] = v;
+      if (Object.keys(missing).length > 0) {
+        await src.extendSchema(hit.type, missing);
+        report.reconciled[t.type] = Object.keys(missing).sort();
+      }
+      continue;
+    }
     await createNodeSchema(engine, resolver, seedTypeInput(t));
     report.createdSchemas.push(t.type);
   }

@@ -68,6 +68,9 @@ export interface JobListing {
   usedAt: string;
   /** The run holding the directory now. */
   busy?: string;
+  /** The repositories its working copies are of, as `host/owner/name`
+   *  (`github.com/stakwork/strut`). Absent with none. */
+  repos?: string[];
   /** The workflow the job's newest TURN ran — `job` or `builder`
    *  (`turnOf`, `JOB_WORKFLOWS`): what the job is, what `job/continue`
    *  launches next. Absent before the first turn. */
@@ -214,6 +217,17 @@ export function holdUrls(holds: readonly JobHold[]): Record<string, string> {
   return urls;
 }
 
+/** A job's working copies as `host/owner/name`, from the cache each is a
+ *  worktree of (`<dataDir>/repos/<host>/<owner>/<name>.git`, git/_shared.ts). */
+const reposOf = (rec: JobRecord): string[] => [
+  ...new Set(
+    Object.values(rec.repos ?? {})
+      .map((r) => /[\\/]repos[\\/]([^\\/]+)[\\/]([^\\/]+)[\\/]([^\\/]+?)\.git$/.exec(r.cache))
+      .filter((m): m is RegExpExecArray => !!m)
+      .map((m) => `${m[1]}/${m[2]}/${m[3]}`),
+  ),
+];
+
 /** A record from before `actors` was kept has only its first actor. */
 const actorsOf = (rec: JobRecord): string[] => rec.actors ?? (rec.createdBy ? [rec.createdBy] : []);
 
@@ -233,6 +247,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       ...(rec.createdAt ? { createdAt: rec.createdAt } : {}),
       usedAt: rec.usedAt,
       ...(busy ? { busy } : {}),
+      ...(reposOf(rec).length ? { repos: reposOf(rec) } : {}),
       ...(turn ? { workflow: turn.workflow } : {}),
       runs: rec.runs?.length ?? 0,
       holds: rec.holds?.length ?? 0,
