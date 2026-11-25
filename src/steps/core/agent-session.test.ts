@@ -965,7 +965,7 @@ describe("agent sessions", () => {
       },
     });
     const META = ["meta/run-step", "meta/publish-workflow", "meta/run-workflow"];
-    const setup = async () => {
+    const setup = async (extra: Record<string, unknown> = {}) => {
       sent.length = 0;
       const [{ proposalsCapability }, { buildAuthoringCapability }, { WorkspaceManager }] = await Promise.all([
         import("../../proposals.js"),
@@ -973,7 +973,7 @@ describe("agent sessions", () => {
         import("../../workspace.js"),
       ]);
       const lib = await createRegistry([]);
-      const reg = { ...registry, "mail/send": send, ...Object.fromEntries(META.map((t) => [t, lib[t]!])) };
+      const reg = { ...registry, "mail/send": send, ...Object.fromEntries(META.map((t) => [t, lib[t]!])), ...extra } as typeof registry;
       const services: Record<string, unknown> = { sessions, proposals: proposalsCapability(cwd) };
       services["authoring"] = buildAuthoringCapability({ workspace: new WorkspaceManager(join(cwd, "ws")), store: new MemoryRunStore(), getRegistry: async () => reg, services });
       return { reg, services };
@@ -1030,6 +1030,35 @@ describe("agent sessions", () => {
       try {
         await run({ toolFilter: ["none"], agentTools: ["mail/send", ...META] }, { registry: reg, services });
         assert.deepEqual(sent, [{ to: "a@b.c" }]);
+      } finally {
+        s.close();
+      }
+    });
+
+    it("runs it as the calling run would: on its job, as its person, so a proposal it makes is theirs", async () => {
+      const { proposerOf } = await import("../lib/knowledge/_shared.js");
+      // graph/edit-node on a page whose text is in git: it proposes.
+      const edit = defineStep({
+        type: "page/edit",
+        description: "Propose a change to a page.",
+        input: z.object({ page: z.string() }),
+        output: z.any(),
+        async run(cfg, ctx) {
+          const bag = ctx.services as { proposals: { propose(p: unknown): Promise<{ id: string }> } };
+          const rec = await bag.proposals.propose({ step: "mail/send", input: { to: "a@b.c" }, title: `Change ${cfg.page}.`, by: proposerOf(ctx) });
+          return { proposed: rec.id };
+        },
+      });
+      const { reg, services } = await setup({ "page/edit": edit });
+      const s = await serve([call("toolu_1", "meta_run_step", { type: "page/edit", config: { page: "Job" } }), answer("toolu_2", "proposed")]);
+      try {
+        await run({ toolFilter: ["none"], agentTools: ["page/edit", ...META] }, { registry: reg, services, job: "j1", actor: "ann", principal: "ann" });
+        const [p, ...more] = await (services["proposals"] as { list(): Promise<any[]> }).list();
+        assert.equal(more.length, 0);
+        assert.deepEqual([p.by.job, p.by.actor, p.by.principal, p.title], ["j1", "ann", "ann", "Change Job."]);
+        const seen = JSON.parse(JSON.parse(resultOf(s.bodies[1], "toolu_1")).content);
+        assert.equal(seen.status, "success");
+        assert.deepEqual(seen.output, { proposed: p.id }, "the step's output comes back as before");
       } finally {
         s.close();
       }

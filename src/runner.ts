@@ -146,8 +146,13 @@ export interface RunOptions<TServices = unknown> {
    *  templates as `$job`, and — through `services.jobs.recordRun`, when the
    *  bag has it — as one line on the job's record (plans/job-index.md §1),
    *  with `title`, the launch's name for the job. A resume records nothing:
-   *  the run is already on the list. */
+   *  the run is already on the list, and neither does a run with
+   *  `offJobList`. */
   job?: string;
+  /** Not a line on its job's record: a single-step run (`runSingleStep`),
+   *  whose log stays in memory, so the line would name a run nobody can
+   *  open. It still runs under the job. */
+  offJobList?: boolean;
   /** The job whose BUDGET the run spends (`StepContext.budgetJob`), when
    *  not `job`: a trial's sample a job's run started spends that job's
    *  (src/trials.ts). Defaults to `job`. Children inherit it, `run.start`
@@ -786,7 +791,7 @@ async function executeRun<TServices = unknown>(
     // check the verify pass runs under the job (plans/job-claims.md §4) is
     // not a turn: never on the list.
     const jobs = (services as { jobs?: { recordRun?: JobsRecordRun } } | undefined)?.jobs;
-    if (opts?.job && jobs?.recordRun && opts.origin !== "verify") {
+    if (opts?.job && jobs?.recordRun && opts.origin !== "verify" && !opts.offJobList) {
       const parent = opts.controller?.parent?.runId;
       await jobs
         .recordRun(opts.job, {

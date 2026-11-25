@@ -664,3 +664,59 @@ steps:
     assert.ok(!JSON.stringify(res).includes("shh"), "secret values must never surface");
   });
 });
+
+describe("runStep under its caller (meta/run-step)", () => {
+  it("runs the step as the calling run, tracked under it, off its job's list, and hands its spend back", async () => {
+    const [{ buildAuthoringCapability }, { RunController }, { MemoryRunStore }, { usageOf, withUsage }, { emptyUsage }] = await Promise.all([
+      import("./authoring.js"),
+      import("./run-control.js"),
+      import("./store.js"),
+      import("./core.js"),
+      import("./pricing.js"),
+    ]);
+    const dir = join(tmpdir(), `strut-authoring-caller-${randomUUID()}`);
+    await mkdir(dir, { recursive: true });
+    const spend = {
+      type: "dev/spend",
+      input: z.object({}),
+      output: z.any(),
+      run: async () => withUsage({ ok: true }, { modelCalls: 1, usage: emptyUsage(), cost: 0.5 }),
+    };
+    const caller = new RunController("caller", "builder");
+    const log: string[] = [];
+    const listed: unknown[] = [];
+    const build = (trackRun: Parameters<typeof buildAuthoringCapability>[0]["trackRun"]) =>
+      buildAuthoringCapability({
+        workspace: new WorkspaceManager(dir),
+        store: new MemoryRunStore(),
+        getRegistry: async () => ({ "dev/spend": spend }) as never,
+        services: { jobs: { recordRun: async (_job: string, run: unknown) => void listed.push(run) } },
+        trackRun,
+      });
+    const authoring = build((workflow, runId, parentRunId, job) => {
+      log.push(`${workflow} under ${parentRunId} for ${job?.id}`);
+      const controller = new RunController(runId, workflow, caller);
+      return { controller, untrack: () => void log.push("untracked") };
+    });
+    try {
+      const ran = (await authoring.runStep("dev/spend", { parentRunId: "caller", job: "j1", actor: "ann", principal: "ann" })) as any;
+      assert.equal(ran.status, "success");
+      assert.deepEqual(ran.output, { ok: true });
+      assert.deepEqual(log, ["__run_step__ under caller for j1", "untracked"]);
+      const start = ran.events.find((e: any) => e.type === "run.start");
+      assert.deepEqual([start.job, start.actor, start.principal], ["j1", "ann", "ann"]);
+      assert.deepEqual(listed, [], "not a line on the job's record: its log is not kept");
+      assert.equal(usageOf(ran)?.cost, 0.5, "a child's spend is its caller's");
+      // With no caller to run under, its own run writes its spend: nothing rides back.
+      assert.equal(usageOf(await authoring.runStep("dev/spend", {})), undefined);
+      assert.equal(log.length, 2, "nothing to track it under");
+      // What the run tree refuses (a branch the caller is not on, a drain) is the answer.
+      const refused = build(() => {
+        throw new Error('branch_fixed: run caller is on Concept branch "b"');
+      });
+      assert.match(((await refused.runStep("dev/spend", { parentRunId: "caller" })) as any).error, /^branch_fixed: /);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

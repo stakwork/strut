@@ -709,7 +709,7 @@ GET /steps/:type/stats — the Step Info flyout's Usage: workflows whose active 
 
 ### `src/run-step.ts`
 
-runSingleStep (one step, in memory, optional cassette) + runStep — the run_step surfaces: settles whether the run is kept (the step has claims, or `keep: true`), records stepHashes, then persists a kept run under `step:<type>` (plans/claims.md §3); `events: false` (the app door, which reads the output alone) hands no events back and skips the step-hash read for a run that is not kept. `RunStepOptions.app` (the app door's stamp, plans/apps.md §5) → `ctx.app` for the step and `app` + `actor` on a kept run's summary
+runSingleStep (one step, in memory, optional cassette; under a job, never a line on the job's run list — `RunOptions.offJobList` — since its log is not kept) + runStep — the run_step surfaces: settles whether the run is kept (the step has claims, or `keep: true`), records stepHashes, then persists a kept run under `step:<type>` (plans/claims.md §3); `events: false` (the app door, which reads the output alone) hands no events back and skips the step-hash read for a run that is not kept. `RunStepOptions.app` (the app door's stamp, plans/apps.md §5) → `ctx.app` for the step and `app` + `actor` on a kept run's summary
 
 ### `src/runs.ts`
 
