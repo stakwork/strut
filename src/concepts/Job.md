@@ -88,7 +88,8 @@ An app's line in Recent Work, and in app/list, says where it comes from
 when it was not made here: that is where a change to it goes. One from a
 repository opened here is changed here, in place, even when the person
 names the repository, and reaches it with package/commit when they ask.
-Strut's own is a code change to strut.
+Strut's own comes back at the next boot: change a copy of it, under a
+name of your own.
 
 One published on a PEER is built there, by that server's builder. Run it
 as you run any workflow:

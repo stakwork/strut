@@ -92,7 +92,8 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       // Where a change to an app goes: its line says (app/recent, app/list).
       "An app's line in Recent Work, and in app/list, says where it comes from when it was not made here: that is where a change to it goes.",
       "One from a repository opened here is changed here, in place, even when the person names the repository, and reaches it with package/commit when they ask.",
-      "Strut's own is a code change to strut.",
+      // No repository named: only a server that holds strut's own could act on one.
+      "Strut's own comes back at the next boot: change a copy of it, under a name of your own.",
       // Another server's is still its builder's, as before, word for word.
       "One published on a PEER is built there, by that server's builder.",
       'meta/run-workflow { name: "builder", input: { prompt, session: "<your job id>/build", peer } }',
