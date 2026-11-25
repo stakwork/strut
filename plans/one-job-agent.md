@@ -8,6 +8,13 @@ not 2 different workflows, but 2 modes (and can be run as both also)?"*
 This plan answers those questions; every point in it is mine and open
 until he rules.
 
+Reviewed against the code the same day, and changed where it did not
+hold: a gated step stays gated (§6); the builder's own paragraphs, and a
+rendering for an agent with a shell (§2); a build's kind and its page's
+cap (§1); the orchestrator's `builds` list kept (§5); the measure moved
+before the grants, with jobs that build nothing in it. Work item 1 is
+ready to build.
+
 It reverses a ruling: on 2026-10-20 the owner ruled that building workflows
 is separate work, and the authoring tools are never granted to a regular
 job (`plans/builder-job.md`). This plan grants them.
@@ -71,15 +78,30 @@ Measured on stadeum.stakwork.ai, 2026-11-24:
   the cache before calling any tool, mostly tool definitions.
 - **The cost is small.** Definitions are cached for an hour: roughly $0.20
   more on a job's first turn, then cents a turn.
-- **The count is not what hurts; overlap is.** Four tools run something:
-  `meta/run-workflow`, `meta/run-step`, `strut/run-workflow`,
-  `remote/run-workflow`. Their descriptions must say when each is the
-  one.
+- **The count is not what hurts; overlap is.** Three groups, and each
+  tool's description must say when it is the one:
+  - running something: `meta/run-workflow`, `meta/run-step`,
+    `strut/run-workflow`, `remote/run-workflow`;
+  - looking at a page: `app/look`, `browser/verify`,
+    `browser/walkthrough`, and the `browser-explore` workflow;
+  - verifying: `meta/verify-run` on a workflow's claim, `meta/verify-job`
+    on the job's (open question 6).
 - **Authoring rules in every prompt hurt more than tools do.** Most jobs
   build nothing. §2 moves them to a page.
-- **If it still picks worse,** the lever is loading rarely used tools
-  (`task/*`, `remote/*`, rollback) only when searched for. The agent step
-  has no such thing today, and this plan does not add one.
+- **Text that contradicts the tools hurts most.** The builder's rules say
+  "No shell here"; this agent holds `bash`. §2 renders them for it.
+- **Most jobs build nothing, and they hold the tools too.** A Code Change
+  job could publish a workflow or a step nobody asked for. The measure
+  (work item 5) runs such jobs and counts any authoring call.
+- **Tools can be kept out of view without losing the cache.** A changed
+  `tools` list rewrites the whole thread to the cache, so a thread's list
+  stays as it started. The API now lets a request declare a tool deferred
+  and bring it into view later, in a message (`tool_addition`, beta
+  `mid-conversation-tool-changes-2026-07-01`), and the cached prefix
+  holds. `@ai-sdk/anthropic` 4.0.71, the version installed, has both
+  (`deferLoading`, `toolChanges`); Sonnet 5.5 takes them, Sonnet 5 does
+  not. The agent step sends neither today, and this plan does not add
+  them: open question 4 says when it would.
 
 ## Proposal
 
@@ -94,20 +116,52 @@ is. `Workflow Builder` becomes a child of `Job`, and its children (`App`,
   the job opens the other page and goes on, with its thread.
 - **"Run as both" comes free.** A job that changes a repository and the
   app over it holds both sets of tools.
+- **A build's `kind` is `Workflow Builder`, never a page under it.** A
+  kind's page is cut at 6,000 characters in the turn's prompt
+  (`context/concept`'s `DOCS_MAX`; `kindPage` sets no `max`), and `App`
+  is 67,709. The job opens the page under it in full with
+  graph/graph-get, as the builder does. `Workflow Builder` itself is
+  6,176, so its last lines are already cut in the builder's prompt: open
+  question 7.
 
 ### 2. The builder's rules become a page
 
 The rules are rendered from `src/ai/prompts.ts`. The chat builder's prompt
 and `builder.yaml` both use them (`JOB_TOOLS`, `src/builder-seed.ts`).
 Strut seeds them as a page under `Workflow Builder`, `Workflow Language`,
-rendered at boot from the same source with the job's tool names. The
-seeder stamps the rendered text's hash, so the seed still matches git.
-The `Workflow Builder` page says to open it before authoring.
+rendered at boot from the same source. The seeder stamps the rendered
+text's hash, so the seed still matches git. The `Workflow Builder` page
+says to open it before authoring.
+
+- **A third rendering.** `JOB_TOOLS` is written for an agent with no
+  shell: "No shell here: probe an API's real response with
+  meta/run-step", and an `App` page "listed at the end of this prompt".
+  The page is rendered for the job: the `meta/*` names, the line on
+  `bash` that the chat's rendering has (in the job's directory), and the
+  `App` page named as the one under `Workflow Builder`. The chat's
+  rendering stays byte for byte (`prompts.test.ts`), and a test pins the
+  builder's the same way.
+- **The builder's own paragraphs come too.** `builder.yaml`'s system
+  prompt says three things the rules do not: the claim on the workflow
+  and `meta/verify-run` on the test run; an app looked at before it is
+  published, never a publish per attempt; a published app listed in
+  `artifacts` as `{ kind: "app", app, version }`. They move, word for
+  word, into `prompts.ts` beside the rules, and both the page and
+  `builder.yaml`'s marker render them: one source, as the rules have.
+  They cannot go on `Workflow Builder` itself: the chat builder reads
+  that page, under other tool names.
+- **After a compaction the page is out of view.** The builder's rules sit
+  in its system prompt, which a compaction keeps; a page opened as a tool
+  result is summarized away. The summary keeps the pages opened, by name
+  (`AGENT_RETAIN`, `src/compaction.ts`), so the agent opens it again.
+  Rare on a 1M window, where the mark is 90%; common on a 200k model.
 
 The job's system prompt stays the `Job` page. Its paragraph "A WORKFLOW,
 or an APP … is the builder's, never yours by hand" becomes: open `Workflow
 Builder` and follow it; one published on another server is that server's
-`builder`, run with `peer`.
+`builder`, run with `peer`. Its line "Never write workflow YAML into a
+file or publish one another way" is dropped with it: the rules say a
+workflow travels as a tool argument.
 
 ### 3. The job gets the builder's tools
 
@@ -122,11 +176,16 @@ In `job.yaml`:
 A raw `graph/query` stays under the `jobs` reader's scope
 (`src/graph/scope.ts`), as every job read is.
 
+`approve` gates the tool call alone. §6 is what keeps a gated step gated
+once the job holds `meta/run-step`.
+
 ### 4. What stays of `builder`
 
 - **The door for another server.** A build on a peer is that peer's
   `builder`, launched by `strut/run-workflow` under this job, as now.
-  `job/start { peer }` keeps launching it. `builder.yaml` is unchanged.
+  `job/start { peer }` keeps launching it. `builder.yaml` does what it
+  does now; the part of its system prompt that §2 moves is rendered from
+  `prompts.ts`.
 - **Builder jobs that already exist.** `job/continue` keeps a job's
   workflow (`turnOf`), and a session's system prompt is its first turn's,
   so they keep going on `builder`. Every new job starts on `job`.
@@ -137,14 +196,49 @@ A raw `graph/query` stays under the `jobs` reader's scope
 
 ### 5. The orchestrator
 
-- `orchestrator.yaml` drops the `builds` list: `Workflow Builder` is now
-  one of the kinds under `Job`.
+- **`orchestrator.yaml` keeps the `builds` list.** Its lists are one
+  level deep: the kinds under `Job`, and the kinds under `Workflow
+  Builder`. Without the second it would no longer see `App`, `Worker
+  Tasks` or a deployment's janitors, and `Worker Tasks` is written for
+  the assistant to talk through before anything is built. A request for
+  one of them is a job with `kind: Workflow Builder`, the build named in
+  its brief, as `Orchestrator.md` says now.
 - `start.workflow` goes from the reply's schema; `peer` stays, for a build
   on another server.
-- `Orchestrator.md`'s two paragraphs on `workflow: builder` shrink to one
-  line on `peer`.
+- `Orchestrator.md`'s two paragraphs on `workflow: builder` become: a
+  build is `kind: Workflow Builder`, with `peer` when it is published on
+  another server.
 - `job/start` still accepts `workflow` for a caller that sends it.
   `builder` without `peer` starts a `job` with kind `Workflow Builder`.
+  `peer` with no `workflow` launches the peer's `builder`; today
+  `job/start` refuses `peer` unless `workflow` is `builder`.
+
+### 6. A gated step stays gated
+
+`approve` holds back the agent's own tool call and nothing else. Read in
+the code, not run:
+
+- `meta/run-step` runs any step that is not sealed (`runStep`,
+  `src/authoring.ts`), and a workflow the agent publishes can hold the
+  step and be run with `meta/run-workflow`.
+- Strut's own gated steps refuse outside an accepted proposal
+  (`ctx.proposal`: `package/install`, `remote/buy-credit`,
+  `task/set-type`, `app/make-public`), and a host's gates hold whatever
+  the route (`hostGates`, `src/proposals.ts`).
+- A package's gate does neither. strut-gmail grants the job `send` with
+  `approve: [send]`, and the step sends when it is called.
+
+The builder has had this route since it shipped. This plan puts
+`meta/run-step` in every job's hands, beside the packages' tools.
+
+The fix, before the grant: what an agent's `approve` names is held
+wherever a model chooses the step, as `holdSubAgent` holds a sub-agent it
+launches (`src/steps/core/agent.ts`). The agent step passes its gated
+types down with the tool's context. `meta/run-step` refuses one, and so
+does a step of one inside a version of a workflow the AI wrote
+(`aiWroteVersion`, the rule a reach applies at run time). The refusal
+says to ask for it as the tool. A workflow a person or a package wrote
+runs as written.
 
 ## Decided
 
@@ -164,28 +258,66 @@ A raw `graph/query` stays under the `jobs` reader's scope
 2. **The rules page.** Default: rendered at boot from `prompts.ts`, so the
    chat builder's prompt and the page never drift. The alternative is a
    hand-written `.md` that the chat builder reads too.
-3. **The overlapping run tools.** Default: keep all four, and make each
-   description say when it is the one. Trim after measuring (item 6).
-4. **Deferred tools.** Default: none, unless item 6 shows worse picks.
+3. **The overlapping tools.** Default: keep them all, and make each
+   description say when it is the one. Trim after measuring (item 5).
+4. **Tools out of view until a job builds.** Default: none, unless item 5
+   shows worse picks, or authoring calls in jobs that build nothing. Then
+   the build's tools (the `meta/*` authoring steps, `app/*`, `task/*`)
+   are declared deferred and brought into view when the job opens
+   `Workflow Builder`, as its kind or by hand: the page is the mode, and
+   its tools come with it. That needs the agent step to send
+   `deferLoading` and `toolChanges`, a check through the gateway
+   (`scripts/gateway-smoke.ts`), and every tool in view on a model or a
+   route that takes neither. Search (`tool_search`) is the other way; it
+   is a tool the provider runs, and a routed strut avoids those.
+5. **Where a gate holds (§6).** Default: `meta/run-step`, and a version
+   of a workflow the AI wrote. The alternative is every run launched
+   under the turn, which would also stop a package's own workflow that
+   sends as it was written to.
+6. **What a build's claim is about.** Default: the workflow, verified
+   with `meta/verify-run`, as the builder does now: the claim stays with
+   the workflow after the job. The job's own ledger then shows nothing
+   for a pure build. The alternative is one claim on both subjects
+   (`meta/add-claim` takes several), so `meta/verify-job` shows it on the
+   job too.
+7. **`Workflow Builder` under the cap.** It is 6,176 characters and gains
+   a line. Default: its three sections on `human` steps move, word for
+   word, to a page under it that the agent opens when a workflow asks a
+   person. The chat builder and `builder` read the same page, so they
+   open it too. The alternative is a higher `max` on `kindPage`, which
+   the owner declined on 2026-11-23, when `Code Change` reached the cap.
 
 ## Work items, in order
 
 1. **Now, on its own:** grant a job `app/list`, `app/get`, `app/look` and
    `app/calls`. This fixes the miss above. `app/look` runs the page as the
-   person, as opening it does. It also corrects `plans/app-calls.md`'s line.
-2. The `Workflow Language` page (§2) and `Workflow Builder` under `Job`;
-   `Job.md`'s paragraph.
-3. `job.yaml`'s tools and approvals (§3); `src/job-seed.ts` tests.
-4. The orchestrator (§5) and `job/start`'s `workflow` with no `peer`.
-5. Docs: `docs/jobs.md`, `docs/builder.md`; a status line on
-   `plans/builder-job.md` naming this plan.
-6. **Measure before item 4 ships:** the same eight asks on a scratch
-   strut with a real model, through the two agents as they are and
-   through the one:
+   person, as opening it does. It also corrects `plans/app-calls.md`'s
+   line, and `job.yaml`'s comment "No app/*".
+2. **Before any grant of `meta/run-step`:** the hold on gated steps (§6),
+   with a test that a job's `meta/run-step` on a type its `approve` names
+   is refused. It closes the builder's route too, and ships on its own.
+3. The `Workflow Language` page (§2): the third rendering, the builder's
+   paragraphs from one source, the pin on the builder's rendering, the
+   pages opened in a compaction's summary. Nothing reads the page yet.
+4. On one branch, together: `Workflow Builder` under `Job` and under its
+   cap (open question 7), `Job.md`'s paragraph, `job.yaml`'s tools and
+   approvals (§3), `src/job-seed.ts` tests. Any one of them changes what
+   every job does, so the branch does not merge before item 5.
+5. **Measure the branch before it merges:** on a scratch strut with a
+   real model, the same asks through the two agents as they are and
+   through the one, each ask twice (one run of an agent says little):
    - three workflow builds;
    - two app changes;
    - two mixed asks (a repository and the app over it);
-   - one look at an installed app.
+   - one look at an installed app;
+   - three jobs that build nothing: a code change, a page of research, a
+     plan.
 
    Compare whether each job's claims verified, what it cost, how many
-   turns it took, and which tools it picked.
+   turns it took, and which tools it picked. In the jobs that build
+   nothing, count any authoring call (`meta/publish-workflow`,
+   `meta/create-step`, `app/publish`): there should be none.
+6. The orchestrator (§5) and `job/start`: `workflow` with no `peer`,
+   `peer` with no `workflow`.
+7. Docs: `docs/jobs.md`, `docs/builder.md`, `docs/security.md` (the
+   hold); a status line on `plans/builder-job.md` naming this plan.
