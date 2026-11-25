@@ -175,10 +175,10 @@ index. A change in this area updates this file, not AGENTS.md.
   ever earned here, in whole sats: accepted pay less what was taken back (a
   restore gives it back; a held earning counts; a payout never lowers it;
   an invite's starting sats are not pay). Their LEVEL is a threshold on it:
-  Level 0 below 10k sats; Level 1 at 10k (about one book of pages), then
-  12k, 15k, 20k, 25k, 30k, 40k, 50k, 60k, 80k, and ten times as much every
-  ten levels (100k at 11, 1M at 21, 1 BTC at 41); the last, 115, at 21M BTC
-  (`LEVEL_SATS`, `levelOf`).
+  Level 0 below 1k sats; quick first levels, 1k, 2.5k and 5k; then from
+  10k at Level 4 (about one book of pages) 12k, 15k, 20k, 25k, 30k, 40k,
+  50k, 60k, 80k, and ten times as much every ten levels (100k at 14, 1M at
+  24, 1 BTC at 44); the last, 118, at 21M BTC (`LEVEL_SATS`, `levelOf`).
   `task/me` answers `xp { sats, level, fromSats, toSats? }` (`toSats` absent
   at the top) wherever the server has a ledger — one not opened yet is
   Level 0 — and nothing on a host's own store. Shown, never a grant: who

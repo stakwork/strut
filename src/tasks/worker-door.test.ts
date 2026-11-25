@@ -43,8 +43,8 @@ const RATE_AT = new Date(1_793_000_000_000).toISOString();
 /** What task/me answers as `rate`: the server's, every currency by code. */
 const RATE = { perBtc: { EUR: 90_000, USD: 100_000 }, at: RATE_AT, source: "test" };
 const NO_PAYOUT = { on: false, why: "no_address", minMsat: 1_000_000, dayLeftMsat: 1_000_000_000, maxMsat: 0 };
-/** XP with nothing earned (plans/worker-progress.md): Level 0, Level 1 at 10k sats. */
-const NO_XP = { sats: 0, level: 0, fromSats: 0, toSats: 10_000 };
+/** XP with nothing earned (plans/worker-progress.md): Level 0, Level 1 at 1k sats. */
+const NO_XP = { sats: 0, level: 0, fromSats: 0, toSats: 1_000 };
 const MATCH = {
   type: "object",
   properties: { same: { type: "boolean" }, note: { type: "string", maxLength: 200 } },
@@ -506,7 +506,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
       const me = (await call(worker.token, "task/me")).result as { balance: { totalMsat: number; heldMsat: number; withdrawableMsat: number; nextReleaseAt?: number } };
       assert.deepEqual([me.balance.totalMsat, me.balance.heldMsat, me.balance.withdrawableMsat], [21_000, 21_000, 0], "held");
       assert.ok(me.balance.nextReleaseAt! > Date.now() + HOUR - 60_000);
-      assert.deepEqual((me as { xp?: unknown }).xp, { sats: 21, level: 0, fromSats: 0, toSats: 10_000 }, "a held earning is XP already");
+      assert.deepEqual((me as { xp?: unknown }).xp, { sats: 21, level: 0, fromSats: 0, toSats: 1_000 }, "a held earning is XP already");
 
       // Staff see it: the worker's balance and the answer's pay.
       const workers = (await (await staff("GET", "/tasks/workers")).json()) as { workers: Array<{ actor: string; balance: { totalMsat: number } }> };
