@@ -1068,9 +1068,9 @@ export interface WorkerInfo {
    *  (`perBtc.USD`, `perBtc.EUR`, …; `fiatOfMsat`). Absent when none can be read. */
   rate?: { perBtc: Record<string, number>; at: string; source: string };
   /** Their XP: everything they ever earned here in whole sats (withdrawing
-   *  never lowers it), and the level it reaches — Level 1 at 10k sats, then
-   *  12k, 15k, 20k, 25k, 30k, 40k, 50k, 60k, 80k, ten times as much every
-   *  ten levels, and the last, 115, at 21M BTC. `fromSats` is
+   *  never lowers it), and the level it reaches — Level 1 at 1k sats, 2 at
+   *  2.5k, 3 at 5k, then from 10k round steps, ten times as much every ten
+   *  levels, and the last, 118, at 21M BTC. `fromSats` is
    *  where this level starts, `toSats` where the next does (absent at the
    *  top). Absent on a server without it. */
   xp?: { sats: number; level: number; fromSats: number; toSats?: number };
