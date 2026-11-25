@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronDown, ChevronRight, Clock, FileText, ImagePlus, Loader2, LogIn, MessageSquare, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
-  appLink, fieldsOf, formats, formProblem, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
+  appLink, fiatOfMsat, fieldsOf, formats, formProblem, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
   type FormSchema, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerType,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
@@ -71,10 +71,32 @@ async function shrink(file: File): Promise<File> {
   }
 }
 
+/** `msat` as money in `currency` (USD when none, or one the rate lacks) at a
+ *  `useWorker()` rate: `$0.05`; undefined when the rate has no figure. */
+function fiatText(msat: number, rate: Parameters<typeof fiatOfMsat>[1], currency?: string): string | undefined {
+  const code = /^[A-Za-z]{3}$/.test(currency ?? "") ? currency!.toUpperCase() : "USD";
+  const value = fiatOfMsat(msat, rate, code) ?? (code === "USD" ? undefined : fiatOfMsat(msat, rate, "USD"));
+  if (value === undefined) return undefined;
+  const used = fiatOfMsat(msat, rate, code) === undefined ? "USD" : code;
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: used, maximumFractionDigits: value < 1 ? 3 : 2 }).format(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The currency a task's `show` names (`show.currency`), if any. */
+function currencyOf(show: unknown): string | undefined {
+  const c = show && typeof show === "object" ? (show as Record<string, unknown>)["currency"] : undefined;
+  return typeof c === "string" ? c : undefined;
+}
+
 /** What a task pays, as a pill: `⚡ Earn 50 sats`, or `+50 sats` once earned. */
-export function PayPill({ msat, earned = false, className }: { msat: number; earned?: boolean; className?: string }) {
+export function PayPill({ msat, earned = false, currency, className }: { msat: number; earned?: boolean; currency?: string; className?: string }) {
   const w = useWorkerWords();
-  const sats = useFormats().sats(msat);
+  const fmt = useFormats();
+  const sats = fmt.sats(msat);
+  const fiat = fiatText(msat, useWorker().data?.rate, currency);
   return (
     <span
       className={cn(
@@ -85,6 +107,7 @@ export function PayPill({ msat, earned = false, className }: { msat: number; ear
       )}
     >
       <Zap className="size-3.5 fill-current" /> {earned ? `+${sats}` : w.earn(sats)}
+      {fiat && <span className="font-normal text-muted-foreground">≈ {fiat}</span>}
     </span>
   );
 }
@@ -297,7 +320,7 @@ export function WorkerTask({ task, submit, skip, label, className }: WorkerTaskP
   return (
     <div className={cn("flex flex-1 flex-col gap-5", className)} data-testid="worker-task">
       <div className="flex flex-col gap-2.5">
-        {task.payMsat > 0 && <PayPill msat={task.payMsat} />}
+        {task.payMsat > 0 && <PayPill msat={task.payMsat} currency={currencyOf((task as { show?: unknown }).show)} />}
         <h2 className="text-[22px] leading-tight font-semibold tracking-tight text-balance">{ask ?? w.aTask}</h2>
         {fields.length > 0 && (
           <dl className="mt-1 w-full max-w-full min-w-0 grid grid-cols-1 gap-y-2.5 sm:grid-cols-[minmax(auto,max-content)_minmax(0,1fr)] sm:gap-x-4 sm:gap-y-2 rounded-2xl border bg-muted/40 px-4 py-3 text-sm">
