@@ -27,6 +27,7 @@ import type { CardField, ProposalDescription } from "../core.js";
 import type { Proposal } from "../proposals.js";
 import { answerSchemaProblem } from "./answer-schema.js";
 import { copiesRuleOf } from "./task-copies.js";
+import { groupRuleOf, type GroupRule } from "./task-groups.js";
 import { attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
 import { openPayProblem, openPayWarning, RuleProblem, sameJson, testRulesOf } from "./task-tests.js";
 import { DEFAULT_HOLD_HOURS, PAY_ON, type CheckRule, type CopiesRule, type GradeRule, type LimitRule, type RoundRule, type StandingRule, type TaskType, type TestRules } from "./task-store.js";
@@ -192,6 +193,13 @@ export const typeChangeInput = z.object({
         "One that fails is REFUSED with the check's reason, in the task's language: the worker keeps the task and sends it again, and nothing is saved, started or paid for it. " +
         "This is how pay waits on a check: a check a workflow runs after the answer comes too late, since an accepted answer is paid at once. Each answer costs one model call, billed to this server. null: none.",
     ),
+  groups: z
+    .preprocess(fromJsonText, z.record(z.string(), z.any()).nullable().optional())
+    .describe(
+      "How the type manages its GROUPS (a book's pages, a batch's photos: the `group` a workflow names with task/reply): { lifecycle?, idleHours?, onEnter?, keyFrom? }. " +
+        'Each group then has a status (open, submitted, accepted, rejected, reopened, abandoned: `lifecycle: "default"`, or your own { statuses, initial, moves: [{ from, to, by: ["owner"|"admin"], reason?: "required" }], closed }), an owner (the worker who sent its first page) and a history. A closed group takes no new tasks. ' +
+        '`keyFrom` names a group from the answer ("{title}|{author}"); `onEnter` { accepted: { review: "ok" } } approves a group\'s answers when it enters that status (per-task pay is unchanged without it); `idleHours` marks a group with no new task for that long (a hint). Replaced whole; null: groups are only names again.',
+    ),
 });
 
 /** What `task/set-type` asks, as its schema parsed it. */
@@ -263,7 +271,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
  *  type with no `answer` takes `EMPTY_ANSWER`. */
 export function mergeType(
   name: string,
-  existing: (Pick<TaskType, "title" | "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "payOn" | "limits" | "tests" | "copies" | "attachments" | "standing" | "round" | "check"> & { open?: boolean }) | undefined,
+  existing: (Pick<TaskType, "title" | "app" | "answer" | "leaseSeconds" | "withinHours" | "enabled" | "paySats" | "holdHours" | "payOn" | "limits" | "tests" | "copies" | "attachments" | "standing" | "round" | "check" | "groups"> & { open?: boolean }) | undefined,
   change: TypeFields,
 ): TaskTypeInput {
   // A new type with no shape given takes the empty object: a files-only
@@ -308,6 +316,9 @@ export function mergeType(
   // And the check (§5.6.7 c): its step and config together.
   const check = change.check === undefined ? existing?.check : change.check;
   if (check !== undefined) out.check = check;
+  // And the groups' rule, whole.
+  const groups = change.groups === undefined ? existing?.groups : change.groups;
+  if (groups !== undefined) out.groups = groups;
   return out;
 }
 
@@ -399,6 +410,7 @@ interface Planned {
   standing?: StandingRule;
   round?: RoundRule;
   check?: CheckRule;
+  groups?: GroupRule;
 }
 
 const plannedOf = (t: TaskTypeRow): Planned => ({
@@ -418,6 +430,7 @@ const plannedOf = (t: TaskTypeRow): Planned => ({
   ...(t.attachments ? { attachments: t.attachments } : {}),
   ...(t.standing ? { standing: t.standing } : {}),
   ...(t.round ? { round: t.round } : {}),
+  ...(t.groups ? { groups: t.groups } : {}),
   ...(t.check ? { check: t.check } : {}),
 });
 
@@ -425,6 +438,7 @@ interface Problems {
   tests?: string;
   copies?: string;
   attachments?: string;
+  groups?: string;
 }
 
 function plan(name: string, existing: TaskTypeRow | undefined, change: TypeFields): { planned: Planned; problems: Problems; openWarning?: string } {
@@ -441,6 +455,12 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
   const tests = rule("tests", () => testRulesOf(merged.tests, shapeOnly));
   const copies = rule("copies", () => copiesRuleOf(merged.copies, shapeOnly));
   const attachments = rule("attachments", () => attachmentRuleOf(merged.attachments));
+  let groupRule: GroupRule | undefined;
+  try {
+    groupRule = groupRuleOf(merged.groups);
+  } catch (err) {
+    problems.groups = err instanceof Error ? err.message : String(err);
+  }
   const pay = merged.paySats && merged.paySats > 0 ? Math.round(merged.paySats * 1000) / 1000 : 0;
   // Ruling 12: who a paid open type lets in is the admin's, so this is
   // said, never refused. A new type has no tests yet; a host's store that
@@ -468,6 +488,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
       ...(merged.standing ? { standing: merged.standing } : {}),
       ...(merged.round ? { round: merged.round } : {}),
       ...(merged.check ? { check: merged.check } : {}),
+      ...(groupRule ? { groups: groupRule } : {}),
     },
     problems,
   };
@@ -578,7 +599,7 @@ function rulesDiff(label: string, before: object | undefined, after: object | un
 }
 
 /** What the save would refuse, first by field: the card's "Approving it fails". */
-const failureOf = (problems: Problems): string | undefined => problems.tests ?? problems.copies ?? problems.attachments;
+const failureOf = (problems: Problems): string | undefined => problems.tests ?? problems.copies ?? problems.attachments ?? problems.groups;
 
 /** A type's limits in words: "stops at $60.00 (60,000 sats) paid in all;
  *  at most 540 a worker a day"; "none". */
@@ -655,6 +676,7 @@ const changeLabel: Record<string, string> = {
   files: "photos",
   when: "when",
   check: "checked when handed in",
+  groups: "groups",
 };
 
 /**
@@ -703,6 +725,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     }
     if (!problems.attachments && !sameJson(before.attachments, after.attachments)) line("files", filesWords(before.attachments) || "none", filesWords(after.attachments) || "none");
     if (before.standing?.workflow !== after.standing?.workflow || before.round?.workflow !== after.round?.workflow) line("when", whenWords(before), whenWords(after));
+    if (!problems.groups && !sameJson(before.groups ?? null, after.groups ?? null)) line("groups", before.groups ? "managed" : "only names", after.groups ? "managed: a status, an owner and a history for each" : "only names");
     if (!sameJson(before.check ?? null, after.check ?? null)) line("check", checkWords(before.check) || "not checked", checkWords(after.check) || "not checked");
   }
   const shapeChanged = !!before && after.answer !== undefined && !sameJson(before.answer, after.answer);

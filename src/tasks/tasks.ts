@@ -114,6 +114,8 @@ import {
   type StandingRule,
   type Verdict,
   type PayOn,
+  type GroupEvent,
+  type GroupRecord,
   type TaskGroup,
   type TaskListQuery,
   type TaskRecord,
@@ -130,6 +132,7 @@ import {
   type LimitRule,
 } from "./task-store.js";
 import { checkRuleOf, gradeRuleOf, openPayProblem, phaseOf, revokeWhy, RuleProblem, sameJson, standingOf, testRulesOf, type Standing } from "./task-tests.js";
+import { groupRuleOf, isClosed, keyFromAnswer, lifecycleOf, moveProblem, movesFor, DEFAULT_IDLE_HOURS, type GroupRole, type GroupRule } from "./task-groups.js";
 import { COPIES_MAX, copiesRuleOf, decideCopies, decidingRule, groupsOf, groupsOfAsync } from "./task-copies.js";
 import { TEST_FILE_MAX_BYTES, type TestFiles } from "./test-files.js";
 import { answerAttachments, attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
@@ -139,6 +142,7 @@ import { liveGrants, MemoryWorkerStore, noStatuses, WORKER_STATUSES, type Grant,
 
 export type { AnswerSchema } from "./answer-schema.js";
 export type { LimitRule, LeaseTotals } from "./task-store.js";
+export type { GroupEvent, GroupRecord } from "./task-store.js";
 export type { CopiesRule, GradeResult, GradeRule, Lease, PayOn, ReviewRecord, StatsWindow, TaskGroup, TaskRecord, TaskReply, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
 export type { PayeeBalance } from "../payments/ledger.js";
 export type { AttachmentRule } from "./answer-files.js";
@@ -296,7 +300,12 @@ export type TaskErrorCode =
   | "no_answer"
   | "final"
   | "not_answered"
-  | "limit_reached";
+  | "limit_reached"
+  | "unknown_group"
+  | "group_closed"
+  | "bad_move"
+  | "reason_required"
+  | "not_owner";
 
 /** A refusal the caller can act on; `code` first in the message, as a
  *  step's error is read. */
@@ -398,6 +407,11 @@ export interface TaskTypeInput {
    *  its files before accepting it — a fail refuses it and the worker keeps
    *  the task. Absent or null: none. */
   check?: { step: string; config?: Record<string, unknown> } | null;
+  /** How it manages its groups (`GroupRule`, src/tasks/task-groups.ts): a
+   *  status, an owner and a history for each group a run names. Absent or
+   *  null: a group is only a name. Refused when it drops a status a group
+   *  of the type is in. */
+  groups?: Record<string, unknown> | GroupRule | null;
 }
 
 /** §5.7: what a standing type's pick-up is made of — its workflow's first
@@ -838,7 +852,7 @@ export interface TasksCapability {
    *  type when asked, the one with the newest task first: each with its
    *  tasks, answers, verdicts and who answered. Strut's own store's; a
    *  host's may have none. */
-  groups?(q?: { type?: string; limit?: number }): Promise<TaskGroup[]>;
+  groups?(q?: { type?: string; status?: string; owner?: string; idle?: boolean; limit?: number }): Promise<TaskGroup[]>;
   task(id: string): Promise<TaskView | undefined>;
   /** One worker as staff read them, with their standing (§7.5). */
   worker(actor: string): Promise<StaffWorker | undefined>;
@@ -910,6 +924,15 @@ export interface TasksService {
    *  others. A person's act (`POST /tasks/groups/review`); never on a
    *  capability. */
   reviewGroup(o: { group: string; type?: string; verdict: Verdict; why?: string; by?: string }): Promise<{ reviewed: number; more: boolean }>;
+  /** One managed group (`TaskType.groups`) as staff read it: its row, every
+   *  move of its status, oldest first, and its tasks. Undefined: no such row. */
+  groupDetail(id: string): Promise<{ group: TaskGroup; events: GroupEvent[]; tasks: TaskView[] } | undefined>;
+  /** An admin's move of a group's status (accept, reject, reopen, abandon,
+   *  or any other its lifecycle gives admin), by its row `id` or by its
+   *  `type` and `group` key (a group named before the type managed them gets
+   *  its row now). Checked against the type's lifecycle; the event is kept
+   *  with who and why. `reviewed`: answers marked by the type's `onEnter`. */
+  groupSet(o: { id?: string; type?: string; group?: string; to: string; reason?: string; by?: string }): Promise<{ group: TaskGroup; event: GroupEvent; reviewed?: number }>;
   /** §7.1: the staff's tests, for the test routes alone. */
   tests: TestAuthoring;
   /** §7.9: every test instance graded. Returns the unsubscribe. */
@@ -940,6 +963,10 @@ export type WorkerTasksCapability = Pick<TasksCapability, "next" | "submit" | "s
   withdraw?(actor: string, o: { address?: string; msat: number }): Promise<PayoutAnswer>;
   /** Strut's own store's; a host's may have none (`task/history` answers no items). */
   history?: TasksCapability["history"];
+  /** The OWNER's move of their own group (submit, reopen: what the type's
+   *  lifecycle gives `owner`), the owner being the worker `actor` — the
+   *  door's, never an input. */
+  groupMove?(actor: string, o: { type: string; group: string; to: string; reason?: string; app?: string; apps?: string[] }): Promise<{ group: TaskGroup }>;
 };
 
 /** What the shared services bag carries (§9.2): the `human` step's call,
@@ -1733,11 +1760,11 @@ export function createTasks(deps: TasksDeps): TasksService {
         // What `task/file` can hand a page (§5.5): a worker can read every file of a reply.
         if (f.size > TEST_FILE_MAX_BYTES) throw new TaskError("bad_request", `files: ${f.path} is ${f.size} bytes; a worker's page reads at most ${TEST_FILE_MAX_BYTES} a file`);
       }
-      const group = input.group === undefined ? undefined : groupOf(input.group);
+      const named = input.group === undefined ? undefined : groupOf(input.group);
       const verdict = input.verdict;
       if (verdict !== undefined && !VERDICTS.includes(verdict)) throw new TaskError("bad_request", `verdict is ${VERDICTS.join(" or ")}`);
       if (input.why !== undefined && verdict === undefined) throw new TaskError("bad_request", "why goes with a verdict");
-      if (show === undefined && !files.length && group === undefined && verdict === undefined) throw new TaskError("bad_request", "a reply has show, files, a group or a verdict");
+      if (show === undefined && !files.length && named === undefined && verdict === undefined) throw new TaskError("bad_request", "a reply has show, files, a group or a verdict");
       // The task's run is the CALLING run, read off its control — never an
       // input — so no other run, page or step names another run's task.
       const run = runLineage(o?.control)[0];
@@ -1746,6 +1773,11 @@ export function createTasks(deps: TasksDeps): TasksService {
       if (!t || t.test !== undefined || t.runId !== run!.runId || t.workflow !== run!.workflow) throw new TaskError("unknown_task", `no task ${id} asked by this run`);
       if (t.status !== "settled") throw new TaskError("not_answered", `task ${id} is ${t.status}: a reply goes only to a task its worker answered`);
       const at = now();
+      // A type that manages its groups can name the group from the answer
+      // (`keyFrom`), and refuses a task for one that is closed.
+      const kind = t.group === undefined || named !== undefined ? await s!.tasks.type(t.type) : undefined;
+      const group = groupKeyOf(kind, t, named);
+      if (group !== undefined && kind?.groups) await joinGroup(s!, kind, t, group);
       // A group alone names the group and leaves the reply as it was.
       const reply: TaskReply | undefined =
         show !== undefined || files.length ? { ...(show !== undefined ? { show } : {}), ...(files.length ? { files: files.map((f) => ({ name: f.name, mediaType: f.mediaType, size: f.size, path: f.path })) } : {}), at } : undefined;
@@ -1979,7 +2011,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       // Staff's verdict on each answer of theirs (§9.6): what to fix, and why.
       const answered = leases.filter((l) => l.status === "submitted");
       const verdicts = answered.length ? new Map((await s.tasks.reviewsOf([...new Set(answered.map((l) => l.task))])).filter((r) => r.worker === w.actor).map((r) => [r.task, r])) : new Map<string, ReviewRecord>();
-      const groups = o.groups ? (await s.tasks.groups({ worker: w.actor, types: [...kinds.keys()].filter(mine) })).map(({ workers: _w, ...g }) => g) : undefined;
+      const groups = o.groups ? await withStatus(s, await s.tasks.groups({ worker: w.actor, types: [...kinds.keys()].filter(mine) }), { worker: w.actor }) : undefined;
       return {
         items: leases.map((l): WorkerHistoryItem => {
           const e = earned.get(l.id);
@@ -2047,9 +2079,21 @@ export function createTasks(deps: TasksDeps): TasksService {
       const standing = await standingRuleOf(name, input.standing);
       const round = await roundRuleOf(name, input.round);
       const check = ruled(() => checkRuleOf(input.check, graderProblem));
+      const groups = (() => {
+        try {
+          return groupRuleOf(input.groups);
+        } catch (err) {
+          throw new TaskError("bad_request", err instanceof Error ? err.message : String(err));
+        }
+      })();
       if (standing && round) throw new TaskError("bad_request", "a task type is standing (a worker's ask makes its task) or sent in rounds (a workflow makes one for each item), never both");
       const s = await stores();
       const existed = await s.tasks.type(name);
+      // A status a group is in cannot be dropped from the lifecycle.
+      if (existed?.groups) {
+        const kept = groups ? new Set(lifecycleOf(groups).statuses) : undefined;
+        if (kept) for (const g of await s.tasks.groupRows({ type: name, limit: TASK_LIST_MAX })) if (!kept.has(g.status)) throw new TaskError("in_use", `a group of ${name} is ${g.status}: keep that status in groups.lifecycle, or move the group first`);
+      }
       const changedBy = by ?? existed?.changedBy;
       // Ruling 12: whether a paid open type qualifies newcomers is the
       // admin's; nothing here refuses one for want of tests.
@@ -2072,6 +2116,7 @@ export function createTasks(deps: TasksDeps): TasksService {
         ...(standing ? { standing } : {}),
         ...(round ? { round } : {}),
         ...(check ? { check } : {}),
+        ...(groups ? { groups } : {}),
         changedAt: now(),
         // A save that names nobody (a script's, on the API key alone) keeps
         // the last person who saved it: they still pay for its graders.
@@ -2180,8 +2225,15 @@ export function createTasks(deps: TasksDeps): TasksService {
 
     async groups(q = {}) {
       if (q.type !== undefined && typeof q.type !== "string") throw new TaskError("bad_request", "type is a task type's name");
+      if (q.status !== undefined && typeof q.status !== "string") throw new TaskError("bad_request", "status is a group's status");
+      if (q.owner !== undefined && typeof q.owner !== "string") throw new TaskError("bad_request", "owner is a worker");
       const s = await storesIfAny();
-      return s ? s.tasks.groups({ ...(q.type ? { types: [q.type] } : {}), ...(q.limit !== undefined ? { limit: q.limit } : {}) }) : [];
+      if (!s) return [];
+      const filtered = q.status !== undefined || q.owner !== undefined || q.idle;
+      const list = await s.tasks.groups({ ...(q.type ? { types: [q.type] } : {}), ...(q.limit !== undefined && !filtered ? { limit: q.limit } : {}) });
+      const read = await withStatus(s, list, "staff");
+      // A filter on what only a managed type has leaves the others out.
+      return filtered ? read.filter((g) => (q.status === undefined || g.status === q.status) && (q.owner === undefined || g.owner === q.owner) && (!q.idle || g.idle)).slice(0, q.limit ?? Infinity) : read;
     },
 
     async task(id) {
@@ -2414,6 +2466,111 @@ export function createTasks(deps: TasksDeps): TasksService {
       }
     }
     return { reviewed, more: tasks.length >= TASK_LIST_MAX };
+  };
+
+  // ── managed groups (`TaskType.groups`, src/tasks/task-groups.ts) ──────
+  /** A group's key as the task's run named it, or the type's `keyFrom` over the task's answer. */
+  const groupKeyOf = (kind: TaskType | undefined, t: TaskRecord, named: string | undefined): string | undefined =>
+    named ?? (kind?.groups?.keyFrom && t.group === undefined ? keyFromAnswer(kind.groups.keyFrom, t.answer, GROUP_MAX) : undefined);
+
+  /** A task joins group `key` of a type that manages them: refused while the
+   *  group has a row in a closed status (a group named before the type
+   *  managed them has no row and takes tasks as ever); a group no task has
+   *  joined yet gets its row, owned by the worker who sent this page. */
+  const joinGroup = async (s: TaskStores, kind: TaskType, t: TaskRecord, key: string): Promise<void> => {
+    const rule = kind.groups!;
+    const row = await s.tasks.groupRow(t.type, key);
+    if (row) {
+      if (t.group !== key && isClosed(rule, row.status)) throw new TaskError("group_closed", `group ${key} is ${row.status}: it takes no new tasks. Its owner or an admin can reopen it`);
+      return;
+    }
+    const others = await s.tasks.list({ group: key, type: t.type, test: false, limit: 2 });
+    if (others.some((o) => o.id !== t.id)) return;
+    await s.tasks.ensureGroup({ id: `grp_${randomId()}`, type: t.type, key, ...(t.by ? { owner: t.by } : {}), status: lifecycleOf(rule).initial, at: now(), actor: t.by ?? "system" });
+  };
+
+  /** Groups as read: managed types' groups with their status, owner, idleness
+   *  and (staff's read) what an admin can move them to. */
+  const withStatus = async (s: TaskStores, list: TaskGroup[], as: "staff" | { worker: string }): Promise<TaskGroup[]> => {
+    const kinds = new Map((await s.tasks.types()).map((k) => [k.name, k]));
+    const at = now();
+    const out: TaskGroup[] = [];
+    for (const g of list) {
+      const rule = kinds.get(g.type)?.groups;
+      const { workers: _w, ...rest } = g;
+      if (!rule) {
+        out.push(as === "staff" ? g : rest);
+        continue;
+      }
+      const row = await s.tasks.groupRow(g.type, g.group);
+      const status = row?.status ?? lifecycleOf(rule).initial;
+      const idle = !isClosed(rule, status) && at - g.last > (rule.idleHours ?? DEFAULT_IDLE_HOURS) * HOUR_MS;
+      out.push({
+        ...(as === "staff" ? g : rest),
+        ...(row ? { id: row.id } : { virtual: true as const }),
+        status,
+        statusAt: row?.statusAt ?? g.first,
+        ...(row ? { statusBy: row.statusBy } : {}),
+        ...(as === "staff" ? (row?.owner ? { owner: row.owner } : {}) : { mine: row?.owner === as.worker }),
+        ...(idle ? { idle: true as const } : {}),
+        ...(as === "staff" ? { moves: movesFor(rule, status, "admin") } : {}),
+      });
+    }
+    return out;
+  };
+
+  /** One move, checked against the type's lifecycle for `role`, then its `onEnter`. */
+  const moveGroupAs = async (s: TaskStores, kind: TaskType, g: GroupRecord, to: string, reason: string | undefined, actor: string, role: GroupRole) => {
+    const rule = kind.groups!;
+    if (reason !== undefined && (typeof reason !== "string" || reason.length > GROUP_REASON_MAX)) throw new TaskError("bad_request", `a reason is a sentence of at most ${GROUP_REASON_MAX} characters`);
+    const why = reason?.trim() || undefined;
+    const problem = moveProblem(rule, g.status, to, role, why);
+    if (problem) throw new TaskError(problem.code, problem.message);
+    const moved = await s.tasks.moveGroup({ id: g.id, from: g.status, to, actor, role, ...(why ? { reason: why } : {}), at: now() });
+    if (!moved) throw new TaskError("bad_move", `group ${g.key} moved meanwhile: read it again`);
+    // Per-task pay stays as it is unless the type says entering this status approves its answers.
+    const onEnter = rule.onEnter?.[to];
+    const reviewed = onEnter ? (await reviewGroup({ group: g.key, type: g.type, verdict: onEnter.review, ...(onEnter.review === "rejected" ? { why: why ?? `group ${to}` } : {}), by: actor })).reviewed : undefined;
+    return { ...moved, ...(reviewed !== undefined ? { reviewed } : {}) };
+  };
+
+  /** The group as one `TaskGroup` read, by its row. */
+  const groupRead = async (s: TaskStores, row: GroupRecord, as: "staff" | { worker: string }): Promise<TaskGroup> => {
+    const [read] = (await s.tasks.groups({ types: [row.type], ...(typeof as === "object" ? { worker: as.worker } : {}), limit: TASK_LIST_MAX })).filter((g) => g.group === row.key);
+    const base: TaskGroup = read ?? { group: row.key, type: row.type, tasks: 0, answers: 0, ok: 0, rejected: 0, unreviewed: 0, first: row.created, last: row.updated };
+    return (await withStatus(s, [base], as))[0]!;
+  };
+
+  const groupDetail: TasksService["groupDetail"] = async (id) => {
+    const s = await storesIfAny();
+    const row = s && typeof id === "string" ? await s.tasks.groupById(id) : undefined;
+    if (!s || !row) return undefined;
+    const tasks = await s.tasks.list({ group: row.key, type: row.type, test: false, limit: TASK_LIST_MAX });
+    return { group: await groupRead(s, row, "staff"), events: await s.tasks.groupEvents(row.id), tasks: await views(s, [...tasks].reverse()) };
+  };
+
+  const groupSet: TasksService["groupSet"] = async (o) => {
+    if (!o || typeof o !== "object") throw new TaskError("bad_request", "a group's move is { id | type and group, to, reason? }");
+    if (typeof o.to !== "string" || !o.to) throw new TaskError("bad_request", "to is the status to move the group to");
+    const s = await storesIfAny();
+    if (!s) throw new TaskError("unknown_group", "no such group here");
+    let row = o.id !== undefined ? await s.tasks.groupById(String(o.id)) : undefined;
+    let kind: TaskType | undefined;
+    if (o.id !== undefined) kind = row && (await s.tasks.type(row.type));
+    else {
+      if (typeof o.type !== "string" || !o.type) throw new TaskError("bad_request", "name the group by its id, or its type and group");
+      const key = groupOf(o.group);
+      kind = await s.tasks.type(o.type);
+      row = await s.tasks.groupRow(o.type, key);
+      // A group named before the type managed them: its row is made now, by its first answerer.
+      if (!row && kind?.groups) {
+        const first = (await s.tasks.list({ group: key, type: o.type, test: false, limit: TASK_LIST_MAX })).filter((t) => t.by).at(-1);
+        if (first) row = (await s.tasks.ensureGroup({ id: `grp_${randomId()}`, type: o.type, key, ...(first.by ? { owner: first.by } : {}), status: lifecycleOf(kind.groups).initial, at: now(), actor: o.by ?? "system" })).group;
+      }
+    }
+    if (!row || !kind?.groups) throw new TaskError("unknown_group", "no such group: its type manages none, or it has no tasks");
+    const moved = await moveGroupAs(s, kind, row, o.to, o.reason, o.by ?? "admin", "admin");
+    return { group: await groupRead(s, moved.group, "staff"), event: moved.event, ...(moved.reviewed !== undefined ? { reviewed: moved.reviewed } : {}) };
   };
 
   // ── the queue: grading (§7.4) and deciding copies (§7.6) ──────────────
@@ -2864,6 +3021,20 @@ export function createTasks(deps: TasksDeps): TasksService {
     if (!deps.payouts) throw new PayoutError("not_here", "this server's task store pays no worker");
     return deps.payouts.pay(actor, o);
   };
+  /** The owner's move of their own group: the actor is the door's. */
+  const groupMove: NonNullable<WorkerTasksCapability["groupMove"]> = async (actor, o) => {
+    count(actor);
+    if (!o || typeof o.type !== "string" || typeof o.to !== "string") throw new TaskError("bad_request", "a group's move is { type, group, to, reason? }");
+    const key = groupOf(o.group);
+    const { s } = await worker(actor);
+    const kind = await s.tasks.type(o.type);
+    if (!kind || !drawnBy(kind, o)) throw new TaskError("unknown_group", "no such group here");
+    const row = kind.groups ? await s.tasks.groupRow(o.type, key) : undefined;
+    if (!row) throw new TaskError("unknown_group", "no such group here");
+    if (row.owner !== actor) throw new TaskError("not_owner", "only the group's owner moves it, from here");
+    const moved = await moveGroupAs(s, kind, row, o.to, o.reason, actor, "owner");
+    return { group: await groupRead(s, moved.group, { worker: actor }) };
+  };
   return {
     grantedBy: async (by) => {
       const s = await storesIfAny();
@@ -2871,7 +3042,7 @@ export function createTasks(deps: TasksDeps): TasksService {
     },
     capability: frozen,
     human: Object.freeze({ ensure: frozen.ensure, reply: frozen.reply }),
-    worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me, history: frozen.history, withdraw }),
+    worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me, history: frozen.history, withdraw, groupMove }),
     isActiveWorker: (actor) => active.has(actor),
     onSettle(listener) {
       listeners.add(listener);
@@ -2899,6 +3070,8 @@ export function createTasks(deps: TasksDeps): TasksService {
     takeBack,
     review,
     reviewGroup,
+    groupDetail,
+    groupSet,
     tests,
     onGraded(listener) {
       gradedListeners.add(listener);
@@ -2977,6 +3150,8 @@ function hours(v: unknown): number {
 }
 
 const HOUR_MS = 3_600_000;
+/** The most characters a group move's reason holds. */
+const GROUP_REASON_MAX = 1000;
 const DAY_MS = 24 * HOUR_MS;
 
 /** A type's pay: sats to the msat, 0 to `PAY_SATS_MAX`; 0 (or none) is unpaid. */

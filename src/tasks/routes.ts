@@ -7,7 +7,7 @@
  * segment (`acme%2Fpet-match`), as a workflow's do.
  *
  * - `GET /tasks/types` → `{ types }`
- * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, payOn?, tests?, copies?, attachments?, standing?, round?, check? }`
+ * - `PUT /tasks/types/:name { app, answer, leaseSeconds?, withinHours?, enabled?, open?, paySats?, holdHours?, payOn?, tests?, copies?, attachments?, standing?, round?, check?, groups? }`
  *   → `{ type }`: the whole type (a PUT: what is left out is the default;
  *   open, `tests`, `copies`, `attachments`, `standing`, `round` and `check` off). Whether a
  *   paid open type qualifies newcomers is the admin's (ruling 12)
@@ -39,7 +39,10 @@
  *   `test=true` the test instances alone, `false` the real tasks;
  *   `status=disputed` the copies tasks whose answers did not agree;
  *   `group` the tasks of one group (`task/reply`'s `group`)
- * - `GET /tasks/groups[?type=&limit=]` → `{ groups }`: the groups the runs
+ * - `GET /tasks/groups/:id` → `{ group, events, tasks }`; `POST /tasks/groups/status { type, group, to, reason? }` or
+ *   `POST /tasks/groups/:id/status { to, reason? }` → `{ group, event, reviewed? }`: an admin's move of a managed group
+ *   (task type `groups`, src/tasks/task-groups.ts); 409 `bad_move`, 400 `reason_required`
+ * - `GET /tasks/groups[?type=&status=&owner=&idle=1&limit=]` → `{ groups }`: the groups the runs
  *   named, the one with the newest task first, each with its tasks,
  *   answers, verdicts (`ok`, `rejected`, `unreviewed`) and `workers`
  * - `POST /tasks/groups/review { group, type?, verdict, why? }` →
@@ -138,6 +141,9 @@ export interface TaskRoutesDeps {
   review?: TasksService["review"];
   /** §9.6 over a group of tasks: the service's, as `review`. */
   reviewGroup?: TasksService["reviewGroup"];
+  /** A managed group's detail and an admin's move of its status: the service's, as `reviewGroup`. */
+  groupDetail?: TasksService["groupDetail"];
+  groupSet?: TasksService["groupSet"];
   /** The staff's tests (§7.1): the service's, never on a capability.
    *  Absent (a host's own store): the test routes answer 501. */
   tests?: TasksService["tests"];
@@ -178,7 +184,7 @@ const PAYOUT_KEY = /^[0-9a-f]{64}$/;
 /** A grant's worker `@me`: the person granting, to try the work themself. */
 export const ME = "@me";
 
-const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
+const STATUS: Partial<Record<TaskErrorCode, 400 | 403 | 404 | 409>> = {
   bad_request: 400,
   bad_schema: 400,
   unknown_type: 404,
@@ -190,6 +196,11 @@ const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
   no_answer: 404,
   in_use: 409,
   final: 409,
+  unknown_group: 404,
+  group_closed: 409,
+  bad_move: 409,
+  reason_required: 400,
+  not_owner: 403,
 };
 
 export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
@@ -358,6 +369,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(b["standing"] !== undefined ? { standing: b["standing"] as { workflow: string } | null } : {}),
         ...(b["round"] !== undefined ? { round: b["round"] as { workflow: string } | null } : {}),
         ...(b["check"] !== undefined ? { check: b["check"] as { step: string; config?: Record<string, unknown> } | null } : {}),
+        ...(b["groups"] !== undefined ? { groups: b["groups"] as Record<string, unknown> | null } : {}),
       };
       // The admin saving a new invite-only type holds it, to try it.
       const who = (await by(c)).by;
@@ -547,9 +559,56 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
       const limit = c.req.query("limit");
       const n = limit ? Number(limit) : undefined;
       if (n !== undefined && (!Number.isSafeInteger(n) || n <= 0)) throw new TaskError("bad_request", "limit is a whole number above 0");
-      return { groups: await tasks.groups!({ ...(c.req.query("type") ? { type: c.req.query("type")! } : {}), ...(n !== undefined ? { limit: n } : {}) }) };
+      const idle = c.req.query("idle");
+      return {
+        groups: await tasks.groups!({
+          ...(c.req.query("type") ? { type: c.req.query("type")! } : {}),
+          ...(c.req.query("status") ? { status: c.req.query("status")! } : {}),
+          ...(c.req.query("owner") ? { owner: c.req.query("owner")! } : {}),
+          ...(idle === "1" || idle === "true" ? { idle: true } : {}),
+          ...(n !== undefined ? { limit: n } : {}),
+        }),
+      };
     });
   });
+
+  /** A managed group: its row, the history of its status and its tasks. */
+  app.get("/tasks/groups/:id", async (c) => {
+    if (!deps.groupDetail) return (await refuse(c)) ?? c.json({ error: "this server's task store is its host's: groups are not available here", code: "not_available" }, 501);
+    return answer(c, async () => {
+      const out = await deps.groupDetail!(c.req.param("id"));
+      if (!out) throw new TaskError("unknown_group", "no such group");
+      return out;
+    });
+  });
+
+  /** An admin's move of a group's status: by its type and key (a group named before its type managed them gets its row now), or by its row's id. */
+  const groupMoveRoute = (id: (c: Context) => string | undefined) => async (c: Context) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.groupSet) return c.json({ error: "this server's task store is its host's: groups are not available here", code: "not_available" }, 501);
+    try {
+      const b = await body(c);
+      for (const k of Object.keys(b)) if (!["type", "group", "to", "reason"].includes(k)) throw new TaskError("bad_request", `a group's move is type, group, to and reason, not ${k}`);
+      for (const k of ["type", "group", "to", "reason"]) if (b[k] !== undefined && typeof b[k] !== "string") throw new TaskError("bad_request", `${k} is a string`);
+      const gid = id(c);
+      return c.json(
+        await deps.groupSet({
+          ...(gid !== undefined ? { id: gid } : {}),
+          ...(gid === undefined && b["type"] !== undefined ? { type: b["type"] as string } : {}),
+          ...(gid === undefined && b["group"] !== undefined ? { group: b["group"] as string } : {}),
+          to: b["to"] as string,
+          ...(b["reason"] !== undefined ? { reason: b["reason"] as string } : {}),
+          ...(await by(c)),
+        }),
+      );
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      throw err;
+    }
+  };
+  app.post("/tasks/groups/status", groupMoveRoute(() => undefined));
+  app.post("/tasks/groups/:id/status", groupMoveRoute((c) => c.req.param("id")));
 
   app.post("/tasks/groups/review", async (c) => {
     const refused = await refuse(c);

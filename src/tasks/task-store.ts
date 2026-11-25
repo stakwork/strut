@@ -40,6 +40,7 @@
  * `settle`'s own transaction when the service hands it a decider (`equal`),
  * else later by `decide`, guarded, while no lease can be taken.
  */
+import type { GroupRole, GroupRule } from "./task-groups.js";
 import type { AnswerSchema } from "./answer-schema.js";
 import type { AttachmentRule } from "./answer-files.js";
 import type { RunAttachment } from "../core.js";
@@ -206,6 +207,8 @@ export interface TaskType {
   payOn?: "ok";
   /** Its budget and per-worker daily cap (`LimitRule`); absent: none. */
   limits?: LimitRule;
+  /** Its groups' lifecycle (`GroupRule`); absent: a group is only a name. */
+  groups?: GroupRule;
   /** Its test rules (§7); absent: off, and the type works as without. */
   tests?: TestRules;
   /** Its copies rule (§7.6); absent: off, a step asks one worker. */
@@ -300,6 +303,58 @@ export interface TaskGroup {
   /** When its oldest task was made, and when its newest was answered. */
   first: number;
   last: number;
+  /** Only where the type manages its groups (`TaskType.groups`): the status
+   *  (`virtual`: a group named before the type managed them, no row yet,
+   *  read as the lifecycle's initial status), when and by whom it was set,
+   *  its owner (staff's read; a worker's has `mine`), `idle` when it has
+   *  taken no task for the type's idle hours, and what staff can move it to. */
+  id?: string;
+  status?: string;
+  statusAt?: number;
+  statusBy?: string;
+  owner?: string;
+  mine?: boolean;
+  virtual?: true;
+  idle?: true;
+  moves?: Array<{ to: string; reason: boolean }>;
+}
+
+/** A MANAGED group (`TaskType.groups`): one row for each (type, key), made
+ *  the first time a run names the key. Its status moves by the type's
+ *  lifecycle; every move is a `GroupEvent`. */
+export interface GroupRecord {
+  id: string;
+  type: string;
+  key: string;
+  title: string;
+  /** The worker who sent its first page. */
+  owner?: string;
+  status: string;
+  statusAt: number;
+  statusBy: string;
+  created: number;
+  updated: number;
+}
+
+/** One move of a group's status, appended and never changed. */
+export interface GroupEvent {
+  seq: number;
+  group: string;
+  from?: string;
+  to: string;
+  actor: string;
+  role: GroupRole | "system";
+  reason?: string;
+  at: number;
+  /** `api`: a person or worker's move; `legacy` and `backfill`: history brought in from elsewhere. */
+  source: "api" | "legacy" | "backfill";
+}
+
+export interface GroupRowQuery {
+  type?: string;
+  status?: string;
+  owner?: string;
+  limit?: number;
 }
 
 /** Which groups: of these types, and only those `worker` answered in. */
@@ -712,6 +767,17 @@ export interface TaskStore {
    *  first, `TASK_LIST_PAGE` at a time. Never a test instance. */
   groups(q?: TaskGroupQuery): Promise<TaskGroup[]>;
 
+  /** The managed groups' rows, the newest move first. */
+  groupRows(q?: GroupRowQuery): Promise<GroupRecord[]>;
+  groupRow(type: string, key: string): Promise<GroupRecord | undefined>;
+  groupById(id: string): Promise<GroupRecord | undefined>;
+  /** Makes the group's row with its first event, or returns the one there is (`created` false). */
+  ensureGroup(g: { id: string; type: string; key: string; owner?: string; status: string; at: number; actor: string; source?: GroupEvent["source"] }): Promise<{ group: GroupRecord; created: boolean }>;
+  /** Moves the group from `from` to `to` and appends the event, in one write; undefined when its status is no longer `from`. */
+  moveGroup(o: { id: string; from: string; to: string; actor: string; role: GroupEvent["role"]; reason?: string; at: number; source?: GroupEvent["source"] }): Promise<{ group: GroupRecord; event: GroupEvent } | undefined>;
+  /** A group's events, oldest first. */
+  groupEvents(id: string): Promise<GroupEvent[]>;
+
   putTest(t: NewTest): Promise<TestRecord>;
   test(id: string): Promise<TestRecord | undefined>;
   /** Oldest first; of one type, retired or not, when asked. */
@@ -784,6 +850,8 @@ export class MemoryTaskStore implements TaskStore {
   private readonly notes = new Map<string, string>();
   /** The verdicts (§9.6), by task and worker. */
   private readonly reviewRows = new Map<string, ReviewRecord>();
+  private readonly groupMap = new Map<string, GroupRecord>();
+  private readonly groupLog: GroupEvent[] = [];
   private seq = 0;
 
   async types(): Promise<TaskType[]> {
@@ -1281,6 +1349,47 @@ export class MemoryTaskStore implements TaskStore {
       .sort((a, b) => b.seq - a.seq)
       .slice(0, pageLimit(q.limit))
       .map(({ seq: _seq, who, ...g }) => ({ ...g, workers: [...who] }));
+  }
+
+  async groupRows(q: GroupRowQuery = {}): Promise<GroupRecord[]> {
+    return [...this.groupMap.values()]
+      .filter((g) => (!q.type || g.type === q.type) && (!q.status || g.status === q.status) && (!q.owner || g.owner === q.owner))
+      .sort((a, b) => b.updated - a.updated || (a.id < b.id ? 1 : -1))
+      .slice(0, pageLimit(q.limit))
+      .map(clone);
+  }
+
+  async groupRow(type: string, key: string): Promise<GroupRecord | undefined> {
+    return clone([...this.groupMap.values()].find((g) => g.type === type && g.key === key));
+  }
+
+  async groupById(id: string): Promise<GroupRecord | undefined> {
+    return clone(this.groupMap.get(id));
+  }
+
+  async ensureGroup(g: { id: string; type: string; key: string; owner?: string; status: string; at: number; actor: string; source?: GroupEvent["source"] }): Promise<{ group: GroupRecord; created: boolean }> {
+    const known = await this.groupRow(g.type, g.key);
+    if (known) return { group: known, created: false };
+    const rec: GroupRecord = { id: g.id, type: g.type, key: g.key, title: g.key, ...(g.owner ? { owner: g.owner } : {}), status: g.status, statusAt: g.at, statusBy: g.actor, created: g.at, updated: g.at };
+    this.groupMap.set(rec.id, rec);
+    this.groupLog.push({ seq: this.groupLog.length + 1, group: rec.id, to: g.status, actor: g.actor, role: "system", at: g.at, source: g.source ?? "api" });
+    return { group: clone(rec), created: true };
+  }
+
+  async moveGroup(o: { id: string; from: string; to: string; actor: string; role: GroupEvent["role"]; reason?: string; at: number; source?: GroupEvent["source"] }): Promise<{ group: GroupRecord; event: GroupEvent } | undefined> {
+    const g = this.groupMap.get(o.id);
+    if (!g || g.status !== o.from) return undefined;
+    g.status = o.to;
+    g.statusAt = o.at;
+    g.statusBy = o.actor;
+    g.updated = o.at;
+    const event: GroupEvent = { seq: this.groupLog.length + 1, group: g.id, from: o.from, to: o.to, actor: o.actor, role: o.role, ...(o.reason ? { reason: o.reason } : {}), at: o.at, source: o.source ?? "api" };
+    this.groupLog.push(event);
+    return { group: clone(g), event: clone(event) };
+  }
+
+  async groupEvents(id: string): Promise<GroupEvent[]> {
+    return this.groupLog.filter((e) => e.group === id).map(clone);
   }
 
   async putTest(t: NewTest): Promise<TestRecord> {

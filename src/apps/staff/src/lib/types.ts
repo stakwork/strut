@@ -284,6 +284,36 @@ export interface TaskGroup {
   workers: string[];
   first: number;
   last: number;
+  /** Only for a type that manages its groups: the group's status and who
+   *  holds it, `idle` when nothing new came for the type's idle hours,
+   *  `virtual` while it has no row yet (named before the type managed
+   *  groups: read as the first status), and what an admin can move it to. */
+  id?: string;
+  status?: string;
+  statusAt?: number;
+  statusBy?: string;
+  owner?: string;
+  idle?: true;
+  virtual?: true;
+  moves?: GroupMoveTo[];
+}
+
+/** A move an admin can make on a group: to a status, with a reason when asked. */
+export interface GroupMoveTo {
+  to: string;
+  reason: boolean;
+}
+
+/** One move of a group's status in its history. */
+export interface GroupEvent {
+  seq: number;
+  from?: string;
+  to: string;
+  actor: string;
+  role: string;
+  reason?: string;
+  at: number;
+  source: string;
 }
 
 /** A run's reply after the answer: a JSON object and files of its run. */

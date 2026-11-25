@@ -38,6 +38,7 @@
  * A type's title, what workers call it (plans/i18n.md), adds
  * `task_types.title` the same way (null: none).
  */
+import type { GroupRule } from "./task-groups.js";
 import type { StatementSync } from "node:sqlite";
 import { opt, type Row, type TaskDb } from "./db.js";
 import type { AnswerSchema } from "./answer-schema.js";
@@ -69,6 +70,9 @@ import {
   type StandingRule,
   type LimitRule,
   type LeaseTotals,
+  type GroupEvent,
+  type GroupRecord,
+  type GroupRowQuery,
   type TaskGroup,
   type TaskGroupQuery,
   type TaskListQuery,
@@ -127,6 +131,33 @@ create table if not exists ${name} (
 const TASKS_V1_COLUMNS = "seq, id, type, workflow, run_id, path, show, files, root, job, status, created, due, settled_at, answer, by";
 
 const SCHEMA = `
+create table if not exists task_groups (
+  id text primary key,
+  type text not null,
+  key text not null,
+  title text not null,
+  owner text,
+  status text not null,
+  status_at integer not null,
+  status_by text not null,
+  meta text,
+  created integer not null,
+  updated integer not null,
+  unique (type, key)
+) strict;
+create table if not exists task_group_events (
+  seq integer primary key autoincrement,
+  group_id text not null,
+  from_status text,
+  to_status text not null,
+  actor text not null,
+  role text not null,
+  reason text,
+  at integer not null,
+  source text not null
+) strict;
+create index if not exists task_group_events_group on task_group_events(group_id, seq);
+create index if not exists task_groups_status on task_groups(type, status, updated);
 create table if not exists task_types (
   name text primary key,
   app text not null,
@@ -221,6 +252,7 @@ const ADDED: Array<[table: string, column: string, type: string]> = [
   ["task_types", "limits", "text"],
   ["task_types", "check_rule", "text"],
   ["task_types", "pay_on", "text"],
+  ["task_types", "groups_rule", "text"],
 ];
 
 /** Every index, made once its table and columns are there (a rebuilt
@@ -293,13 +325,13 @@ export class SqliteTaskStore implements TaskStore {
       types: p("select * from task_types order by name"),
       type: p("select * from task_types where name = ?"),
       putType: p(
-        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only, attachments, standing, round_rule, title, limits, check_rule, pay_on)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `insert into task_types (name, app, answer, lease_seconds, within_hours, enabled, changed_at, changed_by, pay_msat, hold_hours, tests, copies, invite_only, attachments, standing, round_rule, title, limits, check_rule, pay_on, groups_rule)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict (name) do update set app = excluded.app, answer = excluded.answer, lease_seconds = excluded.lease_seconds,
            within_hours = excluded.within_hours, enabled = excluded.enabled, changed_at = excluded.changed_at, changed_by = excluded.changed_by,
            pay_msat = excluded.pay_msat, hold_hours = excluded.hold_hours, tests = excluded.tests, copies = excluded.copies,
            invite_only = excluded.invite_only, attachments = excluded.attachments, standing = excluded.standing, round_rule = excluded.round_rule, title = excluded.title, limits = excluded.limits, check_rule = excluded.check_rule,
-           pay_on = excluded.pay_on`,
+           pay_on = excluded.pay_on, groups_rule = excluded.groups_rule`,
       ),
       deleteType: p("delete from task_types where name = ?"),
       openOfType: p("select 1 from tasks where type = ? and status = 'open' limit 1"),
@@ -573,6 +605,7 @@ export class SqliteTaskStore implements TaskStore {
         t.limits ? JSON.stringify(t.limits) : null,
         t.check ? JSON.stringify(t.check) : null,
         t.payOn ?? null,
+        t.groups ? JSON.stringify(t.groups) : null,
       );
       return typeOf(this.s.type.get(t.name) as Row);
     });
@@ -966,6 +999,58 @@ export class SqliteTaskStore implements TaskStore {
     });
   }
 
+  async groupRows(q: GroupRowQuery = {}): Promise<GroupRecord[]> {
+    const where = [q.type ? "type = ?" : "", q.status ? "status = ?" : "", q.owner ? "owner = ?" : ""].filter(Boolean);
+    const args = [q.type, q.status, q.owner].filter((v): v is string => !!v);
+    const sql = `select * from task_groups ${where.length ? `where ${where.join(" and ")}` : ""} order by updated desc, id desc limit ?`;
+    return (this.db.prepare(sql).all(...args, pageLimit(q.limit)) as Row[]).map(groupOf);
+  }
+
+  async groupRow(type: string, key: string): Promise<GroupRecord | undefined> {
+    const r = this.db.prepare("select * from task_groups where type = ? and key = ?").get(type, key) as Row | undefined;
+    return r && groupOf(r);
+  }
+
+  async groupById(id: string): Promise<GroupRecord | undefined> {
+    const r = this.db.prepare("select * from task_groups where id = ?").get(id) as Row | undefined;
+    return r && groupOf(r);
+  }
+
+  async ensureGroup(g: { id: string; type: string; key: string; owner?: string; status: string; at: number; actor: string; source?: GroupEvent["source"] }): Promise<{ group: GroupRecord; created: boolean }> {
+    return this.db.tx(() => {
+      const made = Number(
+        this.db.prepare("insert into task_groups (id, type, key, title, owner, status, status_at, status_by, created, updated) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (type, key) do nothing").run(g.id, g.type, g.key, g.key, g.owner ?? null, g.status, g.at, g.actor, g.at, g.at).changes,
+      );
+      if (made) this.db.prepare("insert into task_group_events (group_id, from_status, to_status, actor, role, reason, at, source) values (?, null, ?, ?, 'system', null, ?, ?)").run(g.id, g.status, g.actor, g.at, g.source ?? "api");
+      return { group: groupOf(this.db.prepare("select * from task_groups where type = ? and key = ?").get(g.type, g.key) as Row), created: made === 1 };
+    });
+  }
+
+  async moveGroup(o: { id: string; from: string; to: string; actor: string; role: GroupEvent["role"]; reason?: string; at: number; source?: GroupEvent["source"] }): Promise<{ group: GroupRecord; event: GroupEvent } | undefined> {
+    return this.db.tx(() => {
+      const moved = Number(this.db.prepare("update task_groups set status = ?, status_at = ?, status_by = ?, updated = ? where id = ? and status = ?").run(o.to, o.at, o.actor, o.at, o.id, o.from).changes);
+      if (moved !== 1) return undefined;
+      const r = this.db.prepare("insert into task_group_events (group_id, from_status, to_status, actor, role, reason, at, source) values (?, ?, ?, ?, ?, ?, ?, ?)").run(o.id, o.from, o.to, o.actor, o.role, o.reason ?? null, o.at, o.source ?? "api");
+      const group = groupOf(this.db.prepare("select * from task_groups where id = ?").get(o.id) as Row);
+      const event: GroupEvent = { seq: Number(r.lastInsertRowid), group: o.id, from: o.from, to: o.to, actor: o.actor, role: o.role, ...(o.reason ? { reason: o.reason } : {}), at: o.at, source: o.source ?? "api" };
+      return { group, event };
+    });
+  }
+
+  async groupEvents(id: string): Promise<GroupEvent[]> {
+    return (this.db.prepare("select * from task_group_events where group_id = ? order by seq").all(id) as Row[]).map((r) => ({
+      seq: Number(r.seq),
+      group: r.group_id as string,
+      ...(opt<string>(r.from_status) !== undefined ? { from: r.from_status as string } : {}),
+      to: r.to_status as string,
+      actor: r.actor as string,
+      role: r.role as GroupEvent["role"],
+      ...(opt<string>(r.reason) !== undefined ? { reason: r.reason as string } : {}),
+      at: Number(r.at),
+      source: r.source as GroupEvent["source"],
+    }));
+  }
+
   async putTest(t: NewTest): Promise<TestRecord> {
     return this.db.tx(() => {
       this.s.insertTest.run(
@@ -1157,6 +1242,8 @@ function typeOf(r: Row): TaskType {
   const check = opt<string>(r.check_rule);
   if (check !== undefined) t.check = JSON.parse(check) as CheckRule;
   if (opt<string>(r.pay_on) === "ok") t.payOn = "ok";
+  const groupsRule = opt<string>(r.groups_rule);
+  if (groupsRule !== undefined) t.groups = JSON.parse(groupsRule) as GroupRule;
   const title = opt<string>(r.title);
   if (title !== undefined) t.title = title;
   const limits = opt<string>(r.limits);
@@ -1269,4 +1356,9 @@ function leaseOf(r: Row): Lease {
   const attachments = opt<string>(r.attachments);
   if (attachments !== undefined) l.attachments = JSON.parse(attachments) as RunAttachment[];
   return l;
+}
+
+function groupOf(r: Row): GroupRecord {
+  const owner = opt<string>(r.owner);
+  return { id: r.id as string, type: r.type as string, key: r.key as string, title: r.title as string, ...(owner !== undefined ? { owner } : {}), status: r.status as string, statusAt: Number(r.status_at), statusBy: r.status_by as string, created: Number(r.created), updated: Number(r.updated) };
 }

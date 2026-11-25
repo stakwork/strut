@@ -85,10 +85,10 @@ describe("task/set-type: its input, the merge and the card", () => {
     const gated = gatedSchema(typeChangeInput);
     assert.ok(gated instanceof z.ZodObject);
     const json = zodSchema(gated).jsonSchema as { properties: Record<string, unknown>; required: string[] };
-    assert.deepEqual(Object.keys(json.properties), ["name", "title", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "payOn", "limits", "tests", "copies", "attachments", "standing", "round", "check", "rationale"]);
+    assert.deepEqual(Object.keys(json.properties), ["name", "title", "app", "answer", "leaseSeconds", "withinHours", "enabled", "open", "paySats", "holdHours", "payOn", "limits", "tests", "copies", "attachments", "standing", "round", "check", "groups", "rationale"]);
     assert.deepEqual(json.required, ["name", "app"]);
     // The answer is said to be an object, so the model sends one; the rules too.
-    for (const k of ["answer", "tests", "copies", "attachments", "standing", "round", "check"]) assert.match(JSON.stringify(json.properties[k]), /"object"/, k);
+    for (const k of ["answer", "tests", "copies", "attachments", "standing", "round", "check", "groups"]) assert.match(JSON.stringify(json.properties[k]), /"object"/, k);
   });
 
   it("an object field sent as JSON text is parsed, then checked as an object; text that does not parse keeps the shape's refusal", () => {

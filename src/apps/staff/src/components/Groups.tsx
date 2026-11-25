@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { answerLine, captionOf, fmtWhen, GROUP_TASKS, pictureOf, reviewable, type Place } from "../lib/view";
-import type { Task, TaskGroup } from "../lib/types";
+import type { GroupEvent, GroupMoveTo, Task, TaskGroup } from "../lib/types";
 import { Chip, Crumbs, Empty, ErrorLine, Loading, Note, useAct } from "./bits";
 import type { AnswersProps } from "./Answers";
 import { AnswersHead, TypeSelect } from "./AnswersHead";
@@ -77,6 +77,8 @@ export function GroupList(props: AnswersProps) {
   const [type, setType] = useState(props.place.type ?? "");
   /** What shows; until picked, what is left to review when there is any. */
   const [picked, setPicked] = useState<Show | null>(null);
+  /** Only the groups in this status ("" all); "idle" those with nothing new for a while. */
+  const [status, setStatus] = useState("");
   const q = useQuery({
     queryKey: ["staff", "groups", type],
     queryFn: () => client.run<{ groups: TaskGroup[] }>("staff/groups", { ...(type ? { type } : {}), limit: 500 }),
@@ -90,7 +92,9 @@ export function GroupList(props: AnswersProps) {
     n.unreviewed += g.unreviewed;
   }
   const show: Show = picked ?? (props.shown.review && n.unreviewed > 0 ? "none" : "all");
-  const shown = groups.filter((g) => has(g, show));
+  const statuses = [...new Set(groups.flatMap((g) => (g.status ? [g.status] : [])))];
+  const idle = groups.filter((g) => g.idle).length;
+  const shown = groups.filter((g) => has(g, show) && (!status || (status === "idle" ? g.idle : g.status === status)));
 
   return (
     <section className="flex flex-col gap-3">
@@ -99,6 +103,23 @@ export function GroupList(props: AnswersProps) {
       </AnswersHead>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         {props.shown.review && <ShowChips show={show} set={setPicked} n={n} />}
+        {statuses.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2" aria-label="Status">
+            <Chip on={status === ""} onClick={() => setStatus("")}>
+              Any status
+            </Chip>
+            {statuses.map((st) => (
+              <Chip key={st} on={status === st} onClick={() => setStatus(st)} count={groups.filter((g) => g.status === st).length}>
+                {st}
+              </Chip>
+            ))}
+            {idle > 0 && (
+              <Chip on={status === "idle"} onClick={() => setStatus("idle")} count={idle}>
+                idle
+              </Chip>
+            )}
+          </div>
+        )}
         <Note className="ml-auto">A group is a set of answers a workflow put together, to review as one. Newest first.</Note>
       </div>
       {q.error ? (
@@ -120,7 +141,10 @@ export function GroupList(props: AnswersProps) {
               >
                 <Strip group={g} />
                 <span className="flex min-w-0 flex-1 basis-64 flex-col gap-0.5">
-                  <span className="font-semibold break-words">{g.group}</span>
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold break-words">{g.group}</span>
+                    <StatusBadge group={g} />
+                  </span>
                   <span className="text-sm text-muted-foreground">
                     {g.answers} answer{g.answers === 1 ? "" : "s"}
                     {g.workers.length ? ` · ${g.workers.slice(0, 3).map(who).join(", ")}${g.workers.length > 3 ? ` +${g.workers.length - 3}` : ""}` : ""} · {fmtWhen(g.last)}
@@ -181,6 +205,12 @@ export function GroupPage(props: AnswersProps & { group: string }) {
     queryFn: () => client.run<{ tasks: Task[] }>("staff/tasks", { group: props.group, ...(type ? { type } : {}), limit: GROUP_TASKS }),
   });
   const who = useWho(props.workers);
+  // The group as a type that manages its groups reads it: status, owner, moves.
+  const managed = useQuery({
+    queryKey: ["staff", "group-row", props.group, type ?? ""],
+    queryFn: () => client.run<{ groups: TaskGroup[] }>("staff/groups", { ...(type ? { type } : {}), limit: 500 }),
+  });
+  const row = managed.data?.groups.find((g) => g.group === props.group && (!type || g.type === type));
   const list: Place = { tab: "groups", ...(type ? { type } : {}) };
   const crumbs = <Crumbs go={props.go} to={[["Answers", list]]} here={props.group} />;
   if (q.error) {
@@ -225,6 +255,7 @@ export function GroupPage(props: AnswersProps & { group: string }) {
           </Button>
         )}
       </div>
+      {row?.status && <Lifecycle group={row} who={who} />}
       {props.shown.review && (
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
           <ShowChips show={show} set={setShow} n={n} />
@@ -264,6 +295,97 @@ export function GroupPage(props: AnswersProps & { group: string }) {
     </div>
   );
 }
+
+/** A group's status, and that nothing new came for a while. */
+function StatusBadge({ group: g }: { group: TaskGroup }) {
+  if (!g.status) return null;
+  return (
+    <>
+      <Badge variant={g.status === "rejected" || g.status === "abandoned" ? "destructive" : g.status === "accepted" ? "default" : "secondary"}>{g.status}</Badge>
+      {g.idle && <Badge variant="outline">idle: nothing new for a while</Badge>}
+    </>
+  );
+}
+
+/** Where a managed group stands: its status and owner, the moves an admin can
+ *  make (a reason asked where the lifecycle wants one), and the history. */
+function Lifecycle({ group: g, who }: { group: TaskGroup; who: (a: string) => string }) {
+  const client = useStrutClient();
+  const { act, busy, error } = useAct();
+  const [to, setTo] = useState<GroupMoveTo | null>(null);
+  const [reason, setReason] = useState("");
+  const detail = useQuery({
+    queryKey: ["staff", "group-detail", g.id],
+    queryFn: () => client.run<{ events: GroupEvent[] }>("staff/group", { id: g.id! }),
+    enabled: !!g.id,
+  });
+  const move = async (m: GroupMoveTo, why: string) => {
+    await act("group-move", () => client.run("staff/group-set", { type: g.type, group: g.group, to: m.to, ...(why.trim() ? { reason: why.trim() } : {}) }));
+    setTo(null);
+    setReason("");
+  };
+  return (
+    <section className="flex flex-col gap-2 rounded-lg border p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge group={g} />
+        <span className="text-sm text-muted-foreground">
+          {g.owner ? `owner ${who(g.owner)}` : "no owner yet"}
+          {g.statusAt ? ` · since ${fmtWhen(g.statusAt)}` : ""}
+        </span>
+        <span className="ml-auto flex flex-wrap gap-2">
+          {(g.moves ?? []).map((m) => (
+            <Button
+              key={m.to}
+              size="sm"
+              variant={m.to === "accepted" ? "default" : "outline"}
+              disabled={busy !== null}
+              onClick={() => (m.reason ? (setTo(to?.to === m.to ? null : m), setReason("")) : void move(m, ""))}
+            >
+              {MOVE_LABEL[m.to] ?? m.to}
+            </Button>
+          ))}
+        </span>
+      </div>
+      {to && (
+        <form
+          className="flex flex-wrap items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (reason.trim()) void move(to, reason);
+          }}
+        >
+          <input
+            autoFocus
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder={`Why ${(MOVE_LABEL[to.to] ?? to.to).toLowerCase()}? (the owner reads it)`}
+            className="h-9 min-w-64 flex-1 rounded-md border bg-background px-3 text-sm"
+          />
+          <Button type="submit" size="sm" disabled={busy !== null || !reason.trim()}>
+            {MOVE_LABEL[to.to] ?? to.to}
+          </Button>
+        </form>
+      )}
+      <ErrorLine error={error} />
+      {g.virtual && <Note>Named before this type managed its groups: its history starts with the first move.</Note>}
+      {(detail.data?.events.length ?? 0) > 0 && (
+        <ol className="flex flex-col gap-1 text-sm">
+          {[...detail.data!.events].reverse().map((e) => (
+            <li key={e.seq} className="flex flex-wrap gap-x-2 text-muted-foreground">
+              <span className="tabular-nums">{fmtWhen(e.at)}</span>
+              <span className="font-medium text-foreground">{e.from ? `${e.from} → ${e.to}` : e.to}</span>
+              <span>by {e.role === "system" ? who(e.actor) : `${e.role} ${who(e.actor)}`}</span>
+              {e.reason && <span className="break-words">“{e.reason}”</span>}
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+/** A status's button, in the person's words. */
+const MOVE_LABEL: Record<string, string> = { accepted: "Accept", rejected: "Reject", reopened: "Reopen", abandoned: "Abandon", submitted: "Mark submitted" };
 
 function Tile(props: { task: Task; who: (a: string) => string; review: boolean; busy: boolean; go: (p: Place) => void; onReview: (worker: string | undefined, verdict: "ok" | "rejected", why?: string) => void }) {
   const t = props.task;
