@@ -1,12 +1,14 @@
 # One job agent: the builder folds into the job
 
-Status: proposed (2026-11-24). The owner, that day: *"clearly the
+Status: built, and merged by the owner on 2026-11-25 (strut#891, #892,
+#893, #896). Proposed the day before, on his words that day: *"clearly the
 job/builder split is stupid and might just need to go away? Which is the
 'default' though? … do you think an agent would do worse with soooo many
 tools? Do you think it makes sense for orchestrator to choose? maybe its
 not 2 different workflows, but 2 modes (and can be run as both also)?"*
-This plan answers those questions; every point in it is mine and open
-until he rules.
+This plan answered those questions. Where a point was built on a default
+he did not rule on, the open questions say so. Open still: 9, and what
+"Measured" lists.
 
 Reviewed against the code the same day, and changed where it did not
 hold: `meta/run-step` asks too (§6); the builder's own paragraphs, and a
@@ -18,10 +20,15 @@ Work items 1 to 3 are built (strut#891, #892, #893). Building item 3
 changed two things, written back here on 2026-11-25: the page is a file
 in git, and it has no parent yet (§2, open questions 2 and 8).
 
-Items 4 and 6 are built on `feature/one-job-agent` (2026-11-25,
-strut#896), on the defaults of open questions 6 to 8, with one thing
-folded in at the owner's word: an app says where it is changed (§7).
-Item 5, the measurement, ran the same day: see "Measured" below.
+Items 4, 6 and 7 are built (strut#896), on the defaults of open
+questions 6 to 8, with one thing folded in at the owner's word: an app
+says where it is changed (§7). Item 5, the measurement, ran the same day:
+see "Measured" below.
+
+Two changes beside this plan landed with it. The person's assistant and a
+job hold the two steps a Concept page is changed with, each asking first
+(strut#898). And `meta/run-step` runs a step as its caller, so a card the
+step makes has an owner (strut#899).
 
 It reverses a ruling: on 2026-10-20 the owner ruled that building workflows
 is separate work, and the authoring tools are never granted to a regular
@@ -394,12 +401,16 @@ authoring calls where nothing is built). 9 is not answered.
 
 | # | Question | Answer | Status |
 | --- | --- | --- | --- |
-| 1 | Is the split worth keeping | Direction: it "might just need to go away" | owner's question, 2026-11-24, not a ruling |
-| 2 | The default | `job` | proposed |
-| 3 | Who chooses | The orchestrator chooses the kind, never the tools | proposed |
-| 4 | Two workflows or two modes | One workflow; the kind's page is the mode | proposed |
+| 1 | Is the split worth keeping | No: one agent. `builder` stays as the door for another server | built; the owner merged it, 2026-11-25 |
+| 2 | The default | `job` | built, merged |
+| 3 | Who chooses | The orchestrator chooses the kind, never the tools | built, merged |
+| 4 | Two workflows or two modes | One workflow; the kind's page is the mode | built, merged |
 
 ## Open questions, each with a default
+
+Each was built on its default unless its line says otherwise. Still open
+after the measurement: 9. Question 3 stays at its default too: the
+measurement showed no wrong pick among the overlapping tools.
 
 1. **The door for another server.** Default: keep `builder` for peers,
    with no shell, as now. The alternative is opening `job` to peers. That
@@ -468,21 +479,22 @@ authoring calls where nothing is built). 9 is not answered.
 1. **Now, on its own:** grant a job `app/list`, `app/get`, `app/look` and
    `app/calls`. This fixes the miss above. `app/look` runs the page as the
    person, as opening it does. It also corrects `plans/app-calls.md`'s
-   line, and `job.yaml`'s comment "No app/*".
+   line, and `job.yaml`'s comment "No app/*". Built: strut#891.
 2. **Before any grant of `meta/run-step`:** the refusal (§6), with two
    tests: a job's `meta/run-step` on a type its `approve` names is
    refused, and a workflow that holds the same step still publishes and
-   runs. It ships on its own.
+   runs. It ships on its own. Built: strut#892.
 3. The `Workflow Language` page (§2): the third rendering, the builder's
    paragraphs from one source, the pin on the builder's rendering, the
    pages opened in a compaction's summary. Nothing reads the page yet:
    it is built with no parent, as a file in git (open questions 2 and 8).
+   Built: strut#893.
 4. On one branch, together: `Workflow Builder` under `Job` and under its
    cap (open question 7), `Job.md`'s paragraph, where `Workflow Language`
    hangs (open question 8), `job.yaml`'s tools and approvals (§3),
    `src/job-seed.ts` tests, and where an app is changed (§7). Any one of
    them changes what every job does, so the branch does not merge before
-   item 5. Built 2026-11-25 on `feature/one-job-agent`.
+   item 5. Built: strut#896.
 5. **Measure the branch before it merges:** on a scratch strut with a
    real model, the same asks through the two agents as they are and
    through the one, each ask twice (one run of an agent says little):
@@ -498,13 +510,14 @@ authoring calls where nothing is built). 9 is not answered.
    Compare whether each job's claims verified, what it cost, how many
    turns it took, and which tools it picked. In the jobs that build
    nothing, count any authoring call (`meta/publish-workflow`,
-   `meta/create-step`, `app/publish`): there should be none.
+   `meta/create-step`, `app/publish`): there should be none. Run
+   2026-11-25, before the merge: see "Measured".
 6. The orchestrator (§5) and `job/start`: `workflow` with no `peer`,
    `peer` with no `workflow`. It merges with item 4, not after it. With
    `Workflow Builder` under `Job`, the orchestrator's first list names it
    as a kind of job, while its page still sent a build to `builder`,
-   and `job/start` refused a `kind` beside `workflow: builder`. Built
-   2026-11-25 on the same branch.
+   and `job/start` refused a `kind` beside `workflow: builder`. Built:
+   strut#896.
 7. Docs: `docs/jobs.md`, `docs/builder.md`, `docs/security.md` (§6); a
-   status line on `plans/builder-job.md` naming this plan. Done with
-   items 4 and 6.
+   status line on `plans/builder-job.md` naming this plan. Done:
+   strut#896.
