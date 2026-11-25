@@ -59,7 +59,7 @@ export default defineStep({
     "`debug`: `window.__debug` read just after the shot (left out when the page sets none); `debugReads`: each debug step's read, in order, as { step, value } or { step, error } (step = its number in the list); a read is capped at 8,000 chars of JSON, ending in a note when cut, and 2 s; " +
     "`errors`: console errors, page errors, failed or 4xx/5xx requests, and `debug: …` when the last read failed; `appErrors`: what the app's error boundary reported during the look — and, when you are an agent, you SEE the screenshot. " +
     "It runs the page: its reads and writes are real calls, as when a person opens it. " +
-    "With `path`, `saveAs` (e.g. \"public/screenshots/home.png\") also writes the shot into the app directory, returned as `saved`; list it under `screenshots:` in app.yaml (a path, or { file, caption }) and the package store shows it. A look that drew nothing, could not host the app or stopped saves nothing (`saveError` says why).",
+    "With `path`, `saveAs` (e.g. \"screenshots/home.png\") also writes the shot into the app directory, returned as `saved`; list it under `screenshots:` in app.yaml (a path, or { file, caption }) and the package store shows it. A look that drew nothing, could not host the app or stopped saves nothing (`saveError` says why).",
   input: z.object({
     name: z.string().describe("The app's name on this server."),
     version: z.string().optional().describe("A published version to look at (v1, v2, …). The active (live) version when omitted. Not with `path`."),
@@ -82,11 +82,11 @@ export default defineStep({
     saveAs: z
       .string()
       .optional()
-      .describe("With `path`: also write the shot into the app directory here, a .png inside it (\"public/screenshots/home.png\"), for app.yaml's `screenshots`. Replaces a file already there."),
+      .describe("With `path`: also write the shot into the app directory here, a .png inside it (\"screenshots/home.png\"), for app.yaml's `screenshots`. Replaces a file already there."),
   })
     .refine((q) => !(q.path && q.version), { message: "app/look takes `path` (a directory, unpublished) or `version` (a published one), not both" })
     .refine((q) => !q.saveAs || q.path, { message: "`saveAs` writes into the app directory you are working on: it needs `path`" })
-    .refine((q) => !q.saveAs || !saveAsProblem(q.saveAs), { message: "`saveAs` is a .png path inside the app directory, relative, with no . or .. (\"public/screenshots/home.png\")" }),
+    .refine((q) => !q.saveAs || !saveAsProblem(q.saveAs), { message: "`saveAs` is a .png path inside the app directory, relative, with no . or .. (\"screenshots/home.png\")" }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
     const apps = requireApps(ctx.services);

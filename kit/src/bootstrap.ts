@@ -23,6 +23,10 @@ import { createBridgeAccount, createBridgeVisitor, type AccountClient, type Visi
 import { createBridgeCamera, type CameraBridgeApp, type CameraClient } from "./camera/client.js";
 import { installWebLN } from "./wallet/webln.js";
 
+// The app's `public/` by path: the build's table module calls this before the
+// app's own modules run (plans/app-files-by-path.md).
+export { installAppFiles } from "./files.js";
+
 /** A framed page has no browser storage: every host frames it under
  *  `sandbox="allow-scripts"`, never `allow-same-origin`, so its origin is
  *  opaque and `localStorage` / `sessionStorage` throw on first touch — a
