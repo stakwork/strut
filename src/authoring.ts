@@ -5,7 +5,7 @@ import { claimsBlockOf, flowFromYaml, workflowDisabled, type WorkflowMetadata, t
 import type { RunStore } from "./store.js";
 import { countUsage, generateRunId, localRuns, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
-import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
+import { runStep, cassettePath, RUN_STEP_FLOW, type RunStepResult } from "./run-step.js";
 import { flowClosure, grantWidenedBy, stepHashesFor } from "./closure.js";
 import { isSealedStep, sealedInClosure } from "./sealed.js";
 import { reachRefusal, stepInReach, type BuilderReach } from "./reach.js";
@@ -507,6 +507,21 @@ export interface RunStepArgs {
   branch?: string;
   /** The calling run is a trial (`ctx.trial`, src/trials.ts): so is the step's run. */
   trial?: RunTrial;
+  /** The calling run (`ctx.runId`): the step's run is tracked under it, as
+   *  meta/run-workflow's child is (RUN_CONTROL_SPEC §2.2). A cancel of the
+   *  caller reaches it, and what reads a run's tree reads the caller's: the
+   *  conversation a proposal it makes shows in, whether its person is an
+   *  admin, a public or peer tree's holds. */
+  parentRunId?: string;
+  /** The calling run's job, the job whose budget it spends, its person and
+   *  who pays (`ctx.job`, `ctx.budgetJob`, `ctx.actor`, `ctx.principal`):
+   *  the step runs as that run's tool call would, its secrets and model
+   *  grants bound to the person, its files in the job's directory, and a
+   *  proposal it makes is theirs (`proposerOf`). */
+  job?: string;
+  budgetJob?: string;
+  actor?: string;
+  principal?: string;
 }
 
 /**
@@ -849,30 +864,54 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       if (args.cassette && !deps.dataDir) {
         return { error: "Cassette record/replay is unavailable (no local data dir configured)." };
       }
-      return runStep(
-        type,
-        registry,
-        deps.services,
-        {
-          config: coerceJsonArg(args.config) as Record<string, unknown> | undefined,
-          input: coerceJsonArg(args.input),
-          params: coerceJsonArg(args.params) as Record<string, unknown> | undefined,
-          workspace,
-          keep: args.keep === true,
-          ...(args.branch ? { branch: args.branch } : {}),
-          ...(args.trial ? { trial: args.trial } : {}),
-          ...(deps.reach ? { aiAuthored: true } : {}),
-          ...(args.cassette
-            ? {
-                cassette: {
-                  mode: args.cassette,
-                  path: cassettePath(deps.dataDir!, args.cassetteName ?? type),
-                },
-              }
-            : {}),
-        },
-        { store, workspace, claims: claims?.reader ?? null, onKept: (key, runId) => deps.verifier?.schedule(key, runId) },
-      );
+      // Tracked under the calling run, as meta/run-workflow's child is.
+      const runId = generateRunId();
+      let tracked: ReturnType<NonNullable<typeof deps.trackRun>> | undefined;
+      try {
+        tracked = args.parentRunId ? deps.trackRun?.(RUN_STEP_FLOW, runId, args.parentRunId, args.job ? { id: args.job } : undefined, args.branch) : undefined;
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+      try {
+        const result = await runStep(
+          type,
+          registry,
+          deps.services,
+          {
+            runId,
+            config: coerceJsonArg(args.config) as Record<string, unknown> | undefined,
+            input: coerceJsonArg(args.input),
+            params: coerceJsonArg(args.params) as Record<string, unknown> | undefined,
+            workspace,
+            keep: args.keep === true,
+            ...(tracked?.controller ? { controller: tracked.controller } : {}),
+            ...(args.job ? { job: args.job } : {}),
+            ...(args.budgetJob ? { budgetJob: args.budgetJob } : {}),
+            ...(args.actor ? { actor: args.actor } : {}),
+            ...(args.principal ? { principal: args.principal } : {}),
+            ...(args.branch ? { branch: args.branch } : {}),
+            ...(args.trial ? { trial: args.trial } : {}),
+            ...(deps.reach ? { aiAuthored: true } : {}),
+            ...(args.cassette
+              ? {
+                  cassette: {
+                    mode: args.cassette,
+                    path: cassettePath(deps.dataDir!, args.cassetteName ?? type),
+                  },
+                }
+              : {}),
+          },
+          { store, workspace, claims: claims?.reader ?? null, onKept: (key, runId) => deps.verifier?.schedule(key, runId) },
+        );
+        // A child's cost is its parent's (the runner writes a top-level
+        // run's alone): what its model calls spent rides on this step's
+        // `step.end`, as meta/run-workflow's does.
+        if (!tracked?.controller?.parent) return result;
+        const spent = countUsage(result.events);
+        return withUsage(result, spent.modelCalls || spent.cost ? spent : undefined);
+      } finally {
+        tracked?.untrack();
+      }
     },
 
     async listWorkflows(query, limit) {

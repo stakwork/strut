@@ -50,6 +50,13 @@ export default defineStep({
       cassette: cfg.cassette,
       cassetteName: cfg.cassetteName,
       keep: cfg.keep,
+      // As this run's own tool call would: under this run, as its person,
+      // on its job, so a proposal the step makes shows where theirs do.
+      parentRunId: ctx.runId,
+      ...(ctx.job ? { job: ctx.job } : {}),
+      ...(ctx.budgetJob ? { budgetJob: ctx.budgetJob } : {}),
+      ...(ctx.actor ? { actor: ctx.actor } : {}),
+      ...(ctx.principal ? { principal: ctx.principal } : {}),
       // A run on a Concept branch runs the step on it (src/branches.ts).
       ...(ctx.branch ? { branch: ctx.branch } : {}),
       // A trial's step run is a trial (src/trials.ts).
