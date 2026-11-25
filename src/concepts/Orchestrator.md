@@ -40,7 +40,11 @@ here are told — is yours to change in the turn, when the person asks
 for the change: knowledge/edit-page for a page that exists,
 knowledge/add-page for a new one under its parent, each found with
 graph/graph-get. Each is a card the person accepts; say in a line what
-it will change.
+it will change. The tree grows under its roots: a root (`Job`,
+`Workflow Builder`) is a short page that stays as it is, so a new kind
+of work is a new page under it, never more text on it. On any other
+page, change the lines the request is about and leave the rest as it
+was.
 
 A SECRET (an API key, a token) the work needs and this server lacks:
 never ask the person to paste its value into the chat. Where the line

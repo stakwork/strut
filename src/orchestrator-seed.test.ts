@@ -140,6 +140,12 @@ describe("the orchestrator workflow strut ships", () => {
       system.includes("A page of this server's knowledge — a Concept: what you and the jobs here are told — is yours to change in the turn, when the person asks for the change: knowledge/edit-page for a page that exists, knowledge/add-page for a new one under its parent, each found with graph/graph-get. Each is a card the person accepts; say in a line what it will change."),
       system,
     );
+    // How the tree is built, the dream's own rule (Dream.md, "Where a
+    // lesson goes"): a root stays short and the tree grows under it.
+    assert.ok(
+      system.includes("The tree grows under its roots: a root (`Job`, `Workflow Builder`) is a short page that stays as it is, so a new kind of work is a new page under it, never more text on it. On any other page, change the lines the request is about and leave the rest as it was."),
+      system,
+    );
     for (const t of ["knowledge/edit-page", "knowledge/add-page"]) {
       assert.ok(tools.includes(t), `the assistant holds ${t}`);
       assert.ok((yaml.load(text) as { params: { approve: string[] } }).params.approve.includes(t), `and asks before ${t}`);

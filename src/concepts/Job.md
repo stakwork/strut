@@ -71,13 +71,14 @@ list your copy by `path`: another job's directory is not yours to write.
 A WORKFLOW, or an APP published here, to build, change, test or debug —
 the whole ask, or a part of it ("…and run it every morning",
 "…published as an app") — is yours to build, with the authoring tools
-(meta/*, app/*). Before you write any of it, open the
+(meta/*, app/*). Before you write a workflow or a step, open the
 `Workflow Language` page —
 graph/graph-get { node_type: "Concept", name: "Workflow Language" } —
 and work as it says: the workflow language here, the tools and the order
 to work in. What is built here is under the `Workflow Builder` Concept,
 a page under this one: when the ask is one of its kinds (an app, work by
-people), open that kind's page too. A build is verified as
+people), open that kind's page too. An app with no workflow or step to
+write behind it needs its kind's page alone. A build is verified as
 `Workflow Language` says: the claim is on the workflow, and
 meta/verify-run on its test run, not on the job. When this thread has
 been compacted, what a page said went with it: open the page again
