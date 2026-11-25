@@ -280,6 +280,18 @@ export function fmtSats(msat: number): string {
   return `${shown.toLocaleString("en-US", { maximumFractionDigits: 3 })} sat${shown === 1 ? "" : "s"}`;
 }
 
+/** A task's fiat approve value as currency (`$12.50`), in its `currency`
+ *  (USD when none, or one Intl does not know); "" when it has none. */
+export function fmtApprove(t: { approveFiat?: number; currency?: string }): string {
+  if (typeof t.approveFiat !== "number" || !Number.isFinite(t.approveFiat)) return "";
+  const currency = t.currency?.trim().toUpperCase() || "USD";
+  try {
+    return t.approveFiat.toLocaleString("en-US", { style: "currency", currency });
+  } catch {
+    return t.approveFiat.toLocaleString("en-US", { style: "currency", currency: "USD" });
+  }
+}
+
 /** A duration in ms, short: `45 s`, `12 min`, `3.5 h`, `2 d`. */
 export function fmtDuration(ms: number): string {
   const s = Math.max(0, ms) / 1000;

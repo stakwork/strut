@@ -26,7 +26,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
-  answerFields, answerFiles, answerLease, answerLine, captionOf, earningText, emptyFields, fmtClock, fmtSats, fmtWhen, GROUP_TASKS, happenings, jsonText, labelOf, parseJson, pictureOf, reviewable,
+  answerFields, answerFiles, answerLease, answerLine, captionOf, earningText, emptyFields, fmtApprove, fmtClock, fmtSats, fmtWhen, GROUP_TASKS, happenings, jsonText, labelOf, parseJson, pictureOf, reviewable,
   reviewSummary, runOf, shortActor, shownLine, STATUS_WORDS, tookText, toReviewOf, whoOf,
   type Place, type ReviewFilter,
 } from "../lib/view";
@@ -172,6 +172,7 @@ export function TaskList(props: AnswersProps) {
                 <TableHead>Sent</TableHead>
                 <TableHead className="text-right" title="From taking the task to sending the answer">Took</TableHead>
                 {props.shown.earnings && <TableHead className="text-right">Pay</TableHead>}
+                <TableHead className="text-right" title="What approving the task is worth, in fiat">Approve value</TableHead>
                 <TableHead className="w-52">{props.shown.review ? "Review" : "Status"}</TableHead>
               </TableRow>
             </TableHeader>
@@ -198,6 +199,7 @@ export function TaskList(props: AnswersProps) {
                     <TableCell className="whitespace-nowrap tabular-nums">{fmtWhen(t.settledAt ?? t.created)}</TableCell>
                     <TableCell className="text-right whitespace-nowrap tabular-nums">{tookText(lease) || "—"}</TableCell>
                     {props.shown.earnings && <TableCell className="text-right whitespace-nowrap tabular-nums">{payText(lease) || "—"}</TableCell>}
+                    <TableCell className="text-right whitespace-nowrap tabular-nums">{fmtApprove(t) || "—"}</TableCell>
                     <TableCell>
                       {!props.shown.review || answers.length === 0 ? (
                         <StatusWords task={t} />
@@ -580,6 +582,7 @@ export function TaskDetail(props: AnswersProps & { id: string }) {
               {props.shown.earnings && lease && (lease.earning || lease.payMsat) && (
                 <Row label="Pay">{lease.earning ? earningText(lease.earning, now) : `${fmtSats(lease.payMsat!)}, being booked`}</Row>
               )}
+              {fmtApprove(t) && <Row label="Approve value">{fmtApprove(t)}</Row>}
               <Row label="Task type">
                 <button type="button" className="underline underline-offset-2" onClick={() => props.go({ tab: "types", type: t.type })}>
                   {t.type}
