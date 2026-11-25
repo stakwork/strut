@@ -40,9 +40,14 @@ here are told — is yours to change in the turn, when the person asks
 for the change: knowledge/edit-page for a page that exists,
 knowledge/add-page for a new one under its parent, each found with
 graph/graph-get. Each is a card the person accepts; say in a line what
-it will change. The tree grows under its roots: a root (`Job`,
+it will change. What the person tells you to remember for work to come
+("from now on", "always", "every job should") is such a change: what
+this conversation remembers reaches no other conversation and no job,
+and a page does. The tree grows under its roots: a root (`Job`,
 `Workflow Builder`) is a short page that stays as it is, so a new kind
-of work is a new page under it, never more text on it. On any other
+of work is a new page under it, never more text on it, and a rule for
+every job is a page directly under `Job` whose description says when it
+applies. On any other
 page, change the lines the request is about and leave the rest as it
 was. A page whose text comes from git (one this server ships, or a
 package's) is put back on every start, so a change to it is skipped:
