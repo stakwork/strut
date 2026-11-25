@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronDown, ChevronRight, Clock, FileText, ImagePlus, Loader2, LogIn, MessageSquare, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
-  appLink, fieldsOf, formats, formProblem, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
+  appLink, fieldsOf, fiatOfMsat, fiatText, formats, satsWithFiat, formProblem, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
   type FormSchema, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerType,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
@@ -71,10 +71,21 @@ async function shrink(file: File): Promise<File> {
   }
 }
 
-/** What a task pays, as a pill: `⚡ Earn 50 sats`, or `+50 sats` once earned. */
-export function PayPill({ msat, earned = false, className }: { msat: number; earned?: boolean; className?: string }) {
+/** msat as sats with their fiat beside them (`50 sats (≈ $0.03)`) at the
+ *  server's rate (`task/me`'s `rate`), in `currency` (USD by default); the
+ *  sats alone when no rate can be read. */
+export function useSatsWithFiat(currency?: string): (msat: number) => string {
+  const fmt = useFormats();
+  const rate = useWorker().data?.rate;
+  return (msat) => satsWithFiat(msat, rate, fmt, currency);
+}
+
+/** What a task pays, as a pill: `⚡ Earn 50 sats (≈ $0.03)`, or `+50 sats`
+ *  once earned. The fiat is the server's rate (`task/me`'s `rate`) in
+ *  `currency` (USD by default), left off when no rate can be read. */
+export function PayPill({ msat, earned = false, currency, className }: { msat: number; earned?: boolean; currency?: string; className?: string }) {
   const w = useWorkerWords();
-  const sats = useFormats().sats(msat);
+  const sats = useSatsWithFiat(currency)(msat);
   return (
     <span
       className={cn(
@@ -700,6 +711,8 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
 function LevelCard({ xp, pendingMsat }: { xp: NonNullable<WorkerInfo["xp"]>; pendingMsat?: number }) {
   const w = useWorkerWords();
   const fmt = useFormats();
+  const rate = useWorker().data?.rate;
+  const earned = fiatOfMsat(xp.sats * 1000, rate);
   const to = xp.toSats;
   const share = to === undefined ? 1 : Math.min(1, Math.max(0, (xp.sats - xp.fromSats) / (to - xp.fromSats)));
   const pendingSats = Math.floor((pendingMsat ?? 0) / 1000);
@@ -709,7 +722,7 @@ function LevelCard({ xp, pendingMsat }: { xp: NonNullable<WorkerInfo["xp"]>; pen
         <div className={cn("grid size-11 shrink-0 place-items-center rounded-[14px] text-lg font-bold tabular-nums", ACCENT_FILL)}>{xp.level}</div>
         <div className="min-w-0">
           <div className="text-[17px] leading-tight font-semibold">{w.level(xp.level)}</div>
-          <div className="text-[13px] text-muted-foreground tabular-nums">{w.xp(fmt.number(xp.sats))}</div>
+          <div className="text-[13px] text-muted-foreground tabular-nums">{w.xp(fmt.number(xp.sats))}{earned !== undefined && ` (≈ ${fiatText(earned, undefined, fmt.locale)})`}</div>
         </div>
       </div>
       <div
@@ -831,11 +844,11 @@ function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; on
 }
 
 function Stat({ label, msat, note }: { label: string; msat: number; note?: string }) {
-  const fmt = useFormats();
+  const sats = useSatsWithFiat();
   return (
     <div className="rounded-2xl border bg-card p-3.5">
       <div className="text-[13px] text-muted-foreground">{label}</div>
-      <div className="mt-0.5 text-lg font-semibold tabular-nums">{fmt.sats(msat)}</div>
+      <div className="mt-0.5 text-lg font-semibold tabular-nums">{sats(msat)}</div>
       {note && <div className="mt-0.5 text-xs text-muted-foreground">{note}</div>}
     </div>
   );
@@ -846,6 +859,7 @@ function Stat({ label, msat, note }: { label: string; msat: number; note?: strin
 function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string | undefined }) {
   const w = useWorkerWords();
   const fmt = useFormats();
+  const sats = useSatsWithFiat();
   const e = item.earned;
   let badge: ReactNode;
   if (item.status === "open") badge = <Badge tone="accent">{w.inYourHand}</Badge>;
@@ -867,8 +881,8 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
         </div>
       </div>
       <div className="flex flex-col items-end gap-1">
-        {e && <span className={cn("text-sm font-semibold tabular-nums", e.takenBack && "text-muted-foreground line-through")}>+{fmt.sats(e.msat)}</span>}
-        {item.pending && <span className="text-sm font-semibold text-muted-foreground tabular-nums">+{fmt.sats(item.pending.msat)}</span>}
+        {e && <span className={cn("text-sm font-semibold tabular-nums", e.takenBack && "text-muted-foreground line-through")}>+{sats(e.msat)}</span>}
+        {item.pending && <span className="text-sm font-semibold text-muted-foreground tabular-nums">+{sats(item.pending.msat)}</span>}
         {badge}
       </div>
       {item.review?.verdict === "rejected" && item.review.why && <div className="w-full min-w-0 text-sm [overflow-wrap:anywhere] text-destructive">{w.toFix(item.review.why)}</div>}
