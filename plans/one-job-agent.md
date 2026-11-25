@@ -9,7 +9,7 @@ This plan answers those questions; every point in it is mine and open
 until he rules.
 
 Reviewed against the code the same day, and changed where it did not
-hold: a gated step stays gated (§6); the builder's own paragraphs, and a
+hold: `meta/run-step` asks too (§6); the builder's own paragraphs, and a
 rendering for an agent with a shell (§2); a build's kind and its page's
 cap (§1); the orchestrator's `builds` list kept (§5); the measure moved
 before the grants, with jobs that build nothing in it. Work item 1 is
@@ -176,8 +176,8 @@ In `job.yaml`:
 A raw `graph/query` stays under the `jobs` reader's scope
 (`src/graph/scope.ts`), as every job read is.
 
-`approve` gates the tool call alone. §6 is what keeps a gated step gated
-once the job holds `meta/run-step`.
+`approve` gates the tool call alone. §6 keeps `meta/run-step` from being
+the same call without the ask.
 
 ### 4. What stays of `builder`
 
@@ -213,14 +213,13 @@ once the job holds `meta/run-step`.
   `peer` with no `workflow` launches the peer's `builder`; today
   `job/start` refuses `peer` unless `workflow` is `builder`.
 
-### 6. A gated step stays gated
+### 6. `meta/run-step` asks too
 
 `approve` holds back the agent's own tool call and nothing else. Read in
 the code, not run:
 
 - `meta/run-step` runs any step that is not sealed (`runStep`,
-  `src/authoring.ts`), and a workflow the agent publishes can hold the
-  step and be run with `meta/run-workflow`.
+  `src/authoring.ts`).
 - Strut's own gated steps refuse outside an accepted proposal
   (`ctx.proposal`: `package/install`, `remote/buy-credit`,
   `task/set-type`, `app/make-public`), and a host's gates hold whatever
@@ -228,17 +227,31 @@ the code, not run:
 - A package's gate does neither. strut-gmail grants the job `send` with
   `approve: [send]`, and the step sends when it is called.
 
-The builder has had this route since it shipped. This plan puts
-`meta/run-step` in every job's hands, beside the packages' tools.
+So a job that holds `send` as a tool that asks first, with `meta/run-step`
+beside it, could send in one call with no card.
 
-The fix, before the grant: what an agent's `approve` names is held
-wherever a model chooses the step, as `holdSubAgent` holds a sub-agent it
-launches (`src/steps/core/agent.ts`). The agent step passes its gated
-types down with the tool's context. `meta/run-step` refuses one, and so
-does a step of one inside a version of a workflow the AI wrote
-(`aiWroteVersion`, the rule a reach applies at run time). The refusal
-says to ask for it as the tool. A workflow a person or a package wrote
-runs as written.
+The fix, before the grant, is one refusal: `meta/run-step` refuses a type
+the calling agent's own `approve` names, and says to call it as the tool.
+The agent step knows that list and passes it with the tool's context, as
+it already holds a sub-agent to it (`holdSubAgent`,
+`src/steps/core/agent.ts`).
+
+What it leaves alone, on purpose:
+
+- **Building.** A workflow that holds `send` publishes and runs as
+  written, for the builder and for a job: that is what a build is. What
+  the builder can build does not change.
+- **The `builder` workflow.** Packages grant to `job` alone
+  (`packageJobGrants`), so its `approve` never names a package's step,
+  and its `meta/run-step` runs one as it does now.
+
+What stays as it is today:
+
+- A test run of a workflow that sends, sends, with no card.
+- An agent can still put `send` in a workflow of one step and run it. The
+  refusal closes the route of one call, not every route: an agent that
+  writes step code reaches the same API with the same secret, and only a
+  reach (`builder.reach`) stops that.
 
 ## Decided
 
@@ -270,10 +283,11 @@ runs as written.
    (`scripts/gateway-smoke.ts`), and every tool in view on a model or a
    route that takes neither. Search (`tool_search`) is the other way; it
    is a tool the provider runs, and a routed strut avoids those.
-5. **Where a gate holds (§6).** Default: `meta/run-step`, and a version
-   of a workflow the AI wrote. The alternative is every run launched
-   under the turn, which would also stop a package's own workflow that
-   sends as it was written to.
+5. **How far a gate reaches (§6).** Default: the agent's own
+   `meta/run-step`, and no further. A workflow that holds a gated step
+   publishes and runs as written, as the builder's do now. Holding the
+   gate inside a workflow the AI writes was considered and dropped: it
+   would stop a build whose ask is a workflow that sends.
 6. **What a build's claim is about.** Default: the workflow, verified
    with `meta/verify-run`, as the builder does now: the claim stays with
    the workflow after the job. The job's own ledger then shows nothing
@@ -293,9 +307,10 @@ runs as written.
    `app/calls`. This fixes the miss above. `app/look` runs the page as the
    person, as opening it does. It also corrects `plans/app-calls.md`'s
    line, and `job.yaml`'s comment "No app/*".
-2. **Before any grant of `meta/run-step`:** the hold on gated steps (§6),
-   with a test that a job's `meta/run-step` on a type its `approve` names
-   is refused. It closes the builder's route too, and ships on its own.
+2. **Before any grant of `meta/run-step`:** the refusal (§6), with two
+   tests: a job's `meta/run-step` on a type its `approve` names is
+   refused, and a workflow that holds the same step still publishes and
+   runs. It ships on its own.
 3. The `Workflow Language` page (§2): the third rendering, the builder's
    paragraphs from one source, the pin on the builder's rendering, the
    pages opened in a compaction's summary. Nothing reads the page yet.
@@ -319,5 +334,5 @@ runs as written.
    `meta/create-step`, `app/publish`): there should be none.
 6. The orchestrator (§5) and `job/start`: `workflow` with no `peer`,
    `peer` with no `workflow`.
-7. Docs: `docs/jobs.md`, `docs/builder.md`, `docs/security.md` (the
-   hold); a status line on `plans/builder-job.md` naming this plan.
+7. Docs: `docs/jobs.md`, `docs/builder.md`, `docs/security.md` (§6); a
+   status line on `plans/builder-job.md` naming this plan.
