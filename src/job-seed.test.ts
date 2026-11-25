@@ -79,6 +79,12 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     // A build is the job's own: the rules first, then the kinds built here.
     for (const must of [
       "is yours to build, with the authoring tools (meta/*, app/*)",
+      // The rules are for a workflow or a step: an app with neither behind
+      // it is built from its own page (measured 2026-11-25: the agent read
+      // both pages whenever there was a workflow to write, 6 of 6, and
+      // `App` alone for a front-end-only app, 9 of 10).
+      "Before you write a workflow or a step, open the `Workflow Language` page",
+      "An app with no workflow or step to write behind it needs its kind's page alone.",
       'open the `Workflow Language` page — graph/graph-get { node_type: "Concept", name: "Workflow Language" } — and work as it says',
       "What is built here is under the `Workflow Builder` Concept, a page under this one",
       "the claim is on the workflow, and meta/verify-run on its test run, not on the job",

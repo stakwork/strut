@@ -384,6 +384,14 @@ What it showed:
    where the ask read a repository to build an app.
 7. **Bash where the builder used the editor.** The one agent wrote and
    tested with its shell in builds.
+8. **An app with a workflow behind it.** Not in the 13 asks, so run after
+   the merge: three asks for an app that needs something on the server,
+   twice each on fresh servers, $2.04. The one agent opened both
+   `Workflow Language` and `App` before writing anything, 6 of 6, and
+   each workflow was published once and works. So the skip in finding 4
+   is the agent reading "no workflow to write", and the `Job` page's line
+   now says that: the rules before a workflow or a step, an app with
+   neither behind it from its own page.
 
 What it does not show:
 
