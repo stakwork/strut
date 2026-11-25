@@ -9,7 +9,7 @@ import type { StrutCapabilities } from "../../../capabilities.js";
 import { conceptFiles } from "../../../concept-seed.js";
 import { MemorySessionStore, sessionsCapability, type NewTurn } from "../../../session-store.js";
 import { createRegistry } from "../../registry.js";
-import recent, { alreadySent, capRecent, RECENT, recentItems, renderRecent, type RecentPage } from "./recent.js";
+import recent, { alreadySent, capRecent, newerDay, RECENT, recentItems, renderRecent, type RecentPage } from "./recent.js";
 
 const items = (n: number, tag: string) => Array.from({ length: n }, (_, i) => ({ name: `${tag}${i}` }));
 
@@ -72,6 +72,12 @@ describe("context/recent (pure)", () => {
     assert.equal(alreadySent([line(0, "g"), line(4, "h"), line(8, "h", 2)], "h"), true, "a compaction before the turn that sent it");
     assert.equal(alreadySent([line(0, "h")], ""), false);
   });
+
+  it("orders a page by the day the section shows, so a time that moves within a day moves nothing", () => {
+    const times = ["2026-11-24T23:00:00.000Z", undefined, "2026-11-25T00:30:00.000Z", "2026-11-24T01:00:00.000Z", "not a time"];
+    assert.deepEqual([...times].sort(newerDay), ["2026-11-25T00:30:00.000Z", "2026-11-24T23:00:00.000Z", "2026-11-24T01:00:00.000Z", "not a time", undefined]);
+    assert.equal(newerDay("2026-11-24T01:00:00.000Z", "2026-11-24T23:00:00.000Z"), 0, "the same day: the step breaks the tie by name");
+  });
 });
 
 describe("context/recent (step)", () => {
@@ -89,6 +95,7 @@ describe("context/recent (step)", () => {
     await writeFile(join(dir, "f.md"), page("Recent Fails", { step: "test/fails" }, "Fails."));
     const calls: Array<string | undefined> = [];
     let failures = 0;
+    let slowRuns = 0;
     const fails = defineStep({
       type: "test/fails",
       effect: "read",
@@ -124,6 +131,7 @@ describe("context/recent (step)", () => {
       input: z.object({}),
       output: z.any(),
       async run() {
+        slowRuns++;
         await new Promise((r) => setTimeout(r, RECENT.stepMs + 500));
         return { items: [{ name: "too late" }] };
       },
@@ -132,7 +140,7 @@ describe("context/recent (step)", () => {
     const store = new MemorySessionStore();
     const services = { conceptFiles: conceptFiles([{ dir, prefix: "test/concepts/" }]), sessions: sessionsCapability(store) };
     const ctx = (actor?: string) => ({ runId: "r", path: "wf/recent", services, registry, ...(actor ? { actor } : {}) }) as unknown as StepContext<StrutCapabilities>;
-    return { dir, calls, failures: () => failures, store, ctx, done: () => rm(dir, { recursive: true, force: true }) };
+    return { dir, calls, failures: () => failures, slowRuns: () => slowRuns, store, ctx, done: () => rm(dir, { recursive: true, force: true }) };
   }
 
   it("lists each page's items as the person, leaves out a write step, a missing one and a slow one, and keeps their docs", async () => {
@@ -151,6 +159,12 @@ describe("context/recent (step)", () => {
       assert.ok(text.includes("Recent Fails:\nFails.\n"), "a step that fails: its docs");
       assert.deepEqual(t.calls, ["ann"]);
 
+      // A turn while the slow step still runs waits on that run (it ends
+      // within this turn's 2 s) and starts no other.
+      const during = await recent.run(recent.input.parse({ name: "Recent Work" }), t.ctx("ann"));
+      assert.ok(during.text.includes("Recent Slow:\nSlow.\n- too late"), during.text);
+      assert.equal(t.slowRuns(), 1, "one run of the slow step, however many turns came while it ran");
+
       // Kept a while per person: a busy chat does not rerun the steps. The
       // slow step went on, and its answer is kept for the next turn.
       await new Promise((r) => setTimeout(r, 600));
@@ -158,6 +172,7 @@ describe("context/recent (step)", () => {
       assert.deepEqual(t.calls, ["ann"]);
       assert.equal(t.failures(), 1, "a failure is kept as long as an answer: one log line, not one a turn");
       assert.ok(again.text.includes("Recent Slow:\nSlow.\n- too late"), again.text);
+      assert.equal(t.slowRuns(), 1);
       // Another person: their own list. No person: the server's.
       const bob = await recent.run(recent.input.parse({ name: "Recent Work" }), t.ctx("bob"));
       assert.ok(bob.text.includes("- bob's thing: yours") && bob.hash !== out.hash);

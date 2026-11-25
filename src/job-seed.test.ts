@@ -40,6 +40,9 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       ["job/dir", "foreach", "context/concept", "context/concept", "context/recent", "if", "agent", "acp/prompt", "pack"],
       "job/dir → checkouts → the Job page → the kind's page → Recent Work → strut's agent, or a local one over ACP → pack",
     );
+    // Recent Work needs nothing before it, so it runs beside the checkouts; the agent waits for both.
+    assert.deepEqual(flow.steps.find((s) => s.id === "recent")!.depends, []);
+    assert.deepEqual(flow.steps.find((s) => s.id === "own")!.depends, ["kindPage", "recent"]);
     assert.equal(flow.inputBlock?.["prompt"]?.required ?? true, true);
     for (const k of ["workspace", "kind", "session", "repos", "agent", "mode", "model", "cwd"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
 

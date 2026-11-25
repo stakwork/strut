@@ -91,6 +91,9 @@ describe("the orchestrator workflow strut ships", () => {
     // message when it changed, and the turn keeps its hash on its line.
     assert.equal(message({}, undefined, { text: "RECENT\n\n", hash: "h" }), "RECENT\n\nTue 17 Nov 11:34. make it public");
     assert.deepEqual(flow.steps.find((st) => st.id === "recent")!.config, { name: "{{ params.recentConcept }}", session: "{{ input.session }}" });
+    // It needs nothing before it, so it runs beside the rest; the turn waits for it.
+    assert.deepEqual(flow.steps.find((st) => st.id === "recent")!.depends, []);
+    assert.deepEqual(flow.steps.find((st) => st.id === "turn")!.depends, ["standing", "recent", "scripted"]);
     assert.deepEqual(turn["tags"], { recent: "{{ recent.hash }}" });
     assert.equal((yaml.load(text) as { params: { recentConcept: string } }).params.recentConcept, "Recent Work");
     assert.match(promptOf(text), /approves it there — the person themself, when the line before their\s+message says they are an admin\./);

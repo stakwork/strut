@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { recentOutput } from "../context/recent.js";
+import { newerDay, recentOutput } from "../context/recent.js";
 import { requireApps } from "./_shared.js";
 
 /**
@@ -13,7 +13,7 @@ import { requireApps } from "./_shared.js";
 export default defineStep({
   type: "app/recent",
   description:
-    "The apps you most likely mean: { items: [{ name, what (its title, whose it is — you opened it, you made it, on this server —, where it comes from when not made here — strut's own, package <name>, repo <address>, opened here — and its description), at? }] }, the ones you opened in the last hour first, then yours, then the rest. " +
+    "The apps you most likely mean: { items: [{ name, what (its title, whose it is — you opened it, you made it, on this server —, where it comes from when not made here — strut's own, package <name>, repo <address>, opened here — and its description), at? }] }, the ones you opened in the last hour first, then yours, then the rest, each by name. " +
     "app/get for one, app/look to see it.",
   effect: "read",
   input: z.object({}),
@@ -28,7 +28,9 @@ export default defineStep({
       }),
     );
     const rank = (r: (typeof rows)[number]) => (r.opened ? 0 : r.mine ? 1 : 2);
-    rows.sort((x, y) => rank(x) - rank(y) || (y.opened ?? "").localeCompare(x.opened ?? "") || x.a.name.localeCompare(y.a.name));
+    // By the day each was opened, then by name: an app page calling as the
+    // person every minute moves no app up (`newerDay`).
+    rows.sort((x, y) => rank(x) - rank(y) || newerDay(x.opened, y.opened) || x.a.name.localeCompare(y.a.name));
     return {
       // An admin's app (`admin: true`) only when it is theirs: the rest of
       // the list is what anyone here may mean.

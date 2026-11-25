@@ -64,6 +64,13 @@ describe("app/recent", () => {
       { name: "strut/knowledge", what: "Knowledge, on this server, strut's own: Concepts, claims and their trials" },
     ]);
   });
+
+  it("the ones opened the same day by name, so a page calling every minute moves none up", async () => {
+    const at: Record<string, string> = { "strut/knowledge": "2026-11-24T10:05:00.000Z", "strut/jamie": "2026-11-24T10:00:00.000Z", "acme/board": "2026-11-23T23:59:00.000Z" };
+    const calls = async (name: string) => ({ app: name, calls: at[name] ? [{ at: at[name] }] : [] });
+    const out = await appRecent.run({}, ctxOf({ apps: { ...services.apps, calls } }, "bob"));
+    assert.deepEqual(out.items.map((i) => i.name), ["strut/jamie", "strut/knowledge", "acme/board"]);
+  });
 });
 
 describe("meta/recent-workflows", () => {
@@ -97,6 +104,15 @@ describe("meta/recent-workflows", () => {
       { name: "never", what: "on this server" },
     ]);
   });
+
+  it("the step shows the ones run the same day by name, so a schedule every few minutes moves none up", async () => {
+    const ran = (name: string, at: string, mine = false) => ({ name, mine, lastRunAt: Date.parse(at) });
+    const authoring = {
+      recentWorkflows: async () => [ran("zeta", "2026-11-24T10:00:00Z"), ran("alpha", "2026-11-24T09:00:00Z"), ran("older", "2026-11-23T23:00:00Z"), ran("mine", "2026-11-01T09:00:00Z", true)],
+    };
+    const out = await workflowsRecent.run({}, ctxOf({ authoring }, "ann"));
+    assert.deepEqual(out.items.map((i) => i.name), ["mine", "alpha", "zeta", "older"]);
+  });
 });
 
 describe("job/recent", () => {
@@ -122,5 +138,16 @@ describe("job/recent", () => {
     } finally {
       await rm(dataDir, { recursive: true, force: true });
     }
+  });
+
+  it("the ones used the same day by name, so moving between two jobs moves neither", async () => {
+    const used = (job: string, title: string, usedAt: string) => ({ job, title, usedAt, runs: 1, holds: 0 });
+    const jobs = {
+      list: async () => [used("j2", "Zed", "2026-11-24T10:00:00.000Z"), used("j1", "Add a page", "2026-11-24T09:00:00.000Z"), used("j0", "Older", "2026-11-20T09:00:00.000Z")],
+      get: async () => null,
+      read: async () => null,
+    };
+    const out = await jobRecent.run({}, ctxOf({ jobs }, "ann"));
+    assert.deepEqual(out.items.map((i) => i.name), ["Add a page", "Zed", "Older"]);
   });
 });

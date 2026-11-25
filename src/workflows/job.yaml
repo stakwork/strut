@@ -70,15 +70,19 @@ steps:
   # What the person most likely means (plans/recent-work.md): the pages under
   # the `Recent Work` Concept, each listing the top few as the job's person,
   # at the head of the turn's prompt, and only when it changed since the
-  # job's thread last saw it (the turn keeps its hash in `tags`).
+  # job's thread last saw it (the turn keeps its hash in `tags`). It needs
+  # nothing above, so it runs beside them (a checkout takes longer than its
+  # page steps' 2 s); `own` waits for both.
   - id: recent
     type: context/recent
+    depends: []
     config:
       name: "{{ params.recentConcept }}"
       session: "{{ input.session || $job }}"
   # strut's own agent, unless the launch names a local one.
   - id: own
     type: if
+    depends: [kindPage, recent]
     config:
       cond: "{{ !input.agent }}"
   - id: work
