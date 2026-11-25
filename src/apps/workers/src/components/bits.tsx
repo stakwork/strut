@@ -165,7 +165,16 @@ export function Field(props: { label: string; hint?: ReactNode; children: ReactN
 /** A button that asks why first (a revoke's `why`, a take-back's): it opens
  *  into a line to write the reason in, then acts. No `window.prompt`: an app
  *  frame is sandboxed without modals. */
-export function ReasonButton(props: { label: string; placeholder: string; required?: boolean; disabled?: boolean; onAct: (why: string) => void; variant?: "ghost" | "outline" | "destructive" }) {
+export function ReasonButton(props: {
+  label: string;
+  placeholder: string;
+  required?: boolean;
+  disabled?: boolean;
+  onAct: (why: string) => void;
+  variant?: "ghost" | "outline" | "destructive";
+  /** The button that acts, once the reason is open: destructive unless said. */
+  confirm?: "default" | "destructive";
+}) {
   const [open, setOpen] = useState(false);
   const [why, setWhy] = useState("");
   if (!open) {
@@ -189,7 +198,7 @@ export function ReasonButton(props: { label: string; placeholder: string; requir
       />
       <Button
         size="xs"
-        variant="destructive"
+        variant={props.confirm ?? "destructive"}
         disabled={props.disabled || (props.required && !why.trim())}
         onClick={() => {
           props.onAct(why.trim());

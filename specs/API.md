@@ -3092,7 +3092,10 @@ worker** is in the header, on every tab (the panel below).
   by what is left to review. A group's page reads its tasks (`GET
   /tasks?group=&type=`) and draws them oldest first as tiles, each with its
   verdict, a filter (to review, rejected, OK) and **Mark the others OK**
-  (`POST /tasks/groups/review`).
+  (`POST /tasks/groups/review`). A group marked done shows **Done**; the
+  list filters **Open** / **Done** (`GET /tasks/groups?status=`), and a
+  group's page has **Mark done** or **Reopen**, with a reason if given
+  (`POST /tasks/groups/status`).
 - **One answer** (`task=<id>`), in the order a person asks: what was asked
   (the task's `show`: its words, its plain fields, its files), what the
   worker sent (its pictures large, the fields with a value as a short list,
@@ -3197,8 +3200,9 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/file { task, path }` | `GET /tasks/:id/files/<path>` | one file, as `run/files` answers: the task's own, an answer's, or one its reply lists |
 | `staff/take-back { task, worker?, why }` | `POST /tasks/:id/take-back` | `{ task, earnings }` |
 | `staff/review { task, worker?, verdict, why? }` | `PUT /tasks/:id/review` | `{ task, worker, lease, review, earning? }` |
-| `staff/groups { type?, limit? }` | `GET /tasks/groups` | `{ groups: [{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last }] }`, the one with the newest task first |
+| `staff/groups { type?, group?, status?, limit? }` | `GET /tasks/groups` | `{ groups: [{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last, status, statusAt?, statusBy?, why? }] }`, the one with the newest task first |
 | `staff/review-group { group, type?, verdict, why? }` | `POST /tasks/groups/review` | `{ reviewed, more }`: the verdict on every answer in the group with none yet, one `review` each; a verdict given stays |
+| `staff/group-status { type, group, status, why? }` | `POST /tasks/groups/status` | the group as `staff/groups` lists it: its status `open` or `done`, every change kept with who and when |
 | `staff/tests { type?, retired? }` | `GET /tasks/tests` | `{ tests }` |
 | `staff/test { id }` | `GET /tasks/tests/:id` | `{ test, instances }` |
 | `staff/save-test { id?, type?, show?, files?, expected?, grade? }` | `POST /tasks/tests`, or with `id` `PUT /tasks/tests/:id` | `{ test }` |
@@ -6492,7 +6496,7 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 | `task/skip` | `{ lease, reason?, all? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
 | `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, title?, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, pendingMsat?, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? }, rate?: { perBtc, at, source }, xp?: { sats, level, fromSats, toSats? } }`: `xp`, their XP and level (plans/worker-progress.md, src/tasks/levels.ts) — everything they ever earned here in whole sats, accepted less taken back, which withdrawing never lowers; Level 1 at 1k sats, 2 at 2.5k, 3 at 5k, then from 10k at Level 4 round steps (12k, 15k, 20k, 25k, 30k, 40k, 50k, 60k, 80k) and ten times as much every ten levels (1 BTC at Level 44), the last level, 118, at 21M BTC; `toSats` absent at the top; absent with no ledger; `rate`, the exchange rate this server trusts (`GET /rate`'s, src/payments/rate.ts), units of each currency per bitcoin by ISO 4217 code (`perBtc.USD`, `perBtc.EUR`, …), for a page to show fiat beside sats — sats are what is paid; absent when no rate can be read (waited on at most 1.5 s; the kit's `fiatOfMsat(msat, rate, "EUR")`); `pendingMsat`, what their answers on types that pay on ok will earn once OK'd (not in `balance`; absent when nothing waits) |
-| `task/history` | `{ all?, group?, groups? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, pending?: { msat }, reply?: { show?, files?, at }, group?, review?: { verdict, why?, at } }], groups?: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last }] }`: with `group`, every answer of theirs in it (at most 1000) instead of the newest 50; `groups: true` adds their own groups, their answers alone counted ("A run's reply", §22) |
+| `task/history` | `{ all?, group?, groups? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, pending?: { msat }, reply?: { show?, files?, at }, group?, review?: { verdict, why?, at } }], groups?: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last, status, statusAt?, why? }] }`: with `group`, every answer of theirs in it (at most 1000) instead of the newest 50; `groups: true` adds their own groups, their answers alone counted, each with the status staff set (never who set it) ("A run's reply", §22) |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
@@ -6635,8 +6639,9 @@ server whose task store is its host's (which answers none of them).
 | `GET /tasks/:id/files/<path>` | one of the task's `files`, as `task/file` answers it, read by staff with no lease (§9.4): a path on the task's list, one its run's reply lists (`task.reply.files`), or one its answers carried (a lease's `attachments`, read from the run's artifacts), only; `404 not_listed` for any other whether or not it exists, `404 no_file` when it is gone. A test instance's are its test's |
 | `POST /tasks/:id/take-back` | `{ worker?, why }` → `{ task, earnings: TakeBackOutcome[] }`: what the task's answers earned (or `worker`'s alone) taken back while it is HELD; `409 released` (with `earnings`) when every earning asked for is past its hold — then it is the worker's |
 | `PUT /tasks/:id/review` | `{ worker?, verdict, why? }` → `{ task, worker, lease, review: LeaseReview, earning? }`: a person's VERDICT on one answer ("Review" below), `ok` or `rejected` (which says `why`). `worker` only when the task has several answers (`400` otherwise: say whose); `404 no_answer` when it has none (or none by `worker`); `400` for a test instance's. `409 final` to change one once the answer's hold has ended |
-| `GET /tasks/groups?type=&limit=` | `{ groups: TaskGroup[] }`: the groups the runs named with `task/reply`'s `group`, one row a type and group, the one with the newest task first, 100 a page (`limit` at most 1,000): `{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last }` — its real tasks, their answers and verdicts, who answered, when its first task was made and its newest answered. `501 not_available` on a host's own store |
+| `GET /tasks/groups?type=&group=&status=&limit=` | `{ groups: TaskGroup[] }`: the groups the runs named with `task/reply`'s `group`, one row a type and group, the one with the newest task first, 100 a page (`limit` at most 1,000): `{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last, status, statusAt?, statusBy?, why? }` — its real tasks, their answers and verdicts, who answered, when its first task was made and its newest answered, and the status staff set (`open` until set; when, by whom and why from the newest change). `group` one group's rows; `status=open\|done` only those, filtered before the page. `501 not_available` on a host's own store |
 | `POST /tasks/groups/review` | `{ group, type?, verdict, why? }` → `{ reviewed, more }`: the verdict ("Review" below) on every answer in the group (of `type`, when given) that has none yet, one review each, oldest first; a verdict given stays. A rejection says `why`. At most 1,000 tasks a call: `more` when there may be others |
+| `POST /tasks/groups/status` | `{ type, group, status, why? }` → `TaskGroup`: the group's status, `open` or `done`, with `why` if given; every change is kept with who set it and when, and the newest is the status. A mark: nothing is refused for a done group. `400 bad_request` for another status, `404 unknown_group` for a group with no task of `type` |
 
 ```jsonc
 // TaskType
@@ -7252,9 +7257,11 @@ an `image` step drew from their photo):
   leaves what was told as it was; a later reply without one keeps it. Staff
   read and review a group as one (`GET /tasks/groups`, `GET /tasks?group=`,
   `POST /tasks/groups/review`, §14.15's `staff/groups` and
-  `staff/review-group`, the Workers app's Answers by group); the worker reads their
-  groups and each answer's verdict and why (`task/history { groups, group
-  }`), so their app can show what they handed in and what was sent back.
+  `staff/review-group`, the Workers app's Answers by group) and mark it done
+  (`POST /tasks/groups/status`, `staff/group-status`); the worker reads their
+  groups, each with its status and why, and each answer's verdict and why
+  (`task/history { groups, group }`), so their app can show what they handed
+  in and what was sent back.
 
 - **Only the run that asked.** A workflow's step (`effect: "write"`, on the
   shared bag): the store reads the CALLING run off the step's run control

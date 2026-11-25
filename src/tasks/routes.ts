@@ -39,12 +39,17 @@
  *   `test=true` the test instances alone, `false` the real tasks;
  *   `status=disputed` the copies tasks whose answers did not agree;
  *   `group` the tasks of one group (`task/reply`'s `group`)
- * - `GET /tasks/groups[?type=&limit=]` → `{ groups }`: the groups the runs
- *   named, the one with the newest task first, each with its tasks,
- *   answers, verdicts (`ok`, `rejected`, `unreviewed`) and `workers`
+ * - `GET /tasks/groups[?type=&group=&status=&limit=]` → `{ groups }`: the
+ *   groups the runs named, the one with the newest task first, each with
+ *   its tasks, answers, verdicts (`ok`, `rejected`, `unreviewed`),
+ *   `workers` and the status staff set (`status`, `statusAt`, `statusBy`,
+ *   `why`); `status=open|done` those with it
  * - `POST /tasks/groups/review { group, type?, verdict, why? }` →
  *   `{ reviewed, more }`: the same verdict on every answer in the group
  *   with none yet (§9.6), one review each; a verdict given stays
+ * - `POST /tasks/groups/status { type, group, status, why? }` → the group:
+ *   its status `open` or `done`, every change kept with who and when;
+ *   `404 unknown_group` for a group with no task
  * - `GET /tasks/:id` → `{ task, run }`: `run` the run's status now and what
  *   it waits on (`{ status, waitingOn? }`), null for a test instance or a
  *   run not on file
@@ -114,7 +119,7 @@
  *   the worker's `task/*` steps
  */
 import type { Context, Hono } from "hono";
-import { TASK_STATUSES, VERDICTS, type TaskStatus, type Verdict } from "./task-store.js";
+import { TASK_STATUSES, VERDICTS, type GroupStatus, type TaskStatus, type Verdict } from "./task-store.js";
 import { WORKER_STATUSES, type WorkerStatus } from "./worker-store.js";
 import { TaskError, type PayOn, type TaskErrorCode, type TasksCapability, type TasksService } from "./tasks.js";
 import { TEST_FILE_MAX_BYTES } from "./test-files.js";
@@ -138,6 +143,8 @@ export interface TaskRoutesDeps {
   review?: TasksService["review"];
   /** §9.6 over a group of tasks: the service's, as `review`. */
   reviewGroup?: TasksService["reviewGroup"];
+  /** A group's status (open or done): the service's, as `review`. */
+  setGroupStatus?: TasksService["setGroupStatus"];
   /** The staff's tests (§7.1): the service's, never on a capability.
    *  Absent (a host's own store): the test routes answer 501. */
   tests?: TasksService["tests"];
@@ -184,6 +191,7 @@ const STATUS: Partial<Record<TaskErrorCode, 400 | 404 | 409>> = {
   unknown_type: 404,
   unknown_worker: 404,
   unknown_task: 404,
+  unknown_group: 404,
   unknown_test: 404,
   not_listed: 404,
   no_file: 404,
@@ -547,7 +555,8 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
       const limit = c.req.query("limit");
       const n = limit ? Number(limit) : undefined;
       if (n !== undefined && (!Number.isSafeInteger(n) || n <= 0)) throw new TaskError("bad_request", "limit is a whole number above 0");
-      return { groups: await tasks.groups!({ ...(c.req.query("type") ? { type: c.req.query("type")! } : {}), ...(n !== undefined ? { limit: n } : {}) }) };
+      const [type, group, status] = [c.req.query("type"), c.req.query("group"), c.req.query("status")];
+      return { groups: await tasks.groups!({ ...(type ? { type } : {}), ...(group ? { group } : {}), ...(status ? { status: status as GroupStatus } : {}), ...(n !== undefined ? { limit: n } : {}) }) };
     });
   });
 
@@ -567,6 +576,20 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
         ...(await by(c)),
       });
       return c.json(out);
+    } catch (err) {
+      if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
+      throw err;
+    }
+  });
+
+  app.post("/tasks/groups/status", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    if (!deps.setGroupStatus) return c.json({ error: "this server's task store is its host's: a group's status is not available here", code: "not_available" }, 501);
+    try {
+      const b = await body(c);
+      for (const k of Object.keys(b)) if (!["type", "group", "status", "why"].includes(k)) throw new TaskError("bad_request", `a group's status is type, group, status and why, not ${k}`);
+      return c.json(await deps.setGroupStatus({ type: b["type"] as string, group: b["group"] as string, status: b["status"] as GroupStatus, ...(b["why"] !== undefined ? { why: b["why"] as string } : {}), ...(await by(c)) }));
     } catch (err) {
       if (err instanceof TaskError) return c.json({ error: err.message, code: err.code }, STATUS[err.code] ?? 400);
       throw err;
