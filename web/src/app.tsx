@@ -51,7 +51,7 @@ import { INSTALL_LINK_PARAMS, parseInstallLink, type InstallLink } from "./store
 import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph, SidebarIcon } from "./icons";
 import { appKey, appMessage, appPageAddress, appToolInput } from "./app-links";
-import { STAFF_APP } from "./waiting";
+import { WORKERS_APP } from "./waiting";
 import { pickPage, type PageSession, type ServedBox } from "./page";
 import { MemberApps } from "./components/MemberApps";
 import { RunInputPopover } from "./components/RunInputPopover";
@@ -198,9 +198,9 @@ function Shell() {
   // `tool-input`, §7.1). The frame reloads when the builder publishes a new
   // version of it.
   const [apps, setApps] = useState<api.AppListEntry[]>([]);
-  // strut/staff is an admin's (plans/human-steps.md §9.1): listed here, a
+  // strut/workers is an admin's (plans/human-steps.md §9.1): listed here, a
   // waiting run's task links to it.
-  const staffListed = apps.some((a) => a.name === STAFF_APP && !a.peer);
+  const workersListed = apps.some((a) => a.name === WORKERS_APP && !a.peer);
   const [selectedApp, setSelectedApp] = useState<string | null>(initialUrl.get("app"));
   const [appInput, setAppInput] = useState<string | null>(initialUrl.get("input"));
   const [appQuery, setAppQuery] = useState("");
@@ -2200,7 +2200,7 @@ function Shell() {
               onOpenStep={openRunStep}
               onOpenJob={selectJob}
               onOpenApp={selectApp}
-              staffListed={staffListed}
+              workersListed={workersListed}
             />
           }
         />
@@ -2371,7 +2371,7 @@ function Shell() {
               events={flyoutEvents}
               onClose={closeFlyout}
               onOpenApp={selectApp}
-              staffListed={staffListed}
+              workersListed={workersListed}
               {...(!runIsLive && (runIsResumable || runControlStatus === "success")
                 ? { onRerunFrom: () => handleRerunFrom(truePath) }
                 : {})}

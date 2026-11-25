@@ -387,7 +387,7 @@ POST /dm/:id/delete                                            → the item, "de
   strut's host — `POST /mcp` with the host key (`STRUT_HOST_KEYS`'s
   `sphinx`), `x-strut-account: sphinx:<peer.pubkey>`, the peer's alias
   percent-encoded in `x-strut-account-name`, and the JSON-RPC body
-  `tools/call` `step_run { app: "strut/staff", type: "support/receive",
+  `tools/call` `step_run { app: "strut/workers", type: "support/receive",
   config: { records: [<record>] } }` (one record a call; several of ONE
   contact's may go in one call). A worker's file goes with its bytes:
   `file: { data: <standard base64>, name: <the sender's name> }` on the
@@ -457,7 +457,7 @@ POST /dm/:id/delete                                            → the item, "de
   `mediaType` and `fileName`. **The daemon keeps no bytes**: a failed file
   send is tried again under its `id` only with `file` again (`400
   bad_request` without), keeping its first type and name — strut's Retry
-  sends it from its own copy (a row of strut/staff's database); and `GET
+  sends it from its own copy (a row of strut/workers's database); and `GET
   /dm/:id/file` serves files the account RECEIVED alone (`404` on its own).
   Refusals before anything goes: `400 bad_request`, `400 too_long` (the
   caption and quoted id as JSON plus 1 KiB for the file's fields, over 32

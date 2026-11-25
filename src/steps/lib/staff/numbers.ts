@@ -8,7 +8,7 @@ export default defineStep({
   type: "staff/numbers",
   effect: "read",
   description:
-    "Each task type's (one with `type`) spend against its limits, and per worker in the last `days` (7 by default) answered, minutes, per hour and sats earned (GET /tasks/numbers). Answers { types }. Only strut's own staff app, shown to an admin.",
+    "Each task type's (one with `type`) spend against its limits, and per worker in the last `days` (7 by default) answered, minutes, per hour and sats earned (GET /tasks/numbers). Answers { types }. Only strut's own Workers app, shown to an admin.",
   input: z.object({ type: z.string().optional(), days: z.number().int().min(1).max(90).optional() }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {

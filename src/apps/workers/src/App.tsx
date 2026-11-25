@@ -1,4 +1,4 @@
-// strut/staff (plans/human-steps.md §9, specs/API.md §14.15): the task
+// strut/workers (plans/human-steps.md §9, specs/API.md §14.15): the task
 // store's staff routes as a page, for an ADMIN — strut's own UI lists it in
 // Apps, a host (Stadeum) frames it for a person it signed in as an admin.
 // Six tabs, one a job: the Overview (what needs a person, and how the work

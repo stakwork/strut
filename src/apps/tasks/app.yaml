@@ -1,5 +1,5 @@
-# Shown as "Tasks". Its name stays `strut/worker`: every task type and every
-# link already sent names it.
+# Shown as "Tasks". Named `strut/worker` until 2026-11-25 (src/apps/renamed.ts
+# carries a box that ran it over).
 title: Tasks
 description: >-
   Tasks for this server, from any phone (plans/human-steps.md §5): a worker
@@ -7,7 +7,7 @@ description: >-
   another, and answers each — the photos its type asks for, then its fields —
   for what the type pays. It draws any task with no view of its own
   (strut/views' WorkerPage), so a type whose answer is a photo and plain
-  fields needs no app built for it: name `strut/worker` as its app. Strut
+  fields needs no app built for it: name `strut/tasks` as its app. Strut
   ships it and seeds it on every server; nobody outside sees it until an
   admin puts it in the public view.
 icon: list-checks

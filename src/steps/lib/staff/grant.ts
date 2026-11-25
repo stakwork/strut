@@ -6,7 +6,7 @@ import { staffCall, seg } from "./_door.js";
 export default defineStep({
   type: "staff/grant",
   effect: "write",
-  description: "Grant a worker a task type (PUT /tasks/workers/:actor/grants/:type); a new worker becomes active. With tests the grant starts qualifying, unless qualify is false. Answers { worker, notice? }. Only strut's own staff app, shown to an admin: the grant's by is that admin.",
+  description: "Grant a worker a task type (PUT /tasks/workers/:actor/grants/:type); a new worker becomes active. With tests the grant starts qualifying, unless qualify is false. Answers { worker, notice? }. Only strut's own Workers app, shown to an admin: the grant's by is that admin.",
   input: z.object({ actor: z.string().min(1), type: z.string().min(1), qualify: z.boolean().optional() }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {

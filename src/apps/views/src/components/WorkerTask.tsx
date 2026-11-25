@@ -337,7 +337,7 @@ export interface WorkerPageProps {
   /** The dashboard lists the task types of EVERY app the worker can open
    *  here (`task/me { all }`), not this app's alone: a type another app
    *  draws opens that app on it when tapped (`appLink(app, { type })`),
-   *  whose Back returns here. strut/worker's, the server's one work link. */
+   *  whose Back returns here. strut/tasks's, the server's one work link. */
   everyApp?: boolean;
   className?: string;
 }
@@ -907,7 +907,7 @@ function ReplyLine({ item, reply }: { item: Pick<WorkerHistoryItem, "lease">; re
  * pictures drawn and any other file named. Its files are read through the
  * answered lease (`useTaskFile(item, path)`); a page whose answers' replies
  * it shows grants `task/history` and `task/file`. A page that reads them
- * another way (strut/staff, through `staff/file`) passes `file`, which draws
+ * another way (strut/workers, through `staff/file`) passes `file`, which draws
  * each one, and no `item`.
  */
 export function TaskReplyView({ item, reply, file, className }: { item?: Pick<WorkerHistoryItem, "lease">; reply: TaskReply; file?: (f: TaskReplyFile) => ReactNode; className?: string }) {

@@ -8,7 +8,7 @@ export default defineStep({
   effect: "read",
   description:
     "Workers' withdrawals (GET /tasks/payouts): { settings, today: { day, paidMsat, outMsat, count, serverLeftMsat }, payouts } newest first — each with its worker, address, amount, fee, state, when and a failure's words, and stale when it is still out a day after it was sent. " +
-    "state narrows to out, stale, paid or failed; worker to one worker's. Only strut's own staff app, shown to an admin.",
+    "state narrows to out, stale, paid or failed; worker to one worker's. Only strut's own Workers app, shown to an admin.",
   input: z.object({
     state: z.enum(["out", "stale", "paid", "failed"]).optional(),
     worker: z.string().optional(),

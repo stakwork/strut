@@ -77,11 +77,11 @@ export function RunOverview(props: {
   /** Open a step of this run — the flyout on its top-level step. */
   onOpenStep: (path: string) => void;
   onOpenJob: (job: string) => void;
-  /** Open the app the run was launched for (its chip), or strut/staff on a
+  /** Open the app the run was launched for (its chip), or strut/workers on a
    *  task the run waits on (`input`). */
   onOpenApp?: (name: string, input?: string) => void;
-  /** strut/staff is listed to this viewer (an admin): a waited-on task links to it. */
-  staffListed?: boolean;
+  /** strut/workers is listed to this viewer (an admin): a waited-on task links to it. */
+  workersListed?: boolean;
 }) {
   const runId = props.events[0]?.runId ?? "";
   const [now, setNow] = useState(Date.now());
@@ -200,7 +200,7 @@ export function RunOverview(props: {
         </div>
         {o.status === "waiting" && (
           <div class="ov-waiting" title="This run parked: it goes on when what it waits on happens">
-            Waiting on <WaitingOn on={o.waitingOn} staffListed={props.staffListed} onOpenApp={props.onOpenApp} />
+            Waiting on <WaitingOn on={o.waitingOn} workersListed={props.workersListed} onOpenApp={props.onOpenApp} />
           </div>
         )}
         {o.error && (

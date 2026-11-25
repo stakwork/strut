@@ -7,7 +7,7 @@ export default defineStep({
   type: "staff/invites",
   effect: "read",
   description:
-    "Worker invites (GET /tasks/invites): { invites, sats, why? } — each invite { code, link?, sats, status, createdAt?, type? } newest first, status sending, ready, failed, used or cancelled, link the one it was sent with (opening Tasks; none while Tasks is not in the public view), type the kind of work it is for (none: open work); sats what an invite gives when it names none; why that this server cannot invite (no_pay_credential, no_invites). Only strut's own staff app, shown to an admin.",
+    "Worker invites (GET /tasks/invites): { invites, sats, why? } — each invite { code, link?, sats, status, createdAt?, type? } newest first, status sending, ready, failed, used or cancelled, link the one it was sent with (opening Tasks; none while Tasks is not in the public view), type the kind of work it is for (none: open work); sats what an invite gives when it names none; why that this server cannot invite (no_pay_credential, no_invites). Only strut's own Workers app, shown to an admin.",
   input: z.object({}),
   output: z.any(),
   async run(_cfg, ctx: StepContext) {

@@ -17,7 +17,7 @@
  * A box on a photo: `{ type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 }`.
  *
  * ONE FILE IN TWO PLACES (plans/human-steps.md §9.5): `kit/src/folds/answer-schema.ts`,
- * which the staff app's type editor runs on every change, and
+ * which the Workers app's type editor runs on every change, and
  * `src/tasks/answer-schema.ts`, which the task store runs when a type is
  * saved and an answer submitted — so the page never offers to save what the
  * route refuses. The engine's build cannot import the kit (its root is
@@ -257,7 +257,7 @@ export const WORKER_APP_STEPS = ["task/next", "task/submit"] as const;
 /** What is wrong with the app a task type names, or undefined: not on this
  *  server, or its grants (types and globs, as an app's `grants.steps` takes
  *  them) do not reach `task/next` and `task/submit`. One function for the
- *  staff app's type editor, the Queue (`GET /tasks/stats`'s `app`) and
+ *  Workers app's type editor, the Queue (`GET /tasks/stats`'s `app`) and
  *  `task/set-type`'s card. `app` is the app's manifest, or null when none
  *  is listed under `name`. */
 export function taskAppProblem(name: string, app: { grants?: { steps?: readonly string[] } } | null | undefined): string | undefined {

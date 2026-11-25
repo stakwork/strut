@@ -2417,7 +2417,7 @@ Peel's web view's) history and swipe-back go back through it, and the
 visitor stays signed in (the visitor's cookie is the origin's). A page with
 `&back=` draws a slim Back bar over the app, which goes back in history (or
 to the app it names, with no history). Any other link opens a new window,
-as before. The worker's dashboard (strut/worker) opens a task type of
+as before. The worker's dashboard (strut/tasks) opens a task type of
 another app this way, `appLink(app, { type })`; strut/views' `WorkerPage`
 goes straight to work on the `type` input it is opened with.
 
@@ -3001,7 +3001,7 @@ version's files (`GET /apps/:name/:version/files[/…]`) answer those `403`.
 A file read by the version's FILE TOKEN (`?t=`) is served as for any app:
 only a full-scope listing mints one, and the framed document is read with
 it. The flag hides the app; what it may DO is its grants and its steps'
-own checks. `strut/earnings` and `strut/staff` (§14.15) say it; their
+own checks. `strut/earnings` and `strut/workers` (§14.15) say it; their
 usage (`GET /apps/:name/usage`, §14.6) is an admin's too. A PACKAGE's
 `admin: true` app — its version installed by the package, under its
 prefix — shown on a full-scope connection gets the admin's scope for that
@@ -3035,22 +3035,23 @@ page or member's page reaches it, and each step refuses without both.
 
 Any other refusal is the step's error, the route's `code` first.
 
-### 14.15 `strut/staff` — Workers, for an admin (`plans/human-steps.md` §9)
+### 14.15 `strut/workers` — Workers, for an admin (`plans/human-steps.md` §9)
 
 The staff's `/tasks` routes (§22) as an app strut seeds on every server
-(`src/apps/staff/`, `src/apps/staff-seed.ts`, after `strut/views`: it
-imports `TaskForm`), titled "Workers", `admin: true` as
+(`src/apps/workers/`, `src/apps/workers-seed.ts`, after `strut/views`: it
+imports `TaskForm`), titled "Workers" (named `strut/staff` until
+2026-11-25: an old name still opens it, below), `admin: true` as
 `strut/earnings` is (§14.14): listed to full scope alone, its files,
 versions and usage `403` to anyone else. Strut's UI lists it under Apps to
 an admin, and a waiting run's `task:<id>` (the run overview's "Waiting on",
 a parked step's flyout) opens it on that task; a host (Stadeum) frames
-`?app=strut/staff&solo=1` for a person it signed in as an admin.
+`?app=strut/workers&solo=1` for a person it signed in as an admin.
 `createStrut({ staff: false })` or `STRUT_HOST_CONFIG`'s `"staff": false`
 seeds nothing. The page is only a face: the routes decide.
 
 Six tabs, one a job: **Overview**, **Answers**, **Workers**, **Task
 types**, **Payouts**, **Support**. Every place is a deep link
-(`?app=strut/staff&input=…`), the same as before the tabs were regrouped:
+(`?app=strut/workers&input=…`), the same as before the tabs were regrouped:
 `tab=queue|types|workers|tasks|groups|tests|payouts|support`, `type=<name>`,
 `worker=<actor>`, `task=<id>`, `test=<id>`, `run=<workflow>/<runId>`,
 `group=<name>` (with `type=`: one group's page), `by=<actor>`,
@@ -3180,7 +3181,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | ---- | --------- | ------- |
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
 | `staff/numbers { type?, days? }` | `GET /tasks/numbers` | `{ types: TypeNumbers[] }` |
-| `staff/types` | `GET /tasks/types` | `{ types, tasks? }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); `tasks` the same for Tasks (`strut/worker`), the page every invite opens; neither when the public view door has no share read (a host's own) |
+| `staff/types` | `GET /tasks/types` | `{ types, tasks? }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); `tasks` the same for Tasks (`strut/tasks`), the page every invite opens; neither when the public view door has no share read (a host's own) |
 | `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, payOn?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/round-items { type }` | `GET /tasks/types/:name/round` | `{ type, workflow, input?, items, last? }` |
@@ -3224,22 +3225,32 @@ and, under More, the starting sats (blank: the payout settings'
 in WhatsApp; a wallet that cannot invite says why; work answered in an app
 that is not in the public view says so, and makes none. Then, folded and
 only while some work is open, "Anyone with the link": Tasks' `peelLink`
-(`staff/types`' `tasks`, the share of `strut/worker`) as a QR and a Copy
+(`staff/types`' `tasks`, the share of `strut/tasks`) as a QR and a Copy
 button, open work only, for people who have Peel. While Tasks is not in the
 public view the panel offers "Put Tasks online" (`staff/tasks-online`)
 instead; it puts no other app online (the Public view dialog or
 `app/make-public`). The Workers tab lists the invites below, each with its
 work.
 
-### 14.16 `strut/worker` — the worker app every server has (`plans/human-steps.md` §5)
+### 14.16 `strut/tasks` — the worker app every server has (`plans/human-steps.md` §5)
 
-A worker app strut seeds on every server (`src/apps/worker/`,
-`src/apps/worker-seed.ts`, after `strut/views`: it is `WorkerPage`),
-titled "Worker", for any task type whose answer is plain fields and photos:
-a type names `strut/worker` as its `app`, and no app is built for it. It is
+AN OLD NAME (`src/apps/renamed.ts`): `strut/staff` is `strut/workers` and
+`strut/worker` is `strut/tasks`. `GET /public/apps/<old name>` and its
+`/document` answer for the new name (`name` in the body is the new one),
+the web UI's `?app=` / `?back=` is put to the new name before it loads, and
+an invite token naming the old app opens the new one. A box that ran the
+old names carries them over at its first boot: the old app's database and
+viewer state move to the new name, the old app is deleted, and each task
+type's `app` and the public view's entry name the new one.
+
+A worker app strut seeds on every server (`src/apps/tasks/`,
+`src/apps/tasks-seed.ts`, after `strut/views`: it is `WorkerPage`),
+titled "Tasks" (named `strut/worker` until 2026-11-25), for any task type
+whose answer is plain fields and photos:
+a type names `strut/tasks` as its `app`, and no app is built for it. It is
 NOT an admin's: anyone with the deployment's key or a member lists it, and
 nobody outside reaches it until an admin puts it in the public view (`PUT
-/public-view { apps: [{ name: "strut/worker" }] }`, or `app/make-public`).
+/public-view { apps: [{ name: "strut/tasks" }] }`, or `app/make-public`).
 Its page signs a VISITOR in (the public view); a member or an admin — the
 page in their assistant's chat, or strut's UI — is signed in already, as
 `task/me` says, and works and earns as themselves. Then it shows their
@@ -6557,7 +6568,7 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   until it is answered or skipped. With `all: true` the types (and
   `holding`) are those of EVERY app the caller can open here, each naming
   its `app`: on the public door, the public view's apps; on a member's door,
-  every app. strut/worker's dashboard lists them so; `task/next` still hands
+  every app. strut/tasks's dashboard lists them so; `task/next` still hands
   out only the calling app's (`wrong_app`), so a type of another app is
   worked by opening that app. `balance` is what they
   are owed here, in msat: `totalMsat` (earned, less taken back), of which
@@ -6651,7 +6662,7 @@ server whose task store is its host's (which answers none of them).
   "changedAt": 1762948800000, "changedBy": "admin-1"
 }
 // The answer schema is a subset strut checks itself (src/tasks/answer-schema.ts,
-// the same file as the kit's kit/src/folds/answer-schema.ts, which the staff app runs):
+// the same file as the kit's kit/src/folds/answer-schema.ts, which the Workers app runs):
 // type (one name), properties + required (no other key), items, minItems,
 // maxItems, enum, minimum, maximum, minLength, maxLength, title, description.
 
@@ -6904,7 +6915,7 @@ alone (anything else is refused). One withdrawal is one payment.
 | `maxMsat` | the most one withdrawal may ask now: the least of the largest amount whose fee cap fits in what is withdrawable, the worker's day left and the server's; 0 under `minMsat`, while one is out, or when not `on` |
 | `out` | `{ key, msat, maxFeeMsat, at, stale }`: the payout on its way |
 
-**The staff's side** (full scope, routes beside the rest, which `strut/staff`
+**The staff's side** (full scope, routes beside the rest, which `strut/workers`
 reaches through `staff/payouts`, `staff/save-payouts`, `staff/payout-read`
 and `staff/payout-resolve`; nothing else reaches the settings — no step on
 the shared bag, no proposal, no YAML, not `task/set-type`):
@@ -6936,7 +6947,7 @@ daemon for a Sphinx invite through the payer (the daemon pays the mixer for
 it: the starting sats, and the mixer's price on top; specs/LIGHTNING.md
 "Invites"), and answers the link on the base the share links use (§17.2
 `publicAppLinks`: `STRUT_PUBLIC_URL`, else the request's own origin with a
-proxy's headers and mount path honored; a staff page's in-process request
+proxy's headers and mount path honored; a Workers page's in-process request
 takes where the page's own request came):
 
 ```
@@ -6944,8 +6955,8 @@ https://<public view>/public/join#action=i&d=…&c=…&a=<percent-encoded Tasks 
 ```
 
 After `#`: the daemon's invite with its `sphinx.chat://?` taken off, then
-`a=`, strut's own section: the share `link` of TASKS (`strut/worker`, §14.16:
-`<base>/?app=strut%2Fworker&solo=1&public=1`) with `&input=<encoded>` after
+`a=`, strut's own section: the share `link` of TASKS (`strut/tasks`, §14.16:
+`<base>/?app=strut%2Ftasks&solo=1&public=1`) with `&input=<encoded>` after
 it, encoded whole. Every invite opens Tasks, the server's one work page, so
 a worker keeps one page per employer. The input carries `invite=<token>`,
 the invite's own token (`strut-invite.<claims>.<hmac>`, auth.ts
@@ -6973,7 +6984,7 @@ keeps the invites; strut notes only the kind of work each is for
 sent, and the task store keeps the grants an invite made. Open work (the
 default) lets anyone in on their first `task/next`.
 
-Full scope, beside the rest; `strut/staff` reaches them through
+Full scope, beside the rest; `strut/workers` reaches them through
 `staff/invite`, `staff/invites`, `staff/cancel-invite` and
 `staff/tasks-online` (§14.15):
 
@@ -6982,7 +6993,7 @@ Full scope, beside the rest; `strut/staff` reaches them through
 | `POST /tasks/invites { sats?, type? }` | `{ code, link, sats, status, type? }`: `sats` the worker's starting balance, the payout settings' `inviteSats` when left out (1 to 100,000); `type` the kind of work it is for (left out: open work alone). Tasks not in the public view is `409 no_worker_app`; the app that draws `type` not in it, `409 not_online`; no such type, `400`. Each refusal comes before the wallet is asked. `status` is the daemon's: `sending` until the mixer has it, then `ready` |
 | `GET /tasks/invites` | `{ invites: [{ code, link?, sats, status, createdAt?, type?, expiresAt?, by?, takenBy? }], sats, why? }`: the daemon's invites, newest first, each `link` the one it was sent with (none while Tasks is not in the public view) and `type` its work; one that made a grant is `used` with `takenBy` (the worker), whatever the daemon says, since an account Peel already had never makes the daemon say `used`; `sats` the default; `why` — `no_pay_credential` or `no_invites` — when this server cannot invite, with no invites |
 | `POST /tasks/invites/:code/cancel` | `{ code, status }`: one not used yet; `404 unknown_invite` |
-| `POST /tasks/online` | `{ app: "strut/worker", public: true }`: Tasks put in the public view in the admin's name, as the Public view tab saves it with nothing unticked (§14.16: it calls only the worker's `task/*` steps). The one app a staff page puts online itself; any other goes through the Public view or an `app/make-public` card |
+| `POST /tasks/online` | `{ app: "strut/tasks", public: true }`: Tasks put in the public view in the admin's name, as the Public view tab saves it with nothing unticked (§14.16: it calls only the worker's `task/*` steps). The one app a Workers page puts online itself; any other goes through the Public view or an `app/make-public` card |
 
 `status` is `sending`, `ready`, `failed` (the mixer was not paid), `used` (a
 new account took it) or `cancelled`. Refusals: `409 no_pay_credential`
@@ -7241,7 +7252,7 @@ an `image` step drew from their photo):
   leaves what was told as it was; a later reply without one keeps it. Staff
   read and review a group as one (`GET /tasks/groups`, `GET /tasks?group=`,
   `POST /tasks/groups/review`, §14.15's `staff/groups` and
-  `staff/review-group`, the staff app's Answers by group); the worker reads their
+  `staff/review-group`, the Workers app's Answers by group); the worker reads their
   groups and each answer's verdict and why (`task/history { groups, group
   }`), so their app can show what they handed in and what was sent back.
 
@@ -7274,7 +7285,7 @@ an `image` step drew from their photo):
 
 A settled answer has woken its run, and the run has gone on. So a review
 is a MARK on the answer, never an undo: `PUT /tasks/:id/review` (full
-scope; the service's alone, so no step but the staff app's
+scope; the service's alone, so no step but the Workers app's
 `staff/review` reaches it) changes nothing in the run — its step's output,
 its events, the task and what a `human` step reads stay as they were, and
 no run is woken. Checking before the run goes on is the workflow's (a
@@ -7358,7 +7369,7 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
   signed in earns from their first answer: the card's **Who can do it** says
   so as a danger, and the admin's accept saves it.
 - **What it cannot do.** It grants no worker, deletes no type and changes
-  no worker: those are an admin's, in `strut/staff` (§14.15).
+  no worker: those are an admin's, in `strut/workers` (§14.15).
 - **Seeds.** Only the `builder` workflow grants `task/types` and
   `task/set-type`, and lists `task/set-type` in `approve:`. The `job` and
   `orchestrator` seeds do not, nor the builder chat, which has no
@@ -7394,18 +7405,18 @@ it.
 ### Support — the staff's chat with workers (`plans/support-chat.md`; `plans/people-and-hosts.md` §5)
 
 Workers write to the treasury daemon's account, named "Support", from Peel,
-as to any contact; staff answer from the Support tab of `strut/staff`
+as to any contact; staff answer from the Support tab of `strut/workers`
 (§14.15). Support is an APP: it has no route of its own. Its tables are
-`strut/staff`'s own SQLite (`src/apps/staff/db/001-support.sql`: `conversations`,
+`strut/workers`'s own SQLite (`src/apps/workers/db/001-support.sql`: `conversations`,
 `messages`, `files`, `settings`; §14.1's `sqlite/*`), the page reads and
 writes them with SQL, and six `support/*` tools do what touches the
 daemon. Strut no longer reads the daemon's DMs: the daemon hands each
-record to `support/receive` through `strut/staff`'s `hosts:` (§13.5).
+record to `support/receive` through `strut/workers`'s `hosts:` (§13.5).
 
 **The daemon's call.** `POST /mcp` with the `sphinx` host key (§13.4),
 `x-strut-account: sphinx:<the contact's pubkey>` and the contact's alias in
 `x-strut-account-name` (which names them, §13.3), calling `step_run { app:
-"strut/staff", type: "support/receive", config: { records } }`. Each record
+"strut/workers", type: "support/receive", config: { records } }`. Each record
 is one of the daemon's DM feed (`specs/LIGHTNING.md`, "Support's DMs"),
 all of one contact, oldest first — a worker's file with its bytes (`file: {
 data, name? }`, or `fileError: "too_large"` over 25 MiB). The answer is `{
@@ -7418,7 +7429,7 @@ Support keeps the newest it saw per message, so an older one never undoes
 a newer one. Each call tells the app's channel `support` (a state, `key:
 "changed"`), and when a welcome is due starts `support-outbox`.
 
-| Tool (strut/staff's page unless said) | |
+| Tool (strut/workers's page unless said) | |
 | --- | --- |
 | `support/receive { records }` | The daemon's, above. Never a send: a host's bag has no `sphinx` |
 | `support/send { worker, text?, replyTo?, file?, retry? }` | `{ message }`: kept as `sending`, sent from "Support" (`POST /dm { id, to, text?, reply?, file? }`, `id` 64 hex strut made), kept `sent` or `failed` with `error`. `worker` is the worker's actor; `file` is `{ base64, type, name }`, at most 2.5 MiB, its bytes kept (a Retry sends them again), `text` then its caption; at most 32 KiB as the message's JSON with its quoted id (`bad_request: too long`). `retry: <key>` sends a failed one again under its id, or one still `sending` a minute on with no id; the daemon sends one id once. `no_conversation` for a worker who has not got Support as a contact |

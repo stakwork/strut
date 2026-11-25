@@ -423,7 +423,7 @@ const ENTRIES: Entry[] = [
   },
   {
     name: "WorkerTask",
-    what: "A worker app's pieces (plans/human-steps.md §5): WorkerTask draws any task with no view of its own, phone first — what it pays, what it asks (show.ask and show's other plain fields, its image files), then for a type that takes photos the camera's stage (TaskPhotos: Take a photo in the host's camera, or Choose one), then the answer's fields (TaskForm: yes or no, a short list and a 1–5 range as buttons to tap), with Skip and Send in a bar at the bottom. WorkerPage is a whole worker app: sign in, then tasks one after another, and what the last one earned. strut/worker is that page.",
+    what: "A worker app's pieces (plans/human-steps.md §5): WorkerTask draws any task with no view of its own, phone first — what it pays, what it asks (show.ask and show's other plain fields, its image files), then for a type that takes photos the camera's stage (TaskPhotos: Take a photo in the host's camera, or Choose one), then the answer's fields (TaskForm: yes or no, a short list and a 1–5 range as buttons to tap), with Skip and Send in a bar at the bottom. WorkerPage is a whole worker app: sign in, then tasks one after another, and what the last one earned. strut/tasks is that page.",
     grants: "grants.steps: task/next, task/submit, task/skip (task/file for a task's files) · permissions: camera",
     usage: `export default () => <WorkerPage title="Labels" intro="Photograph nutrition labels for sats." />  // or: const { task, submit, skip } = useTask();  task && <WorkerTask task={task} submit={submit} skip={skip} />`,
     demo: () => <WorkerTaskDemo />,

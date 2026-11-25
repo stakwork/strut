@@ -1,5 +1,5 @@
 -- SUPPORT (plans/people-and-hosts.md §5): the staff's chat with workers over
--- the treasury's Sphinx DMs, in strut/staff's own SQLite. The daemon hands
+-- the treasury's Sphinx DMs, in strut/workers's own SQLite. The daemon hands
 -- each DM record to `support/receive` (the host's call); the page reads these
 -- tables with SQL and writes its own columns (seen, done, taken, settings);
 -- the `support/*` tools send, delete, read a file and set the picture.

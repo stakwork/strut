@@ -8,7 +8,7 @@ export default defineStep({
   type: "staff/tasks-online",
   effect: "write",
   description:
-    "Put Tasks (strut/worker, the server's one work page) in the public view (POST /tasks/online), as the Public view tab does with nothing unticked, in the admin's name: anyone with its link sees its sign-in, and signed-in workers do their work there. Answers { app, public: true }. Only Tasks: another app goes online through the Public view or an app/make-public card. Only strut's own staff app, shown to an admin.",
+    "Put Tasks (strut/tasks, the server's one work page) in the public view (POST /tasks/online), as the Public view tab does with nothing unticked, in the admin's name: anyone with its link sees its sign-in, and signed-in workers do their work there. Answers { app, public: true }. Only Tasks: another app goes online through the Public view or an app/make-public card. Only strut's own Workers app, shown to an admin.",
   input: z.object({}),
   output: z.any(),
   async run(_cfg, ctx: StepContext) {

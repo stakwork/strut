@@ -109,7 +109,7 @@ describe("Send a round on a strut: the save's checks, the items, a round of all 
       orchestrator: false,
       builder: false,
       views: false,
-      staff: false,
+      workersApp: false,
       jamie: false,
       knowledge: false,
       earnings: false,
@@ -131,7 +131,7 @@ describe("Send a round on a strut: the save's checks, the items, a round of all 
   const auth = { authorization: `Bearer ${KEY}`, "content-type": "application/json" };
   const req = (method: string, path: string, body?: unknown, headers: Record<string, string> = auth) =>
     strut.app.request(path, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
-  const putType = (body: Record<string, unknown>) => req("PUT", "/tasks/types/shop-visit", { app: "strut/worker", answer: ANSWER, ...body });
+  const putType = (body: Record<string, unknown>) => req("PUT", "/tasks/types/shop-visit", { app: "strut/tasks", answer: ANSWER, ...body });
   const errorOf = async (res: Response) => ((await res.json()) as { error: string }).error;
   /** The open tasks of the type, waiting until the round's run made `n`. */
   const tasksOf = async (n: number) => {

@@ -1,6 +1,6 @@
 /**
  * The ADMIN DOORS strut's own admin apps go through (specs/API.md §14.14):
- * `earnings/*` for `strut/earnings`, `staff/*` for `strut/staff`
+ * `earnings/*` for `strut/earnings`, `staff/*` for `strut/workers`
  * (plans/human-steps.md §9.3). Each door is one request to its own routes,
  * in process and in the viewer's own name (createStrut's admin doors, auth.ts
  * `inProcessRequest`), so what the app does is what the route does, checked

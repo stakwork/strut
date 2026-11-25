@@ -315,8 +315,8 @@ describe("an app's SQLite through a strut server", () => {
       jamie: false,
       knowledge: false,
       earnings: false,
-      staff: false,
-      worker: false,
+      workersApp: false,
+      tasksApp: false,
     });
   });
 

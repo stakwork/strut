@@ -255,8 +255,8 @@ describe("a package's steps manage the secrets it provides", () => {
       stt: false,
       jamie: false,
       earnings: false,
-      staff: false,
-      worker: false,
+      workersApp: false,
+      tasksApp: false,
     });
     await install(HOOKS, "hooks");
     await install(OTHER, "other");

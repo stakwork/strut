@@ -198,7 +198,7 @@ describe("task/set-type: its input, the merge and the card", () => {
     // Only people you invite: the admin gives it to each.
     const invite = typeCard({ name: "pet-match", app: "workers", answer: MATCH, open: false });
     assert.equal(field(invite, "Who can do it")!.value, "Only people you invite: give it to each of them in Workers.");
-    assert.equal(field(invite, "Workers")!.value, "none yet: you give it to each worker in Workers (strut/staff)");
+    assert.equal(field(invite, "Workers")!.value, "none yet: you give it to each worker in Workers (strut/workers)");
     assert.match(invite.summary!, /^Only people you invite can do the "pet match" task/);
     // A new type with no answer: nothing to hand in but what the files rule says; nothing that fails.
     const none = typeCard({ name: "pet-match", app: "workers" });
@@ -382,7 +382,7 @@ describe("task/set-type on a strut: the builder asks, an admin says yes", () => 
       orchestrator: false,
       builder: false,
       views: false,
-      staff: false,
+      workersApp: false,
       jamie: false,
       knowledge: false,
       earnings: false,

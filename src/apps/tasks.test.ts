@@ -1,5 +1,5 @@
 /**
- * `strut/worker` (src/apps/worker-seed.ts, plans/human-steps.md §5): the
+ * `strut/tasks` (src/apps/tasks-seed.ts, plans/human-steps.md §5): the
  * worker app every server has, strut/views' WorkerPage. It is seeded at boot
  * and built; an admin puts it in the public view; a task type names it as
  * its app — here a STANDING type that takes a photo (§5.7), the open-ended
@@ -21,13 +21,13 @@ import { hostConfigFromEnv } from "../server.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { jpeg, publicAppToken, setEnv, sphinxSignIn, stepCall } from "../test-util/public-door.js";
 import { treeHash } from "../version.js";
-import { WORKER_APP, WORKER_DIR, seedWorkerApp } from "./worker-seed.js";
+import { TASKS_APP, TASKS_DIR, seedTasksApp } from "./tasks-seed.js";
 
 const KEY = "worker-app-key";
 const admin = { authorization: `Bearer ${KEY}`, "content-type": "application/json" };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const quiet = { serveUi: false, enableChat: false, enableMcp: true, scheduler: false, autoResume: false, wakeDelayMs: 0 } as const;
-const seedsOff = { jamie: false, knowledge: false, earnings: false, staff: false, job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false } as const;
+const seedsOff = { jamie: false, knowledge: false, earnings: false, workersApp: false, job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false } as const;
 
 /** The open-ended task: a photo of a nutrition label, checked only for being there. */
 const LABELS = `name: label-photos
@@ -75,7 +75,7 @@ steps:
       why: "{{ photo.answer.page === 'blurry' ? 'Too blurry: take it again' : '' }}"
 `;
 
-describe("strut/worker: the worker app every server has", () => {
+describe("strut/tasks: the worker app every server has", () => {
   let root: string;
   let restoreEnv: () => void;
   let strut: Awaited<ReturnType<typeof createStrut>>;
@@ -98,30 +98,30 @@ describe("strut/worker: the worker app every server has", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("is seeded at boot and built, first-party but not an admin's; a reboot is a no-op; `worker: false` and STRUT_HOST_CONFIG turn it off", async () => {
-    const app = await strut.apps.get(WORKER_APP);
+  it("is seeded at boot and built, first-party but not an admin's; a reboot is a no-op; `tasksApp: false` and STRUT_HOST_CONFIG turn it off", async () => {
+    const app = await strut.apps.get(TASKS_APP);
     assert.ok(app, "seeded");
     assert.deepEqual([app.version, app.publisher, app.versions[app.version]?.source, app.stale, app.manifest.admin, app.manifest.title], ["v1", "strut", "seed", false, undefined, "Tasks"]);
     assert.deepEqual(app.manifest.permissions, ["camera"]);
-    assert.equal(app.hash, await treeHash(WORKER_DIR));
+    assert.equal(app.hash, await treeHash(TASKS_DIR));
     const info = JSON.parse(await readFile(join(app.dir, "dist", "build.json"), "utf8"));
     assert.deepEqual(info.warnings, []);
-    assert.deepEqual(await seedWorkerApp({ workspace: strut.workspace, kit: await kitForTests() }), { version: "v1", changed: false });
-    const off = await createStrut({ ...quiet, ...seedsOff, views: false, workspace: new WorkspaceManager(join(root, "off")), kit: await kitForTests(), worker: false });
-    assert.equal(await off.apps.get(WORKER_APP), null);
+    assert.deepEqual(await seedTasksApp({ workspace: strut.workspace, kit: await kitForTests() }), { version: "v1", changed: false });
+    const off = await createStrut({ ...quiet, ...seedsOff, views: false, workspace: new WorkspaceManager(join(root, "off")), kit: await kitForTests(), tasksApp: false });
+    assert.equal(await off.apps.get(TASKS_APP), null);
     await off.close?.();
     const file = join(root, "host.json");
-    await writeFile(file, JSON.stringify({ worker: false }));
-    assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { worker: false });
-    await writeFile(file, JSON.stringify({ worker: true }));
-    assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"worker" must be false/);
+    await writeFile(file, JSON.stringify({ tasksApp: false }));
+    assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { tasksApp: false });
+    await writeFile(file, JSON.stringify({ tasksApp: true }));
+    assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"tasksApp" must be false/);
   });
 
-  it("an open-ended photo task: a standing type drawn by strut/worker in the public view, a worker's pick-up answered with a photo, the workflow run on the answer and its reply read by the worker and staff", async () => {
+  it("an open-ended photo task: a standing type drawn by strut/tasks in the public view, a worker's pick-up answered with a photo, the workflow run on the answer and its reply read by the worker and staff", async () => {
     // ── The workflow and its type: standing, a photo with each answer, paid, open with no tests (ruling 12).
     await staff("POST", "/workflows", { name: "label-photos", yaml: LABELS }, 201);
     const type = await staff("PUT", "/tasks/types/label-photo", {
-      app: WORKER_APP,
+      app: TASKS_APP,
       answer: { type: "object", properties: { product: { type: "string", title: "Product", maxLength: 120 } } },
       attachments: { max: 2, min: 1, types: ["image/*"] },
       paySats: 50,
@@ -132,17 +132,17 @@ describe("strut/worker: the worker app every server has", () => {
     const stats = await staff("GET", "/tasks/stats?type=label-photo");
     assert.equal(stats["types"][0].appProblem, undefined, JSON.stringify(stats["types"][0]));
 
-    // ── An admin puts Tasks online from strut/staff (POST /tasks/online), as the
+    // ── An admin puts Tasks online from strut/workers (POST /tasks/online), as the
     // Public view tab saves it with nothing unticked; a worker signs in with Sphinx.
-    assert.deepEqual(await staff("POST", "/tasks/online", {}), { app: WORKER_APP, public: true });
+    assert.deepEqual(await staff("POST", "/tasks/online", {}), { app: TASKS_APP, public: true });
     const surface = (await staff("GET", "/public-view"))["surface"] as { apps: Array<{ name: string }>; steps: string[] };
-    assert.deepEqual(surface.apps.map((a) => a.name), [WORKER_APP]);
+    assert.deepEqual(surface.apps.map((a) => a.name), [TASKS_APP]);
     // The employer's name (the brand's): in the page as it is served, which Tasks heads itself with.
     await staff("PUT", "/brand", { name: "Labels & Co" });
-    const doc = await (await req(`/public/apps/${WORKER_APP}/document`)).text();
+    const doc = await (await req(`/public/apps/${TASKS_APP}/document`)).text();
     assert.ok(doc.includes('<meta name="strut-name" content="Labels &amp; Co">'), "the name rides in the document");
     await staff("PUT", "/brand", {});
-    const page = await publicAppToken(req, WORKER_APP);
+    const page = await publicAppToken(req, TASKS_APP);
     const worker = await sphinxSignIn(req);
     const call = (t: string, config: Record<string, unknown> = {}) => stepCall(req, "/public/mcp", t, config, { authorization: `Bearer ${worker.token}` }, page);
 
@@ -198,7 +198,7 @@ describe("strut/worker: the worker app every server has", () => {
   it("a type that pays on ok: the run's verdict on task/reply pays the page it OKs, and never the one it refuses", async () => {
     await staff("POST", "/workflows", { name: "page-photos", yaml: PAGES }, 201);
     await staff("PUT", "/tasks/types/page-photo", {
-      app: WORKER_APP,
+      app: TASKS_APP,
       answer: { type: "object", properties: { page: { type: "string" } } },
       attachments: { max: 1, min: 1, types: ["image/*"] },
       paySats: 4,
@@ -206,7 +206,7 @@ describe("strut/worker: the worker app every server has", () => {
       standing: { workflow: "page-photos" },
     });
     await staff("POST", "/tasks/online", {});
-    const page = await publicAppToken(req, WORKER_APP);
+    const page = await publicAppToken(req, TASKS_APP);
     const worker = await sphinxSignIn(req);
     const call = (t: string, config: Record<string, unknown> = {}) => stepCall(req, "/public/mcp", t, config, { authorization: `Bearer ${worker.token}` }, page);
     const shot = { name: "page.jpg", mediaType: "image/jpeg", data: jpeg(1024).toString("base64") };

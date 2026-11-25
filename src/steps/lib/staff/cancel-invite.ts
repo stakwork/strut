@@ -6,7 +6,7 @@ import { seg, staffCall } from "./_door.js";
 export default defineStep({
   type: "staff/cancel-invite",
   effect: "write",
-  description: "Cancel a worker invite not used yet (POST /tasks/invites/:code/cancel): { code, status }. Only strut's own staff app, shown to an admin.",
+  description: "Cancel a worker invite not used yet (POST /tasks/invites/:code/cancel): { code, status }. Only strut's own Workers app, shown to an admin.",
   input: z.object({ code: z.string().min(1) }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {
