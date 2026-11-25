@@ -69,6 +69,14 @@
  * `readPackage` resolves them and refuses a workflow the package does not
  * carry; strut matches them at each graph write it hears (./on.ts).
  *
+ * Its `calls:` says what a group call on the box records onto (stadeum
+ * plans/call-canvas.md §8): `kind`, the scribe's job kind, the name of a
+ * Concept page the package ships, and `app`, the app Jamie's screen shows,
+ * one of its apps by its folder (`canvas` → `<package>/canvas`).
+ * `readPackage` refuses a kind or an app the package does not ship; the
+ * install records it on each version (`upstream.calls`) and `GET /packages`
+ * lists it, so voice names no package of its own.
+ *
  * A Concept page comes in two forms (plans/concept-history.md §2.1, read by
  * `parseConceptFile`, src/concept-seed.ts): the old `concepts/<Name>.md`,
  * named by its file, with a `description` and one `parent`; and the new
@@ -80,7 +88,7 @@
  * A package may be a BUNDLE instead (stadeum plans/software.md §3.3):
  * `bundle:` lists other packages by the `git+` branch each is followed at,
  * with no digest, and the bundle holds nothing else — no folder, and no
- * `requires`, `job`, `provides`, `schedules` or `maxRunCostUsd`. A subscription to it follows
+ * `requires`, `job`, `provides`, `schedules`, `maxRunCostUsd`, `on` or `calls`. A subscription to it follows
  * each listed package as a part of its own (./subscriptions.ts); nothing
  * installs a bundle (`package_is_bundle`, ./install.ts). Each entry is a
  * `git+https://host/org/repo[@<branch>][#<folder>]` ref that names a branch
@@ -266,6 +274,13 @@ const manifestSchema = z
     // op, one type, one workflow an entry. Strict like the rest: an older
     // strut refuses the package instead of installing it without them.
     on: z.array(onEntry).optional(),
+    // What a group call on the box records onto (stadeum
+    // plans/call-canvas.md §8): `kind`, the scribe's job kind, a Concept
+    // page the package ships; `app`, what Jamie's screen shows, one of its
+    // apps by its folder. Voice reads it off `GET /packages`. Strict like
+    // the rest: an older strut refuses the package instead of installing
+    // it with no recording.
+    calls: z.object({ kind: z.string().min(1), app: z.string().min(1) }).strict().optional(),
     // The packages a bundle lists, each by the `git+` branch it is followed
     // at (./subscriptions.ts). A bundle holds nothing else (`readPackage`).
     bundle: z.array(z.string().min(1)).min(1, "a bundle lists at least one package").optional(),
@@ -275,7 +290,7 @@ const manifestSchema = z
 export type PackageManifest = z.infer<typeof manifestSchema>;
 
 /** What a bundle may not carry: what belongs to a package's own items. */
-const NOT_IN_A_BUNDLE = ["requires", "job", "provides", "schedules", "maxRunCostUsd", "on"] as const;
+const NOT_IN_A_BUNDLE = ["requires", "job", "provides", "schedules", "maxRunCostUsd", "on", "calls"] as const;
 
 /** Every secret a package's steps may read: `requires.secrets` and
  *  `requires.optional` — its fence. */
@@ -316,6 +331,16 @@ export interface PackageInfo {
   /** The manifest's `provides.git`, each forge step resolved to its full
    *  type: the package's own (`<package>/<name>`) or strut's. */
   gitHosts?: GitHost[];
+  /** The manifest's `calls:`, its app by its full name. */
+  calls?: PackageCalls;
+}
+
+/** What a group call records onto: the scribe's job kind (a Concept page of
+ *  the package) and the app Jamie's screen shows, by its full name
+ *  (`<package>/<folder>`). */
+export interface PackageCalls {
+  kind: string;
+  app: string;
 }
 
 /** A workflow of the package strut runs when a node of `type` is `op`
@@ -506,6 +531,13 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
   const schedules = manifest.schedules ? resolveSchedules(pkg, manifest.schedules, items, manifest.provides?.secrets ?? [], problems) : undefined;
   const on = manifest.on ? resolveOn(pkg, manifest.on, items, problems) : undefined;
   const caps = manifest.maxRunCostUsd ? resolveCaps(pkg, manifest.maxRunCostUsd, items, problems) : undefined;
+  const calls = manifest.calls && { kind: manifest.calls.kind, app: `${pkg}/${manifest.calls.app}` };
+  if (manifest.calls && !pages.has(manifest.calls.kind)) {
+    problems.push(`${MANIFEST_FILE}: calls.kind: ${JSON.stringify(manifest.calls.kind)} is not a Concept page of the package — the kind is the name of a page it ships (concepts/<file>.md)`);
+  }
+  if (manifest.calls && !apps.has(manifest.calls.app)) {
+    problems.push(`${MANIFEST_FILE}: calls.app: ${JSON.stringify(manifest.calls.app)} is not an app of the package — name one of its apps by its folder (apps/<name>/)`);
+  }
   if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);
   return {
     manifest,
@@ -517,6 +549,7 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
     ...(caps ? { maxRunCostUsd: caps } : {}),
     ...(on ? { on } : {}),
     ...(gitHosts.length ? { gitHosts } : {}),
+    ...(calls ? { calls } : {}),
   };
 }
 

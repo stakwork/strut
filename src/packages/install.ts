@@ -311,6 +311,8 @@ async function installSet(
     ...(m.info.manifest.requires?.git ? { git: true as const } : {}),
     // What it provides, its forge steps by their full types (format.ts `gitHosts`).
     ...(m.info.manifest.provides ? { provides: { ...m.info.manifest.provides, ...(m.info.gitHosts ? { git: m.info.gitHosts } : {}) } } : {}),
+    // What a group call records onto, its app by its full name (format.ts `calls`).
+    ...(m.info.calls ? { calls: m.info.calls } : {}),
     // A workflow's run cap (`maxRunCostUsd:`), on its own version.
     ...(item.kind === "workflow" && m.info.maxRunCostUsd?.[item.name] !== undefined ? { maxRunCostUsd: m.info.maxRunCostUsd[item.name] } : {}),
     at,
