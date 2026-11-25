@@ -93,18 +93,21 @@ export interface ReaderCtx {
   agentTool?: boolean;
   aiAuthored?: boolean;
   app?: { firstParty?: true };
+  /** Started from inside another run (`StepContext.nested`): never a page's own call. */
+  nested?: true;
   workflow?: string;
   path?: string;
   frame?: { workflow: string; sealed?: boolean };
 }
 
 /** The workflow name of one step run on its own, a page's call among them: `RUN_STEP_FLOW` (src/run-step.ts), kept
- *  here as text since this file imports nothing at runtime; scope.test.ts holds the two equal. */
+ *  here as text since this file imports nothing at runtime; scope.test.ts holds the two equal. A page's own
+ *  call is that run with an app, never one started from inside another (`nested`, src/run-step.ts `pageCall`). */
 export const PAGE_CALL = "__run_step__";
 
 export function readerKindOf(ctx: ReaderCtx | undefined, readers: GraphReaders | undefined): ReaderKind {
   const run = ctx?.workflow ?? ctx?.path?.split("/")[0];
-  if (ctx?.app) return ctx.app.firstParty === true && run === PAGE_CALL ? "ui" : "apps";
+  if (ctx?.app) return ctx.app.firstParty === true && run === PAGE_CALL && !ctx.nested ? "ui" : "apps";
   const listed = readers?.assistant?.workflows ?? [];
   if (
     ctx?.agentTool && !ctx.aiAuthored && run && listed.includes(run) &&

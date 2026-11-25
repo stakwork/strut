@@ -1,10 +1,10 @@
 import { basename } from "node:path";
 import { z } from "zod";
 import type { JobIndex } from "../../../job-index.js";
-import { isFirstParty, workflowOf, type RunEvent, type StepContext } from "../../../core.js";
+import { isFirstParty, type RunEvent, type StepContext } from "../../../core.js";
 import type { ArtifactsCapability } from "../../../capabilities.js";
 import { jobRoot, readJobRecord, type JobLaunch, type JobsCapability } from "../../../jobs.js";
-import { RUN_STEP_FLOW } from "../../../run-step.js";
+import { pageCall } from "../../../run-step.js";
 import { loadRunAttachments, type Attachment } from "../../../ai/attachments.js";
 
 /**
@@ -166,7 +166,7 @@ export async function requirePersonOnJob(
   type: string,
   job: string,
 ): Promise<JobsCapability> {
-  if (!isFirstParty(ctx.app) || !ctx.actor || workflowOf(ctx) !== RUN_STEP_FLOW) {
+  if (!isFirstParty(ctx.app) || !ctx.actor || !pageCall(ctx)) {
     throw new Error(`${type} is a person's act: it runs only as strut's own app's call, for its viewer (plans/jamie-app.md §5). An agent verifies with meta/verify-job.`);
   }
   const jobs = (ctx.services as { jobs?: JobsCapability; dataDir?: string } | undefined)?.jobs;

@@ -4,7 +4,7 @@ import { buildRunView, type RunViewOptions } from "./run-view.js";
 import { claimsBlockOf, flowFromYaml, workflowDisabled, type WorkflowMetadata, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
 import { countUsage, generateRunId, localRuns, stepRunKey, stepTypeOfRunKey } from "./store.js";
-import { runWorkflow } from "./runner.js";
+import { runWorkflow, type RunCaller } from "./runner.js";
 import { runStep, cassettePath, type RunStepResult } from "./run-step.js";
 import { flowClosure, grantWidenedBy, stepHashesFor } from "./closure.js";
 import { isSealedStep, sealedInClosure } from "./sealed.js";
@@ -507,6 +507,10 @@ export interface RunStepArgs {
   branch?: string;
   /** The calling run is a trial (`ctx.trial`, src/trials.ts): so is the step's run. */
   trial?: RunTrial;
+  /** The calling run's origin, app and cost cap (`RunCaller`): the step's
+   *  run is held where that run's own steps are, and is never a page's own
+   *  call. The runner sets it (`bindAuthoring`), over whatever a step sends. */
+  caller?: RunCaller;
 }
 
 /**
@@ -588,8 +592,11 @@ export interface AuthoringCapability {
      *  which it shares (`holdJob`). `budgetJob`: the job whose budget the
      *  launching run spends (`ctx.budgetJob`), the child's too. `mcp`: the
      *  launching run's caller's MCP servers (`ctx.mcp`), so the child's
-     *  agents reach the same caller. */
-    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string; budgetJob?: string; mcp?: McpServer[]; branch?: string },
+     *  agents reach the same caller. `caller`: the launching run's origin,
+     *  app and cost cap (`RunCaller`), so the child is held where that run's
+     *  own steps are — set by the runner (`bindAuthoring`), over whatever a
+     *  step sends. */
+    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string; budgetJob?: string; mcp?: McpServer[]; branch?: string; caller?: RunCaller },
   ): Promise<RunResult | { error: string }>;
   listRuns(name: string, limit?: number): Promise<unknown>;
   getRun(name: string, runId: string, opts?: RunViewOptions): Promise<unknown>;
@@ -861,6 +868,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           keep: args.keep === true,
           ...(args.branch ? { branch: args.branch } : {}),
           ...(args.trial ? { trial: args.trial } : {}),
+          ...(args.caller ? { caller: args.caller } : {}),
           ...(deps.reach ? { aiAuthored: true } : {}),
           ...(args.cassette
             ? {
@@ -1013,6 +1021,9 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       }
       try {
         const result = await runWorkflow(flow, coerceJsonArg(input) ?? {}, registry, {
+          // Held where the launching run's own steps are: its origin, app
+          // and cost cap (`RunCaller`), and never a page's own call.
+          ...(opts?.caller ? { ...opts.caller, nested: true } : {}),
           runId,
           store,
           workspace,

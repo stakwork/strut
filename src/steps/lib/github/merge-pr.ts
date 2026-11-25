@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { defineStep, isFirstParty, workflowOf, type StepContext } from "../../../core.js";
+import { defineStep, isFirstParty, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { RUN_STEP_FLOW } from "../../../run-step.js";
+import { pageCall } from "../../../run-step.js";
 import { parseGithubRepo } from "./create-pr.js";
 import { githubError, prState, type PullDetail } from "./pr-status.js";
 
@@ -91,8 +91,8 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
-    const pageCall = isFirstParty(ctx.app) && !!ctx.actor && workflowOf(ctx) === RUN_STEP_FLOW;
-    if (!pageCall && !ctx.proposal) {
+    const page = isFirstParty(ctx.app) && !!ctx.actor && pageCall(ctx);
+    if (!page && !ctx.proposal) {
       throw new Error(
         "github/merge-pr is a person's act: it runs only from strut's own app (its Merge button) or as a proposal a person accepted. Propose it; never merge on your own.",
       );

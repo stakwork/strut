@@ -2537,6 +2537,21 @@ describe("run control endpoints", () => {
       }
     });
 
+    it("a resumed run a page's call started keeps the app, with no origin of its own (meta/run-workflow)", async () => {
+      const { strut, workspace, store, cleanup } = await bootServer();
+      try {
+        const app = { name: "strut/jamie", version: "v1", firstParty: true as const, admin: true as const };
+        await writeCutOffLog(workspace, store, "1000", { start: { app } });
+        const report = await strut.autoResumeStaleRuns();
+        assert.equal(report[0]!.action, "resumed");
+        const summary = await waitForSummary(store, "boot", "1000");
+        assert.deepEqual(summary.app, app, "still held where the page's call was");
+        assert.equal(summary.origin, undefined);
+      } finally {
+        await cleanup();
+      }
+    });
+
     it("is on by default whenever the run store outlives the process, whatever the workspace kind", async () => {
       // The lab host: a GRAPH workspace (stood in for by a pathless one) with
       // an explicit FileRunStore. The gate is the run store, not the

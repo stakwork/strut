@@ -188,8 +188,8 @@ container in the compose (strut and any service that registers steps).
   /conversations/fork` for full scope alone (403 to a person token, a host,
   a peer), and on `conversation/list|get|fork` only from strut's own page
   shown to an admin, in its own call (`adminPageCall`; refused to a
-  member's page, a model-written one, a workflow, an agent's tool and a run
-  the page launched). Reading is not a turn: no viewer added, nobody's
+  member's page, a model-written one, a workflow, an agent's tool, a run
+  the page launched and a step run from inside one, `ctx.nested`). Reading is not a turn: no viewer added, nobody's
   seen moved, and a turn in another person's conversation stays
   `conversation_not_yours:`. Jamie tells every viewer that admins can read
   conversations.
@@ -404,8 +404,14 @@ container in the compose (strut and any service that registers steps).
   job id. The meta surface may not publish `peer: true` (a person opens a
   workflow to other struts). `peer: true` is the AUTHOR vouching for
   everything the workflow can reach given any input: a run it launches
-  (`meta/run-workflow`, `job/*`) is a local run with local names, and an
-  agent it grants `bash` is a shell for the peer.
+  through `job/*` is a local run with local names, and an agent it grants
+  `bash` is a shell for the peer. A run it starts through the authoring
+  surface (meta/run-step's, meta/run-workflow's) stays the peer's: the
+  runner hands it the caller's origin (`bindAuthoring`, `RunCaller`), so
+  its sessions open under `peer/` as the caller's own tool call's do. The
+  same holds for a host's, a public and an app's run: a nested run gets
+  what its caller's tool call gets, never more, and with an app it is
+  never a page's own call (`ctx.nested`, run-step.ts `pageCall`).
   **A person's credential** (plans/chained-orchestrators.md §2, ruled
   2026-10-22): the peer key's actor is a header any strut sets, so strut
   could not tell a person from a strut. A third scope, `peer:person`, is a

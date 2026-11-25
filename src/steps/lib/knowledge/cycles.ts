@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { defineStep, isFirstParty, workflowOf, type StepContext } from "../../../core.js";
-import { RUN_STEP_FLOW } from "../../../run-step.js";
+import { defineStep, isFirstParty, type StepContext } from "../../../core.js";
+import { pageCall } from "../../../run-step.js";
 import { requireKnowledge } from "./_shared.js";
 
 /**
@@ -26,7 +26,7 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx: StepContext) {
     const app = ctx?.app;
-    if (!app || !isFirstParty(app) || app.admin !== true || workflowOf(ctx) !== RUN_STEP_FLOW) {
+    if (!app || !isFirstParty(app) || app.admin !== true || !pageCall(ctx)) {
       throw new Error("knowledge/cycles is an admin's: only strut's own page, shown to an admin of this server, reads what the dream learned (it quotes the conversations it read)");
     }
     const knowledge = requireKnowledge(ctx, "knowledge/cycles");

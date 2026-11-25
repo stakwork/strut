@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { stepHashesFor } from "./closure.js";
-import type { AppRef, Flow, HostRef, StepRegistry, RunEvent, RunResult, RunSummary, RunTrial } from "./core.js";
+import { workflowOf, type AppRef, type Flow, type HostRef, type StepContext, type StepRegistry, type RunEvent, type RunResult, type RunSummary, type RunTrial } from "./core.js";
 import type { ClaimsReader } from "./graph/claims.js";
-import { runWorkflow, type SubflowResolver } from "./runner.js";
+import { runWorkflow, type RunCaller, type SubflowResolver } from "./runner.js";
 import type { RunController } from "./run-control.js";
 import { baseType } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
@@ -33,6 +33,13 @@ import {
 /** Name of the ad-hoc one-step flow every single-step run executes as — its
  *  events' path root. Never a published workflow. */
 export const RUN_STEP_FLOW = "__run_step__";
+
+/** Is this call a PAGE's own: the single-step run the app door
+ *  (`step_run`) started for `ctx.app` — never a run started from inside
+ *  another (`ctx.nested`: meta/run-step's), whatever app it carries. */
+export function pageCall(ctx: Partial<Pick<StepContext, "app" | "nested" | "path" | "workflow">>): boolean {
+  return !!ctx.app && !ctx.nested && workflowOf(ctx) === RUN_STEP_FLOW;
+}
 
 /** The id of that flow's one step: the step TYPE, slashes as dots (an id
  *  cannot hold a `/` — it would read as a nested path), the version pin
@@ -97,6 +104,10 @@ export interface RunStepOptions {
   /** Who launched the run and who pays (see `RunOptions`). */
   actor?: string;
   principal?: string;
+  /** The run this one is started from inside (meta/run-step, `RunCaller`):
+   *  its origin, app and cost cap, so the step is held where the caller's
+   *  own steps are. The run is `nested`: never a page's own call. */
+  caller?: RunCaller;
 }
 
 export interface RunStepResult {
@@ -152,6 +163,7 @@ export async function runSingleStep(
 
   const events: RunEvent[] = [];
   const result: RunResult = await runWorkflow(flow, opts.input ?? {}, registry, {
+    ...(opts.caller ? { ...opts.caller, nested: true } : {}),
     runId,
     store: new MemoryRunStore(),
     services: runServices,

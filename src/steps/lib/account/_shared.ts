@@ -10,12 +10,12 @@
  * is linked as them — so no agent may make one: in a tribe that does not
  * show its senders, every turn runs as the tribe's linker.
  */
-import { isFirstParty, workflowOf, type StepContext } from "../../../core.js";
+import { isFirstParty, type StepContext } from "../../../core.js";
 import type { AccountsCapability } from "../../../people.js";
-import { RUN_STEP_FLOW } from "../../../run-step.js";
+import { pageCall } from "../../../run-step.js";
 
 export function requireAccounts(type: string, ctx: StepContext | undefined): { accounts: AccountsCapability; actor: string } {
-  if (!ctx || !isFirstParty(ctx.app) || !ctx.actor || workflowOf(ctx) !== RUN_STEP_FLOW) {
+  if (!ctx || !isFirstParty(ctx.app) || !ctx.actor || !pageCall(ctx)) {
     throw new Error(`${type} is a person's: it runs only as strut's own app's call, for its viewer (plans/people-and-hosts.md §2.1), never an agent's tool or another app's`);
   }
   const accounts = (ctx.services as { accounts?: AccountsCapability } | undefined)?.accounts;
