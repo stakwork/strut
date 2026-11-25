@@ -14,15 +14,16 @@
  *   Commit  the workspace's EDITS of the package — every item whose active
  *           version is not the one the repo door installed at the commit on
  *           file, and every item deleted here — written into the working
- *           copy (`packageFiles(…, { under })`), committed with the actor's
+ *           copy, its package folder first put back to HEAD
+ *           (`packageFiles(…, { under })`), committed with the actor's
  *           identity and pushed: a new branch and a pull request, or the
  *           followed branch when asked. Then the commit is applied through
  *           the repo door, which stamps each version with it: no item is a
  *           fork any more.
  *           A page goes back to the file it has, in that file's form; only
  *           a page renamed here moves, and only a new page takes its key.
- *   Diff    what a Commit would write, staged in a scratch worktree: viewing
- *           it never writes to the working copy or its index.
+ *   Diff    what a Commit would write, staged in a scratch worktree at HEAD:
+ *           viewing it never writes to the working copy or its index.
  *   Pull    the edits committed locally first (nothing is lost, git has both
  *           sides), then git merges the remote's branch. A conflict stops
  *           there, names the files and installs nothing; the person resolves
@@ -37,7 +38,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, cp, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { shellCapability, type HttpCapability, type SecretsCapability, type ShellCapability } from "../capabilities.js";
 import { cachePath, commitOf, fetchCache, git, gitOk, parseRepo, remoteDefaultBranch, withLock, type GitAuth, type RepoRef } from "../steps/lib/git/_shared.js";
@@ -300,6 +301,19 @@ export function createRepos(deps: ReposDeps): Repos {
     } finally {
       await rm(out, { recursive: true, force: true });
     }
+  };
+
+  /** The package's folder in the working copy put back to HEAD, index and
+   *  files, before the workspace's edits are written into it: a Commit holds
+   *  HEAD and those edits, nothing an earlier write left behind (Diff wrote
+   *  and staged its edits here before it used a scratch worktree, which
+   *  left a renamed page beside the file it was renamed from). An accepted
+   *  page proposal's file is lost by none of this: the page was reloaded
+   *  from it, so it reads as an edit and is written again from the graph.
+   *  Never while a merge waits: the person's resolution is there. */
+  const toHead = async (rec: RepoRecord, work: string) => {
+    await ok(["restore", "--source=HEAD", "--staged", "--worktree", "--", pathspec(rec)], work);
+    await ok(["clean", "-fdq", "--", pathspec(rec)], work);
   };
 
   /** Files a merge left unmerged. */
@@ -626,16 +640,12 @@ export function createRepos(deps: ReposDeps): Repos {
       return withLock(cacheDir, async () => {
         if (rec.merge || (await merging(work))) throw refusal("package_repo_merging", `a pull's merge waits in the working copy (${(await unmerged(work)).join(", ") || "resolved"}) — resolve it and Pull`);
         // Read-only: the edits are written into a scratch worktree at HEAD,
-        // over a copy of the working copy's package folder, and staged there.
+        // which is where a Commit starts too (`toHead`), and staged there.
         // The working copy and its index are never touched.
         const scratch = join(deps.cache.root, ".scratch", `diff-${randomBytes(8).toString("hex")}`);
         await ok(["worktree", "add", "--quiet", "--detach", scratch, "HEAD"], work);
         try {
-          const into = rec.path ? join(scratch, ...rec.path.split("/")) : scratch;
-          // The package folder as the working copy has it (a worktree's root keeps its `.git`).
-          for (const e of await readdir(into).catch(() => [])) if (e !== ".git") await rm(join(into, e), { recursive: true, force: true });
-          await cp(pkgDirOf(rec), into, { recursive: true, filter: (src) => basename(src) !== ".git" });
-          await writeEdits(rec, into);
+          await writeEdits(rec, rec.path ? join(scratch, ...rec.path.split("/")) : scratch);
           await ok(["add", "-A", "--", pathspec(rec)], scratch);
           return await diffOf(scratch, ["--cached", "HEAD"], pathspec(rec));
         } finally {
@@ -658,6 +668,7 @@ export function createRepos(deps: ReposDeps): Repos {
       return masked(auth?.token, async () => {
         const done = await withLock(cacheDir, async () => {
           if (rec.merge || (await merging(work))) throw refusal("package_repo_merging", `a pull's merge waits in the working copy (${(await unmerged(work)).join(", ") || "resolved"}) — resolve it and Pull first`);
+          await toHead(rec, work);
           const found = await writeEdits(rec);
           await ok(["add", "-A", "--", pathspec(rec)], work);
           const staged = await run(["diff", "--cached", "--quiet"], work);
@@ -728,6 +739,7 @@ export function createRepos(deps: ReposDeps): Repos {
           // and the merge (concluded above, or by hand) is what goes on.
           let local: string | undefined;
           if (!rec.merge) {
+            await toHead(rec, work);
             await writeEdits(rec);
             await ok(["add", "-A", "--", pathspec(rec)], work);
             if ((await run(["diff", "--cached", "--quiet"], work)).code === 1) {

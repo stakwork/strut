@@ -161,6 +161,21 @@ for (const tb of testBackends()) describe(`a repo's Concept pages, on ${tb.name}
     assert.equal(remoteFile("concepts/concept-notes.md"), NOTES, "an untouched page is left as it is");
   });
 
+  it("a working copy an earlier Diff wrote into (the page staged under its key, its file gone) commits HEAD and the edit, nothing more", async () => {
+    await editDocs("Call Canvas", "CALL docs from the repo.", "CALL docs edited here.");
+    await rm(join(work, "concepts", "Call Canvas.md"));
+    await write(work, { "concepts/concept-callcanvas.md": "---\nname: Call Canvas\ndescription: The scribe of a recorded call.\nparents:\n  - Notes\n---\nCALL docs edited here.\n", "stray.txt": "left behind\n" });
+    git(work, "add", "-A", "concepts");
+
+    const diff = await json("/packages/repos/acme/notes/diff");
+    assert.deepEqual(diff["files"], [{ path: "concepts/Call Canvas.md", status: "modified" }]);
+
+    await commit("Edit the call page");
+    assert.deepEqual(remoteFiles(), ["concepts/Call Canvas.md", "concepts/concept-notes.md", "strut.yaml", "workflows/score.yaml"]);
+    assert.equal(remoteFile("concepts/Call Canvas.md"), CALL.replace("CALL docs from the repo.", "CALL docs edited here."));
+    assert.equal(git(work, "status", "--porcelain"), "", "the working copy is clean after the commit");
+  });
+
   it("a page new to the package is written under its key", async () => {
     await step("graph/create-triplet", { source_ref_id: await refOf("Notes"), edge_type: "PARENT_OF", target_type: "Concept", target_data: { name: "Meeting Notes", description: "notes of a meeting", docs: "MEETING docs." } });
     const diff = await json("/packages/repos/acme/notes/diff");
