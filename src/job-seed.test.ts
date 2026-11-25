@@ -295,9 +295,10 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       assert.equal(turns[0]!.cwd, join(dir, "jobs", job), "the job's directory");
       assert.equal(turns[0]!.session, job, "the job's thread");
       // No graph: the Recent Work pages strut ships, from their files, head
-      // the prompt — the server's apps, with no person to list theirs.
+      // the prompt (what each lists is recent-pages.test.ts's: the apps here
+      // depend on a built kit).
       const ownLines = (prompt: string) => prompt.replace(/^\[Recent Work:[\s\S]*?\[end of Recent Work\]\n\n/, "");
-      assert.ok(turns[0]!.prompt.startsWith("[Recent Work:") && turns[0]!.prompt.includes("- strut/knowledge: Knowledge, on this server"), turns[0]!.prompt);
+      assert.ok(turns[0]!.prompt.startsWith("[Recent Work:") && ["Recent Apps:\n", "Recent Jobs:\n", "Recent Workflows:\n"].every((p) => turns[0]!.prompt.includes(p)), turns[0]!.prompt);
       assert.equal(ownLines(turns[0]!.prompt), `This job runs on this server, @acme. Your job id: ${job}. Plan dark mode.`, "the server line, then the job's id");
       assert.deepEqual(turns[0]!.tools, paramsOf(await jobWorkflowYaml()).tools, "params.tools reaches agentTools");
       // No graph: the `Job` page all the same, read from the file strut

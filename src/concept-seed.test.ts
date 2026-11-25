@@ -697,7 +697,7 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     }
     const res = await strut.app.request("/steps/context/recent/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ config: { name: "Recent Work" } }) });
     const { output } = (await res.json()) as { output: { text: string; hash: string } };
-    assert.ok(output.text.startsWith("[Recent Work:") && output.text.includes("Recent Apps:\n") && output.text.includes("- strut/knowledge: Knowledge, on this server"), output.text);
+    assert.ok(output.text.startsWith("[Recent Work:") && ["Recent Apps:\n", "Recent Jobs:\n", "Recent Workflows:\n"].every((p) => output.text.includes(p)), output.text);
   });
 
   it("concepts: { personal: true } seeds Personal; an agent walks it with context/concept and graph_get, and the run records both reads", async () => {
