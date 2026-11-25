@@ -17,7 +17,7 @@
 // that admins can read conversations here.
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Eye, Hash, Loader2, MessageCircle, PanelLeftOpen, Square, Zap } from "lucide-react";
+import { Eye, Hash, Loader2, ArrowDown, MessageCircle, PanelLeftOpen, Square, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useHost } from "@strut/kit";
 import { Markdown } from "./Markdown";
@@ -69,6 +69,9 @@ export function Thread({ session, draft, everyone = false, onReadAsAdmin, onStar
   const [refusal, setRefusal] = useState<SendRefusal | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
+  // What the thread held when the person was last at the bottom: anything
+  // after it arrived while they were scrolled up.
+  const [seenAt, setSeenAt] = useState("");
 
   useEffect(() => setRefusal(null), [session]);
 
@@ -105,6 +108,13 @@ export function Thread({ session, draft, everyone = false, onReadAsAdmin, onStar
     const el = scroller.current;
     if (el && pinned && !(focusJob && shown.current !== focusJob.at)) el.scrollTop = el.scrollHeight;
   }, [turns.length, newest?.status, pinned]);
+
+  const arrival = `${turns.length}:${newest?.status ?? ""}`;
+  useEffect(() => {
+    if (pinned) setSeenAt(arrival);
+  }, [pinned, arrival]);
+  const hasNew = !pinned && seenAt !== "" && seenAt !== arrival;
+  const toBottom = () => scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
 
   // A job asked for from the list: its newest card, once the turns are in.
   useEffect(() => {
@@ -175,13 +185,14 @@ export function Thread({ session, draft, everyone = false, onReadAsAdmin, onStar
         {everyone && owner && owner !== viewer && <span className="shrink-0 text-xs text-muted-foreground">{owner}'s chat</span>}
         <span className="shrink-0 text-xs text-muted-foreground">Jamie</span>
       </header>
+      <div className="relative min-h-0 flex-1">
       <div
         ref={scroller}
         onScroll={(e) => {
           const el = e.currentTarget;
           setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
         }}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+        className="h-full overflow-y-auto px-4 py-4"
         data-testid="thread"
       >
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
@@ -202,6 +213,19 @@ export function Thread({ session, draft, everyone = false, onReadAsAdmin, onStar
             </ThreadPrs.Provider>
           </ReadOnlyContext.Provider>
         </div>
+      </div>
+      {!pinned && (
+        <button
+          type="button"
+          onClick={toBottom}
+          aria-label={hasNew ? "Scroll to latest: new messages" : "Scroll to latest"}
+          data-testid="scroll-bottom"
+          className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border bg-background px-3 py-1.5 text-xs shadow-md hover:bg-muted"
+        >
+          <ArrowDown className="size-3.5" />
+          {hasNew && <span data-testid="scroll-bottom-new">New messages</span>}
+        </button>
+      )}
       </div>
       <div className="shrink-0 px-4 pb-4">
         <div className="mx-auto w-full max-w-3xl space-y-2">
