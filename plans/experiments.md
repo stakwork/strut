@@ -45,7 +45,8 @@
 > then it has its own children?"*
 >
 > Only the quoted words are the owner's. The rest is proposed. Read
-> against strut `main` @07101d4b and stakwork/pods `main` @95d6c37.
+> against strut `main` @07101d4b and stakwork/pods `main` @95d6c37, and
+> strut checked again @20fca3ee.
 > Earlier drafts had kinds of case, rounds, a rule for keeping a change,
 > and the budget in the prompt. This file's history has them.
 
@@ -82,20 +83,24 @@ Strut knows nothing more:
   and a check is any step. Pods, a legal task and a video differ only in
   what the prompt says.
 
-**A prompt is** a person's message, and pages. The subject's own pages
-say what the work is (`Pod Setup`). One page, `Experiment`, says how to
-experiment well: make up cases that cover the goal, read every failure
-before changing anything, make every change the reading supports, keep
-some cases back, never reword a claim to pass it, stop when it stops
-improving. It is a page, so it has claims of its own and can be
-experimented on.
+**A prompt is** a person's message, and pages. The message can name
+cases, or a kind of case: "try hive, strut and two Django apps", "only
+Rust repositories". Cases it names are used as given, a kind it names
+bounds the ones made up, and the pages fill in the rest. The subject's
+own pages say what the work is (`Pod Setup`). One page, `Experiment`,
+says how to experiment well: use the cases the person names and make up
+the rest to cover the goal, read every failure before changing
+anything, make every change the reading supports, keep some cases back,
+never reword a claim to pass it, stop when it stops improving. It is a
+page, so it has claims of its own and can be experimented on.
 
 **`Experiment` is a kind of job, and its children are kinds of
 experiment** (owner). Strut's `Job` page already says each child is a
 kind, and "A kind's own children refine it", as `Pod Setup` refines
 `Pod`. A page under `Experiment` says what one sort of experiment needs:
 for pods, to pick repositories, some the person's and some common, in a
-mix of languages. So that prompt has a home, and nobody types it twice.
+mix of languages, where the person names none. So that prompt has a
+home, and nobody types it twice.
 
 **A person can do any of it by hand,** through the same steps, and it
 is the same record drawn the same way. The record says who made each
@@ -116,6 +121,9 @@ Experiments
   Pod setup feels real                     out of budget       $100 of $100
 ```
 
+- **The box is the person's message,** several lines: the goal, and
+  anything they want tried. Jamie reads it as he would the same words
+  in a chat.
 - **Start** opens a Jamie chat with the experiment already running,
   through the seam Set up uses (`conversation/start`): no model turn
   decides it, and there is no second click.
@@ -130,9 +138,9 @@ Experiments
 - **Jamie says nothing extra** before he goes (owner).
 - **It ends one of two ways.** It stops improving, which is Jamie's
   call. Or the budget is spent, which is strut's: it starts nothing
-  more, the gateway refuses what is in flight, and the chat is told in a
-  fixed line with no model turn. Either way the best so far is there to
-  use.
+  more, the gateway refuses what is in flight ("The budget"), and the
+  chat is told in a fixed line with no model turn. Either way the best
+  so far is there to use.
 
 The list is every job whose kind is `Experiment` or a page under it:
 its goal, what it has spent of its budget, and whether it is running. A
@@ -162,12 +170,12 @@ stay after it ends.
 
 | What | Today |
 | --- | --- |
-| **A budget on a job:** a cap on the model calls of the job and every run it starts, kept at the gateway | A run carries a cap the gateway keeps, and a person's delegation a ceiling over all their work. Nothing caps a job and what it starts |
-| **A test of a change that spans pages,** either side able to start from an earlier test's change | `test` takes one page's new wording against the page as it is |
+| **A budget on a job:** a cap on the model calls of the job and every run it starts, kept at the gateway ("The budget" below) | A run carries a cap the gateway keeps, and a person's delegation a ceiling over all their work. Nothing caps a job and what it starts |
+| **A test of a change that spans pages,** either side able to start from an earlier test's change ("A test of several pages") | `test` takes one page's new wording against the page as it is |
 | **The test steps as Jamie's tools:** `knowledge/checks`, `add-check`, `cases`, `trial`, `test` and `sample`, for a job with a budget, which is told when a test's last sample is judged | They answer only strut's own page shown to an admin: "a trial spends, and a page's words are an agent's rules" (open question 1). A trial's end wakes nothing |
 | **The form and the list** in the Knowledge app, and a page's experiments on its card | A page's card has its checks and tests |
 | **A sample's files kept with its verdict:** what its run left, for whoever opens the dot | A sample that ran as a job loses them. Strut closes the job once it is judged, and that deletes its directory |
-| **As many cases as a benchmark has** | At most 20 on a claim |
+| **As many cases as a benchmark has,** and samples of each: for a job with a budget, the budget is the limit | At most 20 cases on a claim, and 20 samples of each (`CASES_MAX`, `TRIAL_N_MAX` in `src/trials.ts`) |
 | **The `Experiment` page,** under `Job`, and the list reading the kinds under it | Not there. A kind under a kind works already |
 
 That is all. The budget is any job's to have, not only an experiment's.
@@ -184,6 +192,37 @@ Already built, and used as it is:
 - a package's pages carrying their claims and checks;
 - a cap on one run, kept at the gateway;
 - `conversation/start`, and the chat about a node.
+
+### The budget
+
+The gateway applies the cap of every block on a call, not only the last
+(docs/models.md), and a person's delegation is the first block. So a job
+with a budget holds a link of its own: the delegation, extended with the
+job as its `run_id` and the budget as its `max_cost_usd`. Every run
+under the job links from it instead of from the delegation: the job's
+turns, the jobs its trials start, and their judges. Today each run's
+link comes off the delegation itself (`runLink` in `src/mothership.ts`),
+and a sample's job knows nothing of the job that asked for it, so the
+trial hands the budget's job to each sample it starts.
+
+Strut also adds up what the job's runs cost, from the cost each run's
+summary already has (`totals.cost`). That sum is the "$64 of $100" in
+the list, and it is what makes strut start nothing more. The gateway is
+the hard stop on what is in flight.
+
+A box with no gateway (no Mothership: a model key of its own, local
+development) has only strut's sum. It starts nothing past the budget,
+and a run in flight finishes, so a climb there can go over by what was
+in flight.
+
+### A test of several pages
+
+`knowledge/test` takes `changes`, each a page by name and its whole new
+text: `null` takes the page out, and a name that is not there adds it,
+under `parent`. `from`, a test's id, starts both sides from that test's
+changed side, so a climb builds on its best so far. A Concept branch is
+a copy of the whole tree, a package's pages included (`src/branches.ts`),
+so the changed side runs as it does today.
 
 ## Everything else is a prompt
 
@@ -209,8 +248,8 @@ None of it is strut's. It is the pods package's pages and steps.
 
 - **A page under `Experiment`,** say `Pod Setup Experiment`: pick about
   ten sets of repositories, some the person's and some common, in a mix
-  of languages, set each up, and improve `Pod` and `Pod Setup` toward
-  what feels most real to a person.
+  of languages, unless the person named them, set each up, and improve
+  `Pod` and `Pod Setup` toward what feels most real to a person.
 - **"Most usable" as claims** on `Pod Setup`. Four are there: it bakes,
   a person gets in, it asked for no secret, and the workspace's page is
   written. Three more:
@@ -235,6 +274,12 @@ None of it is strut's. It is the pods package's pages and steps.
 The two real setups of hive cost $0.31 and $0.66 in model calls, so $100
 is 150 to 300 setups, before the judges' own calls. A pod's time is the
 pods service's bill, and is not in the budget.
+
+Time is the other limit. Trials run four samples at a time on a box
+(`CONCURRENCY` in `src/trials.ts`). A test of ten sets of repositories,
+four samples of each on both sides, is 80 setups in 20 waves: hours, at
+10 to 20 minutes a setup. And since a pod's time is not in the budget,
+nothing caps how long a climb runs (open question 6).
 
 ## Later
 
@@ -269,3 +314,7 @@ Each is the same steps, used by something else:
 5. **What a question runs on.** A case that only asks something needs a
    workflow that answers in one run. The orchestrator sends what it must
    find out to a job, and a trial holds jobs.
+6. **How long a climb runs.** Four samples at a time make a pods test
+   take hours, and pod time is uncapped. Proposed: `Pod Setup Experiment`
+   asks for one sample of each case at first, and four at a time stays
+   until a climb shows it is the wall.
