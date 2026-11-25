@@ -21,7 +21,7 @@ in git, and it has no parent yet (§2, open questions 2 and 8).
 Items 4 and 6 are built on `feature/one-job-agent` (2026-11-25,
 strut#896), on the defaults of open questions 6 to 8, with one thing
 folded in at the owner's word: an app says where it is changed (§7).
-The branch does not merge before item 5.
+Item 5, the measurement, ran the same day: see "Measured" below.
 
 It reverses a ruling: on 2026-10-20 the owner ruled that building workflows
 is separate work, and the authoring tools are never granted to a regular
@@ -310,6 +310,85 @@ goes (`appOrigin`, `src/apps/apps.ts`). Strut already keeps the facts.
 
 Not built: a refusal in `git/push` for a repository opened here. A pod's
 own `git push` goes around it.
+
+## Measured (2026-11-25)
+
+Work item 5. Two arms: "two agents" is `main` at a83d3c67, "one agent" is
+`feature/one-job-agent` at 4004b787.
+
+- **Servers.** Two scratch servers per arm, each with an empty workspace,
+  `claude-sonnet-5-5`, and the same fixtures: a small code repository,
+  one app made on the server, and two apps in packages opened as
+  repositories (through Create repo).
+- **The asks.** A script played the person. Each of 13 asks was one
+  message to the assistant, so routing was measured too: three workflow
+  builds (one with a person's step), three app asks, two mixed asks, one
+  look at an installed app, the app in a repository named by its
+  repository, and three that build nothing. A question from the assistant
+  or a job got one plain "go ahead".
+- **Repeats.** Each ask ran twice per arm, on a fresh server each time: 52
+  runs, $8.20 in all.
+- **Checked by hand.** The workflows were run on a known input, the apps'
+  sources read, the code jobs' tests run. A job's own report was not
+  taken as the result.
+
+| | Two agents | One agent |
+| --- | --- | --- |
+| Cost, 26 runs | $3.84 | $4.36 |
+| Model calls | 225 | 190 |
+| Tool calls | 289 | 228 |
+| Authoring calls in the 8 runs that build nothing | 0 | 0 |
+| The app in a repository, named by its repository: changed in place | 0 of 2 | 2 of 2 |
+
+Average for one ask, by kind:
+
+| Kind of ask | Two agents | One agent |
+| --- | --- | --- |
+| Workflow build (3 asks) | $0.23, 9 model calls | $0.16, 8 model calls |
+| App ask (3) | $0.10, 7 | $0.21, 8 |
+| Mixed (2) | $0.23, 17 | $0.22, 11 |
+| No build (4) | $0.09, 5 | $0.11, 4 |
+
+What it showed:
+
+1. **An app that is also in a repository (§7).** Named by its repository,
+   two agents routed it as code both times: a commit on a new branch in a
+   checkout, a push tried, the app never republished, and a question
+   asking the person to make the remote writable. The one agent edited it
+   in place both times, published it, and said the change was not yet in
+   the repository. Named by the app, both arms edited in place; only the
+   one agent said where the change was not.
+2. **No drift.** No run that builds nothing made an authoring call, in
+   either arm.
+3. **The results were the same.** Every testable workflow's claim was
+   supported in both arms, and each gave the right answer on a known
+   input. The workflow with a person's step asked for the same task type
+   in both. Both arms' code fixes pass their tests.
+4. **The pages were opened.** The one agent opened `Workflow Language` on
+   8 of 8 workflow builds and `Worker Tasks` on 2 of 2. On app asks it
+   opened `App` 10 of 10 and `Workflow Language` 1 of 10. The builder
+   opened `App` on none of the 8 app asks it was given.
+5. **Cost.** 13% more overall. A workflow build cost the one agent less.
+   An app ask cost it about double: it reads the 67k `App` page, and
+   every call carries the longer tool list. On a cold cache the same look
+   at an app cost $0.21 against $0.13.
+6. **A mixed ask is still two jobs.** For "a code change and a workflow"
+   the assistant started two jobs in both arms. One job did both only
+   where the ask read a repository to build an app.
+7. **Bash where the builder used the editor.** The one agent wrote and
+   tested with its shell in builds.
+
+What it does not show:
+
+- The asks were small: the dearest job cost $0.35. Nothing here ran long
+  enough to compact, so it says nothing on the page after a compaction or
+  on open question 9.
+- Two runs of each ask per arm. A difference of a few cents is noise.
+- No Code package on the scratch servers: `Code Change` had no page, and
+  nothing could push. The repositories were read-only on purpose.
+
+For the open questions: 4 stays at its default (no worse picks, no
+authoring calls where nothing is built). 9 is not answered.
 
 ## Decided
 
