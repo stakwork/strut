@@ -302,7 +302,7 @@ goes (`appOrigin`, `src/apps/apps.ts`). Strut already keeps the facts.
 | nothing | made here | is made here |
 | `repo <address>, opened here` | its package is opened as a repository (Packages → Repos) | is made here, in place, and reaches the repository by `package/commit` when the person asks |
 | `package <name>` | an installed package's | made here is this server's own copy |
-| `strut's own` | seeded | is put back by the next boot, so it is made to a copy under a name of the person's own (`app/init` with it as the template) |
+| `strut's own, from <address>` | seeded | is put back by the next boot. It is a code change in that repository when the person has it, and otherwise is made to a copy under a name of their own (`app/init` with it as the template) |
 
 - **Where it shows:** `app/recent` (the Recent Work list), each row of
   `app/list`, and `app/get`, as `origin`. The `Recent Apps` page says
@@ -316,8 +316,10 @@ goes (`appOrigin`, `src/apps/apps.ts`). Strut already keeps the facts.
   ask for.
 
 `strut's own` first read "a code change to strut". Only a server that
-holds strut's repository can act on that, so it now says what any server
-can do: change a copy.
+holds strut's repository can act on that. So the line names the
+repository (strut's `package.json` says it), written as the lists of
+Recent Work write one, and each server's own lists decide: a code change
+there when the person has that repository, a copy when they do not.
 
 Not built: a refusal in `git/push` for a repository opened here. A pod's
 own `git push` goes around it.

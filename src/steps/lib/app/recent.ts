@@ -13,7 +13,7 @@ import { requireApps } from "./_shared.js";
 export default defineStep({
   type: "app/recent",
   description:
-    "The apps you most likely mean: { items: [{ name, what (its title, whose it is — you opened it, you made it, on this server —, where it comes from when not made here — strut's own, package <name>, repo <address>, opened here — and its description), at? }] }, the ones you opened in the last hour first, then yours, then the rest, each by name. " +
+    "The apps you most likely mean: { items: [{ name, what (its title, whose it is — you opened it, you made it, on this server —, where it comes from when not made here — strut's own, from <address>; package <name>; repo <address>, opened here — and its description), at? }] }, the ones you opened in the last hour first, then yours, then the rest, each by name. " +
     "app/get for one, app/look to see it.",
   effect: "read",
   input: z.object({}),

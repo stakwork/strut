@@ -40,6 +40,7 @@
  * and forgotten when the app's record is written (`watchAppWrites`).
  */
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { rename, rm, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -407,6 +408,31 @@ export interface AppsDeps {
   /** The repository a package is opened here from (src/packages/repos.ts),
    *  for `origin`. Absent: a repo's app reads as its package's. */
   repoOf?: (pkg: string) => Promise<{ url: string } | undefined>;
+  /** Where strut's own code lives, for a seeded app's `origin`. Default:
+   *  what strut's package says (`strutRepository`). */
+  repository?: string;
+}
+
+/** A repository as the lists of Recent Work write one, `host/owner/name`,
+ *  so an app's line and a repository's line read alike. */
+const repoAddress = (url: string): string =>
+  url
+    .replace(/^git\+/, "")
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+    .replace(/\/+$/, "")
+    .replace(/\.git$/, "");
+
+/** Where strut's own code lives, as its package.json says (`repository`):
+ *  what the line of an app strut seeded names. Undefined when the package
+ *  names none, or cannot be read. */
+export function strutRepository(): string | undefined {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf-8")) as { repository?: string | { url?: string } };
+    const url = typeof pkg.repository === "string" ? pkg.repository : pkg.repository?.url;
+    return url ? repoAddress(url) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -416,16 +442,18 @@ export interface AppsDeps {
  * change, nor strut's own for one that can be edited here
  * (plans/one-job-agent.md §7). The `Recent Apps` page says what each means.
  *
- *   - strut seeded it: the next boot publishes the committed version again;
+ *   - strut seeded it: the next boot publishes the committed version
+ *     again. The line names strut's repository (`own`), so a server that
+ *     holds it changes the code there, and any other changes a copy;
  *   - its package is opened here as a repository (app-repos.md §3): edited
  *     in place, and committed to the repository on a person's yes;
  *   - an installed package's: an edit here is this server's own copy;
  *   - none of these, undefined: made here, changed here.
  */
-export function appOrigin(app: Pick<AppVersionManifest, "seeded" | "package">, repo?: { url: string }): string | undefined {
-  if (app.seeded) return "strut's own";
+export function appOrigin(app: Pick<AppVersionManifest, "seeded" | "package">, repo?: { url: string }, own?: string): string | undefined {
+  if (app.seeded) return own ? `strut's own, from ${own}` : "strut's own";
   if (!app.package) return undefined;
-  return repo ? `repo ${repo.url}, opened here` : `package ${app.package}`;
+  return repo ? `repo ${repoAddress(repo.url)}, opened here` : `package ${app.package}`;
 }
 
 
@@ -702,6 +730,8 @@ export function createApps(deps: AppsDeps): AppsCapability {
   };
 
   const errorsOf = async (app: string) => (deps.errors ? await deps.errors(app, APP_ERRORS_MAX).catch(() => []) : []);
+  // Strut's own repository, read once: what a seeded app's line names.
+  const ownRepository = deps.repository ?? strutRepository();
 
   const manifestOf: AppsCapability["manifestOf"] = (name, version) =>
     manifests.read(name, version, async () => {
@@ -760,7 +790,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
       const app = await manifestOf(name);
       if (!app) return undefined;
       const repo = app.package && !app.seeded ? await deps.repoOf?.(app.package).catch(() => undefined) : undefined;
-      return appOrigin(app, repo);
+      return appOrigin(app, repo, ownRepository);
     },
 
     versionDir,

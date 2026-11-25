@@ -2,6 +2,10 @@
   "name": "strut",
   "version": "0.1.0",
   "description": "Minimal, LLM-friendly workflow engine",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stakwork/strut.git"
+  },
   "type": "module",
   "private": true,
   "main": "./build/index.js",
