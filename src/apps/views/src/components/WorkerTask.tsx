@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronDown, ChevronRight, Clock, FileText, ImagePlus, Loader2, LogIn, MessageSquare, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
-  appLink, fieldsOf, formats, formProblem, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
+  appLink, fieldsOf, formats, formProblem, taskErrorCode, useAccountWidget, useApp, useCamera, fiatOfMsat, useFormats, useHost, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
   type FormSchema, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerType,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
@@ -71,10 +71,15 @@ async function shrink(file: File): Promise<File> {
   }
 }
 
-/** What a task pays, as a pill: `⚡ Earn 50 sats`, or `+50 sats` once earned. */
-export function PayPill({ msat, earned = false, className }: { msat: number; earned?: boolean; className?: string }) {
+/** What a task pays, as a pill: `⚡ Earn 50 sats (≈ $0.03)`, or `+50 sats`
+ *  once earned. The fiat is the server's rate (`task/me`'s `rate`) in
+ *  `currency` (USD by default), left off when no rate can be read. */
+export function PayPill({ msat, earned = false, currency, className }: { msat: number; earned?: boolean; currency?: string; className?: string }) {
   const w = useWorkerWords();
-  const sats = useFormats().sats(msat);
+  const fmt = useFormats();
+  const rate = useWorker().data?.rate;
+  const value = fiatOfMsat(msat, rate, currency);
+  const sats = fmt.sats(msat) + (value === undefined ? "" : ` (≈ ${fmt.fiat(value, currency)})`);
   return (
     <span
       className={cn(

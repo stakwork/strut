@@ -269,10 +269,6 @@ export interface Task {
   reply?: TaskReply;
   /** The group its run put it in (`task/reply`'s `group`). */
   group?: string;
-  /** What approving the task is worth, in fiat (`currency`'s units). */
-  approveFiat?: number;
-  /** ISO 4217 code of `approveFiat`; absent means USD. */
-  currency?: string;
 }
 
 /** A group of tasks the runs named (`staff/groups`): its tasks, their

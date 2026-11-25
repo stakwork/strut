@@ -32,6 +32,9 @@ export interface Formats {
   number(n: number): string;
   /** msat as whole sats: `1,234 sats`, `1 sat` (the rest of a sat dropped). */
   sats(msat: number): string;
+  /** An amount as currency in the locale's style: `$12.50`. `currency` is an
+   *  ISO 4217 code, USD by default (and for a code `Intl` refuses). */
+  fiat(amount: number, currency?: string): string;
   /** How long ago: `now`, `5 min. ago` / `hace 5 min`, `3 hr. ago`, or the day. */
   ago(ms: number, now?: number): string;
   /** How long until: `in 5 min.` / `dentro de 5 min`, `in 3 hr.`, or the day. */
@@ -56,6 +59,14 @@ export function formats(locale?: string | null): Formats {
     sats: (msat) => {
       const n = Math.floor(msat / 1000);
       return `${num.format(n)} ${n === 1 ? "sat" : "sats"}`;
+    },
+    fiat: (amount, currency) => {
+      const code = currency?.trim().toUpperCase() || "USD";
+      try {
+        return amount.toLocaleString(tag, { style: "currency", currency: code });
+      } catch {
+        return amount.toLocaleString(tag, { style: "currency", currency: "USD" });
+      }
     },
     ago: (ms, now = Date.now()) => {
       const d = Math.max(0, now - ms);
