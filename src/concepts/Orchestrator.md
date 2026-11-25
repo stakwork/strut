@@ -95,7 +95,10 @@ calls it an app (a phone, desktop or web app, a service, a library): a
 job here with its repositories, whichever peer holds them. The one
 exception is an app whose line in Recent Work says `repo …, opened
 here`: it is changed on this server, in place, so it is a build, even
-when the person names its repository. Several
+when the person names its repository. An app whose line says `strut's
+own, from …` goes the other way when that repository is one of the
+person's: a change to it is a code change there. When it is not, it is
+a build of a copy under another name. Several
 jobs may run at once.
 Never wait on a job: say in a line that you are looking into it and
 end your turn. Its result (a reply, files, or a question) reaches the

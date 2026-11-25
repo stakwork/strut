@@ -14,7 +14,7 @@ import { MemoryRunStore } from "../store.js";
 import { FileWorkspaceStore } from "../workspace.js";
 import { treeFiles } from "../version.js";
 import { kitForTests } from "../test-util/app-kit.js";
-import { appManifests, appOrigin, createApps, type AppsCapability, type AppVersionManifest } from "./apps.js";
+import { appManifests, appOrigin, createApps, strutRepository, type AppsCapability, type AppVersionManifest } from "./apps.js";
 import type { KitLocation } from "./kit.js";
 import { readBuildInfo } from "./build.js";
 import appList from "../steps/lib/app/list.js";
@@ -313,8 +313,13 @@ describe("the apps capability", () => {
     // The words a list's line carries (app/recent, app/list, app/get).
     assert.equal(appOrigin({ seeded: false }), undefined, "made here: no mark");
     assert.equal(appOrigin({ seeded: false, package: "acme/hello" }), "package acme/hello");
-    assert.equal(appOrigin({ seeded: false, package: "acme/hello" }, { url: "https://github.com/acme/hello" }), "repo https://github.com/acme/hello, opened here");
+    // A repository is written as the lists of Recent Work write one: host/owner/name.
+    assert.equal(appOrigin({ seeded: false, package: "acme/hello" }, { url: "https://github.com/acme/hello.git" }), "repo github.com/acme/hello, opened here");
     assert.equal(appOrigin({ seeded: true, package: "strut/kit" }, { url: "https://github.com/acme/hello" }), "strut's own", "a seed is put back at boot, whatever else is true of it");
+    // A seeded app's line names strut's repository: a server that holds it
+    // changes the code there, and any other changes a copy.
+    assert.equal(appOrigin({ seeded: true }, undefined, "github.com/acme/strut"), "strut's own, from github.com/acme/strut");
+    assert.equal(strutRepository(), "github.com/stakwork/strut", "what strut's package.json says (`repository`)");
 
     const ws = new FileWorkspaceStore(fresh("ws"));
     const opened = new Set<string>();
@@ -330,11 +335,12 @@ describe("the apps capability", () => {
     assert.equal(await apps.origin!("board"), undefined);
     assert.equal(await apps.origin!("acme/hello/game"), "package acme/hello", "installed: an edit here is this server's copy");
     assert.equal(await apps.origin!("elsewhere"), undefined, "an item is its package's only under its prefix: a copy under another name is made here");
-    assert.equal(await apps.origin!("strut/thing"), "strut's own");
+    assert.equal(await apps.origin!("strut/thing"), "strut's own, from github.com/stakwork/strut");
+    assert.equal(await createApps({ workspace: ws, kit, getRegistry: () => REGISTRY, repository: "git.example/fork/strut" }).origin!("strut/thing"), "strut's own, from git.example/fork/strut", "a host may say where its strut's code lives");
     assert.equal(await apps.origin!("nope"), undefined);
     // Opened as a repository (Packages → Repos): edited here, in place.
     opened.add("acme/hello");
-    assert.equal(await apps.origin!("acme/hello/game"), "repo https://github.com/acme/hello, opened here");
+    assert.equal(await apps.origin!("acme/hello/game"), "repo github.com/acme/hello, opened here");
   });
 
   it("checkout copies a version into an empty directory; init scaffolds the template, or copies an installed app with no upstream", async () => {
