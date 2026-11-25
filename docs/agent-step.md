@@ -210,6 +210,19 @@ index. A change in this area updates this file, not AGENTS.md.
     (`holdSubAgent`): an `agentTools` entry the parent does not hold is
     refused, and every step the parent asks before running (`approve`) that
     the sub-agent holds is added to the sub-agent's own `approve`.
+    **`approve` holds `meta/run-step` too**: every tool call's context
+    carries the types the agent asks before running (`ctx.gated`, its
+    expanded `approve` with its parent agent's — a sub-agent runs on its
+    parent's tool context, so it is held whatever it holds; set under an
+    app too, where the gated tools are left out), and `meta/run-step`
+    refuses one, by its bare type (a pin is the same step) or its name
+    inside the agent's package, telling the model to call the tool, which
+    proposes. Else a package's gated step (strut-gmail's `send`), which
+    does not refuse for itself outside `ctx.proposal` as strut's own gated
+    steps do, would run through it with no card. Building is untouched: a
+    workflow that holds the step publishes and runs as written. Not
+    covered: a one-step workflow the agent writes and runs, and step code
+    that calls the same API itself — only `builder.reach` stops those.
     **A tool-step can end the turn**: an output marked `withStop(output)`
     (core.ts, the fourth marker — a device that has not answered, an
     approval waiting on a person) stops the loop after that tool round —

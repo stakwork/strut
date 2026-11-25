@@ -1838,6 +1838,11 @@ export default defineStep({
     // FIRST-PARTY page's run keeps them (plans/jamie-app.md §3): strut's own
     // app shows the cards, and its viewer decides them (proposal/decide).
     const appGated = !!ctx?.app && !isFirstParty(ctx.app) && approve.size > 0;
+    // Every tool call's context says what this agent asks before running,
+    // with what its parent agent asks (a sub-agent runs on its parent's tool
+    // context): `meta/run-step` refuses those types, or a gated tool would
+    // run through it with no card. Under an app too, where they are left out.
+    if (toolCtx && approve.size) toolCtx.gated = new Set([...(toolCtx.gated ?? []), ...approve]);
     const registryTools = buildRegistryTools(
       appGated ? expandAgentTools(stepGrants, ctx!.registry!, ctx!.package).filter((t) => !approve.has(t)) : stepGrants,
       ctx?.registry,

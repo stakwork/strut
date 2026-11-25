@@ -340,7 +340,9 @@ index. A change in this area updates this file, not AGENTS.md.
   `withStop`; ending the turn stays the automation steps' and Peel's device
   requests' way, for a decision awaited inside the turn). The same step is
   an immediate write in a janitor automation and a proposal in a chat; the
-  WORKFLOW decides, never the model. A person decides at `POST
+  WORKFLOW decides, never the model. The same agent's `meta/run-step`
+  refuses a gated type (`ctx.gated`, docs/agent-step.md), so the gate is
+  not run around in one call. A person decides at `POST
   /proposals/:id/decide { action: accept | reject, input?, reason? }` —
   hive's card, strut's own run overview and job timeline, a host's route —
   and on accept strut runs the step then and there with the recorded input
