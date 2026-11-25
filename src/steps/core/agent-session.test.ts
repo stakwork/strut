@@ -948,6 +948,137 @@ describe("agent sessions", () => {
     }
   });
 
+  // `meta/run-step` beside a gated tool (plans/one-job-agent.md §6): the
+  // tool asks the person first, so running the same step through
+  // meta/run-step is refused. Building is not: a workflow that holds the
+  // step publishes and runs as written.
+  describe("meta/run-step and `approve`", () => {
+    const sent: unknown[] = [];
+    const send = defineStep({
+      type: "mail/send",
+      description: "Send a mail.",
+      input: z.object({ to: z.string() }),
+      output: z.any(),
+      async run(cfg) {
+        sent.push(cfg);
+        return { sent: cfg.to };
+      },
+    });
+    const META = ["meta/run-step", "meta/publish-workflow", "meta/run-workflow"];
+    const setup = async () => {
+      sent.length = 0;
+      const [{ proposalsCapability }, { buildAuthoringCapability }, { WorkspaceManager }] = await Promise.all([
+        import("../../proposals.js"),
+        import("../../authoring.js"),
+        import("../../workspace.js"),
+      ]);
+      const lib = await createRegistry([]);
+      const reg = { ...registry, "mail/send": send, ...Object.fromEntries(META.map((t) => [t, lib[t]!])) };
+      const services: Record<string, unknown> = { sessions, proposals: proposalsCapability(cwd) };
+      services["authoring"] = buildAuthoringCapability({ workspace: new WorkspaceManager(join(cwd, "ws")), store: new MemoryRunStore(), getRegistry: async () => reg, services });
+      return { reg, services };
+    };
+    const resultOf = (body: any, id: string): string =>
+      JSON.stringify((body.messages as any[]).flatMap((m) => (Array.isArray(m.content) ? m.content : [])).find((p: any) => p.type === "tool_result" && p.tool_use_id === id));
+
+    it("refuses a type the agent asks before running, and says to call it as the tool", async () => {
+      const { reg, services } = await setup();
+      const s = await serve([
+        call("toolu_1", "meta_run_step", { type: "mail/send", config: { to: "a@b.c" } }),
+        call("toolu_2", "meta_run_step", { type: "mail/send@v2", config: { to: "a@b.c" } }),
+        answer("toolu_3", "refused"),
+      ]);
+      try {
+        const out = await run({ toolFilter: ["none"], agentTools: ["mail/send", ...META], approve: ["mail/send"] }, { registry: reg, services });
+        assert.equal(out.result, "refused");
+        assert.deepEqual(sent, [], "mail/send did not run");
+        const seen = resultOf(s.bodies[1], "toolu_1");
+        assert.match(seen, /mail\/send/);
+        assert.match(seen, /mail_send/, "names the tool to call instead");
+        assert.match(resultOf(s.bodies[2], "toolu_2"), /mail_send/, "a pin is the same step");
+      } finally {
+        s.close();
+      }
+    });
+
+    it("refuses it by a package's own name, and under an app, where the gated tool is left out", async () => {
+      const { reg, services } = await setup();
+      const pkgReg = { ...reg, "acme/mail/send": send };
+      const s = await serve([
+        call("toolu_1", "meta_run_step", { type: "send", config: { to: "a@b.c" } }),
+        call("toolu_2", "meta_run_step", { type: "acme/mail/send", config: { to: "a@b.c" } }),
+        answer("toolu_3", "refused"),
+        call("toolu_4", "meta_run_step", { type: "mail/send", config: { to: "a@b.c" } }),
+        answer("toolu_5", "refused"),
+      ]);
+      try {
+        await run({ toolFilter: ["none"], agentTools: ["send", ...META], approve: ["send"] }, { registry: pkgReg, services, package: "acme/mail" });
+        assert.match(resultOf(s.bodies[1], "toolu_1"), /your tool send:/, "named as the model sees it");
+        assert.match(resultOf(s.bodies[2], "toolu_2"), /your tool send:/);
+        await run({ toolFilter: ["none"], agentTools: ["mail/send", ...META], approve: ["mail/send"] }, { registry: reg, services, app: { name: "canvas", version: "v1" } });
+        assert.ok(!(s.bodies[3].tools as any[]).some((t) => t.name === "mail_send"), "the gated tool is not offered");
+        assert.match(resultOf(s.bodies[4], "toolu_4"), /mail_send/);
+        assert.deepEqual(sent, []);
+      } finally {
+        s.close();
+      }
+    });
+
+    it("runs it for an agent that does not ask before it (the builder's case)", async () => {
+      const { reg, services } = await setup();
+      const s = await serve([call("toolu_1", "meta_run_step", { type: "mail/send", config: { to: "a@b.c" } }), answer("toolu_2", "sent")]);
+      try {
+        await run({ toolFilter: ["none"], agentTools: ["mail/send", ...META] }, { registry: reg, services });
+        assert.deepEqual(sent, [{ to: "a@b.c" }]);
+      } finally {
+        s.close();
+      }
+    });
+
+    it("leaves building alone: a workflow holding the gated step publishes and runs as written", async () => {
+      const { reg, services } = await setup();
+      const yaml = 'name: mailer\nsteps:\n  - id: send\n    type: mail/send\n    config:\n      to: "{{ input.to }}"\n';
+      const s = await serve([
+        call("toolu_1", "meta_publish_workflow", { name: "mailer", yaml }),
+        call("toolu_2", "meta_run_workflow", { name: "mailer", input: { to: "a@b.c" } }),
+        answer("toolu_3", "built"),
+      ]);
+      try {
+        await run({ toolFilter: ["none"], agentTools: ["mail/send", ...META], approve: ["mail/send"] }, { registry: reg, services });
+        assert.doesNotMatch(resultOf(s.bodies[1], "toolu_1"), /error/i);
+        assert.deepEqual(sent, [{ to: "a@b.c" }], "the workflow's step ran");
+      } finally {
+        s.close();
+      }
+    });
+
+    it("holds a sub-agent's meta/run-step to its parent's gates, whatever it holds", async () => {
+      const { reg, services } = await setup();
+      const regWithAgent = { ...reg, agent };
+      const sub = { system: "sys", prompt: "send it", toolFilter: ["none"], finalAnswer: "Report.", model: "claude-sonnet-4-5", reasoning: "provider-default", cwd };
+      const s = await serve([
+        // The parent hands a sub-agent meta/run-step alone (no mail/send, so no gate of its own) …
+        call("toolu_1", "agent", { ...sub, agentTools: ["meta/run-step"] }),
+        // … whose run-step call is refused,
+        call("toolu_s1", "meta_run_step", { type: "mail/send", config: { to: "a@b.c" } }),
+        answer("toolu_s2", "could not"),
+        // … and another that gates a tool of its own, and not mail/send.
+        call("toolu_2", "agent", { ...sub, agentTools: ["dev/recall", "meta/run-step"], approve: ["dev/recall"] }),
+        call("toolu_s3", "meta_run_step", { type: "mail/send", config: { to: "a@b.c" } }),
+        answer("toolu_s4", "could not"),
+        answer("toolu_3", "done"),
+      ]);
+      try {
+        await run({ toolFilter: ["none"], agentTools: ["agent", "dev/recall", "mail/send", ...META], approve: ["mail/send"] }, { registry: regWithAgent, services });
+        assert.deepEqual(sent, [], "neither sub-agent sent");
+        assert.match(resultOf(s.bodies[2], "toolu_s1"), /mail_send/);
+        assert.match(resultOf(s.bodies[5], "toolu_s3"), /mail_send/);
+      } finally {
+        s.close();
+      }
+    });
+  });
+
   it("under an APP (ctx.app) a tool in `approve` is not offered at all — nothing would show its proposal — and the rest are", async () => {
     const { proposalsCapability } = await import("../../proposals.js");
     const write = defineStep({ type: "dev/write", input: z.object({ name: z.string() }), output: z.any(), async run() { return {}; } });

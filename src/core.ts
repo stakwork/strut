@@ -289,6 +289,11 @@ export interface StepContext<TServices = unknown> {
    *  deliberately and what a model inside it decided to do are not the same
    *  actor (plans/claims.md §4.1, fixed point 3). */
   agentTool?: boolean;
+  /** The step types the agent whose tool call this is asks a person before
+   *  running (its `approve`, expanded, and its parent agent's): set by the
+   *  agent step on its tools' context. `meta/run-step` refuses them, so a
+   *  gated tool is not run around its ask. Absent outside an agent's tools. */
+  gated?: ReadonlySet<string>;
   /** This step runs inside a version of a workflow the meta surface wrote
    *  (`source: agent`) on a strut whose host set `builder.reach`: the
    *  runner sets it, a subflow keeps it, and an agent's tool calls inherit
