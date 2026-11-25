@@ -121,6 +121,9 @@ export function createFixtureClient({ latencyMs = 120 }: { latencyMs?: number } 
         return provenanceFixture(c);
       case "history/read":
         return historyFixture(c);
+      // A worker's page: no work of its own, the exchange rate a pay pill shows fiat from.
+      case "task/me":
+        return { actor: "ada-7f3c", status: "active", types: [], balance: { heldMsat: 0, withdrawableMsat: 0, totalMsat: 0 }, rate: { perBtc: { USD: 60_000, EUR: 55_000 }, at: new Date(1790000000000).toISOString(), source: "fixture" } };
       case "proposal/get": {
         const p = PROPOSALS[String(c["id"])];
         if (!p) throw new Error(`No proposal "${String(c["id"])}"`);

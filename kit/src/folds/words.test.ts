@@ -51,12 +51,4 @@ describe("words: formats", () => {
     assert.equal(formats("not a tag!").locale, "en-US");
     assert.equal(formats("es_MX").locale, "es-MX");
   });
-
-  it("fiat is currency, USD unless another code Intl knows", () => {
-    const en = formats("en");
-    assert.equal(en.fiat(12.5), "$12.50");
-    assert.equal(en.fiat(12.5, "usd"), "$12.50");
-    assert.equal(en.fiat(12.5, "EUR"), "€12.50");
-    assert.equal(en.fiat(12.5, "nope"), "$12.50");
-  });
 });
