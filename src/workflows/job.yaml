@@ -195,12 +195,15 @@ params:
   # a page (browser/walkthrough for a flow, a frame per step), http/verify
   # for an endpoint, exec for a command — or a person's look when nothing
   # here runs it, never a check over the agent's own diff; and verify the
-  # job before saying done. No app/* (2026-10-22): an APP is the builder's
-  # — published on this server and handed over by name (`{ kind: "app",
-  # app }`) — and a page over this job's own results is an HTML file in
-  # its directory; the job-app runtime (plans/apps.md §6) is still served
-  # for a directory with an app.yaml, but nothing here scaffolds or builds
-  # one. A host appends its own (`createStrut({ job: { tools } })`): the
+  # job before saying done. The app READS (2026-11-25): app/list, app/get,
+  # app/look (an app as the person opening it sees it, a screenshot the
+  # agent sees) and app/calls (what the person's open page called), so a
+  # job finds and looks at an app published here. Building or publishing
+  # an app stays the `builder` workflow's (app/init, app/build,
+  # app/publish and the rest, dropped on 2026-10-22, when the reads went
+  # with them): it hands an app over by name (`{ kind: "app", app }`),
+  # and a page over this job's own results is an HTML file in its
+  # directory. A host appends its own (`createStrut({ job: { tools } })`): the
   # lab adds `pod/*`. An installed package appends what its strut.yaml's
   # `job:` names — its own steps, and strut's named one by one (`git/push`
   # for a change that ends as a pull request; src/job-seed.ts). Never the
@@ -226,6 +229,11 @@ params:
     - http/verify
     - browser/verify
     - browser/walkthrough
+    # The apps published here, read and looked at; never built.
+    - app/list
+    - app/get
+    - app/look
+    - app/calls
     - strut/list-peers
     - strut/run-workflow
     # What the turn is doing now, and its checklist, to whoever watches the

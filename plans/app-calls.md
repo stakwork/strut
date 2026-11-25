@@ -44,8 +44,10 @@ should work in every host (strut's UI, Hive, Peel), with nothing pasted.
    - Previews (the builder's looks at a directory) stay out, as they stay
      out of the counts today.
 2. **One step, `app/calls { name, since?, limit? }`**, under `app/*` (so the
-   builder and jobs already hold it). It returns the reader's own calls on
-   that app, oldest first: the newest `limit` (100 by default). Each call
+   builder already holds it; jobs did not, since `job.yaml` granted no
+   `app/*`, and hold it from 2026-11-25 with the other app reads). It
+   returns the reader's own calls on that app, oldest first: the newest
+   `limit` (100 by default). Each call
    also carries `t`, the ms since the first listed call started, so a gap
    shows without date arithmetic.
 3. **Docs.** `docs/apps.md`, and one line on the `App` Concept page: when

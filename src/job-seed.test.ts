@@ -1,12 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
-import { defineStep } from "./core.js";
+import { defineStep, mediaOf } from "./core.js";
 import { contentHash } from "./version.js";
 import { createRegistry } from "./steps/registry.js";
 import { validateWorkflowYaml } from "./validate.js";
@@ -15,9 +15,14 @@ import { createStrut } from "./createStrut.js";
 import { MemoryRunStore } from "./store.js";
 import { JOB_WORKFLOW, jobWorkflowYaml } from "./job-seed.js";
 import { STRUT_CONCEPTS, conceptFiles } from "./concept-seed.js";
+import { buildRegistryTools } from "./steps/core/agent.js";
+import { kitForTests } from "./test-util/app-kit.js";
 
 type Params = { tools: string[]; system: string };
 const paramsOf = (text: string) => (yaml.load(text) as { params: Params }).params;
+
+/** What a job holds of `app/*` (plans/one-job-agent.md work item 1): the reads. */
+const APP_READS = ["app/list", "app/get", "app/look", "app/calls"];
 
 const quiet = { serveUi: false, enableChat: false, scheduler: false, stt: false as const, store: new MemoryRunStore() };
 
@@ -45,13 +50,94 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     }
   });
 
-  it("no app tools (2026-10-22): an app is the builder's, handed over by name; the reply passes one on as { kind: app, app }", async () => {
+  it("the app READS, never the writes (2026-11-25): building an app is the builder's, handed over by name; the reply passes one on as { kind: app, app }", async () => {
     const text = await jobWorkflowYaml();
     const { tools, system } = paramsOf(text);
-    for (const t of tools) assert.ok(!t.startsWith("app/"), `the job agent never holds ${t}`);
+    assert.deepEqual(tools.filter((t) => t.startsWith("app/")), APP_READS, "the four reads, by name, no glob");
+    assert.ok(!(yaml.load(text) as { params: { approve: string[] } }).params.approve.some((t) => t.startsWith("app/")), "nothing to approve: they only read");
     assert.ok(JSON.stringify(yaml.load(text)).includes("An app on this server, by name"), "the reply's `app` field");
     assert.ok(!text.includes("an app directory you built"), "no app directory as a deliverable");
     assert.doesNotMatch(system, /app\/init|Job App/);
+    // The `Job` page sends a look at an app published here to app/look,
+    // not to browser-explore, which needs an address.
+    const job = (await conceptFiles([STRUT_CONCEPTS]).get("Job"))!;
+    assert.match(job.docs!.replace(/\s+/g, " "), /An app published on this server needs no address: app\/list finds it, app\/look \{ name \} shows it as the person sees it\./);
+  });
+
+  it("the seeded job's agent holds exactly the four app reads, and each runs as its tool inside a job, as the job's person", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "job-seed-apps-"));
+    try {
+      type Tool = { execute: (input: unknown) => Promise<unknown> };
+      const held: string[] = [];
+      const out: Record<string, unknown> = {};
+      // Stands in for the core `agent` step: builds its tools from the
+      // grants as the step does (buildRegistryTools over the run's registry
+      // and ctx), then calls each app tool the way a model would.
+      const fakeAgent = defineStep({
+        type: "agent",
+        input: z.object({ agentTools: z.array(z.string()), approve: z.array(z.string()) }).passthrough(),
+        output: z.any(),
+        async run(cfg, ctx) {
+          const tools = buildRegistryTools(cfg.agentTools, ctx.registry, ctx, (d: unknown) => d, { approve: new Set(cfg.approve), session: ctx.job }) as Record<string, Tool>;
+          held.push(...Object.keys(tools).filter((k) => k.startsWith("app_")));
+          out["list"] = await tools["app_list"]!.execute({});
+          out["get"] = await tools["app_get"]!.execute({ name: "trials" });
+          out["calls"] = await tools["app_calls"]!.execute({ name: "trials" });
+          out["look"] = await tools["app_look"]!.execute({ name: "trials", input: { view: "/trials" } });
+          return { result: "ok", object: { text: "ok", artifacts: [] }, steps: 1, usage: {}, cost: 0 };
+        },
+      });
+      // Stands in for the Playwright browser: what app/look hands it.
+      const looks: Array<{ runId: string; input: { name: string; version: string; actor?: string; link?: Record<string, string> }; sink: { runId: string; job?: { name: string; root: string } } }> = [];
+      const browser = {
+        async lookAtApp(runId: string, input: (typeof looks)[number]["input"], sink: (typeof looks)[number]["sink"]) {
+          looks.push({ runId, input, sink });
+          return { small: Buffer.from("png"), path: "shots/001.png", dir: sink.job!.root, url: "/shot", width: 1280, height: 800, bytes: 3, rendered: true, text: "Trials", errors: [] };
+        },
+        async dispose() {},
+      };
+      const strut = await createStrut({
+        workspace: new WorkspaceManager(join(dir, "ws")),
+        registry: await createRegistry([fakeAgent]),
+        services: { browser },
+        kit: await kitForTests(),
+        // strut's own apps would be built too: only the one published here.
+        views: false,
+        jamie: false,
+        knowledge: false,
+        earnings: false,
+        staff: false,
+        worker: false,
+        ...quiet,
+      });
+      const app = join(dir, "trials-src");
+      await mkdir(join(app, "src"), { recursive: true });
+      await writeFile(join(app, "app.yaml"), "title: Trials\n");
+      await writeFile(join(app, "src", "App.tsx"), "export default function App() { return <p>trials</p>; }\n");
+      const published = await strut.apps.publish(app, "trials", { surface: "person" });
+      assert.ok(published.ok, published.ok ? "" : published.errors.join("\n"));
+
+      const job = "job-app-reads";
+      const run = await strut.run(JOB_WORKFLOW, { prompt: "Screenshot the trials page." }, { job, actor: "ann" });
+      assert.equal(run.status, "success", JSON.stringify(run.error));
+      assert.deepEqual(held.sort(), ["app_calls", "app_get", "app_list", "app_look"], "exactly the four, from the seeded workflow's grants");
+
+      const ok = (v: unknown) => assert.ok(typeof v !== "string", `a tool's error, which the model would read: ${String(v)}`);
+      for (const k of ["list", "get", "calls", "look"]) ok(out[k]);
+      assert.deepEqual((out["list"] as { apps: Array<{ name: string }> }).apps.map((a) => a.name), ["trials"]);
+      assert.equal((out["get"] as { manifest: { title: string } }).manifest.title, "Trials");
+      assert.deepEqual((out["calls"] as { calls: unknown[] }).calls, [], "the person's own calls: none yet");
+      // The look runs as the job's person, and its shot lands in the job's directory.
+      assert.equal(looks.length, 1);
+      assert.deepEqual([looks[0]!.input.name, looks[0]!.input.version, looks[0]!.input.actor, looks[0]!.input.link], ["trials", "v1", "ann", { view: "/trials" }]);
+      assert.equal(looks[0]!.sink.job?.name, job);
+      assert.equal(looks[0]!.runId, run.runId);
+      const look = out["look"] as { name: string; version: string; rendered: boolean };
+      assert.deepEqual([look.name, look.version, look.rendered], ["trials", "v1", true]);
+      assert.equal(mediaOf(look)?.[0]?.mediaType, "image/png", "the agent SEES the shot");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("a repository found mid-turn: git/checkout is granted and the prompt says how, since bash never holds the person's token", async () => {
