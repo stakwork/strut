@@ -6,7 +6,7 @@ import { requireApps, resolveAppPath } from "./_shared.js";
 export default defineStep({
   type: "app/get",
   description:
-    "One published app at a version (the active one by default): its manifest (title, grants, data, csp), hash, versions, publisher, owner, upstream, the version's directory (`dir`) and files, " +
+    "One published app at a version (the active one by default): its manifest (title, grants, data, csp), hash, versions, publisher, owner, upstream, `origin` (where it comes from, as app/list says it; absent: made here), the version's directory (`dir`) and files, " +
     "its build (`build`: the kit, builtAt, the hash it built from, the imported apps) and `stale` — true when the document is older than the sources or an imported kit moved, so a build is due — " +
     "`inertGrants`, granted workflows that no longer exist, and `errors`, the page's latest client-side errors. " +
     "With `path` instead of `name`: an app DIRECTORY you are working on (in your job's directory; `job` names another job's) — read back the same way: manifest, files, build, `stale`.",
@@ -27,6 +27,7 @@ export default defineStep({
     }
     const view = await apps.get(cfg.name!, cfg.version);
     if (!view) throw new Error(cfg.version ? `App "${cfg.name}" has no version ${cfg.version}` : `App "${cfg.name}" not found`);
-    return view;
+    const origin = await apps.origin?.(cfg.name!);
+    return origin ? { ...view, origin } : view;
   },
 });

@@ -1,5 +1,10 @@
 # The builder job: workflow building as a kind of job, here and on another strut
 
+> **Status (2026-11-25): changed by `plans/one-job-agent.md`.** The `job`
+> workflow now holds the authoring tools and builds what is published here
+> (a job of kind `Workflow Builder`). `builder` stays as the door for a
+> build on another strut. The ruling of 2026-10-20 below is reversed there.
+
 > **Status (2026-10-20): proposed, two points ruled; work item 1 BUILT** on
 > `feature/builder-job` — `src/workflows/builder.yaml`, `src/builder-seed.ts`,
 > the `peer: false` delta, `createStrut({ builder })`, `STRUT_HOST_CONFIG.builder`,

@@ -410,7 +410,7 @@ describe("app/make-public in the seeds: the builder job and the assistant ask fo
   const params = (text: string) => (yaml.load(text) as { params: Params }).params;
   const reaches = (grants: string[], type: string) => grants.some((g) => globToRegExp(g).test(type));
 
-  it("builder and orchestrator grant it and gate it, beside app/grant; job does not reach it", async () => {
+  it("builder, job and orchestrator grant it and gate it, the orchestrator's beside app/grant", async () => {
     const builder = params(await builderWorkflowYaml());
     assert.ok(reaches(builder.tools, "app/make-public"), "builder grants it (app/*)");
     assert.ok(builder.approve?.includes("app/make-public"), "a proposal: an admin's yes");
@@ -418,7 +418,10 @@ describe("app/make-public in the seeds: the builder job and the assistant ask fo
     assert.ok(orchestrator.tools.includes("app/make-public"));
     assert.ok(orchestrator.approve?.includes("app/make-public"));
     assert.ok(orchestrator.approve!.indexOf("app/make-public") === orchestrator.approve!.indexOf("app/grant") + 1, "beside app/grant");
-    assert.ok(!reaches(params(await jobWorkflowYaml()).tools, "app/make-public"), "job does not reach it");
+    // A job builds too (plans/one-job-agent.md §3): what the builder asks first for, it asks first for.
+    const job = params(await jobWorkflowYaml());
+    assert.ok(reaches(job.tools, "app/make-public"), "job grants it (app/*)");
+    assert.ok(job.approve?.includes("app/make-public"), "a proposal there too");
   });
 
   it("the builder chat's tools leave out the app/* steps that run only as a proposal", async () => {

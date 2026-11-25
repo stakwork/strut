@@ -543,10 +543,11 @@ const WORKFLOW_LANGUAGE_DESCRIPTION = "How a workflow, a step or an app is writt
  * matches git as every page's does, and prompts.test.ts holds the file to
  * this text: change the rules, then `npm run render:concepts`.
  *
- * It has no parent yet, so no prompt lists it: a page under `Workflow
+ * It has no parent, so no prompt lists it: a page under `Workflow
  * Builder` is offered as a kind to open in every prompt that reads that
- * page (the chat's, the builder job's, the orchestrator's). It gets its
- * parent when that page says to open it (plans/one-job-agent.md, item 4).
+ * page (the chat's, the builder job's, the orchestrator's). The job agent
+ * opens it by name, as the `Job` page says to (plans/one-job-agent.md,
+ * open question 8).
  */
 export function workflowLanguagePage(): string {
   return `---

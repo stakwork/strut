@@ -155,13 +155,14 @@ export interface ConceptSeedOutcome {
   claims?: PageClaim[];
 }
 
-/** The pages strut ships (`src/concepts/`): a root per agent — `Workflow
- *  Builder`, `Job`, and `Dream`, the dream's own rules with a page per kind
- *  of source under it — and the pages under them. Before strut shipped them
- *  the stakgraph lab seeded the first two files, under its own prefixes.
- *  `Workflow Build` was the builder's entry under `Job`, there only because
- *  the orchestrator read `Job` alone; it reads both roots now, and the job
- *  agent's way to the builder is in `Job`'s own docs. `Job App` (an app a
+/** The pages strut ships (`src/concepts/`): `Job`, with `Workflow Builder`
+ *  (what is built here: a kind of job since plans/one-job-agent.md, read by
+ *  the builders too) under it; `Dream`, the dream's own rules with a page
+ *  per kind of source under it; and the pages under them. Before strut
+ *  shipped them the stakgraph lab seeded the first two files, under its own
+ *  prefixes. `Workflow Build` was the builder's entry under `Job`, there
+ *  only because the orchestrator read `Job` alone; it reads both pages now,
+ *  and how a job builds is in `Job`'s own docs. `Job App` (an app a
  *  job wrote in its own directory, plans/apps.md §6) was a third way to an
  *  app, retired 2026-10-22: a page over a job's results is an HTML file in
  *  its directory, and an app is the builder's, published and handed over

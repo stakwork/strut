@@ -119,28 +119,26 @@ describe("a run started from inside another keeps its caller's bounds", () => {
     assert.deepEqual(seen.map((s) => s.opened), ["public/tok1/ann", "public/tok1/ann", "public/tok1/ann"]);
   });
 
-  // No actor here: the app's runs below open `app/<name>/<id>`, the same
-  // with or without meta/run-step handing on the caller's person.
-  it("an app's run: a nested step reads the graph as the app's, its sessions under the app", async () => {
+  it("an app's run: a nested step reads the graph as the app's, its sessions under the app and its viewer", async () => {
     const app: AppRef = { name: "acme/notes", version: "v1" };
-    const by = await run("notes-turn", { origin: "app", app });
+    const by = await run("notes-turn", { origin: "app", app, actor: "ann" });
     for (const where of ["own", "nested", "child"] as const) {
       assert.deepEqual(by[where].app, app, `${where}: the caller's app`);
       assert.equal(by[where].reader, "apps", `${where}: read as the app's, not as a job's`);
-      assert.equal(by[where].opened, "app/acme/notes/ann", `${where}: the thread the caller's own call opens`);
+      assert.equal(by[where].opened, "app/acme/notes/ann/ann", `${where}: the thread the caller's own call opens`);
     }
   });
 
   it("a first-party page's run: a nested step carries the app, yet is never the page's own call", async () => {
     const app: AppRef = { name: "strut/jamie", version: "v1", firstParty: true, admin: true };
-    const by = await run("jamie", { origin: "app", app });
+    const by = await run("jamie", { origin: "app", app, actor: "ann" });
     for (const where of ["own", "nested", "child"] as const) {
       assert.deepEqual(by[where].app, app, `${where}: the caller's app`);
       // A page's own call reads as `ui` and passes as an admin's page; a
       // run started from inside the turn — `__run_step__` included — does not.
       assert.equal(by[where].reader, "apps", `${where}: never the page's reader`);
       assert.equal(by[where].adminPage, false, `${where}: never the admin's page`);
-      assert.equal(by[where].opened, "app/strut/jamie/ann", `${where}: the thread the caller's own call opens`);
+      assert.equal(by[where].opened, "ann", `${where}: the viewer's own thread, as the caller's own call opens it`);
     }
   });
 

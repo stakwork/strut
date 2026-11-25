@@ -811,7 +811,10 @@ instead of baked into env at deploy time.
   `{NAME}` header templates, or one named by a template; a `git/*` step
   names none, reading the run's token for its repository's host as a
   `github/*` step reads GITHUB_TOKEN, so `tools` decides it); `meta/run-step`
-  refuses a step outside it. The same rule (`stepProblems`) holds at RUN
+  refuses a step outside it. (Apart from any reach, `meta/run-step` also
+  refuses a step the calling agent asks a person before running, its
+  `approve`: docs/agent-step.md, plans/one-job-agent.md §6. A job holds
+  both since that plan.) The same rule (`stepProblems`) holds at RUN
   time for every step inside a version of a workflow the AI wrote (the
   version that runs, `aiWroteVersion`: a seed put back at boot, or a
   person's own later version, is not held; the AI's version run by name or

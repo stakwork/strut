@@ -19,7 +19,10 @@ name: builder
 # it belongs to, here or on a peer (`input.peer`, below); code lives in its
 # repository and is checked out wherever a job runs, so a code job runs
 # here. The hands differ too: the authoring twins and strut's workflow
-# dialect, not a shell and checkouts. A job agent that meets a build runs
+# dialect, not a shell and checkouts. Since plans/one-job-agent.md the
+# `job` agent holds these tools too and builds what is published HERE
+# itself; this workflow stays as the door for ANOTHER server (`peer`,
+# below), with no shell. A job agent that meets a build on a peer runs
 # this workflow itself (meta/run-workflow; the `Job` page's docs).
 #
 # Open to other struts: `peer: true` lets a PEER (plans/federation.md §3)
@@ -223,8 +226,9 @@ params:
     # Task types (plans/human-steps.md §9.8): a workflow with a `human` step
     # names one, and the builder writes that workflow and its worker app, so
     # it reads the types here and ASKS for a new one or a change — an
-    # admin's yes (task/set-type is a proposal, below). The builder's alone:
-    # a task type comes with a workflow. It grants no worker: a person does.
+    # admin's yes (task/set-type is a proposal, below). Whoever builds the
+    # workflow asks (the job too, plans/one-job-agent.md): a task type
+    # comes with a workflow. It grants no worker: a person does.
     - task/types
     - task/set-type
     # How the work is going (spend, limits, each worker's numbers): read it,

@@ -25,7 +25,9 @@ import {
   type Proposal,
 } from "./proposals.js";
 import { personToken } from "./auth.js";
-import type { JobUpdateInput } from "./jobs.js";
+import { jobRoot, readJobRecord, type JobUpdateInput } from "./jobs.js";
+import { RUN_STEP_FLOW } from "./run-step.js";
+import { proposerOf } from "./steps/lib/knowledge/_shared.js";
 
 // Proposals (plans/proposals.md): the gate on an agent's tool, the record,
 // the decision that applies the step in code, what the thread is told.
@@ -479,6 +481,51 @@ describe("proposals", () => {
       assert.deepEqual(made.map((p) => [p.by.workflow, p.by.conversation]).sort(), [["job", "ann/c9"], ["turn", "ann/c9"]]);
       const listed = await idsOf("/proposals", personToken("ann")!.token);
       for (const p of made) assert.ok(listed.includes(p.id), `${p.by.workflow}'s proposal is listed to ann's device`);
+    });
+
+    it("a step a job's run runs through meta/run-step proposes as that run: its job, its person, the turn's thread", async () => {
+      // graph/edit-node on a page whose text is in git proposes (`proposerOf`):
+      // a job's agent reaches it only through meta/run-step.
+      const seen: unknown[] = [];
+      const edit = defineStep({
+        type: "dev/edit-page",
+        description: "Propose a change to a page.",
+        input: z.object({}),
+        output: z.any(),
+        async run(_cfg, c) {
+          seen.push({ job: c.job, budgetJob: c.budgetJob, actor: c.actor, principal: c.principal });
+          const bag = c.services as { proposals: ReturnType<typeof proposalsCapability> };
+          return { proposal: (await bag.proposals.propose({ step: "dev/write", input: { name: "x" }, title: "W.", by: proposerOf(c) })).id };
+        },
+      });
+      const start = defineStep({
+        type: "dev/start-job",
+        input: z.object({}),
+        output: z.any(),
+        async run(_cfg, c) {
+          const bag = c.services as { jobs: { launch(o: unknown): Promise<unknown> } };
+          return bag.jobs.launch({ job: "j1", workflow: "job", input: {}, from: c.runId, ...(c.actor ? { actor: c.actor } : {}) });
+        },
+      });
+      await boot({ registry: await createRegistry([write, edit, start]) });
+      await strut.workspace.publishWorkflow("turn", "v1", { steps: [{ id: "s", type: "dev/start-job", config: {} }] });
+      await strut.workspace.publishWorkflow("job", "v1", { steps: [{ id: "edit", type: "meta/run-step", config: { type: "dev/edit-page" } }] });
+      assert.equal((await strut.run("turn", { session: "ann/c9" }, { actor: "ann" })).status, "success");
+      let made: Proposal[] = [];
+      for (let i = 0; i < 100 && made.length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+        made = (await listProposals(root())).filter((p) => p.by.workflow === RUN_STEP_FLOW);
+      }
+      assert.equal(made.length, 1);
+      const p = made[0]!;
+      assert.deepEqual(seen, [{ job: "j1", budgetJob: "j1", actor: "ann", principal: "ann" }], "the step ran as the job's run would");
+      assert.deepEqual([p.by.job, p.by.actor, p.by.principal], ["j1", "ann", "ann"]);
+      // Its thread is the turn that started the job: the conversation page
+      // shows a card with both under that turn's job card (conversations.test.ts).
+      assert.equal(p.by.conversation, "ann/c9");
+      assert.ok((await idsOf("/proposals", personToken("ann")!.token)).includes(p.id), "listed to ann's device");
+      // A single-step run is not one of the job's runs: its log is not kept.
+      assert.deepEqual((await readJobRecord(jobRoot(dir, "j1")))!.runs!.map((r) => r.workflow), ["job"]);
     });
 
     it("a proposal only an admin accepts: a person token's own accept is refused (admin_required), the full key's applies", async () => {
