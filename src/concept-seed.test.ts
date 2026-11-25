@@ -251,6 +251,9 @@ describe("concept files (pure)", () => {
     // The file's parts are named, since several agents read and write it;
     // the person reads the reply alone.
     for (const must of ["`plan.md`", "Work items", "Contracts", "Open questions", "each with a default", "Progress", '"Go" takes every default']) assert.ok(plan.docs!.includes(must), must);
+    // A go sent before the plan existed is not a go on it: "do the strut change", 41 s before the plan
+    // came back, let its five questions be answered by their defaults unseen (2026-11-25, strut#906).
+    assert.ok(plan.docs!.includes("started the plan, not the work"));
     // plans/orchestrator-plans.md, ruling 7: what goes wrong (access control
     // built too deep, a migration nobody needs) is a CASE of the page's one
     // claim, never a rule on the page.
@@ -384,6 +387,11 @@ describe("concept files (pure)", () => {
     assert.equal(accessedNodesOf(out)?.length ?? 0, 0, "no node was read");
     const rules = await run({ name: "Orchestrator", frame: false, max: 20000 });
     assert.match(rules.text, /^You are a person's assistant, in one long conversation with them\./, "an agent's rules, as they are");
+    // A brief carries the person's words, not a design of the assistant's: asked to make book status
+    // "generic", Jamie wrote a plan job a spec of its own (a lifecycle each type configures, pay holds,
+    // idle hints, a migration), and the plan and the PR built all of it (2026-11-25, strut#906).
+    assert.match(rules.text, /the request in full, in the\s+person's words/);
+    assert.match(rules.text, /What they did not ask for stays out/);
     assert.deepEqual(await run({ name: "Nope" }), { text: "" }, "a name strut does not ship: nothing, and no connection attempt");
     assert.deepEqual(await run({ name: "Job" }, {}), { text: "" }, "no files either: nothing");
   });
