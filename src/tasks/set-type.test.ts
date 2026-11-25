@@ -663,12 +663,12 @@ export default defineStep({ type: "test/sneak", input: z.object({}), output: z.a
 
 // ── the seeds ───────────────────────────────────────────────────────────────
 
-describe("task/set-type in the seeds: the builder's alone", () => {
+describe("task/set-type in the seeds: whoever builds the workflow asks for its type", () => {
   type Params = { tools: string[]; approve?: string[] };
   const params = (text: string) => (yaml.load(text) as { params: Params }).params;
   const reaches = (grants: string[], type: string) => grants.some((g) => globToRegExp(g).test(type));
 
-  it("the builder grants task/types, task/set-type and task/report and gates task/set-type; the assistant reads and asks for grants, never a type; job reaches none", async () => {
+  it("the builder and the job grant task/types, task/set-type and task/report and gate task/set-type; the assistant reads and asks for grants, never a type", async () => {
     const builder = params(await builderWorkflowYaml());
     assert.ok(builder.tools.includes("task/types") && builder.tools.includes("task/set-type") && builder.tools.includes("task/report"));
     assert.ok(builder.approve?.includes("task/set-type"), "a proposal: an admin's yes");
@@ -677,7 +677,12 @@ describe("task/set-type in the seeds: the builder's alone", () => {
     for (const type of ["task/types", "task/report", "task/grant"]) assert.ok(orchestrator.tools.includes(type), `the assistant grants ${type}`);
     assert.ok(orchestrator.approve?.includes("task/grant"), "a grant is an admin's yes");
     assert.ok(!reaches(orchestrator.tools, "task/set-type"), "a type is the builder's");
+    // A job builds too (plans/one-job-agent.md §3), so it holds what the
+    // builder holds of tasks: the types and the report, never a grant to a
+    // worker (a person's) nor a worker's own steps.
     const job = params(await jobWorkflowYaml());
-    for (const type of ["task/types", "task/set-type", "task/report", "task/grant"]) assert.ok(!reaches(job.tools, type), `job does not grant ${type}`);
+    for (const type of ["task/types", "task/set-type", "task/report"]) assert.ok(job.tools.includes(type), `job grants ${type}`);
+    assert.ok(job.approve?.includes("task/set-type"), "a proposal there too");
+    for (const type of ["task/grant", "task/next", "task/submit"]) assert.ok(!reaches(job.tools, type), `job does not grant ${type}`);
   });
 });

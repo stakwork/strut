@@ -129,7 +129,7 @@ steps:
               required: [id, title]
               properties:
                 id: { type: string, description: "Stable across turns: the same id next turn means a newer version of the same thing (\"plan\", not \"plan-v3\")." }
-                kind: { type: string, description: "As given when a workflow handed you the artifact (captcha, walkthrough, …; `app` with `app: <name>` for an app the builder published). Otherwise only when the file extension would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json | sheet | table | timeline | docx | redline" }
+                kind: { type: string, description: "As given when a workflow handed you the artifact (captcha, walkthrough, …; `app` with `app: <name>` for an app published here). Otherwise only when the file extension would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json | sheet | table | timeline | docx | redline" }
                 title: { type: string }
                 label: { type: string, description: "What it is to the reader: Plan, Page, Screenshot" }
                 summary: { type: string, description: "One sentence about what is in it" }
@@ -138,7 +138,7 @@ steps:
                 content: { type: string, description: "Small inline content instead of a file (a diff, short JSON)" }
                 render: { type: string, description: "A file a page can draw in its place, relative to the working directory: a .docx's HTML, a sheet's CSV" }
                 from: { type: array, items: { type: string }, description: "The ref_ids of the graph nodes it was made from — the Concepts it follows, the excerpts it quotes — as the graph tools gave them" }
-                app: { type: string, description: "An app on this server, by name, as the builder's reply gave it (with kind: app); its active version unless `version` names one" }
+                app: { type: string, description: "An app on this server, by name (with kind: app); its active version unless `version` names one" }
                 version: { type: string, description: "With `app`: a version to pin (v3)" }
           ask:
             type: object
@@ -199,22 +199,22 @@ params:
   # a page (browser/walkthrough for a flow, a frame per step), http/verify
   # for an endpoint, exec for a command — or a person's look when nothing
   # here runs it, never a check over the agent's own diff; and verify the
-  # job before saying done. The app READS (2026-11-25): app/list, app/get,
-  # app/look (an app as the person opening it sees it, a screenshot the
-  # agent sees) and app/calls (what the person's open page called), so a
-  # job finds and looks at an app published here. Building or publishing
-  # an app stays the `builder` workflow's (app/init, app/build,
-  # app/publish and the rest, dropped on 2026-10-22, when the reads went
-  # with them): it hands an app over by name (`{ kind: "app", app }`),
-  # and a page over this job's own results is an HTML file in its
-  # directory. A host appends its own (`createStrut({ job: { tools } })`): the
+  # job before saying done. BUILDING is a kind of job
+  # (plans/one-job-agent.md, 2026-11-25): the job holds what the `builder`
+  # workflow holds — `meta/*`, the whole authoring surface as steps
+  # (publish, edit, create and run a step, validate, the runs, the claims),
+  # `app/*` (scaffold, build, look at and publish an app; app/look and
+  # app/calls also show an app as the person opening it sees it),
+  # graph/query and the task-type steps a workflow with a `human` step
+  # needs — and builds as the `Workflow Language` page says, which the
+  # `Job` page tells it to open, with `Workflow Builder` and its kinds
+  # under `Job`. The `builder` workflow stays the door for another server
+  # (the `Job` page's own docs). A page over this job's own results is
+  # still an HTML file in its directory. A host appends its own
+  # (`createStrut({ job: { tools } })`): the
   # lab adds `pod/*`. An installed package appends what its strut.yaml's
   # `job:` names — its own steps, and strut's named one by one (`git/push`
-  # for a change that ends as a pull request; src/job-seed.ts). Never the
-  # authoring writes (meta/publish-workflow, meta/create-step, edit-step):
-  # a workflow, or an app published on this server, is the `builder`
-  # workflow's, which this agent runs through meta/run-workflow when such a
-  # request reaches it (the `Job` page's own docs).
+  # for a change that ends as a pull request; src/job-seed.ts).
   tools:
     - graph/graph-search
     - graph/graph-get
@@ -227,24 +227,21 @@ params:
     # accepts on a card (below), since a page is what an agent here is told.
     - knowledge/edit-page
     - knowledge/add-page
-    - meta/list-workflows
-    - meta/get-workflow
-    - meta/run-workflow
-    - meta/get-run
-    - meta/resume-run
-    - meta/list-claims
-    - meta/add-claim
-    - meta/add-check
-    - meta/edit-check
-    - meta/verify-job
+    # A raw read of the graph, under this job's reader scope as every job
+    # read is: what a workflow's graph/* steps wrote, counted and read back.
+    - graph/query
+    # The whole authoring surface, by glob, as the builder's is: a twin
+    # added later lands here without a seed edit. meta/run-step refuses a
+    # step this agent asks before running (`approve`, below).
+    - meta/*
     - http/verify
     - browser/verify
     - browser/walkthrough
-    # The apps published here, read and looked at; never built.
-    - app/list
-    - app/get
-    - app/look
-    - app/calls
+    # Apps: found, looked at, and built — a front-end project over
+    # workflows, its files written by the editor in the job's directory.
+    # app/make-public among them ASKS to put an app in the public view (a
+    # proposal, below).
+    - app/*
     - strut/list-peers
     - strut/run-workflow
     # What the turn is doing now, and its checklist, to whoever watches the
@@ -280,6 +277,13 @@ params:
     - remote/run-workflow
     - remote/call
     - remote/buy-credit
+    # Task types (plans/human-steps.md §9.8): a workflow with a `human` step
+    # names one, so the job reads the types here and ASKS for a new one or a
+    # change (task/set-type is a proposal, below). It grants no worker: a
+    # person does. task/report is how the work is going, read, never rebuilt.
+    - task/types
+    - task/set-type
+    - task/report
     # A server someone lets the job into over SSH: the public half of the
     # person's key, made the first time — the private half stays in strut
     # and signs through the agent's `sshKeys`, so bash's ssh just works.
@@ -288,13 +292,17 @@ params:
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: package/install
   # (someone's code into this strut), package/commit (this server's edits pushed
-  # to a repo with a person's credential) and remote/buy-credit (this server's
-  # sats to another strut). A host appends its gated writes
+  # to a repo with a person's credential), remote/buy-credit (this server's
+  # sats to another strut), task/set-type (a task type: what workers are
+  # shown and paid) and app/make-public (an app in the public view: what
+  # anyone sees). A host appends its gated writes
   # (`createStrut({ job: { approve } })`).
   approve:
     - package/install
     - package/commit
     - remote/buy-credit
+    - task/set-type
+    - app/make-public
     - knowledge/edit-page
     - knowledge/add-page
   # The MECHANICS of a turn: the directory, the checkouts, the reply's

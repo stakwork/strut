@@ -179,6 +179,13 @@ export interface JobRun {
 export const JOB_WORKFLOWS = ["job", "builder"] as const;
 export type JobWorkflow = (typeof JOB_WORKFLOWS)[number];
 
+/** The KIND a build is (plans/one-job-agent.md §1): the page under `Job`
+ *  that holds what is built here. A job of this kind builds a workflow or
+ *  an app with the job's own tools; `builder` is the door for a build on
+ *  another server. Never a page under it: a kind's page is cut in the
+ *  prompt, and the job opens the one under it in full. */
+export const BUILD_KIND = "Workflow Builder";
+
 /** The job's newest TURN: its newest run with no parent that ran one of
  *  `JOB_WORKFLOWS` — so, the workflow the job IS. What `job/continue`
  *  launches (a builder job stays a builder job) and what `GET /jobs/:id`

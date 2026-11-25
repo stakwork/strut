@@ -14,6 +14,7 @@ import { WorkspaceManager, flowFromYaml } from "./workspace.js";
 import { createStrut } from "./createStrut.js";
 import { MemoryRunStore } from "./store.js";
 import { JOB_WORKFLOW, jobWorkflowYaml } from "./job-seed.js";
+import { builderWorkflowYaml } from "./builder-seed.js";
 import { STRUT_CONCEPTS, conceptFiles } from "./concept-seed.js";
 import { buildRegistryTools } from "./steps/core/agent.js";
 import { kitForTests } from "./test-util/app-kit.js";
@@ -21,8 +22,8 @@ import { kitForTests } from "./test-util/app-kit.js";
 type Params = { tools: string[]; system: string };
 const paramsOf = (text: string) => (yaml.load(text) as { params: Params }).params;
 
-/** What a job holds of `app/*` (plans/one-job-agent.md work item 1): the reads. */
-const APP_READS = ["app/list", "app/get", "app/look", "app/calls"];
+/** The authoring surface a job holds by glob, as the builder does (plans/one-job-agent.md §3). */
+const GLOBS = ["meta/*", "app/*"];
 
 const quiet = { serveUi: false, enableChat: false, scheduler: false, stt: false as const, store: new MemoryRunStore() };
 
@@ -48,26 +49,62 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     const { tools } = paramsOf(text);
     assert.ok(tools.length > 0);
     for (const t of tools) {
-      assert.ok(!t.includes("*"), `strut's own list names steps, never globs: ${t}`);
+      if (GLOBS.includes(t)) continue;
+      assert.ok(!t.includes("*"), `only the authoring surface comes by glob: ${t}`);
       assert.ok(registry[t], `a grant strut cannot honor: ${t}`);
     }
   });
 
-  it("the app READS, never the writes (2026-11-25): building an app is the builder's, handed over by name; the reply passes one on as { kind: app, app }", async () => {
+  it("building is a kind of job (plans/one-job-agent.md): the builder's tools and approvals, and the Job page says how a build starts", async () => {
     const text = await jobWorkflowYaml();
     const { tools, system } = paramsOf(text);
-    assert.deepEqual(tools.filter((t) => t.startsWith("app/")), APP_READS, "the four reads, by name, no glob");
-    assert.ok(!(yaml.load(text) as { params: { approve: string[] } }).params.approve.some((t) => t.startsWith("app/")), "nothing to approve: they only read");
+    const approve = (yaml.load(text) as { params: { approve: string[] } }).params.approve;
+    // What the `builder` workflow grants on top of a job's own (§3).
+    for (const t of [...GLOBS, "graph/query", "task/types", "task/set-type", "task/report"]) assert.ok(tools.includes(t), t);
+    assert.deepEqual(tools.filter((t) => t.startsWith("meta/") || t.startsWith("app/")), GLOBS, "the globs alone: no twin named beside them");
+    // Every call the builder asks a person before, the job asks before too.
+    const builder = (yaml.load(await builderWorkflowYaml()) as { params: { tools: string[]; approve: string[] } }).params;
+    for (const t of builder.approve) assert.ok(approve.includes(t), `asks first, as the builder does: ${t}`);
+    for (const t of builder.tools) assert.ok(tools.includes(t), `the builder holds it, so the job does: ${t}`);
     assert.ok(JSON.stringify(yaml.load(text)).includes("An app on this server, by name"), "the reply's `app` field");
     assert.ok(!text.includes("an app directory you built"), "no app directory as a deliverable");
     assert.doesNotMatch(system, /app\/init|Job App/);
+
+    const files = conceptFiles([STRUT_CONCEPTS]);
+    const job = (await files.get("Job"))!;
+    const said = job.docs!.replace(/\s+/g, " ");
     // The `Job` page sends a look at an app published here to app/look,
     // not to browser-explore, which needs an address.
-    const job = (await conceptFiles([STRUT_CONCEPTS]).get("Job"))!;
-    assert.match(job.docs!.replace(/\s+/g, " "), /An app published on this server needs no address: app\/list finds it, app\/look \{ name \} shows it as the person sees it\./);
+    assert.match(said, /An app published on this server needs no address: app\/list finds it, app\/look \{ name \} shows it as the person sees it\./);
+    // A build is the job's own: the rules first, then the kinds built here.
+    for (const must of [
+      "is yours to build, with the authoring tools (meta/*, app/*)",
+      'open the `Workflow Language` page — graph/graph-get { node_type: "Concept", name: "Workflow Language" } — and work as it says',
+      "What is built here is under the `Workflow Builder` Concept, a page under this one",
+      "the claim is on the workflow, and meta/verify-run on its test run, not on the job",
+      "When this thread has been compacted, what a page said went with it: open the page again before you write more.",
+      // Where a change to an app goes: its line says (app/recent, app/list).
+      "An app's line in Recent Work, and in app/list, says where it comes from when it was not made here: that is where a change to it goes.",
+      "One from a repository opened here is changed here, in place, even when the person names the repository, and reaches it with package/commit when they ask.",
+      "Strut's own is a code change to strut.",
+      // Another server's is still its builder's, as before, word for word.
+      "One published on a PEER is built there, by that server's builder.",
+      'meta/run-workflow { name: "builder", input: { prompt, session: "<your job id>/build", peer } }',
+      "`prompt` stands alone: the builder sees nothing of your thread.",
+      "`session` is the build's own thread: the same on every turn of this job",
+      "It answers `{ text, artifacts, ask? }`.",
+      'you hand it on as it gave it (an app: `{ kind: "app", app: "<name>" }` in your `artifacts`)',
+    ]) assert.ok(said.includes(must), must);
+    assert.doesNotMatch(said, /is the builder's, never yours by hand|Never write workflow YAML into a file/, "the split's two lines are gone");
+    // Both pages the paragraph names are there to open: the rules by name
+    // (no parent, so no other prompt lists them), the kinds under Job.
+    assert.deepEqual((await files.get("Workflow Language"))!.parents, []);
+    assert.deepEqual((await files.get("Workflow Builder"))!.parents, ["Job"]);
+    assert.ok(job.children.some((c) => c.name === "Workflow Builder"), "listed among the job's kinds");
+    assert.ok(job.docs!.length <= 10_000, `the Job page is read whole (max 10000): ${job.docs!.length}`);
   });
 
-  it("the seeded job's agent holds exactly the four app reads, and each runs as its tool inside a job, as the job's person", async () => {
+  it("the seeded job's agent holds the app tools, and each read runs as its tool inside a job, as the job's person", async () => {
     const dir = await mkdtemp(join(tmpdir(), "job-seed-apps-"));
     try {
       type Tool = { execute: (input: unknown) => Promise<unknown> };
@@ -123,7 +160,7 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       const job = "job-app-reads";
       const run = await strut.run(JOB_WORKFLOW, { prompt: "Screenshot the trials page." }, { job, actor: "ann" });
       assert.equal(run.status, "success", JSON.stringify(run.error));
-      assert.deepEqual(held.sort(), ["app_calls", "app_get", "app_list", "app_look"], "exactly the four, from the seeded workflow's grants");
+      for (const t of ["app_calls", "app_get", "app_list", "app_look", "app_init", "app_checkout", "app_build", "app_publish", "app_make_public"]) assert.ok(held.includes(t), `from the seeded workflow's grants: ${t}`);
 
       const ok = (v: unknown) => assert.ok(typeof v !== "string", `a tool's error, which the model would read: ${String(v)}`);
       for (const k of ["list", "get", "calls", "look"]) ok(out[k]);

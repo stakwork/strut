@@ -301,6 +301,11 @@ export interface AppsCapability {
    *  app's record is next written. Never the files, the build, the errors
    *  or the grants `get` reads. Null when there is no such app or version. */
   manifestOf(name: string, version?: string): Promise<AppVersionManifest | null>;
+  /** Where the app comes from, which is where a change to it goes
+   *  (`appOrigin`): a few words for a list's line, or undefined for an app
+   *  made on this server, which is changed here. Off `manifestOf`'s
+   *  remembered record. Optional: a host's own capability may not say. */
+  origin?(name: string): Promise<string | undefined>;
   /** A version's directory (the active one by default), or null. */
   versionDir(name: string, version?: string): Promise<{ path: string; version: string; hash: string } | null>;
   /** Build the directory in place (`dist/`), with the installed apps and the
@@ -399,6 +404,28 @@ export interface AppsDeps {
   summarize?: AppSummarizer;
   /** How long the summary may take before it is given up on. Default 20 s. */
   summaryTimeoutMs?: number;
+  /** The repository a package is opened here from (src/packages/repos.ts),
+   *  for `origin`. Absent: a repo's app reads as its package's. */
+  repoOf?: (pkg: string) => Promise<{ url: string } | undefined>;
+}
+
+/**
+ * Where an app comes from, in the few words its line in a list carries
+ * (app/recent, app/list, app/get): what tells an agent WHERE a change to it
+ * goes, so an app that is also in a repository is not taken for a code
+ * change, nor strut's own for one that can be edited here
+ * (plans/one-job-agent.md §7). The `Recent Apps` page says what each means.
+ *
+ *   - strut seeded it: the next boot publishes the committed version again;
+ *   - its package is opened here as a repository (app-repos.md §3): edited
+ *     in place, and committed to the repository on a person's yes;
+ *   - an installed package's: an edit here is this server's own copy;
+ *   - none of these, undefined: made here, changed here.
+ */
+export function appOrigin(app: Pick<AppVersionManifest, "seeded" | "package">, repo?: { url: string }): string | undefined {
+  if (app.seeded) return "strut's own";
+  if (!app.package) return undefined;
+  return repo ? `repo ${repo.url}, opened here` : `package ${app.package}`;
 }
 
 
@@ -676,6 +703,20 @@ export function createApps(deps: AppsDeps): AppsCapability {
 
   const errorsOf = async (app: string) => (deps.errors ? await deps.errors(app, APP_ERRORS_MAX).catch(() => []) : []);
 
+  const manifestOf: AppsCapability["manifestOf"] = (name, version) =>
+    manifests.read(name, version, async () => {
+      const rec = await workspace.getApp(name, version);
+      if (!rec) return null;
+      const pkg = rec.upstream?.package;
+      return {
+        version: rec.version,
+        manifest: rec.manifest,
+        seeded: rec.versions[rec.version]?.source === "seed",
+        // An item is its package's only under its prefix (src/packages/installed.ts).
+        ...(pkg && packagePrefixOf(name) === pkg ? { package: pkg } : {}),
+      };
+    });
+
   return {
     async list() {
       const listed = await workspace.listApps();
@@ -713,19 +754,14 @@ export function createApps(deps: AppsDeps): AppsCapability {
       };
     },
 
-    manifestOf: (name, version) =>
-      manifests.read(name, version, async () => {
-        const rec = await workspace.getApp(name, version);
-        if (!rec) return null;
-        const pkg = rec.upstream?.package;
-        return {
-          version: rec.version,
-          manifest: rec.manifest,
-          seeded: rec.versions[rec.version]?.source === "seed",
-          // An item is its package's only under its prefix (src/packages/installed.ts).
-          ...(pkg && packagePrefixOf(name) === pkg ? { package: pkg } : {}),
-        };
-      }),
+    manifestOf,
+
+    async origin(name) {
+      const app = await manifestOf(name);
+      if (!app) return undefined;
+      const repo = app.package && !app.seeded ? await deps.repoOf?.(app.package).catch(() => undefined) : undefined;
+      return appOrigin(app, repo);
+    },
 
     versionDir,
 

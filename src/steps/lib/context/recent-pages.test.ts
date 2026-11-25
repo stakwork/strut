@@ -55,6 +55,16 @@ describe("app/recent", () => {
     ]);
   });
 
+  it("an app not made here says where it comes from, before its description: where a change to it goes", async () => {
+    const origins: Record<string, string> = { "strut/jamie": "strut's own", "strut/knowledge": "strut's own", "acme/board": "repo https://github.com/acme/board, opened here" };
+    const out = await appRecent.run({}, ctxOf({ apps: { ...services.apps, origin: async (name: string) => origins[name] } }, "bob"));
+    assert.deepEqual(out.items, [
+      { name: "acme/board", what: "Board, on this server, repo https://github.com/acme/board, opened here" },
+      { name: "strut/jamie", what: "Jamie, on this server, strut's own" },
+      { name: "strut/knowledge", what: "Knowledge, on this server, strut's own: Concepts, claims and their trials" },
+    ]);
+  });
+
   it("the ones opened the same day by name, so a page calling every minute moves none up", async () => {
     const at: Record<string, string> = { "strut/knowledge": "2026-11-24T10:05:00.000Z", "strut/jamie": "2026-11-24T10:00:00.000Z", "acme/board": "2026-11-23T23:59:00.000Z" };
     const calls = async (name: string) => ({ app: name, calls: at[name] ? [{ at: at[name] }] : [] });

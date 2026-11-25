@@ -14,7 +14,7 @@ import { MemoryRunStore } from "../store.js";
 import { FileWorkspaceStore } from "../workspace.js";
 import { treeFiles } from "../version.js";
 import { kitForTests } from "../test-util/app-kit.js";
-import { appManifests, createApps, type AppsCapability, type AppVersionManifest } from "./apps.js";
+import { appManifests, appOrigin, createApps, type AppsCapability, type AppVersionManifest } from "./apps.js";
 import type { KitLocation } from "./kit.js";
 import { readBuildInfo } from "./build.js";
 import appList from "../steps/lib/app/list.js";
@@ -307,6 +307,34 @@ describe("the apps capability", () => {
     assert.ok(!existsSync(join(folder, "v2")), "v2 is recorded and not kept");
     assert.ok((await readFile(join((await apps.versionDir("legacy", "v2"))!.path, "dist", "index.html"), "utf8")).includes("legacy 2"), "and comes back");
     assert.deepEqual(await apps.compact(), { recorded: 0, evicted: 1, mismatched: ["legacy@v1"] }, "a second pass drops only what was read back");
+  });
+
+  it("origin says where an app comes from, which is where a change to it goes: made here, a package's, a repository opened here, strut's own", async () => {
+    // The words a list's line carries (app/recent, app/list, app/get).
+    assert.equal(appOrigin({ seeded: false }), undefined, "made here: no mark");
+    assert.equal(appOrigin({ seeded: false, package: "acme/hello" }), "package acme/hello");
+    assert.equal(appOrigin({ seeded: false, package: "acme/hello" }, { url: "https://github.com/acme/hello" }), "repo https://github.com/acme/hello, opened here");
+    assert.equal(appOrigin({ seeded: true, package: "strut/kit" }, { url: "https://github.com/acme/hello" }), "strut's own", "a seed is put back at boot, whatever else is true of it");
+
+    const ws = new FileWorkspaceStore(fresh("ws"));
+    const opened = new Set<string>();
+    const apps = createApps({ workspace: ws, kit, getRegistry: () => REGISTRY, now: () => new Date(0), repoOf: async (pkg) => (opened.has(pkg) ? { url: `https://github.com/${pkg}` } : undefined) });
+    const src = fresh();
+    await cp(FIXTURE, src, { recursive: true });
+    const upstream = { package: "acme/hello", version: "1.0.0", digest: "d1", source: { ref: "git+https://github.com/acme/hello@main" }, secrets: [] };
+    assert.ok((await apps.publish(src, "board", { surface: "person" })).ok);
+    assert.ok((await apps.publish(src, "acme/hello/game", { surface: "person", upstream })).ok);
+    assert.ok((await apps.publish(src, "elsewhere", { surface: "person", upstream })).ok);
+    assert.ok((await apps.publish(src, "strut/thing", { surface: "person", source: "seed" })).ok);
+
+    assert.equal(await apps.origin!("board"), undefined);
+    assert.equal(await apps.origin!("acme/hello/game"), "package acme/hello", "installed: an edit here is this server's copy");
+    assert.equal(await apps.origin!("elsewhere"), undefined, "an item is its package's only under its prefix: a copy under another name is made here");
+    assert.equal(await apps.origin!("strut/thing"), "strut's own");
+    assert.equal(await apps.origin!("nope"), undefined);
+    // Opened as a repository (Packages → Repos): edited here, in place.
+    opened.add("acme/hello");
+    assert.equal(await apps.origin!("acme/hello/game"), "repo https://github.com/acme/hello, opened here");
   });
 
   it("checkout copies a version into an empty directory; init scaffolds the template, or copies an installed app with no upstream", async () => {
