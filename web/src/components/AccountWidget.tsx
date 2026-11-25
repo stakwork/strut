@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import { workerOf, type CreditView, type PlacementController, type WorkerView } from "../account-widget";
 import type { AccountApi } from "../app-host";
 import { signOutVisitor, visitorInfo } from "../visitor-signin";
+import { satsWithFiat } from "@strut/kit/folds";
 import { fmt, words } from "../words";
 
 // ── The visitor's account widget ───────────────────────────────────────────
@@ -164,10 +165,10 @@ export function AccountWidget(props: {
               )}
               {worker && (
                 <>
-                  <div class="account-row"><span>{words.held}</span><span class="account-num">{fmt.sats(worker.heldMsat)}</span></div>
+                  <div class="account-row"><span>{words.held}</span><span class="account-num">{satsWithFiat(worker.heldMsat, worker.rate, fmt)}</span></div>
                   <div class="account-row">
                     <span>{words.withdrawable}</span>
-                    <span class="account-num">{fmt.sats(worker.withdrawableMsat)}</span>
+                    <span class="account-num">{satsWithFiat(worker.withdrawableMsat, worker.rate, fmt)}</span>
                   </div>
                   {worker.canWithdraw ? (
                     <button type="button" class="btn btn-primary" disabled={busy} onClick={() => void withdraw()}>

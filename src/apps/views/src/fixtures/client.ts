@@ -121,9 +121,28 @@ export function createFixtureClient({ latencyMs = 120 }: { latencyMs?: number } 
         return provenanceFixture(c);
       case "history/read":
         return historyFixture(c);
-      // A worker's page: no work of its own, the exchange rate a pay pill shows fiat from.
+      // A worker's dashboard: the work, what they earned, their level, and the
+      // exchange rate a pay pill, a balance and their XP show fiat from.
       case "task/me":
-        return { actor: "ada-7f3c", status: "active", types: [], balance: { heldMsat: 0, withdrawableMsat: 0, totalMsat: 0 }, rate: { perBtc: { USD: 60_000, EUR: 55_000 }, at: new Date(1790000000000).toISOString(), source: "fixture" } };
+        return {
+          actor: "ada-7f3c",
+          status: "active",
+          types: [
+            { name: "label-photo", title: "Label photos", app: "strut/worker", payMsat: 50_000, qualifying: false, standing: false, waiting: 4 },
+            { name: "spam-check", title: "Spam check", app: "strut/worker", payMsat: 5_000, qualifying: false, standing: true },
+          ],
+          balance: { heldMsat: 120_000, withdrawableMsat: 1_850_000, totalMsat: 1_970_000, nextReleaseAt: 1790000000000 + 3_600_000 },
+          pendingMsat: 30_000,
+          xp: { sats: 1_970, level: 1, fromSats: 1_000, toSats: 2_500 },
+          rate: { perBtc: { USD: 60_000, EUR: 55_000 }, at: new Date(1790000000000).toISOString(), source: "fixture" },
+        };
+      case "task/history":
+        return {
+          items: [
+            { lease: "h1", type: "label-photo", ask: "Photograph a nutrition label", taken: 1789999000000, closed: 1789999100000, status: "submitted", earned: { msat: 50_000, releases: 1790003600000 } },
+            { lease: "h2", type: "spam-check", ask: "Is this post spam?", taken: 1789998000000, closed: 1789998030000, status: "submitted", pending: { msat: 5_000 } },
+          ],
+        };
       case "proposal/get": {
         const p = PROPOSALS[String(c["id"])];
         if (!p) throw new Error(`No proposal "${String(c["id"])}"`);

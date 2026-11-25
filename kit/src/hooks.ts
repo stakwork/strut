@@ -1076,13 +1076,6 @@ export interface WorkerInfo {
   xp?: { sats: number; level: number; fromSats: number; toSats?: number };
 }
 
-/** What `msat` is worth in `currency` at a `useWorker()` rate, or undefined
- *  when the rate has no figure for it. */
-export function fiatOfMsat(msat: number, rate: { perBtc: Record<string, number> } | undefined, currency = "USD"): number | undefined {
-  const perBtc = rate?.perBtc[currency.toUpperCase()];
-  return perBtc ? (msat / 1000 / 100_000_000) * perBtc : undefined;
-}
-
 /** The refusal code a task call's error begins with (`not_active`,
  *  `lease_expired`, …), or undefined. */
 export function taskErrorCode(err: unknown): string | undefined {
