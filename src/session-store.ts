@@ -177,6 +177,11 @@ export interface NewTurn {
    *  because a person wrote — what the wake's loop cap counts, and how a
    *  host tells it from a person's message. Absent on a person's turn. */
   wake?: true;
+  /** What the workflow asked to keep on the line (the agent step's `tags`),
+   *  read back by a later run of it, never by the step: the hash of the
+   *  Recent Work section the turn's prompt carried (`context/recent`).
+   *  Absent when none were given. */
+  tags?: Record<string, string>;
   provider: string;
   /** Canonical `provider/id`. */
   model: string;
@@ -452,12 +457,16 @@ export interface SessionsCapability {
   open(id: string, holder: SessionHolder): Promise<OpenSession>;
   /** Who holds `id` right now, if anyone. */
   holder(id: string): SessionHolder | undefined;
+  /** The thread's turn lines alone, oldest first (`[]` for none), without
+   *  holding it: what a step before the agent reads (`context/recent`). */
+  turns(id: string): Promise<SessionTurn[]>;
 }
 
 export function sessionsCapability(store: SessionStore): SessionsCapability {
   const held = new Map<string, SessionHolder>();
   return {
     holder: (id) => held.get(id),
+    turns: (id) => store.turns(checked(id)),
     async open(id, holder) {
       checked(id);
       const by = held.get(id);

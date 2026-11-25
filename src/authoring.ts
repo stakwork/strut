@@ -129,6 +129,33 @@ export async function listWorkflowEntries(
   return { workflows, total, hint };
 }
 
+export interface RecentWorkflow {
+  name: string;
+  description?: string;
+  /** The person owns it: they published its first version. */
+  mine: boolean;
+  /** Its newest run, epoch ms. */
+  lastRunAt?: number;
+}
+
+/** See `AuthoringCapability.recentWorkflows`. */
+export async function recentWorkflows(
+  workspace: Pick<WorkspaceStore, "listWorkflows">,
+  store: Pick<RunStore, "lastRunAt">,
+  actor: string | undefined,
+  limit: number,
+): Promise<RecentWorkflow[]> {
+  const listed = (await workspace.listWorkflows()).filter((w) => w.activeSource !== "seed" && !w.disabled);
+  const rows = await Promise.all(
+    listed.map(async (w): Promise<RecentWorkflow> => {
+      const last = await store.lastRunAt(w.name).catch(() => null);
+      return { name: w.name, ...(w.description ? { description: w.description } : {}), mine: !!actor && w.owner === actor, ...(last != null ? { lastRunAt: last } : {}) };
+    }),
+  );
+  rows.sort((a, b) => Number(b.mine) - Number(a.mine) || (b.lastRunAt ?? 0) - (a.lastRunAt ?? 0) || a.name.localeCompare(b.name));
+  return rows.slice(0, limit);
+}
+
 /** One workflow's YAML + version metadata — from its metadata record, one
  *  read, never a listing (a thousand workflows made this a full scan). */
 export async function readWorkflow(
@@ -504,6 +531,10 @@ export interface AuthoringCapability {
   /** Slim entries, `query`-filtered and cut at `limit` (default 100) with
    *  `total` + a `hint` when cut — `listWorkflowEntries`. */
   listWorkflows(query?: string, limit?: number): Promise<unknown>;
+  /** The workflows a person most likely means (`meta/recent-workflows`,
+   *  plans/recent-work.md): theirs first (`owner`), then the rest, newest
+   *  run first. Strut's own seeds and disabled ones are left out. */
+  recentWorkflows(actor: string | undefined, limit: number): Promise<RecentWorkflow[]>;
   getWorkflow(name: string, version?: string): Promise<unknown>;
   /** Static check of workflow YAML WITHOUT publishing — the chat builder's
    *  `validate_workflow`, for in-run authors (`meta/validate-workflow`). */
@@ -846,6 +877,10 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
 
     async listWorkflows(query, limit) {
       return listWorkflowEntries(workspace, query, limit);
+    },
+
+    async recentWorkflows(actor, limit) {
+      return recentWorkflows(workspace, store, actor, limit);
     },
 
     async getWorkflow(name, version) {

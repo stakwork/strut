@@ -109,6 +109,9 @@ export const SEED_TYPES: readonly NodeSchema[] = [
     // Its other names, for `resolve` (`resolve.ts`): `aliases` is the
     // Schema rows' column.
     alt_names: "?list",
+    // A read step whose items show under the page (`context/recent`,
+    // plans/recent-work.md §2): a page under `Recent Work` names one.
+    step: "?string",
   }, { role: "concept" }),
 ];
 

@@ -329,6 +329,7 @@ function sessionsOn(sessions: SessionsCapability, branch: string | undefined): S
   const where = (b: string | undefined) => (b ? `branch "${b}"` : "main");
   return {
     holder: (id) => sessions.holder(id),
+    turns: (id) => sessions.turns(id),
     async open(id, holder) {
       const s = await sessions.open(id, holder);
       const first = s.turns[0];

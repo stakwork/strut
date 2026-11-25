@@ -65,11 +65,11 @@ the 14 Strut node types (StrutApp + StrutAppVersion, plans/apps.md §1.3; StrutJ
 
 ### `src/graph/schema-seed.ts`
 
-idempotent domain registration through `SchemaSource`: Thing root, Schema nodes, CHILD_OF, the migration stamp; the constraints and vector/fulltext indexes are Neo4j DDL (`engine.bolt`). On a graph with no jarvis `About` node it also creates `strut_search_text_index`, the one keyword index the reader uses there, and `createNodeSchema` then makes no per-domain fulltext index. Also the seed types (seed-types.ts), each created through `createNodeSchema` only when no Schema has its name, and each of their edge rules only where the graph does not already allow that edge — so a graph jarvis seeded keeps its own rows and gets none of ours. Returns `mode: "file"` at once on a store that seeds its own Strut types (Ladybug)
+idempotent domain registration through `SchemaSource`: Thing root, Schema nodes, CHILD_OF, the migration stamp; the constraints and vector/fulltext indexes are Neo4j DDL (`engine.bolt`). On a graph with no jarvis `About` node it also creates `strut_search_text_index`, the one keyword index the reader uses there, and `createNodeSchema` then makes no per-domain fulltext index. Also the seed types (seed-types.ts), each created through `createNodeSchema` only when no Schema has its name, and each of their edge rules only where the graph does not already allow that edge — so a graph jarvis seeded keeps its own rows and gets none of ours. On a graph strut holds alone (no jarvis `About` node) a seed type's row that exists is strut's, so an attribute added in code since (`Concept.step`, 2026-11-24) is added to it, add-only, as a Strut type's is (`reconciled` in the report); jarvis's rows are never extended. Returns `mode: "file"` at once on a store that seeds its own Strut types (Ladybug)
 
 ### `src/graph/seed-types.ts`
 
-the types BOTH engines seed beside the Strut ones (plans/ontology.md): Claim, Check, Evidence (the claim layer) and Concept, under jarvis's names and key specs with the attributes strut writes and reads, their 16 edge rules, and their Neo4j domains (Epistemic, General). Ladybug's registry.ts seeds them at open, schema-seed.ts on Neo4j; every other type is created at runtime
+the types BOTH engines seed beside the Strut ones (plans/ontology.md): Claim, Check, Evidence (the claim layer) and Concept, under jarvis's names and key specs with the attributes strut writes and reads (Concept's `step`: the read step a page under `Recent Work` lists its items with, docs/knowledge.md), their 16 edge rules, and their Neo4j domains (Epistemic, General). Ladybug's registry.ts seeds them at open, schema-seed.ts on Neo4j; every other type is created at runtime
 
 ### `src/graph/node-writer.ts`
 

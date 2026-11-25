@@ -132,6 +132,18 @@ steps:
   - id: standing
     type: proposal/standing
     config: {}
+  # What the person most likely means (plans/recent-work.md): the pages under
+  # the `Recent Work` Concept, each listing the top few as this run's person
+  # (their apps, workflows and jobs, a package's workspaces), theirs first,
+  # then what else the server has. At the head of THIS turn's prompt, and
+  # only when it changed since this conversation last saw it: the turn keeps
+  # its hash (`tags`), and the step reads the last one back. Read every turn,
+  # since a shared conversation has several people.
+  - id: recent
+    type: context/recent
+    config:
+      name: "{{ params.recentConcept }}"
+      session: "{{ input.session }}"
   # A PREPARED turn (plans/package-seams.md §7): `conversation/start` — a
   # package's workflow, or an app's page, starting work for a person — puts
   # the job in `$prepared`, a launch-level field strut alone sets, never in
@@ -169,7 +181,7 @@ steps:
         artifacts: []
   - id: turn
     type: agent
-    depends: [standing, scripted]
+    depends: [recent, scripted]
     config:
       # A prepared turn's answer, scripted: no model call (above).
       reply: "{{ scripted?.reply }}"
@@ -195,14 +207,19 @@ steps:
         {{ builds.text }}
         {{ personal.text }}
       retain: "{{ params.retain }}"
-      # `input.context.line` (the host's per-turn line: the time, the device,
-      # "On a voice call: answer in a sentence or two") is the head of THIS
-      # turn's prompt — never the system prompt, which the session froze at
-      # its first turn. `context.where` is not read here: a wake puts it in
-      # its own line (src/wake.ts), and a host keeps it in a person's line.
-      prompt: "{{ input.context?.line || '' }}{{ standing.admin === true ? 'The person is an admin of this server: what needs an admin to approve, they approve themself. ' : '' }}{{ peers.peers.length ? (peers.self?.id ? 'This server is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other servers' : 'Servers') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ scripted?.prompt ?? input.prompt }}"
+      # The Recent Work section, when it changed, then `input.context.line`
+      # (the host's per-turn line: the time, the device, "On a voice call:
+      # answer in a sentence or two") head THIS turn's prompt — never the
+      # system prompt, which the session froze at its first turn.
+      # `context.where` is not read here: a wake puts it in its own line
+      # (src/wake.ts), and a host keeps it in a person's line.
+      prompt: "{{ recent.text }}{{ input.context?.line || '' }}{{ standing.admin === true ? 'The person is an admin of this server: what needs an admin to approve, they approve themself. ' : '' }}{{ peers.peers.length ? (peers.self?.id ? 'This server is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other servers' : 'Servers') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ scripted?.prompt ?? input.prompt }}"
       # The person's words alone, what the graph keeps as this turn's text.
       message: "{{ input.prompt }}"
+      # The Recent Work section's hash, kept on the turn's line: what tells
+      # the next turn's `recent` step the thread has it.
+      tags:
+        recent: "{{ recent.hash }}"
       toolFilter: [none]
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
@@ -322,6 +339,9 @@ params:
   # The root of the person's own pages (the `personal` step), when a host
   # keeps one: createStrut names `Personal` with `concepts: { personal: true }`.
   personalConcept: ""
+  # The root of what the person most likely means (the `recent` step): strut
+  # seeds it (src/concepts/Recent Work.md); a package hangs pages under it.
+  recentConcept: Recent Work
   # THE evolvable surface: registry steps granted to the agent as tools. It
   # has no built-ins (toolFilter: [none]): no bash, no files, no web — work
   # that needs them is a job's. The job launchers (detached: the

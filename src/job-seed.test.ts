@@ -31,8 +31,8 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
     const flow = flowFromYaml(JOB_WORKFLOW, "v1", text);
     assert.deepEqual(
       flow.steps.map((s) => s.type),
-      ["job/dir", "foreach", "context/concept", "context/concept", "if", "agent", "acp/prompt", "pack"],
-      "job/dir → checkouts → the Job page → the kind's page → strut's agent, or a local one over ACP → pack",
+      ["job/dir", "foreach", "context/concept", "context/concept", "context/recent", "if", "agent", "acp/prompt", "pack"],
+      "job/dir → checkouts → the Job page → the kind's page → Recent Work → strut's agent, or a local one over ACP → pack",
     );
     assert.equal(flow.inputBlock?.["prompt"]?.required ?? true, true);
     for (const k of ["workspace", "kind", "session", "repos", "agent", "mode", "model", "cwd"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
@@ -241,18 +241,27 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
           return { text: cfg.name === "Code Change" ? "PAGE: how a code change is done here." : "" };
         },
       });
-      const strut = await createStrut({ workspace: new WorkspaceManager(dir), registry: await createRegistry([fakeAgent, fakeConcept]), ...quiet });
+      // Stands in for context/recent: its section heads the prompt.
+      const fakeRecent = defineStep({
+        type: "context/recent",
+        input: z.object({ name: z.string().optional() }).passthrough(),
+        output: z.any(),
+        async run() {
+          return { text: "RECENT\n\n", hash: "h" };
+        },
+      });
+      const strut = await createStrut({ workspace: new WorkspaceManager(dir), registry: await createRegistry([fakeAgent, fakeConcept, fakeRecent]), ...quiet });
       const { kindLead, kindEnd } = (yaml.load(await jobWorkflowYaml()) as { params: { kindLead: string; kindEnd: string } }).params;
       const job = "job-kind-test";
 
       const coded = await strut.run(JOB_WORKFLOW, { prompt: "Add the line.", workspace: "acme", kind: "Code Change" }, { job });
       assert.equal(coded.status, "success", JSON.stringify(coded.error));
-      assert.equal(prompts[0], `This job runs on this server, @acme. Your job id: ${job}. ${kindLead}PAGE: how a code change is done here.${kindEnd}Add the line.`);
+      assert.equal(prompts[0], `RECENT\n\nThis job runs on this server, @acme. Your job id: ${job}. ${kindLead}PAGE: how a code change is done here.${kindEnd}Add the line.`);
       assert.ok(kindLead.includes("\n\n") && kindEnd.includes("\n\n"), "the page stands apart from the lines around it");
 
       const unknown = await strut.run(JOB_WORKFLOW, { prompt: "Again.", kind: "Nope" }, { job });
       assert.equal(unknown.status, "success", JSON.stringify(unknown.error));
-      assert.equal(prompts[1], `Your job id: ${job}. Again.`, "no page for the kind: the prompt as without one");
+      assert.equal(prompts[1], `RECENT\n\nYour job id: ${job}. Again.`, "no page for the kind: the prompt as without one");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -285,7 +294,12 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       assert.equal(out.ask, undefined);
       assert.equal(turns[0]!.cwd, join(dir, "jobs", job), "the job's directory");
       assert.equal(turns[0]!.session, job, "the job's thread");
-      assert.equal(turns[0]!.prompt, `This job runs on this server, @acme. Your job id: ${job}. Plan dark mode.`, "the server line, then the job's id");
+      // No graph: the Recent Work pages strut ships, from their files, head
+      // the prompt (what each lists is recent-pages.test.ts's: the apps here
+      // depend on a built kit).
+      const ownLines = (prompt: string) => prompt.replace(/^\[Recent Work:[\s\S]*?\[end of Recent Work\]\n\n/, "");
+      assert.ok(turns[0]!.prompt.startsWith("[Recent Work:") && ["Recent Apps:\n", "Recent Jobs:\n", "Recent Workflows:\n"].every((p) => turns[0]!.prompt.includes(p)), turns[0]!.prompt);
+      assert.equal(ownLines(turns[0]!.prompt), `This job runs on this server, @acme. Your job id: ${job}. Plan dark mode.`, "the server line, then the job's id");
       assert.deepEqual(turns[0]!.tools, paramsOf(await jobWorkflowYaml()).tools, "params.tools reaches agentTools");
       // No graph: the `Job` page all the same, read from the file strut
       // ships — the agent's instructions, and the kinds under it.
@@ -313,7 +327,7 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
       assert.equal(alone.status, "success", JSON.stringify(alone.error));
       assert.equal(turns[2]!.session, undefined);
       assert.equal(turns[2]!.cwd, join(dir, "artifacts", alone.runId));
-      assert.equal(turns[2]!.prompt, "Just a note.", "no job, no id line");
+      assert.equal(ownLines(turns[2]!.prompt), "Just a note.", "no job, no id line");
       const own = ((await (await strut.app.request(`/workflows/${JOB_WORKFLOW}/runs/${alone.runId}/artifacts`)).json()) as { artifacts: Array<{ url?: string }> }).artifacts;
       assert.deepEqual(own.map((l) => l.url), [`/artifacts/${alone.runId}/plan.md`]);
     } finally {

@@ -41,6 +41,11 @@ and returns its output; its files stay there. strut/list-peers says
 which peers there are and what each holds, and also names THIS
 server (`self`) and its repositories — code there is here.
 
+What a message names (a repository, an app, a workflow) you match against
+the latest Recent Work list in your thread before searching for it. A
+repository is checked out (`git/checkout`, by its https URL), never
+looked for on the disk: another job's directory is never where to look.
+
 Seeing what a page shows is a workflow too. You have no browser to look
 around with: to look at a site or a running app, open the `Browser` page
 under this one and run browser-explore as it says; it also says what to
