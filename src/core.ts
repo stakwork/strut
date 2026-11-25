@@ -331,6 +331,11 @@ export interface StepContext<TServices = unknown> {
    *  step that keeps something per app (its SQLite file, its declared
    *  graph types, its schedules) finds the app here. Absent otherwise. */
   app?: AppRef;
+  /** The run was started from inside another (meta/run-step,
+   *  meta/run-workflow): it carries that run's app and origin, and is never
+   *  a page's own call (`pageCall`, src/run-step.ts), whatever app it
+   *  carries. Absent otherwise. */
+  nested?: true;
   /** The HOST this call came through (plans/people-and-hosts.md §3): set by
    *  the host's door alone (`step_run` on `POST /mcp` with a host key), never
    *  by a launch body, and not carried by a run the step launches. Absent

@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { defineStep, workflowOf, type StepContext } from "../../../core.js";
+import { defineStep, type StepContext } from "../../../core.js";
 import { decides, pageSees, proposalsOf, proposalUrl } from "../../../proposals.js";
-import { RUN_STEP_FLOW } from "../../../run-step.js";
+import { pageCall } from "../../../run-step.js";
 
 /** One proposal, whole: its step and input, who proposed it, the decision
  *  and the result (plans/proposals.md §2). A page's own call (an app's
@@ -25,7 +25,7 @@ export default defineStep({
     const p = await cap.get(cfg.id);
     if (!p) throw new Error(`No proposal "${cfg.id}"`);
     // A page's own call: whether its viewer may accept what only an admin does.
-    const page = ctx.app && workflowOf(ctx) === RUN_STEP_FLOW;
+    const page = ctx.app && pageCall(ctx);
     const admin = ctx.app?.admin === true;
     const viewer = { admin, decides: decides(p, { ...(ctx.actor ? { actor: ctx.actor } : {}), admin }) || pageSees(p, { admin }) };
     return { ...p, url: proposalUrl(p.id), ...(page ? { viewer } : {}) };

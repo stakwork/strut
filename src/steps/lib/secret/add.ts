@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { defineStep, isFirstParty, workflowOf, type StepContext } from "../../../core.js";
-import { RUN_STEP_FLOW } from "../../../run-step.js";
+import { defineStep, isFirstParty, type StepContext } from "../../../core.js";
+import { pageCall } from "../../../run-step.js";
 import type { SecretBlanks } from "../../../secret-store.js";
 
 /**
@@ -31,7 +31,7 @@ export default defineStep({
   }),
   output: z.object({ name: z.string() }),
   async run(cfg, ctx: StepContext) {
-    if (!isFirstParty(ctx.app) || !ctx.actor || workflowOf(ctx) !== RUN_STEP_FLOW) {
+    if (!isFirstParty(ctx.app) || !ctx.actor || !pageCall(ctx)) {
       throw new Error(
         "secret/add is a person's: it runs only as strut's own app's call, for its viewer (plans/member-rights.md). An agent never sees or stores a value — it names the secret in its reply's ask.secret.",
       );

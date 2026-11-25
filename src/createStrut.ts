@@ -3761,8 +3761,11 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.origin === "host" && p.runStart.host ? { origin: "host" as const, host: p.runStart.host } : {}),
         ...(p.runStart.continues ? { continues: p.runStart.continues } : {}),
         // An app's run stays the app's: its sessions under the app's
-        // namespace (runner.ts `bindApp`), never the ids its page passed.
-        ...(p.runStart.origin === "app" && p.runStart.app ? { origin: "app" as const, app: p.runStart.app } : {}),
+        // namespace (runner.ts `bindApp`), never the ids its page passed —
+        // a run a page's call started from inside it too (`RunCaller`),
+        // which records the app with no origin of its own.
+        ...(p.runStart.origin === "app" && p.runStart.app ? { origin: "app" as const } : {}),
+        ...(p.runStart.app ? { app: p.runStart.app } : {}),
         // A public run stays one: its sessions under `public/<runId>/`, its
         // cap, its charge when it ends (plans/paid-runs.md §6).
         ...(p.runStart.origin === "public" ? { origin: "public" as const } : {}),

@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { defineStep, isFirstParty, workflowOf, type StepContext } from "../../../core.js";
+import { defineStep, isFirstParty, type StepContext } from "../../../core.js";
 import { pageSees, proposalsOf, proposalUrl } from "../../../proposals.js";
-import { RUN_STEP_FLOW } from "../../../run-step.js";
+import { pageCall } from "../../../run-step.js";
 
 /**
  * A PERSON's decision on a proposal, from strut's own app (plans/jamie-app.md
@@ -33,7 +33,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {
-    if (!isFirstParty(ctx.app) || !ctx.actor || workflowOf(ctx) !== RUN_STEP_FLOW) {
+    if (!isFirstParty(ctx.app) || !ctx.actor || !pageCall(ctx)) {
       throw new Error(
         "proposal/decide is a person's decision: it runs only as strut's own app's call, for its viewer (plans/jamie-app.md §3). A person decides at POST /proposals/:id/decide; an agent never does.",
       );

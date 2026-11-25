@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { defineStep, isFirstParty, workflowOf, type StepContext } from "../../../core.js";
+import { defineStep, isFirstParty, type StepContext } from "../../../core.js";
 import { briefOf, proposalsOf, type ProposalStatus } from "../../../proposals.js";
-import { RUN_STEP_FLOW } from "../../../run-step.js";
+import { pageCall } from "../../../run-step.js";
 
 /**
  * The proposals on file (plans/proposals.md §3) as an agent reads them —
@@ -33,7 +33,7 @@ export default defineStep({
     // Strut's own page, called by the page itself, also shows an admin what
     // no conversation made (`pageSees`): the dream's. Decided on the index,
     // like the limit, so only the page returned is read (one more, for `more`).
-    const own = ctx.app && isFirstParty(ctx.app) && workflowOf(ctx) === RUN_STEP_FLOW;
+    const own = ctx.app && isFirstParty(ctx.app) && pageCall(ctx);
     const listed = await cap.list({
       ...(cfg.job ? { job: cfg.job } : {}),
       ...(cfg.session ? { session: cfg.session } : {}),

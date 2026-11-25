@@ -15,6 +15,7 @@ import type {
   StepCounts,
 } from "./core.js";
 export type { RunEndInfo } from "./core.js";
+import type { AuthoringCapability } from "./authoring.js";
 import { assertWorkflowEnabled } from "./workspace.js";
 import { accessedNodesOf, messagesOf, takeUsage, TRIAL_HELD, type AccessedNode, type ModelUsage, type OnWriteMark, type PreparedJob, type RunTrial, type StartedBy, type WakeMark } from "./core.js";
 import { resolveConfig } from "./expr.js";
@@ -203,6 +204,11 @@ export interface RunOptions<TServices = unknown> {
    *  handed to every step as `ctx.app`, read back by a resume like `job`.
    *  Nothing a launch body sends can set it. */
   app?: AppRef;
+  /** The run was started from inside another, through that run's
+   *  `services.authoring` (meta/run-step, meta/run-workflow: `RunCaller`):
+   *  handed to every step as `ctx.nested`, so it is never a page's own call
+   *  (`pageCall`), whatever app it carries. Nothing records it. */
+  nested?: boolean;
   /** A HOST's call of an app's tool (plans/people-and-hosts.md §3): handed
    *  to every step as `ctx.host`. The host's door (`runSingleStep { host }`)
    *  is the one site that sets it; nothing records it. */
@@ -383,6 +389,46 @@ function bindPublic<TServices>(services: TServices, origin: RunOrigin | undefine
   return { ...bag, sessions: view } as TServices;
 }
 
+/** What a run started from inside this one carries of it: the launch fields
+ *  this run's views of the bag are made of (`bindPublic`, `bindHost`,
+ *  `bindPeer`, `bindApp`), its app (`ctx.app`, its reader of the graph) and
+ *  its cost cap. A check's origin (`verify`) or a schedule's bounds nothing,
+ *  so neither is carried. */
+export type RunCaller = Pick<RunOptions, "origin" | "peerPerson" | "host" | "continues" | "credit" | "maxCostUsd" | "app">;
+
+const CARRIED_ORIGINS: ReadonlySet<RunOrigin> = new Set<RunOrigin>(["peer", "host", "public", "app"]);
+
+function callerOf(opts: RunOptions | undefined): RunCaller {
+  const origin = opts?.origin && CARRIED_ORIGINS.has(opts.origin) ? opts.origin : undefined;
+  return {
+    ...(origin ? { origin } : {}),
+    ...(origin === "peer" && opts?.peerPerson ? { peerPerson: true } : {}),
+    ...(origin === "host" && opts?.host ? { host: opts.host } : {}),
+    ...(origin === "public" && opts?.credit ? { credit: opts.credit } : {}),
+    ...(opts?.continues ? { continues: opts.continues } : {}),
+    ...(opts?.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
+    ...(opts?.app ? { app: opts.app } : {}),
+  };
+}
+
+/** A run this one starts — a step through meta/run-step, a workflow through
+ *  meta/run-workflow — is started through its `authoring`, which hands it
+ *  this run's `RunCaller`: its sessions open where this run's do and it
+ *  works for this run's app, so it gets what this run's own tool call gets,
+ *  never more. Set here, over whatever a step sends. A per-run view like
+ *  `bindPeer`'s. */
+function bindAuthoring<TServices>(services: TServices, caller: RunCaller): TServices {
+  if (services == null || typeof services !== "object") return services;
+  const authoring = (services as { authoring?: AuthoringCapability }).authoring;
+  if (typeof authoring?.runStep !== "function" || typeof authoring.runWorkflow !== "function") return services;
+  const view: AuthoringCapability = {
+    ...authoring,
+    runStep: (type, args) => authoring.runStep(type, { ...args, caller }),
+    runWorkflow: (name, input, params, version, opts) => authoring.runWorkflow(name, input, params, version, { ...opts, caller }),
+  };
+  return { ...(services as object), authoring: view } as TServices;
+}
+
 /** Did the AI write the version of `workflow` that runs (`which`, else the
  *  active one), on a strut with `builder.reach` (src/reach.ts)? A record
  *  that cannot be read counts as the AI's. */
@@ -423,6 +469,8 @@ interface Exec {
   /** The run is a trial (`StepContext.trial`). */
   trial?: RunTrial;
   app?: AppRef;
+  /** Started from inside another run (`RunOptions.nested`). */
+  nested?: true;
   hostCall?: HostRef;
   automation?: { id: string };
   wake?: WakeMark;
@@ -619,7 +667,8 @@ async function executeRun<TServices = unknown>(
   // `secrets` is bound to that principal (plans/code-change.md §3.2): a
   // shallow per-run view, so the consumer's bag object is never mutated and
   // a step's `secrets.get(NAME)` needs to know nothing about actors. A
-  // peer's run gets its own session namespace the same way (bindPeer). Its
+  // peer's run gets its own session namespace the same way (bindPeer), and
+  // a run it starts through `authoring` the same views (bindAuthoring). Its
   // graph writes are heard (bindGraph, plans/live-feeds.md §2): told to the
   // run's job and kept in the deployment's change feed.
   // On a Concept branch its Concepts are the branch's (bindBranch); on any
@@ -628,7 +677,7 @@ async function executeRun<TServices = unknown>(
     bindNodeFiles(bindTrial(bindBranch(
       bindApp(
         bindPeer(
-          bindHost(bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal, budgetJob), opts?.origin, opts?.credit ?? runId), opts?.origin, opts?.host),
+          bindHost(bindPublic(bindAuthoring(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal, budgetJob), callerOf(opts)), opts?.origin, opts?.credit ?? runId), opts?.origin, opts?.host),
           opts?.origin,
           opts?.peerPerson ? opts.actor : undefined,
           opts?.continues,
@@ -828,6 +877,7 @@ async function executeRun<TServices = unknown>(
     ...(branch ? { branch } : {}),
     ...(opts?.trial ? { trial: opts.trial } : {}),
     app: opts?.app,
+    ...(opts?.nested ? { nested: true } : {}),
     ...(opts?.hostCall ? { hostCall: opts.hostCall } : {}),
     automation: opts?.automation,
     ...(opts?.wake ? { wake: opts.wake } : {}),
@@ -1434,6 +1484,7 @@ function stepContext(step: Step, validConfig: unknown, scope: Record<string, unk
     ...(exec.branch ? { branch: exec.branch } : {}),
     ...(exec.trial ? { trial: exec.trial } : {}),
     ...(exec.app ? { app: exec.app } : {}),
+    ...(exec.nested ? { nested: true } : {}),
     ...(exec.hostCall ? { host: exec.hostCall } : {}),
     ...(exec.automation ? { automation: exec.automation } : {}),
     ...(exec.wake ? { wake: exec.wake } : {}),

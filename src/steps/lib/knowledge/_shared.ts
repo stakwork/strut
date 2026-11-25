@@ -1,5 +1,5 @@
 import { isFirstParty, workflowOf, type StepContext } from "../../../core.js";
-import { RUN_STEP_FLOW } from "../../../run-step.js";
+import { pageCall } from "../../../run-step.js";
 import type { TrialsCapability } from "../../../trials.js";
 import type { GraphBackend } from "../../../graph/backend.js";
 import type { Proposal } from "../../../proposals.js";
@@ -56,7 +56,7 @@ export function requireTrials(ctx: StepContext | undefined, step: string): Trial
  */
 export function requireAdminPage(ctx: StepContext | undefined, step: string): void {
   const app = ctx?.app;
-  if (!app || !isFirstParty(app) || app.admin !== true || workflowOf(ctx!) !== RUN_STEP_FLOW) {
+  if (!app || !isFirstParty(app) || app.admin !== true || !pageCall(ctx!)) {
     throw new Error(`${step} is an admin's: only strut's own page, shown to an admin of this server, runs a page's checks or changes what it is held to`);
   }
 }

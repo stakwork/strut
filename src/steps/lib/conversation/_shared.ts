@@ -18,9 +18,9 @@
  * person token, a model-written page, a workflow, an agent's tool or a run
  * the page launched.
  */
-import { isFirstParty, workflowOf, type AppRef } from "../../../core.js";
+import { isFirstParty, type AppRef } from "../../../core.js";
 import type { ConversationViewer, ConversationsCapability } from "../../../conversations.js";
-import { RUN_STEP_FLOW } from "../../../run-step.js";
+import { pageCall } from "../../../run-step.js";
 
 /** The `everyone` field of the steps that take it. */
 export const EVERYONE_DESCRIPTION =
@@ -28,12 +28,12 @@ export const EVERYONE_DESCRIPTION =
   "Only strut's own page, shown to an admin of this server, may ask for it.";
 
 /** Is this call strut's own page, shown to an admin, in its own call? */
-export function adminPageCall(ctx: { app?: AppRef; path?: string; workflow?: string }): boolean {
-  return isFirstParty(ctx.app) && ctx.app?.admin === true && workflowOf(ctx) === RUN_STEP_FLOW;
+export function adminPageCall(ctx: { app?: AppRef; nested?: true; path?: string; workflow?: string }): boolean {
+  return isFirstParty(ctx.app) && ctx.app?.admin === true && pageCall(ctx);
 }
 
 export function requireConversations(
-  ctx: { services?: unknown; app?: AppRef; actor?: string; path?: string; workflow?: string },
+  ctx: { services?: unknown; app?: AppRef; nested?: true; actor?: string; path?: string; workflow?: string },
   ask: { type?: string; everyone?: boolean; about?: boolean } = {},
 ): {
   conversations: ConversationsCapability;
