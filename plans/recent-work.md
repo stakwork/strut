@@ -1,9 +1,11 @@
 # Recent Work: what a person has been working on, in every prompt
 
-Status: proposed (2026-11-24). The owner ruled three points that day: the
+Status: proposed (2026-11-24). The owner ruled four points that day: the
 idea (a Concept root whose pages are injected), that the lists are the
-PERSON's (whoever is speaking), and the root's name, `Recent Work`. The
-rest is mine, each open question with a default.
+PERSON's (whoever is speaking), the root's name, `Recent Work`, and that a
+list starts with the person's own and fills from what else they can see,
+so a new person still sees the server's apps and workspaces. The rest is
+mine, each open question with a default.
 
 Companion: `plans/one-job-agent.md`. It grants a job the app tools, which
 the pages here point to.
@@ -49,8 +51,9 @@ which a Stadeum box does not set, so it is empty there.
 
 Strut seeds one root Concept, `Recent Work` (`src/concepts/Recent Work.md`):
 
-> What this person has been working on lately, newest first. Each list is
-> the top few; the page says how to find the rest. When a message names
+> What this person most likely means: what they worked on lately, then
+> what else this server has. Each list is the top few; the page says how
+> to find the rest. When a message names
 > something ("the stadium repo", "the knowledge app"), match it here first.
 
 Strut and every package hang pages under it, as they hang kinds under
@@ -67,7 +70,7 @@ like any page's.
 ```markdown
 ---
 name: Workspaces
-description: The person's workspaces and the repositories in each.
+description: The box's workspaces and the repositories in each.
 step: stadeum/code/recent
 parents:
   - Recent Work
@@ -83,10 +86,15 @@ The contract of the step:
   (`src/steps/lib/graph/_shared.ts`).
 - It runs as the person (`runSingleStep` with `actor`), so it sees only
   what they may.
-- It answers `{ items: [{ name, what?, at?, link? }] }`, newest first:
+- It answers `{ items: [{ name, what?, at?, link? }] }`: what the person
+  most likely means. Their own come first, newest first. Then, up to the
+  page's cap, what else they can see, in the order that fits the kind
+  (newest, most run). So a person on their first day still gets a list:
+  the server's apps, the box's workspaces.
   - `name`: what the person would call it (`stakwork/stadeum`,
     `strut/knowledge`);
-  - `what`: a few words (`your PR #109 merged`, `opened 3 times`);
+  - `what`: a few words, which also say whose it is (`your PR #109
+    merged`, `you opened it 3 times`, `on this server`);
   - `at`: when, ISO;
   - `link`: where to open it.
 
@@ -113,7 +121,9 @@ from git.
    `- stakwork/stadeum: your PR #109 merged (Nov 24) <link>`. Dates are
    absolute, never "2 d ago", so the text does not change from turn to
    turn by itself.
-4. Caps it: at most 8 items a page and 20 in all, the newest kept.
+4. Caps it: at most 8 items a page and 20 in all. A page keeps its step's
+   order. Past 20, the last item of the longest page goes first, so a
+   page's fill goes before its person's own.
 5. Returns `{ text, hash }`. `hash` is the hash of the text.
 
 The renderer never names a package, a type or a domain. Apps (strut's) and
@@ -153,13 +163,16 @@ a read step:
 
 | Page | Step | Items | Docs: find more with |
 | --- | --- | --- | --- |
-| Apps | `app/recent` | Apps the person published (`StrutAppVersion.actor`) or opened (the monitor's call log, `plans/app-calls.md`), with the address a person opens each at | `app/list`, `app/get`; `app/look` to see one |
-| Workflows | `meta/recent-workflows` | Workflows the person published (`StrutWorkflowVersion.actor`) or ran (`StrutRun.actor`) | `meta/list-workflows` |
-| Jobs | `job/recent` | The person's recent jobs: title, kind, repositories, whether it is still working | `job/list { q }`, `job/get` |
+| Apps | `app/recent` | Apps the person published (`StrutAppVersion.actor`) or opened (the monitor's call log, `plans/app-calls.md`), then the server's other apps, newest published first. Each with the address a person opens it at | `app/list`, `app/get`; `app/look` to see one |
+| Workflows | `meta/recent-workflows` | Workflows the person published (`StrutWorkflowVersion.actor`) or ran (`StrutRun.actor`), then the ones run most on this server in the last 14 days | `meta/list-workflows` |
+| Jobs | `job/recent` | The person's recent jobs: title, kind, repositories, whether it is still working. Never another person's, so a new person's list is empty | `job/list { q }`, `job/get` |
 
 The Jobs page also covers repositories worked on through strut, since a
 job records its `repos`. Work done anywhere else comes from a package's
 page.
+
+Strut seeds a handful of apps, so the Apps page always names
+`strut/knowledge`: the 00:03 job would have found it whoever asked.
 
 ### 6. One line on two pages
 
@@ -174,14 +187,16 @@ page.
 This tests the seam: each package adds one page and one read step, and
 neither strut nor any other package changes.
 
-- **stadeum/code**, `Workspaces`: the person's workspaces and their
-  repositories, newest used first.
+- **stadeum/code**, `Workspaces`: every one of the box's workspaces and
+  their repositories, the ones the person used lately first. A workspace
+  is the box's, not one person's.
 - **stadeum/github**, `Repositories`: repositories where the person opened
-  or merged a pull request, or pushed, in the last 14 days. It uses their
-  own token. This is the page that catches work done outside strut (a
-  laptop session's PRs).
+  or merged a pull request, or pushed, in the last 14 days, then what
+  their token reaches, most recently pushed first. It uses their own
+  token. This is the page that catches work done outside strut (a laptop
+  session's PRs).
 - **stadeum/canvas**, `Initiatives`: the initiatives the person wrote on
-  lately.
+  lately, then the box's newest.
 
 ## Decided
 
@@ -190,8 +205,9 @@ neither strut nor any other package changes.
 | 1 | Injected or looked up | Injected, as a Concept root whose pages list the top few and say how to find more | owner, 2026-11-24 |
 | 2 | Whose list | The person's: whoever is speaking this turn | owner, 2026-11-24 |
 | 3 | The root's name | `Recent Work` | owner, 2026-11-24 |
-| 4 | How a package adds a list | A page under the root naming a read step (§2), no new `strut.yaml` field | proposed |
-| 5 | Where it goes | The turn's prompt, only when changed (§4) | proposed |
+| 4 | What a list holds | What the person most likely means: their own first, then what else they can see, up to the cap (§2). A new person still sees the server's apps and workspaces | owner, 2026-11-24 |
+| 5 | How a package adds a list | A page under the root naming a read step (§2), no new `strut.yaml` field | proposed |
+| 6 | Where it goes | The turn's prompt, only when changed (§4) | proposed |
 
 ## Open questions, each with a default
 
@@ -200,7 +216,7 @@ neither strut nor any other package changes.
 2. **Which steps a page may name.** A person can edit a page in the
    Knowledge app, and its step then runs on everyone's turns. Default: any
    step that declares `effect: "read"`. It runs as the reader, so it shows
-   them only their own, and 2 s caps its cost. The alternative is only the
+   them only what they may see, and 2 s caps its cost. The alternative is only the
    page's own package's steps (strut's steps for strut's pages).
 3. **A launch with no person** (a host's key, an automation). Default: no
    section.
@@ -214,7 +230,7 @@ neither strut nor any other package changes.
    write step, the timeout, the caps, the unchanged-hash skip, the resend
    after a compaction.
 3. Strut's root and three pages with `app/recent`, `meta/recent-workflows`
-   and `job/recent`.
+   and `job/recent`, each tested for a person with no history.
 4. The step in `orchestrator.yaml` and `job.yaml`; the lines on
    `Orchestrator.md` and `Job.md`.
 5. Docs: `docs/knowledge.md` (the attribute, the root), `docs/jobs.md`
@@ -222,7 +238,7 @@ neither strut nor any other package changes.
 6. Check it with a real model on a scratch strut: replay the 23:41 chunk
    ("experiments.md … in the stadium repo"). The job should check out
    stakwork/stadeum, not search the disk. The 00:03 one should name
-   `strut/knowledge`.
+   `strut/knowledge`, asked by a person who never opened it.
 
 ## Not in this plan
 
