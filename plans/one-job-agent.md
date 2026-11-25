@@ -12,8 +12,11 @@ Reviewed against the code the same day, and changed where it did not
 hold: `meta/run-step` asks too (§6); the builder's own paragraphs, and a
 rendering for an agent with a shell (§2); a build's kind and its page's
 cap (§1); the orchestrator's `builds` list kept (§5); the measure moved
-before the grants, with jobs that build nothing in it. Work item 1 is
-ready to build.
+before the grants, with jobs that build nothing in it.
+
+Work items 1 to 3 are built (strut#891, #892, #893). Building item 3
+changed two things, written back here on 2026-11-25: the page is a file
+in git, and it has no parent yet (§2, open questions 2 and 8).
 
 It reverses a ruling: on 2026-10-20 the owner ruled that building workflows
 is separate work, and the authoring tools are never granted to a regular
@@ -128,10 +131,17 @@ is. `Workflow Builder` becomes a child of `Job`, and its children (`App`,
 
 The rules are rendered from `src/ai/prompts.ts`. The chat builder's prompt
 and `builder.yaml` both use them (`JOB_TOOLS`, `src/builder-seed.ts`).
-Strut seeds them as a page under `Workflow Builder`, `Workflow Language`,
-rendered at boot from the same source. The seeder stamps the rendered
-text's hash, so the seed still matches git. The `Workflow Builder` page
-says to open it before authoring.
+Strut ships them as one more page of its own, `Workflow Language`: a file
+in `src/concepts/` that `npm run render:concepts` writes from the same
+source, and that a test holds to it (`src/ai/prompts.test.ts`). It is
+seeded as every page is, so the seed matches git.
+
+The page has no parent yet. A page under `Workflow Builder` is listed, as
+a kind to open, in every prompt that reads that page: the chat builder's,
+the `builder` job's and the orchestrator's. A line on `Workflow Builder`
+telling its reader to open it reaches the first two as well, since both
+read that page's text. Where it hangs, and which page says to open it, is
+open question 8.
 
 - **A third rendering.** `JOB_TOOLS` is written for an agent with no
   shell: "No shell here: probe an API's real response with
@@ -158,7 +168,8 @@ says to open it before authoring.
 
 The job's system prompt stays the `Job` page. Its paragraph "A WORKFLOW,
 or an APP … is the builder's, never yours by hand" becomes: open `Workflow
-Builder` and follow it; one published on another server is that server's
+Builder` and follow it, and `Workflow Language` before authoring (open
+question 8); one published on another server is that server's
 `builder`, run with `peer`. Its line "Never write workflow YAML into a
 file or publish one another way" is dropped with it: the rules say a
 workflow travels as a tool argument.
@@ -268,9 +279,13 @@ What stays as it is today:
    with no shell, as now. The alternative is opening `job` to peers. That
    means refusing `agent` and `cwd` on a peer's launch, and a person
    forwarded from another server would get a shell here.
-2. **The rules page.** Default: rendered at boot from `prompts.ts`, so the
-   chat builder's prompt and the page never drift. The alternative is a
-   hand-written `.md` that the chat builder reads too.
+2. **The rules page.** Built in item 3 as a file in git, written from
+   `prompts.ts` by `npm run render:concepts`. A test fails while the file
+   is behind, so the chat builder's prompt and the page never drift. The
+   first default was rendering at boot. The seeder, the read from files
+   on a server with no graph, and the dream all take a page as a file, so
+   a file changed none of them. The alternative is still a hand-written
+   `.md` that the chat builder reads too.
 3. **The overlapping tools.** Default: keep them all, and make each
    description say when it is the one. Trim after measuring (item 5).
 4. **Tools out of view until a job builds.** Default: none, unless item 5
@@ -300,6 +315,15 @@ What stays as it is today:
    person. The chat builder and `builder` read the same page, so they
    open it too. The alternative is a higher `max` on `kindPage`, which
    the owner declined on 2026-11-23, when `Code Change` reached the cap.
+8. **Where `Workflow Language` hangs, and which page says to open it.**
+   Default: no parent, opened by name, and the `Job` page's paragraph on
+   building (§2) says to open it. `Job` is the job agent's page alone, so
+   the chat builder, the `builder` job and the orchestrator see neither
+   the page nor the line. It is then a root page, beside `Job` and
+   `Dream`. The alternative is under `Workflow Builder`, with a
+   description that says whose it is. The three prompts then list it as a
+   kind, and the `builder` job, which has no shell, may open rules that
+   say it has one.
 
 ## Work items, in order
 
@@ -313,10 +337,12 @@ What stays as it is today:
    runs. It ships on its own.
 3. The `Workflow Language` page (§2): the third rendering, the builder's
    paragraphs from one source, the pin on the builder's rendering, the
-   pages opened in a compaction's summary. Nothing reads the page yet.
+   pages opened in a compaction's summary. Nothing reads the page yet:
+   it is built with no parent, as a file in git (open questions 2 and 8).
 4. On one branch, together: `Workflow Builder` under `Job` and under its
-   cap (open question 7), `Job.md`'s paragraph, `job.yaml`'s tools and
-   approvals (§3), `src/job-seed.ts` tests. Any one of them changes what
+   cap (open question 7), `Job.md`'s paragraph, where `Workflow Language`
+   hangs (open question 8), `job.yaml`'s tools and approvals (§3),
+   `src/job-seed.ts` tests. Any one of them changes what
    every job does, so the branch does not merge before item 5.
 5. **Measure the branch before it merges:** on a scratch strut with a
    real model, the same asks through the two agents as they are and
