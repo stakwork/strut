@@ -101,6 +101,14 @@ export function capRecent(pages: RecentPage[]): RecentPage[] {
 /** An ISO time as its date alone: absolute, so the text does not change by itself from turn to turn. */
 const dayOf = (at: string) => (Number.isNaN(Date.parse(at)) ? undefined : new Date(at).toISOString().slice(0, 10));
 
+/** A page step's order within a group: the newer DAY first, as the section
+ *  shows it, and 0 for the same day, so the step breaks the tie by name.
+ *  Then its list changes only when what the section shows does, and the
+ *  section is not sent again because a time moved within a day. A step still
+ *  picks WHICH items by the exact time; this orders the ones it shows. None
+ *  sorts last. */
+export const newerDay = (a: string | undefined, b: string | undefined): number => ((b && dayOf(b)) || "").localeCompare((a && dayOf(a)) || "");
+
 /** Pure: the root and its pages → the section. "" with no page. */
 export function renderRecent(root: { name: string; docs?: string }, pages: RecentPage[]): string {
   if (!pages.length) return "";
@@ -134,44 +142,64 @@ export function alreadySent(turns: Array<{ offset: number; replayFrom?: number; 
 
 /** What each person's steps answered lately, per server (its registry). */
 const kept = new WeakMap<object, Map<string, { at: number; items: RecentItem[] }>>();
+/** The runs of those steps still going, per server, by the same key: a turn
+ *  that comes while one runs waits on it, and starts no other. */
+const going = new WeakMap<object, Map<string, Promise<RecentItem[] | undefined>>>();
+
+const perServer = <V>(m: WeakMap<object, Map<string, V>>, registry: object): Map<string, V> => {
+  const found = m.get(registry);
+  if (found) return found;
+  const made = new Map<string, V>();
+  m.set(registry, made);
+  return made;
+};
 
 /** One page's step, run as this run's person: its items, or undefined
  *  (not a read step, failed, or slower than `stepMs`). */
 async function itemsOf(page: string, step: string, ctx: StepContext<StrutCapabilities>): Promise<RecentItem[] | undefined> {
   const registry = ctx.registry;
   if (!registry) return undefined;
-  const memo = kept.get(registry) ?? new Map();
-  kept.set(registry, memo);
+  const memo = perServer(kept, registry);
+  const runs = perServer(going, registry);
   const key = `${ctx.actor ?? ""}\n${step}`;
   const hit = memo.get(key);
   if (hit && Date.now() - hit.at < RECENT.keepMs) return hit.items;
-  const def = (await resolveStep(registry, step).catch(() => null))?.def as { effect?: string } | undefined;
-  if (def?.effect !== "read") {
-    console.warn(`[context/recent] "${page}" names ${def ? `"${step}", which is not a read step` : `no step "${step}"`}: its items are left out`);
-    return undefined;
+  let running = runs.get(key);
+  if (!running) {
+    const def = (await resolveStep(registry, step).catch(() => null))?.def as { effect?: string } | undefined;
+    if (def?.effect !== "read") {
+      console.warn(`[context/recent] "${page}" names ${def ? `"${step}", which is not a read step` : `no step "${step}"`}: its items are left out`);
+      return undefined;
+    }
+    const { runSingleStep } = await import("../../../run-step.js");
+    // A failure is kept as no items for as long as an answer, so a page whose
+    // step cannot run here (a host without its capability) is one log line,
+    // not one a turn.
+    const failed = (why: unknown) => {
+      console.warn(`[context/recent] "${page}": ${step} failed:`, why instanceof Error ? why.message : why);
+      memo.set(key, { at: Date.now(), items: [] });
+      return undefined;
+    };
+    // ctx.services is this run's view already (its branch, its app or host):
+    // the step reads through it, as this run's person. A run past `stepMs`
+    // goes on, and what it answers is kept for the next turn. Another turn
+    // may have started one during the awaits above: that one is waited on.
+    running =
+      runs.get(key) ??
+      runSingleStep(step, registry, ctx.services, {
+        config: {},
+        ...(ctx.actor ? { actor: ctx.actor } : {}),
+        ...(ctx.principal ? { principal: ctx.principal } : {}),
+      })
+        .then((run) => {
+          if (run.status !== "success") return failed(run.error?.message ?? run.status);
+          const items = recentItems(run.output);
+          memo.set(key, { at: Date.now(), items });
+          return items;
+        }, failed)
+        .finally(() => runs.delete(key));
+    runs.set(key, running);
   }
-  const { runSingleStep } = await import("../../../run-step.js");
-  // A failure is kept as no items for as long as an answer, so a page whose
-  // step cannot run here (a host without its capability) is one log line,
-  // not one a turn.
-  const failed = (why: unknown) => {
-    console.warn(`[context/recent] "${page}": ${step} failed:`, why instanceof Error ? why.message : why);
-    memo.set(key, { at: Date.now(), items: [] });
-    return undefined;
-  };
-  // ctx.services is this run's view already (its branch, its app or host):
-  // the step reads through it, as this run's person. A run past `stepMs`
-  // goes on, and what it answers is kept for the next turn.
-  const running = runSingleStep(step, registry, ctx.services, {
-    config: {},
-    ...(ctx.actor ? { actor: ctx.actor } : {}),
-    ...(ctx.principal ? { principal: ctx.principal } : {}),
-  }).then((run) => {
-    if (run.status !== "success") return failed(run.error?.message ?? run.status);
-    const items = recentItems(run.output);
-    memo.set(key, { at: Date.now(), items });
-    return items;
-  }, failed);
   let timer: NodeJS.Timeout | undefined;
   const slow = new Promise<"slow">((resolve) => {
     timer = setTimeout(() => resolve("slow"), RECENT.stepMs);
