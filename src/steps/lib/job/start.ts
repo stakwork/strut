@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { defineStep, isFirstParty, type StepContext } from "../../../core.js";
-import { JOB_WORKFLOWS } from "../../../jobs.js";
+import { BUILD_KIND, JOB_WORKFLOWS } from "../../../jobs.js";
 import { appScoped } from "../../../session-store.js";
 import { attachmentsField, handedOn, launchOnce, launchOutput, requireJobLaunch } from "./_shared.js";
 
@@ -16,27 +16,29 @@ import { attachmentsField, handedOn, launchOnce, launchOutput, requireJobLaunch 
  * asked for this turn hears the job end. `job/continue` sends the job its
  * next message.
  *
- * `workflow` picks the hands (plans/builder-job.md §2): `job` (the default)
- * for code, research and pages (and an app over the job's own results);
- * `builder` when the thing to make or change is a WORKFLOW, or an APP
- * published on a strut server (new, changed, here or on a peer) — the
- * authoring twins and app/*, no shell. Code in a repository is `job`'s
- * even when it is an app: a phone app, called "the app", once went to a
- * builder on a peer that could not push it. The rule lives here, on
- * the field, where the model reads it beside the call; the kinds under the
- * `Workflow Builder` Concept, in the orchestrator's prompt beside the kinds
- * under `Job`, are what it routes here. `peer` goes with `builder` only: a workflow (or
- * an app) lives on one strut (its graph, secrets and services), so it is built on
- * the strut whose workspace it belongs to, and the local `builder` run
- * dispatches there (builder.yaml's `remote` branch); code lives in its
- * repository and is checked out here, so a code job runs here.
+ * ONE agent does every kind of work (plans/one-job-agent.md §1, §5): the
+ * `job` workflow, which builds a workflow or an app with its own tools as
+ * it changes code. `kind` is the request's KIND, by the name of its page
+ * under the `Job` Concept — what the orchestrator routes by, from the list
+ * closing its prompt. The job workflow opens every turn with that page
+ * (job.yaml's `kindPage`), so the job starts from the kind's convention —
+ * a Code Change's sizing rule, its sandbox — instead of having to open it.
+ * A BUILD's kind is `Workflow Builder` (`BUILD_KIND`), the thing to build
+ * named in the prompt.
  *
- * `kind` is the request's KIND, by the name of its page under the `Job`
- * Concept — what the orchestrator routes by, from the list closing its
- * prompt. The job workflow opens every turn with that page (job.yaml's
- * `kindPage`), so the job starts from the kind's convention — a Code
- * Change's sizing rule, its sandbox — instead of having to open it. A
- * builder job reads its own page, so `kind` is a code job's only.
+ * `peer` is for a build published on ANOTHER server: a workflow (or an
+ * app) lives on one strut (its graph, secrets and services), so it is built
+ * on the strut it belongs to, by that strut's `builder` — the one workflow
+ * another strut may launch, with no shell. The local `builder` run
+ * dispatches there (builder.yaml's `remote` branch). Code lives in its
+ * repository and is checked out here, so a code job runs here: a phone
+ * app, called "the app", once went to a builder on a peer that could not
+ * push it.
+ *
+ * `workflow` is still taken from a caller that sends it (the orchestrator
+ * no longer does): `builder` here is a job of the build's kind, and with
+ * `peer` the build on that server. What a job IS, once started, is its
+ * record's (`turnOf`): a builder job started before this stays one.
  *
  * `budgetUsd` is the job's budget (stadeum plans/experiments.md, "A budget
  * on a job"): the person's own figure, passed on by their conversation, set
@@ -57,29 +59,24 @@ export default defineStep({
     workflow: z
       .enum(JOB_WORKFLOWS)
       .optional()
-      .describe(
-        "Which hands the job gets. `job` (the default): code, research, pages, plans, an app over this job's own results — a working directory, repositories, the shell. " +
-          "`builder`: the thing to build, change, test or debug is a WORKFLOW (an automation, a pipeline, a custom step, a schedule) or an APP published on a strut server (new, changed, here or on a peer) — the authoring tools, no shell. " +
-          "Code in a repository is `job`, even an app's (a phone, desktop or web app). " +
-          "A workflow or a published app belongs to one server: it is built here unless `peer` names another.",
-      ),
+      .describe("Leave it out: one job does every kind of work, and `kind` says which. Still read from a caller that sends it: `builder` is a job of kind Workflow Builder, or with `peer` the build on that server."),
     peer: z
       .string()
       .optional()
       .describe(
-        "With workflow: builder only — the server the workflow or app is published on when it is not this one, by id as strut/list-peers gives it (@acme-web → acme-web): the build happens there, under this job. Never with workflow: job: code is checked out here, whichever peer holds it.",
+        "Only for a BUILD — a workflow or an app to build, change, test or debug — published on another server: that server's id as strut/list-peers gives it (@acme-web → acme-web). The build happens there, under this job. Never for code: a repository is checked out here, whichever peer holds it.",
       ),
     repos: z
       .array(z.string())
       .optional()
       .describe(
-        "Repository URLs the job works on, checked out into its directory with the person's GitHub token before it starts. List them here, not only in the prompt: a private one is reachable only through a checkout. workflow: job only — workflow: builder checks nothing out.",
+        "Repository URLs the job works on, checked out into its directory with the person's GitHub token before it starts. List them here, not only in the prompt: a private one is reachable only through a checkout. Not with `peer`: a build on another server checks nothing out.",
       ),
     kind: z
       .string()
       .optional()
       .describe(
-        "The kind of work, by its name in the list of the kinds of work a job does here (\"Code Change\"), when the request is one of them: the job starts every turn from that kind's page. Leave it out when none fits. workflow: job only — a builder job reads its own page.",
+        "The kind of work, by its name in the list of the kinds of work a job does here (\"Code Change\"; \"Workflow Builder\" for a workflow or an app to build, change, test or debug), when the request is one of them: the job starts every turn from that kind's page. Leave it out when none fits.",
       ),
     budgetUsd: z
       .number()
@@ -93,16 +90,19 @@ export default defineStep({
   output: launchOutput,
   async run(cfg, ctx: StepContext) {
     const launch = requireJobLaunch(ctx.services);
-    const workflow = cfg.workflow ?? "job";
-    if (cfg.peer && workflow !== "builder") {
-      throw new Error(`peer: only a builder job runs on another strut server (workflow: builder); a code job runs here, with its repositories — leave peer out, or start a builder job`);
+    if (cfg.peer && cfg.workflow === "job") {
+      throw new Error(`peer: only a build (a workflow or an app) runs on another strut server; a code job runs here, with its repositories — leave peer out, or leave workflow out for a build there`);
     }
-    if (cfg.repos?.length && workflow === "builder") {
-      throw new Error(`repos: a builder job checks nothing out — it authors workflows through its tools; leave repos out, or start a job (workflow: job) for work on a repository`);
+    // A build on another server is that server's `builder`: this strut's
+    // `builder` run dispatches there. It reads its own page and checks
+    // nothing out, so a kind is not passed on, and `repos` is refused.
+    const remote = !!cfg.peer;
+    if (remote && cfg.repos?.length) {
+      throw new Error(`repos: a build on another strut server checks nothing out — leave repos out, or leave peer out for work on a repository here`);
     }
-    if (cfg.kind && workflow === "builder") {
-      throw new Error(`kind: a builder job reads its own page — name the kind of build in its prompt and leave kind out`);
-    }
+    // Here, every kind of work is a job's: `workflow: builder` from a caller
+    // that still sends it is a job of the build's kind.
+    const kind = remote ? undefined : (cfg.kind ?? (cfg.workflow === "builder" ? BUILD_KIND : undefined));
     const attachments = await handedOn(ctx, cfg.attachments);
     return launchOnce(ctx, launch, {
       // A turn an APP launched starts its jobs in the app's namespace, where
@@ -110,12 +110,12 @@ export default defineStep({
       // person's own (plans/jamie-app.md §3).
       job: ctx.app && !isFirstParty(ctx.app) ? appScoped(ctx.app.name, randomUUID()) : randomUUID(),
       title: cfg.title,
-      ...(cfg.workflow ? { workflow: cfg.workflow } : {}),
+      ...(remote ? { workflow: "builder" as const } : {}),
       input: {
         prompt: cfg.prompt,
         ...(cfg.repos?.length ? { repos: cfg.repos } : {}),
         ...(cfg.peer ? { peer: cfg.peer } : {}),
-        ...(cfg.kind ? { kind: cfg.kind } : {}),
+        ...(kind ? { kind } : {}),
       },
       ...(attachments ? { attachments } : {}),
       ...(cfg.budgetUsd !== undefined ? { budgetUsd: cfg.budgetUsd } : {}),

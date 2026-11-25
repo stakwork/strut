@@ -18,9 +18,10 @@ Work items 1 to 3 are built (strut#891, #892, #893). Building item 3
 changed two things, written back here on 2026-11-25: the page is a file
 in git, and it has no parent yet (§2, open questions 2 and 8).
 
-Item 4 is built on `feature/one-job-agent` (2026-11-25), on the defaults
-of open questions 6 to 8, with one thing folded in at the owner's word:
-an app says where it is changed (§7). It does not merge before item 5.
+Items 4 and 6 are built on `feature/one-job-agent` (2026-11-25,
+strut#896), on the defaults of open questions 6 to 8, with one thing
+folded in at the owner's word: an app says where it is changed (§7).
+The branch does not merge before item 5.
 
 It reverses a ruling: on 2026-10-20 the owner ruled that building workflows
 is separate work, and the authoring tools are never granted to a regular
@@ -228,6 +229,11 @@ the same call without the ask.
   `peer` with no `workflow` launches the peer's `builder`; today
   `job/start` refuses `peer` unless `workflow` is `builder`.
 
+As built: a kind named beside `workflow: builder` stands, where it was
+refused, so a job can change a repository and build over it. With `peer`
+no kind is passed on, since a builder reads its own page, and `repos`
+are refused there. `peer` beside `workflow: job` is still refused.
+
 ### 6. `meta/run-step` asks too
 
 `approve` holds back the agent's own tool call and nothing else. Read in
@@ -417,7 +423,9 @@ own `git push` goes around it.
 6. The orchestrator (§5) and `job/start`: `workflow` with no `peer`,
    `peer` with no `workflow`. It merges with item 4, not after it. With
    `Workflow Builder` under `Job`, the orchestrator's first list names it
-   as a kind of job, while its page still sends a build to `builder`,
-   and `job/start` refuses a `kind` beside `workflow: builder`.
+   as a kind of job, while its page still sent a build to `builder`,
+   and `job/start` refused a `kind` beside `workflow: builder`. Built
+   2026-11-25 on the same branch.
 7. Docs: `docs/jobs.md`, `docs/builder.md`, `docs/security.md` (§6); a
-   status line on `plans/builder-job.md` naming this plan.
+   status line on `plans/builder-job.md` naming this plan. Done with
+   items 4 and 6.

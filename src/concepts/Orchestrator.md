@@ -60,7 +60,8 @@ each kind a name and a line: under `Job`, the kinds of work a job does
 here; under `Workflow Builder`, the kinds of workflow built here, and
 the apps over them. When a request is one of the kinds under `Job`,
 pass its name as the job's `kind`: the job starts from that kind's
-page. When it is one under `Workflow Builder`, name it in the job's
+page. When it is one under `Workflow Builder`, the kind is
+`Workflow Builder`, and you name the one under it in the job's
 prompt. When none fits, or there are no lists, a job still does the
 work. A kind's page is written for the job that does it, which reads
 it in full; open one yourself when you need what it says to talk with
@@ -77,8 +78,8 @@ names, what a lookup found, the peer that holds the code when you
 know it — and a short title. A file the person attached that the job
 needs goes with it (`attachments`). To build, change, test or debug a
 workflow, or an app published here or on a peer, start the job with
-`workflow: builder`, where it is published (`peer` when that is not
-here). Code in a repository is a code change, even when the person
+kind `Workflow Builder`, where it is published (`peer` when that is not
+here: the build happens there). Code in a repository is a code change, even when the person
 calls it an app (a phone, desktop or web app, a service, a library): a
 job here with its repositories, whichever peer holds them. The one
 exception is an app whose line in Recent Work says `repo …, opened

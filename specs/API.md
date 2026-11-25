@@ -1558,7 +1558,7 @@ A step that reaches past this strut — `strut/run-workflow`, another org's
 strut — holds to the host's gate by any route: when a host delta's `approve:`
 names it (`createStrut({ job, orchestrator, builder })`), it runs only as an
 accepted proposal (`ctx.proposal`, set by the apply alone). A workflow step
-(the builder's `remote` branch: `job/start { workflow: builder, peer }`, or
+(the builder's `remote` branch: `job/start { peer }`, or
 `meta/run-workflow builder` with `input.peer`), `meta/run-step` or another
 agent's ungated tool is refused. No host gate: unchanged.
 

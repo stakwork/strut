@@ -19,8 +19,8 @@ import type { BuilderReach } from "./reach.js";
  * `job` carries these tools too since plans/one-job-agent.md and builds
  * what is published here itself, so this workflow is the door for another
  * server: a job agent that meets a build on a peer runs it (the `Job`
- * page's docs), and the orchestrator still starts one for a build until
- * that plan's item 6. The missing shell is focus, not a boundary
+ * page's docs), and the orchestrator starts one only for a build on a
+ * peer (`job/start { peer }`). The missing shell is focus, not a boundary
  * (builder.yaml's header).
  *
  * Its system prompt is the builder chat's rules — strut's workflow dialect,

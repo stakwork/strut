@@ -334,7 +334,9 @@ describe("job/start and job/continue", () => {
     });
     assert.equal(ends[1].output.workspace, "acme", "job/continue: the same");
 
-    orchTool = { name: "job_start", input: { prompt: "Build a digest workflow", title: "Digest", workflow: "builder" } };
+    // A build on another server runs this strut's `builder`, which
+    // dispatches there. A caller may still say `workflow: builder` with it.
+    orchTool = { name: "job_start", input: { prompt: "Build a digest workflow", title: "Digest", workflow: "builder", peer: "acme-web" } };
     const third = await launch({ prompt: "build a digest workflow" });
     await settle("orch", third);
     const built = await until(() => posts.find((p) => p.workflow === "builder"));
@@ -382,7 +384,7 @@ describe("job/start and job/continue", () => {
     assert.equal(view?.runs.length, 2, "two turns of one job; the refused ones launched nothing");
   });
 
-  it("kind: start hands the job its kind; continue carries the last turn's unless it names another; a builder job is refused one", async () => {
+  it("kind: start hands the job its kind; continue carries the last turn's unless it names another; `workflow: builder` here is a job of the build's kind", async () => {
     const { launch, settle, until, toolOutput } = await boot();
     orchTool = { name: "job_start", input: { prompt: "Add a page-context line", title: "Page context", kind: "Code Change" } };
     const first = await launch({ prompt: "add the line" });
@@ -405,11 +407,18 @@ describe("job/start and job/continue", () => {
     await settle("orch", third);
     assert.equal((await ends(3))[2].output.kind, "Plan Mode", "continue: a kind it names replaces it");
 
-    orchTool = { name: "job_start", input: { prompt: "Build a digest", title: "Digest", workflow: "builder", kind: "Code Change" } };
+    // One agent builds (plans/one-job-agent.md §5): a caller that still
+    // says `workflow: builder` gets a JOB of the kind every build is, and
+    // one that names a kind beside it keeps that kind.
+    orchTool = { name: "job_start", input: { prompt: "Build a digest", title: "Digest", workflow: "builder" } };
     const fourth = await launch({ prompt: "build a digest" });
     await settle("orch", fourth);
-    assert.ok(seen.orch.at(-1)!.includes("a builder job reads its own page"), seen.orch.at(-1));
-    assert.equal(posts.filter((p) => p.workflow === "builder").length, 0, "nothing launched");
+    assert.equal((await ends(4))[3].output.kind, "Workflow Builder", "a build is a kind of job");
+    orchTool = { name: "job_start", input: { prompt: "Build it and push the repo", title: "Both", workflow: "builder", kind: "Code Change", repos: ["https://github.com/acme/web"] } };
+    const fifth = await launch({ prompt: "build it and push" });
+    await settle("orch", fifth);
+    assert.equal((await ends(5))[4].output.kind, "Code Change", "a named kind stands, and its repositories are checked out");
+    assert.equal(posts.filter((p) => p.workflow === "builder").length, 0, "the builder workflow never ran");
   });
 
   it("model: a job runs on the model its turn picked — start and continue alike, a new pick reaching the job's next turn; a turn with no pick leaves the job on its own", async () => {
@@ -447,9 +456,9 @@ describe("job/start and job/continue", () => {
     assert.deepEqual(await ran(2, plain.runId), { model: "claude-sonnet-4-5", params: undefined }, "no pick: the job's own model");
   });
 
-  it("start { workflow: builder, peer }: the builder workflow runs the turn with the peer; the job says which it is; continue names only the job and follows the record, peer included; peer and repos are refused on a code job, and a kind on a builder job's continue", async () => {
+  it("start { peer }: a build on another server is the builder workflow's turn, with the peer; the job says which it is; continue names only the job and follows the record, peer included; peer is refused on a code job, repos on a build there, and a kind on a builder job's continue", async () => {
     const { strut, launch, settle, until, toolOutput, jobs } = await boot();
-    orchTool = { name: "job_start", input: { prompt: "Build a daily digest workflow", title: "Digest workflow", workflow: "builder", peer: "acme-web" } };
+    orchTool = { name: "job_start", input: { prompt: "Build a daily digest workflow", title: "Digest workflow", kind: "Workflow Builder", peer: "acme-web" } };
     const first = await launch({ prompt: "make me a digest workflow on @acme-web" });
     await settle("orch", first);
     const started = await toolOutput(first);
@@ -486,15 +495,15 @@ describe("job/start and job/continue", () => {
     assert.equal((await jobs.get!(started.job, { threads: false }))?.workflow, "builder");
 
     // A code job runs here, with its repositories: `peer` is refused on it,
-    // and `repos` on a builder job — nothing launched either way.
-    orchTool = { name: "job_start", input: { prompt: "Fix the bug", title: "Bug", peer: "acme-web" } };
+    // and `repos` on a build there — nothing launched either way.
+    orchTool = { name: "job_start", input: { prompt: "Fix the bug", title: "Bug", workflow: "job", peer: "acme-web" } };
     const third = await launch({ prompt: "fix it there" });
     await settle("orch", third);
-    assert.ok(seen.orch.at(-1)!.includes("only a builder job runs on another strut"), seen.orch.at(-1));
-    orchTool = { name: "job_start", input: { prompt: "Build it", title: "Build", workflow: "builder", repos: ["https://github.com/acme/web"] } };
+    assert.ok(seen.orch.at(-1)!.includes("only a build (a workflow or an app) runs on another strut server"), seen.orch.at(-1));
+    orchTool = { name: "job_start", input: { prompt: "Build it", title: "Build", peer: "acme-web", repos: ["https://github.com/acme/web"] } };
     const fourth = await launch({ prompt: "build with the repo" });
     await settle("orch", fourth);
-    assert.ok(seen.orch.at(-1)!.includes("a builder job checks nothing out"), seen.orch.at(-1));
+    assert.ok(seen.orch.at(-1)!.includes("a build on another strut server checks nothing out"), seen.orch.at(-1));
     // A continue keeps the job's workflow, so it cannot make the build a
     // code change: a kind on a builder job is refused, and the code is a
     // new job (2026-11-21: a phone app's change, continued on a build on a
@@ -508,9 +517,9 @@ describe("job/start and job/continue", () => {
     assert.equal(seen.builder.length, 2, "the builder heard nothing more");
   });
 
-  it("start { workflow: builder } on a strut with no builder is refused by name, and nothing launches", async () => {
+  it("start { peer } on a strut with no builder is refused by name, and nothing launches", async () => {
     const { launch, settle, jobs } = await boot({ builder: false });
-    orchTool = { name: "job_start", input: { prompt: "Build a workflow", title: "Build", workflow: "builder" } };
+    orchTool = { name: "job_start", input: { prompt: "Build a workflow", title: "Build", peer: "acme-web" } };
     const run = await launch({ prompt: "build one" });
     await settle("orch", run);
     assert.ok(seen.orch.at(-1)!.includes('no_workflow: this strut server has no \\"builder\\" workflow'), seen.orch.at(-1));

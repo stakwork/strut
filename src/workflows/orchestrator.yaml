@@ -11,16 +11,18 @@ name: orchestrator
 # ones is the deployment's to grant) to orient: a lookup's answer is the
 # reply only when it is the whole answer, otherwise it is what a job's
 # brief starts from. Anything to be found out or made is a job's — the
-# `job` workflow's, or the `builder`'s for a workflow or an app — started
-# DETACHED (job/start, job/continue), several at once if need be: the turn
+# `job` workflow's, a workflow or an app to build included; the `builder`'s
+# only when one is published on another server (plans/one-job-agent.md) —
+# started DETACHED (job/start, job/continue), several at once if need be: the turn
 # ends while a job works, and the job's `run.end` goes to the callback this
 # turn was launched with. Two lists close the system prompt
 # (context/concept, the kinds alone): the kinds of work a job does here —
-# the `Job` Concept's children — and the kinds of thing the builder builds
-# here — the `Workflow Builder` Concept's — each the tree its own agent
-# reads, grown by each deployment, so a turn routes a
+# the `Job` Concept's children — and the kinds of thing built
+# here — the `Workflow Builder` Concept's, itself a kind under `Job` —
+# each grown by each deployment, so a turn routes a
 # request by kind: a job's as `kind` on job/start (the job opens every turn
-# with that page), a build's named in the brief. One conversation is one session, for good: the agent step
+# with that page), a build's `Workflow Builder` with the thing to build
+# named in the brief. One conversation is one session, for good: the agent step
 # compacts it in place when it nears the window. Its system prompt is the
 # session's first turn's. Its RULES are a Concept page, not this file
 # (plans/claim-trials.md §1): the `Orchestrator` page strut seeds
@@ -82,10 +84,11 @@ steps:
       name: "{{ params.concept }}"
       docs: false
       tool: graph_graph_get
-  # The kinds of thing the BUILDER builds here, the same way: the `Workflow
-  # Builder` Concept's children (strut's `App`, a deployment's janitors),
-  # the tree the builder reads. A request for one of them is a job on
-  # `workflow: builder`.
+  # The kinds of thing BUILT here, the same way: the `Workflow
+  # Builder` Concept's children (strut's `App`, a deployment's janitors).
+  # The first list is one level deep, so it shows `Workflow Builder` and
+  # none of these. A request for one of them is a job of kind `Workflow
+  # Builder`, the one under it named in the brief.
   - id: builds
     type: context/concept
     config:
@@ -237,10 +240,9 @@ steps:
             properties:
               brief: { type: string, minLength: 1, description: "Everything the job needs, as job/start's prompt: the job does not see this conversation." }
               title: { type: string, minLength: 1, description: "A short name for the job, as the person would say it." }
-              kind: { type: string, description: "The kind of work, by its name under the first list, when the request is one of them. Not with workflow: builder." }
-              workflow: { type: string, enum: [job, builder], description: "builder for a workflow or an app published here or on a peer; job (the default) for anything else, code in a repository included, even an app's." }
-              peer: { type: string, description: "With workflow: builder only: the server the workflow or app is published on when it is not this one, by id (@acme-web → acme-web)." }
-              repos: { type: array, items: { type: string }, description: "Repository URLs the job works on, checked out before it starts (a private one only this way). workflow: job only." }
+              kind: { type: string, description: "The kind of work, by its name under the first list, when the request is one of them. Workflow Builder for a workflow or an app to build, change, test or debug: the one under it, from the second list, is named in the brief." }
+              peer: { type: string, description: "Only for a build (a workflow or an app) published on another server: that server's id (@acme-web → acme-web). The build happens there. Never for code in a repository." }
+              repos: { type: array, items: { type: string }, description: "Repository URLs the job works on, checked out before it starts (a private one only this way). Not with peer." }
               attachments: { type: array, items: { type: string }, description: "Files attached to THIS message that the job needs, by name as the message shows them. A file from an earlier message: call job/start instead." }
               budgetUsd: { type: number, description: "The job's budget in dollars, a cap on its model calls that the server keeps: only the amount the PERSON gave (\"$100\"), never one you chose. Leave it out when they named none." }
           artifacts:
@@ -287,9 +289,9 @@ steps:
     config:
       prompt: "{{ turn.object.start.brief }}"
       title: "{{ turn.object.start.title }}"
-      workflow: "{{ turn.object.start.workflow }}"
-      # job/start refuses `kind` on a builder job (it reads its own page).
-      kind: "{{ turn.object.start.workflow === 'builder' ? undefined : turn.object.start.kind }}"
+      # One job does every kind of work; with `peer` job/start launches the
+      # build on that server and passes no kind on (plans/one-job-agent.md §5).
+      kind: "{{ turn.object.start.kind }}"
       peer: "{{ turn.object.start.peer }}"
       repos: "{{ turn.object.start.repos }}"
       # This turn's files only: a DAG step sees the files its run was
@@ -453,7 +455,7 @@ params:
   # host's section is appended here, so it still follows strut's own text.
   system: |
     To start ONE job, put it in `start` of your reply instead of calling
-    job/start: { brief, title, kind?, workflow?, peer?, repos?,
+    job/start: { brief, title, kind?, peer?, repos?,
     attachments? }, the fields job/start takes, `brief` its prompt. strut
     starts it right after your reply, so write `text` first, in a line or
     two, and never both call job/start and fill `start` for the same job.

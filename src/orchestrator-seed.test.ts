@@ -52,9 +52,9 @@ describe("the orchestrator workflow strut ships", () => {
     assert.equal(personalOf(await orchestratorWorkflowYaml({ personalConcept: "Personal" })), "Personal");
     assert.equal(flow.inputBlock?.["prompt"]?.required ?? true, true);
     for (const k of ["session", "context"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
-    // Two lists, one per agent's tree, children alone: the kinds of work a
-    // job does here (Job) and the kinds of thing the builder builds
-    // (Workflow Builder). The pages' docs are those agents' instructions;
+    // Two lists, children alone: the kinds of work a job does here (Job)
+    // and the kinds of thing built here (Workflow Builder, itself a kind
+    // under Job). The pages' docs are those agents' instructions;
     // each list ends with how to open a kind's page (graph/graph-get, a
     // grant), for when this agent needs one to talk the person through it.
     assert.deepEqual(flow.steps.find((st) => st.id === "concepts")!.config, { name: "{{ params.concept }}", docs: false, tool: "graph_graph_get" });
@@ -113,17 +113,21 @@ describe("the orchestrator workflow strut ships", () => {
       assert.ok(registry[t], `a grant strut cannot honor: ${t}`);
     }
 
-    // A workflow build is a job on `workflow: builder` (plans/builder-job.md
-    // §2, amended): ONE sentence here — what is built is the `Workflow
-    // Builder` tree's kinds (the second list this prompt ends with), and the
-    // rule rides on job/start's own schema, beside the call. `builder` is a
-    // field value, never a noun the person hears: the prompt names no
-    // "builder job", and tells the agent to talk in the person's words.
+    // A workflow build is a job of KIND `Workflow Builder`
+    // (plans/one-job-agent.md §5): ONE sentence here — what is built is the
+    // `Workflow Builder` tree's kinds (the second list this prompt ends
+    // with), and the rule rides on job/start's own schema, beside the call.
+    // Never a noun the person hears: the prompt names no "builder job", and
+    // tells the agent to talk in the person's words.
     const system = promptOf(text).replace(/\s+/g, " ");
     assert.ok(
-      system.includes("To build, change, test or debug a workflow, or an app published here or on a peer, start the job with `workflow: builder`, where it is published (`peer` when that is not here)."),
+      system.includes("To build, change, test or debug a workflow, or an app published here or on a peer, start the job with kind `Workflow Builder`, where it is published (`peer` when that is not here: the build happens there)."),
       system,
     );
+    assert.ok(system.includes("When it is one under `Workflow Builder`, the kind is `Workflow Builder`, and you name the one under it in the job's prompt."), system);
+    assert.doesNotMatch(system, /workflow: builder/, "the orchestrator no longer picks a workflow");
+    // An app that is also in a repository is changed here (§7).
+    assert.ok(system.includes("The one exception is an app whose line in Recent Work says `repo …, opened here`: it is changed on this server, in place, so it is a build, even when the person names its repository."), system);
     // Code in a repository is a code job's, whatever the person calls it
     // and whichever peer holds it: "an interface for peel" (a phone app)
     // once went to a builder on the peer that lists Peel's repositories.
@@ -133,15 +137,14 @@ describe("the orchestrator workflow strut ships", () => {
     assert.ok(system.includes("under `Workflow Builder`, the kinds of workflow built here, and the apps over them"), "the second list says what it is");
     assert.ok(system.includes("Talk to the person in their words, not this prompt's"), "a posture for every reply, not a renaming table");
     const start = z.toJSONSchema(registry["job/start"]!.input) as { properties: Record<string, { enum?: string[]; description?: string }> };
+    // job/start still reads `workflow` from a caller that sends it, a closed
+    // set, and tells a model to leave it out: `kind` says what the work is,
+    // and `peer` where a build is published.
     assert.deepEqual(start.properties["workflow"]!.enum, ["job", "builder"], "a closed set: the model never names an arbitrary workflow");
-    assert.match(start.properties["workflow"]!.description!, /`builder`: the thing to build, change, test or debug is a WORKFLOW/);
-    // A published app is a builder's too — on a peer as here — while an
-    // app's code in a repository, and an app over a job's own results,
-    // stay the job's.
-    assert.match(start.properties["workflow"]!.description!, /or an APP published on a strut server/);
-    assert.match(start.properties["workflow"]!.description!, /Code in a repository is `job`, even an app's/);
-    assert.match(start.properties["workflow"]!.description!, /`job` \(the default\):[^.]*an app over this job's own results/);
-    assert.match(start.properties["peer"]!.description!, /^With workflow: builder only/);
+    assert.match(start.properties["workflow"]!.description!, /^Leave it out: one job does every kind of work, and `kind` says which\./);
+    assert.match(start.properties["kind"]!.description!, /"Workflow Builder" for a workflow or an app to build, change, test or debug/);
+    assert.match(start.properties["peer"]!.description!, /^Only for a BUILD — a workflow or an app to build, change, test or debug — published on another server/);
+    assert.match(start.properties["peer"]!.description!, /Never for code: a repository is checked out here, whichever peer holds it\./);
   });
 
   it("model, reasoning and stream are launch KNOBS: grantWidenedBy passes them, and still refuses a tool the template does not grant", async () => {
@@ -163,9 +166,10 @@ describe("the orchestrator workflow strut ships", () => {
     // `start` takes what the job/start tool takes, but a DAG step after the
     // agent sees only THIS turn's files: the agent hands its tools alone the
     // files of the thread's earlier turns.
-    assert.deepEqual(Object.keys((reply.properties["start"] as any).properties), ["brief", "title", "kind", "workflow", "peer", "repos", "attachments", "budgetUsd"]);
+    assert.deepEqual(Object.keys((reply.properties["start"] as any).properties), ["brief", "title", "kind", "peer", "repos", "attachments", "budgetUsd"], "no `workflow`: one job does every kind of work");
     const started = flow.steps.find((st) => st.id === "started")!.config as Record<string, unknown>;
-    for (const k of ["peer", "repos", "attachments", "budgetUsd"]) assert.equal(started[k], `{{ turn.object.start.${k} }}`);
+    assert.equal(started["workflow"], undefined);
+    for (const k of ["kind", "peer", "repos", "attachments", "budgetUsd"]) assert.equal(started[k], `{{ turn.object.start.${k} }}`);
     assert.ok(
       String(p["system"]).replace(/\s+/g, " ").includes("or to hand the job a file from an earlier message: `start` carries only this message's files."),
     );
@@ -507,16 +511,19 @@ describe("the orchestrator, end to end", () => {
     const { strut, ends, turn } = await boot(() =>
       toolUse("toolu_1", "final_answer", {
         text: "On it.",
-        start: { brief: "Build a digest workflow", title: "Digest", workflow: "builder", peer: "acme-web" },
+        start: { brief: "Build a digest workflow", title: "Digest", kind: "Workflow Builder", peer: "acme-web" },
         artifacts: [],
       }),
     );
     const first = await turn({ prompt: "Build a digest on @acme-web", session: "peel/agent-1/dm-p" });
     assert.equal(first.status, "success", JSON.stringify(first));
+    // A build on another server is that server's builder: this strut's
+    // `builder` run dispatches there, and reads its own page.
     const { end, runStart } = await startedJob(strut, ends, "builder");
     assert.equal(end.runId, first.output.runId);
     assert.equal(runStart.input.peer, "acme-web");
     assert.equal(runStart.input.prompt, "Build a digest workflow");
+    assert.equal(runStart.input.kind, undefined, "no kind is passed on to a builder");
   });
   it("`start` carries `repos` and THIS message's `attachments` to the job, which keeps its own copy of the file", async () => {
     const notes = "# Notes\nThe flaky test is in ci.yml.";
@@ -538,20 +545,21 @@ describe("the orchestrator, end to end", () => {
     assert.deepEqual(runStart.attachments, [{ name: "notes.md", mediaType: "text/markdown", size: Buffer.byteLength(notes), path: "attachments/notes.md" }]);
     assert.equal(await (await strut.app.request(`/artifacts/${end.runId}/attachments/notes.md`)).text(), notes);
   });
-  it("`start` with a kind on a builder job drops the kind (job/start refuses it) and the build starts", async () => {
+  it("`start` with kind Workflow Builder, here, is a JOB of that kind: one agent builds (plans/one-job-agent.md §5)", async () => {
     const { strut, ends, turn } = await boot(() =>
       toolUse("toolu_1", "final_answer", {
         text: "On it.",
-        start: { brief: "Build a digest workflow", title: "Digest", workflow: "builder", kind: "Code Change" },
+        start: { brief: "Build a digest workflow", title: "Digest", kind: "Workflow Builder" },
         artifacts: [],
       }),
     );
     const first = await turn({ prompt: "build me a digest", session: "peel/agent-1/dm-k" });
     assert.equal(first.status, "success", JSON.stringify(first));
     assert.equal(first.output.startError, undefined);
-    const { end, runStart } = await startedJob(strut, ends, "builder");
+    const { end, runStart } = await startedJob(strut, ends, "job");
     assert.equal(end.runId, first.output.runId);
-    assert.equal(runStart.input.kind, undefined);
+    assert.equal(runStart.input.kind, "Workflow Builder");
+    assert.equal(ends.filter((e) => e.workflow === "builder").length, 0, "the builder workflow is another server's door");
   });
   it("a `start` job/start refuses never fails the turn: the reply goes out saying the job did not start, with `startError`", async () => {
     const { turn, seen } = await boot(() =>
