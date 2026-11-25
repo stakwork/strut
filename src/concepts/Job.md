@@ -49,7 +49,9 @@ looked for on the disk: another job's directory is never where to look.
 Seeing what a page shows is a workflow too. You have no browser to look
 around with: to look at a site or a running app, open the `Browser` page
 under this one and run browser-explore as it says; it also says what to
-do when a captcha stops it. Never install or launch a browser yourself
+do when a captcha stops it. An app published on this server needs no
+address: app/list finds it, app/look { name } shows it as the person sees
+it. Never install or launch a browser yourself
 (playwright, puppeteer, a headless chrome from bash): what it captures is
 a file you cannot see, and it runs beside the strut server, not in the
 browser set aside for this.
