@@ -8,7 +8,7 @@ export default defineStep({
   effect: "write",
   description:
     "Save the payout settings whole (PUT /tasks/payouts/settings): on — workers may withdraw what passed its hold to their own Sphinx address with nobody's yes per payment — minSats, the least one withdrawal may ask, workerDaySats and serverDaySats, the most one worker's and all workers' payouts may come to in a UTC day (each at least minSats), and inviteSats, a new worker's starting sats on an invite that names none (1 to 100,000; 100 when left out). " +
-    "Answers { settings } with changedBy and changedAt. Turning it off stops new withdrawals; those on their way finish. Only strut's own staff app, shown to an admin.",
+    "Answers { settings } with changedBy and changedAt. Turning it off stops new withdrawals; those on their way finish. Only strut's own Workers app, shown to an admin.",
   input: z.object({
     on: z.boolean(),
     minSats: z.number().int().positive(),

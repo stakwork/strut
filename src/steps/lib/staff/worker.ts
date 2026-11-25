@@ -6,7 +6,7 @@ import { staffCall, seg } from "./_door.js";
 export default defineStep({
   type: "staff/worker",
   effect: "read",
-  description: "One worker (GET /tasks/workers/:actor): the worker with balance and standing, their live lease, the last 7 days by type and their newest 50 leases. Only strut's own staff app, shown to an admin.",
+  description: "One worker (GET /tasks/workers/:actor): the worker with balance and standing, their live lease, the last 7 days by type and their newest 50 leases. Only strut's own Workers app, shown to an admin.",
   input: z.object({ actor: z.string().min(1) }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {

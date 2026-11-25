@@ -662,7 +662,7 @@ describe("the worker's door (plans/human-steps.md §5, §6)", () => {
     const history = (await call(w.token, "task/history")).result as { items: Array<{ lease: string; type: string; status: string }> };
     assert.deepEqual(history.items.map((i) => [i.lease, i.type, i.status]), [[got.lease, "ballot", "submitted"]]);
     assert.deepEqual(await call(w.token, "task/history", {}, otherIdentity), { result: { items: [] } }, "another app sees none of this app's tasks");
-    // Across apps (strut/worker's dashboard): every app of the public view, never one outside it.
+    // Across apps (strut/tasks's dashboard): every app of the public view, never one outside it.
     await staff("PUT", "/tasks/types/other-ballot", { app: "other", answer: MATCH, open: false });
     await staff("PUT", "/tasks/types/hidden-ballot", { app: "hidden", answer: MATCH, open: false });
     for (const t of ["other-ballot", "hidden-ballot"]) await staff("PUT", `/tasks/workers/${encodeURIComponent(w.actor)}/grants/${t}`);

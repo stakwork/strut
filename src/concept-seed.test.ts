@@ -182,7 +182,7 @@ describe("concept files (pure)", () => {
     // built. Workspace-general: no one deployment's task.
     const work = await read("Worker Tasks.md");
     assert.deepEqual(work.parents, ["Workflow Builder"]);
-    for (const must of ["ONE message", "Any time, as many as they like", "One for each item", "Only people you invite", "in dollars", "Never ask about the rest", "strut/staff", "strut/earnings", "standing: { workflow }", "open: false", "never turn dollars into", "a round goes out when the person says so", "never theirs to hear about", "Invite a worker", "open work only", "What is built in", "never in an admin app", "task/report", "task/grant", "perWorkerDay", "strut/worker", "Show the WORKER PAGE too", "paid from their first one", "round: { workflow }", "Send a round", "Earnings is named in words alone, never shown"]) assert.ok(work.docs!.includes(must), must);
+    for (const must of ["ONE message", "Any time, as many as they like", "One for each item", "Only people you invite", "in dollars", "Never ask about the rest", "strut/workers", "strut/earnings", "standing: { workflow }", "open: false", "never turn dollars into", "a round goes out when the person says so", "never theirs to hear about", "Invite a worker", "open work only", "What is built in", "never in an admin app", "task/report", "task/grant", "perWorkerDay", "strut/tasks", "Show the WORKER PAGE too", "paid from their first one", "round: { workflow }", "Send a round", "Earnings is named in words alone, never shown"]) assert.ok(work.docs!.includes(must), must);
     // A worker app goes public with every workflow it grants, runs and all:
     // the person's reports stay out of it (a built app once hid a Reports tab
     // behind `useHost().public` while its workflow's runs were open to anyone).
@@ -200,7 +200,7 @@ describe("concept files (pure)", () => {
       "A `human` step asks a PERSON: it names a TASK TYPE in `task`",
       "Read the types here with\n`task/types` before writing the step, and use one that fits.",
       "It is a proposal an\nadmin accepts on a card; you never make a type yourself.",
-      "`strut/worker`: it draws any task whose answer is plain fields",
+      "`strut/tasks`: it draws any task whose answer is plain fields",
       "ask for it with `app/make-public` and say so in your reply",
       "A type is OPEN unless you ask for `open: false`",
       "ask for the type with `attachments: { max, min, types }`",
@@ -220,7 +220,7 @@ describe("concept files (pure)", () => {
     // A worker app's links are shared from Workers, which opens with
     // them (a QR code, Invite): every page points there, none pastes a link.
     for (const c of [app, work]) {
-      assert.ok(c.docs!.includes("strut/staff"), `${c.name} points to Workers`);
+      assert.ok(c.docs!.includes("strut/workers"), `${c.name} points to Workers`);
       assert.match(c.docs!, /never\s+paste\s+a\s+link/, `${c.name}: no link pasted in a reply`);
       assert.doesNotMatch(c.docs!, /hand the person `peelLink`|give the person the `peelLink`/, `${c.name}: no pasted peelLink`);
     }
@@ -251,6 +251,9 @@ describe("concept files (pure)", () => {
     // The file's parts are named, since several agents read and write it;
     // the person reads the reply alone.
     for (const must of ["`plan.md`", "Work items", "Contracts", "Open questions", "each with a default", "Progress", '"Go" takes every default']) assert.ok(plan.docs!.includes(must), must);
+    // A go sent before the plan existed is not a go on it: "do the strut change", 41 s before the plan
+    // came back, let its five questions be answered by their defaults unseen (2026-11-25, strut#906).
+    assert.ok(plan.docs!.includes("started the plan, not the work"));
     // plans/orchestrator-plans.md, ruling 7: what goes wrong (access control
     // built too deep, a migration nobody needs) is a CASE of the page's one
     // claim, never a rule on the page.
@@ -384,6 +387,11 @@ describe("concept files (pure)", () => {
     assert.equal(accessedNodesOf(out)?.length ?? 0, 0, "no node was read");
     const rules = await run({ name: "Orchestrator", frame: false, max: 20000 });
     assert.match(rules.text, /^You are a person's assistant, in one long conversation with them\./, "an agent's rules, as they are");
+    // A brief carries the person's words, not a design of the assistant's: asked to make book status
+    // "generic", Jamie wrote a plan job a spec of its own (a lifecycle each type configures, pay holds,
+    // idle hints, a migration), and the plan and the PR built all of it (2026-11-25, strut#906).
+    assert.match(rules.text, /the request in full, in the\s+person's words/);
+    assert.match(rules.text, /What they did not ask for stays out/);
     assert.deepEqual(await run({ name: "Nope" }), { text: "" }, "a name strut does not ship: nothing, and no connection attempt");
     assert.deepEqual(await run({ name: "Job" }, {}), { text: "" }, "no files either: nothing");
   });
@@ -738,7 +746,7 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
         return { result: "ok", object: { text: "ok", artifacts: [] }, steps: 1, usage: {}, cost: 0 };
       },
     });
-    const strut = await make({ registry: await createRegistry([fakeAgent]), views: false, jamie: false, knowledge: false, earnings: false, staff: false, worker: false });
+    const strut = await make({ registry: await createRegistry([fakeAgent]), views: false, jamie: false, knowledge: false, earnings: false, workersApp: false, tasksApp: false });
     const page = async () => (await names()).includes("Release Notes");
     const run = await strut.run("job", { prompt: "Record a kind for release notes." }, { job: "job-pages", actor: "ann" });
     assert.equal(run.status, "success", JSON.stringify(run.error));

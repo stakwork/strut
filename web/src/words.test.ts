@@ -7,9 +7,9 @@ import { signInNote } from "./native-pay";
 
 describe("the page's locale", () => {
   it("the link's lang= when it is a tag, else the browser's, else English", () => {
-    assert.equal(pageLocale("https://s.example/?app=strut/worker&solo=1&lang=es", "en-US"), "es");
-    assert.equal(pageLocale("https://s.example/?app=strut/worker&lang=es-MX", "en-US"), "es-MX");
-    assert.equal(pageLocale("https://s.example/?app=strut/worker", "es-AR"), "es-AR");
+    assert.equal(pageLocale("https://s.example/?app=strut/tasks&solo=1&lang=es", "en-US"), "es");
+    assert.equal(pageLocale("https://s.example/?app=strut/tasks&lang=es-MX", "en-US"), "es-MX");
+    assert.equal(pageLocale("https://s.example/?app=strut/tasks", "es-AR"), "es-AR");
     assert.equal(pageLocale("https://s.example/?lang=not%20a%20tag!", "es-AR"), "es-AR");
     assert.equal(pageLocale("https://s.example/?lang=", "es-AR"), "es-AR");
     assert.equal(pageLocale(undefined, undefined), "en-US");

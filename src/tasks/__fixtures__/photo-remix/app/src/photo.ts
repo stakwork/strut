@@ -4,7 +4,7 @@ import type { TaskReplyFile, WorkerHistoryItem } from "@strut/kit";
 export const TYPE = "photo-remix";
 /** How often the page reads the worker's history while a picture is being made. */
 export const REPLY_POLL_MS = 3_000;
-/** How long it waits for one, as strut/worker does: a model answers well before. */
+/** How long it waits for one, as strut/tasks does: a model answers well before. */
 export const REPLY_WAIT_MS = 120_000;
 
 /** msat as a worker reads it. */

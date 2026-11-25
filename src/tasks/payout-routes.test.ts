@@ -24,7 +24,7 @@ import { WALLET_ENV } from "../payments/settings.js";
 import { PayoutError } from "../payments/payouts.js";
 import type { EarningsView } from "../payments/earnings.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
-import { STAFF_APP } from "../apps/staff-seed.js";
+import { WORKERS_APP } from "../apps/workers-seed.js";
 import { setEnv } from "../test-util/public-door.js";
 import { WORKER_ADDRESS } from "../steps/lib/task/_shared.js";
 import withdrawStep from "../steps/lib/task/withdraw.js";
@@ -97,9 +97,9 @@ describe("withdraw on a server (plans/human-steps.md §8.2)", () => {
     const res = await req("/tasks/payouts/settings", { method: "PUT", headers: keyed, body: JSON.stringify(ON) });
     assert.equal(res.status, 200, await res.clone().text());
   };
-  /** The staff's door, as the app door hands it to strut/staff in front of an admin. */
+  /** The staff's door, as the app door hands it to strut/workers in front of an admin. */
   const staffCtx = (actor = "admin-1") => ({
-    app: { name: STAFF_APP, version: "v1", firstParty: true, admin: true },
+    app: { name: WORKERS_APP, version: "v1", firstParty: true, admin: true },
     actor,
     services: { staffAdmin: inProcessDoor((r, a) => Promise.resolve(strut.app.fetch(inProcessRequest(r, a))), STAFF_ROUTES, "staff") },
   });

@@ -593,7 +593,7 @@ names a type, never its shape, and you ask an admin for a new one with
 `task/set-type` (the `Worker Tasks` page). One app usually draws several types, a view
 each.
 
-Every server has a worker app already, `strut/worker`: it draws any task
+Every server has a worker app already, `strut/tasks`: it draws any task
 whose answer is plain fields and photos (strut/views' `WorkerPage`). A type
 that needs nothing more names it and no app is built. It is also every
 worker's DASHBOARD, the one link staff share: it lists the task types of
@@ -754,15 +754,15 @@ members). Once the app is published and draws its task types, ask for it
 with `app/make-public` (the version `app/publish` answered): an ADMIN
 approves a card that says what anyone will see and who can sign in, and
 strut adds the app, held at that version (an app strut seeds, such as
-strut/worker, is added unheld and follows strut's releases). A view that names no sign-in
+strut/tasks, is added unheld and follows strut's releases). A view that names no sign-in
 offers `sphinx` with the root key, so a worker is one person on every
 server. Anyone with the link sees a sign-in and nothing else; a worker's
 calls are never kept as runs, and none counts against a visitor's daily
 writes. Say in your reply that later publishes are drafts until someone
 makes them live. The person shares a worker app from Workers
-(`strut/staff`), whose first page opens with its links, a QR code and
+(`strut/workers`), whose first page opens with its links, a QR code and
 Invite (a one-use link that sets up a new worker's phone): point them
-there with an artifact, `{ kind: "app", app: "strut/staff" }` (your words
+there with an artifact, `{ kind: "app", app: "strut/workers" }` (your words
 say "Workers"), and never paste a link from the result (or `GET
 /public/apps`) in your reply, nor build one by hand.
 

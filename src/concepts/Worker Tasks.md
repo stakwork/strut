@@ -16,7 +16,7 @@ something the person asks for is not here, say so plainly ("there is no
 per-student timesheet yet; Workers shows each worker's tasks,
 time and pay") rather than building a stand-in.
 
-- **Workers** (`strut/staff`): each task's queue; on a task's
+- **Workers** (`strut/workers`): each task's queue; on a task's
   page, what it has paid against its budget and, for the last 7 days, each
   worker's tasks, time spent, tasks per hour and pay; the workers, who
   holds which work, grant and revoke; the answers and a verdict on each;
@@ -93,9 +93,9 @@ Talk in the person's words:
 ## Once it is built: what the person does
 
 Say these in order, in a few lines, and point to where each is done: an
-app is an artifact, `{ kind: "app", app: "strut/staff" }`, which shows as
+app is an artifact, `{ kind: "app", app: "strut/workers" }`, which shows as
 a card the person opens, while your words name it ("Workers").
-Show the WORKER PAGE too — the app the task names, `strut/worker` unless
+Show the WORKER PAGE too — the app the task names, `strut/tasks` unless
 the builder made one: it is what they built, and what workers will see.
 Those two are the cards; Earnings is named in words alone, never shown.
 
@@ -104,7 +104,7 @@ Those two are the cards; Earnings is named in words alone, never shown.
    one. A budget or a daily cap is on the pay's card.
 2. **Add money.** In Earnings (`strut/earnings`), Add sats: an invoice
    they pay from their own wallet. Name it; do not show it as a card.
-3. **Bring workers in.** Workers (`strut/staff`) opens with
+3. **Bring workers in.** Workers (`strut/workers`) opens with
    Invite a worker: it makes a one-use link for one person, for one kind
    of work or anything open. On a phone without Peel it sets Peel up (it
    costs a few sats); someone with Peel goes straight in. Either way it
@@ -159,7 +159,7 @@ What the person decided maps onto them:
   leaves without a verdict waits for the person's OK in Workers (one by
   one, or a whole group at once). Without `payOn: "ok"` every accepted
   answer is paid as it is sent, whatever the workflow says after.
-- The workers' language is the person's to say, never to ask. `strut/worker`
+- The workers' language is the person's to say, never to ask. `strut/tasks`
   speaks it already: its screens are in English or Spanish, whichever the
   worker's phone is set to. What the type says is yours: write its ask, its
   questions and their choices, and its `title` (what workers call it, any
@@ -200,7 +200,7 @@ same turn you publish the workflow that names it, and put why in
 The type's `app` is the WORKER APP its tasks are answered in, and it must
 grant the worker's steps — `task/next` and `task/submit` at least; the App
 page's "Worker apps" has the rest. Every server has one already,
-`strut/worker`: it draws any task whose answer is plain fields (text,
+`strut/tasks`: it draws any task whose answer is plain fields (text,
 numbers, yes or no, a pick from a list) and photos, showing the worker
 `show.ask` and the rest of `show`'s plain fields. Name it as the type's app
 unless the task needs a view of its own (a box drawn on a photo, two images
@@ -208,10 +208,10 @@ side by side); then build a worker app from strut/views' pieces. Workers
 reach a worker app only in the PUBLIC VIEW: when the app the type names is
 not there yet, ask for it with `app/make-public` and say so in your reply.
 Once the app is public, the person shares it from Workers
-(`strut/staff`), whose first page opens with its links: the Peel and web
+(`strut/workers`), whose first page opens with its links: the Peel and web
 links, a QR code, and Invite, a one-use link that sets up a new worker's
 phone. Point them there with an artifact, `{ kind: "app", app:
-"strut/staff" }` (your words say "Workers"); never paste a link
+"strut/workers" }` (your words say "Workers"); never paste a link
 in your reply, nor build one by hand.
 
 A type is OPEN unless you ask for `open: false`: anyone signed in to its

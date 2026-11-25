@@ -18,7 +18,7 @@
  *   which opens only for an ACCEPTED `task/set-type` proposal on disk for
  *   that name and that input, the admin's edits included, and saves the type
  *   with that admin as `changedBy`. It grants no worker, deletes no type and
- *   changes no worker: those are a person's, in `strut/staff`.
+ *   changes no worker: those are a person's, in `strut/workers`.
  * - `typeCard`: the card (`describe`). It reads a type's rules, never a
  *   test: no expected answer is on it.
  */
@@ -157,7 +157,7 @@ export const typeChangeInput = z.object({
         .optional()
         .superRefine((v, c) => ruleIssue(c, () => testRulesOf(v, shapeOnly))),
     )
-    .describe("Test tasks mixed among its tasks to qualify and score workers: { rate, newRate, newTasks, qualify, window, minGraded, threshold, grade, gradeCapUsd }, merged over the type's own (or the defaults); null turns them off. The tests themselves are an admin's, in strut/staff."),
+    .describe("Test tasks mixed among its tasks to qualify and score workers: { rate, newRate, newTasks, qualify, window, minGraded, threshold, grade, gradeCapUsd }, merged over the type's own (or the defaults); null turns them off. The tests themselves are an admin's, in strut/workers."),
   copies: z
     .preprocess(
       fromJsonText,
@@ -778,7 +778,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
     value: !existing
       ? after.open
         ? "none yet: anyone signed in holds it from their first ask"
-        : "none yet: you give it to each worker in Workers (strut/staff)"
+        : "none yet: you give it to each worker in Workers (strut/workers)"
       : workers === undefined
         ? "not counted on this server"
         : `${workers} hold it`,

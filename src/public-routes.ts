@@ -56,6 +56,7 @@ import { parseAttachments, type Attachment } from "./ai/attachments.js";
 import type { PublicTools } from "./public-tools.js";
 import { defaultVisitorAddress } from "./visitor-address.js";
 import { JOIN_HEADERS, joinLang, joinPage, joinQrScript } from "./public-join.js";
+import { renamedApp } from "./apps/renamed.js";
 
 export interface PublicRouteDeps {
   surface: PublicSurfaceService;
@@ -547,9 +548,10 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
   // The page itself: the document of the version the public view serves,
   // carrying the PUBLIC identity (it opens `POST /public/mcp` for this app
   // and nothing else) and `<meta name="strut-public-view">`, which the kit
-  // reads as `useHost().public`.
+  // reads as `useHost().public`. An app's old name (src/apps/renamed.ts)
+  // answers for its new one, here and below.
   app.get("/public/apps/:name{.+}/document", async (c) => {
-    const name = c.req.param("name");
+    const name = renamedApp(c.req.param("name"));
     if (!deps.apps || !(await surface.get()).apps.some((a) => a.name === name)) return notPublic(c, `app "${name}"`);
     const doc = await deps.apps.document(name).catch(() => null);
     if (!doc) return notPublic(c, `app "${name}"`);
@@ -557,7 +559,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
   });
 
   app.get("/public/apps/:name{.+}", async (c) => {
-    const name = c.req.param("name");
+    const name = renamedApp(c.req.param("name"));
     if (!deps.apps || !(await surface.get()).apps.some((a) => a.name === name)) return notPublic(c, `app "${name}"`);
     const info = await deps.apps.info(name).catch(() => null);
     return info ? c.json(withLinks(info, c)) : notPublic(c, `app "${name}"`);

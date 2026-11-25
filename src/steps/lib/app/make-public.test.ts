@@ -163,7 +163,7 @@ describe("app/make-public on a strut: an agent asks, an admin says yes", () => {
       orchestrator: false,
       builder: false,
       views: false,
-      staff: false,
+      workersApp: false,
       jamie: false,
       knowledge: false,
       earnings: false,
@@ -427,7 +427,7 @@ describe("app/make-public in the seeds: the builder job and the assistant ask fo
   it("the builder chat's tools leave out the app/* steps that run only as a proposal", async () => {
     const root = await mkdtemp(join(tmpdir(), "strut-make-public-chat-"));
     try {
-      const strut = await createStrut({ workspace: new WorkspaceManager(join(root, "ws")), store: new MemoryRunStore(), serveUi: false, scheduler: false, autoResume: false, stt: false, views: false, jamie: false, staff: false, knowledge: false, earnings: false, concepts: false, systemWorkflows: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false });
+      const strut = await createStrut({ workspace: new WorkspaceManager(join(root, "ws")), store: new MemoryRunStore(), serveUi: false, scheduler: false, autoResume: false, stt: false, views: false, jamie: false, workersApp: false, knowledge: false, earnings: false, concepts: false, systemWorkflows: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false });
       try {
         const registry = strut.getRegistry();
         const tools = buildTools({ workspace: strut.workspace, registry, store: new MemoryRunStore(), getRegistry: async () => registry, services: strut.services, dataDir: root, shell: { cwd: root } } as never) as Record<string, unknown>;

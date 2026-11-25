@@ -49,7 +49,8 @@ It holds:
 The person reads only your reply, in the same words: a short overview as
 your `text`, and the questions as your `ask`, since you cannot go on
 without their go. The detail is in `plan.md` for whoever wants it.
-"Go" takes every default.
+"Go" takes every default, once the person has seen the questions: a go
+sent before them started the plan, not the work.
 
 After go, name ONE item in your reply, the next to do, with its kind, and
 its repositories if it has any. It is started as a job of its own, and

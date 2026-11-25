@@ -7,7 +7,7 @@ export default defineStep({
   type: "staff/payout-read",
   effect: "read",
   description:
-    "Read one payout now through the wallet it went out through (POST /tasks/payouts/:key/read): { payout, state, msat, feeMsat, maxFeeMsat, error? }; settled or failed, the books and the worker's balance follow. Only strut's own staff app, shown to an admin.",
+    "Read one payout now through the wallet it went out through (POST /tasks/payouts/:key/read): { payout, state, msat, feeMsat, maxFeeMsat, error? }; settled or failed, the books and the worker's balance follow. Only strut's own Workers app, shown to an admin.",
   input: z.object({ key: z.string().regex(/^[0-9a-f]{64}$/) }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {

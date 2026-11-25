@@ -1,7 +1,7 @@
 name: support-outbox
 description: Sends Support's welcomes that are due, once per worker.
 # Support's one workflow (plans/people-and-hosts.md §5): `support/receive`
-# starts it, for strut/staff, when a new contact's welcome is due (one run at
+# starts it, for strut/workers, when a new contact's welcome is due (one run at
 # a time). It runs as an app's run, so its bag carries the `sphinx`
 # capability, which no other workflow's does (§4). No schedule: a run a
 # restart cut off resumes at boot, and a welcome still due goes with the

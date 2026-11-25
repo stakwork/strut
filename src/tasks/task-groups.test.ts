@@ -14,7 +14,7 @@ import { RunController } from "../run-control.js";
  * counts and mark its unreviewed answers at once; a worker reads their own
  * groups and every answer of one, each with staff's verdict and why — what
  * to fix. One suite over the SQLite file and the memory twin, through the
- * service; the routes and steps are in src/apps/staff.test.ts.
+ * service; the routes and steps are in src/apps/workers.test.ts.
  */
 
 const T0 = Date.parse("2026-11-19T20:00:00Z");

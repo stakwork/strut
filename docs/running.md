@@ -277,9 +277,9 @@ STRUT_API_KEY=dev-key STRUT_WORKSPACE_BACKEND=fs npx tsx src/server.ts
   what a worker sees. Strut reads none of the feed itself: started with
   `STRUT_URL` and `STRUT_HOST_KEY` (strut's `STRUT_HOST_KEYS=sphinx:<it>`),
   the stand-in PUSHES each record, a worker's file with its bytes, to
-  strut/staff's `support/receive` (plans/people-and-hosts.md §5, §7), one
+  strut/workers's `support/receive` (plans/people-and-hosts.md §5, §7), one
   call at a time, again every second until strut answers a `2xx`. Then
-  `?app=strut/staff&input=tab%3Dsupport`; the staff app acts as the admin a
+  `?app=strut/workers&input=tab%3Dsupport`; the Workers app acts as the admin a
   ticket names (`POST /auth/ticket { actor, role: "admin" }`, then the UI
   at `/?ticket=<it>`). src/apps/support.test.ts runs it all against a
   strut served on a port.
@@ -303,11 +303,11 @@ What else a paid flow needs, each learned the hard way:
   is only a draft (`live: false`). Make it live with `PUT /apps/:name/active
   { "version": "vN" }`, which takes a new release and its lock.
 - **Worker payouts are off until an admin turns them on**: the Payouts tab in
-  `strut/staff`, or `PUT /tasks/payouts/settings { "on": true, "minSats":
+  `strut/workers`, or `PUT /tasks/payouts/settings { "on": true, "minSats":
   1000, "workerDaySats": 1000000, "serverDaySats": 10000000 }` (all four;
   `inviteSats` beside them is an invite's default, 100 when left out).
 - **Inviting a worker** (plans/human-steps.md §5.8): Invite a worker in
-  `strut/staff` (its header, on every tab, or a type's page), or `POST
+  `strut/workers` (its header, on every tab, or a type's page), or `POST
   /tasks/invites {}` (`{ "type": "<type>" }` for one kind of work), asks the
   stand-in's `POST /invite` (with the pay token; it debits the sats and its
   price, `INVITE_PRICE_SATS`, 10) and answers the join link, which opens

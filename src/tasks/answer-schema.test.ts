@@ -108,7 +108,7 @@ describe("an answer", () => {
 });
 
 describe("the answer schema's two copies (plans/human-steps.md §9.5)", () => {
-  it("kit/src/folds/answer-schema.ts, which the staff page runs, is src/tasks/answer-schema.ts byte for byte", async () => {
+  it("kit/src/folds/answer-schema.ts, which the Workers page runs, is src/tasks/answer-schema.ts byte for byte", async () => {
     const { readFile } = await import("node:fs/promises");
     const store = await readFile(new URL("./answer-schema.ts", import.meta.url), "utf8");
     const kit = await readFile(new URL("../../kit/src/folds/answer-schema.ts", import.meta.url), "utf8");

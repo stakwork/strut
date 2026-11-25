@@ -1,9 +1,9 @@
 import { waitingParts } from "../waiting";
 
-/** What a waiting run or a parked step waits on: a task opens strut/staff on
+/** What a waiting run or a parked step waits on: a task opens strut/workers on
  *  it (./waiting.ts), for a viewer the app is listed to. */
-export function WaitingOn(props: { on: readonly string[] | undefined; staffListed?: boolean; onOpenApp?: (name: string, input?: string) => void }) {
-  const parts = waitingParts(props.on, !!props.staffListed && !!props.onOpenApp);
+export function WaitingOn(props: { on: readonly string[] | undefined; workersListed?: boolean; onOpenApp?: (name: string, input?: string) => void }) {
+  const parts = waitingParts(props.on, !!props.workersListed && !!props.onOpenApp);
   if (!parts.length) return <>something outside the run</>;
   return (
     <>

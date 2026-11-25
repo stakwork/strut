@@ -5,7 +5,7 @@ import { dmOf, keepRecord, OUTBOX_WORKFLOW, RECEIVE_MAX_RECORDS, SUPPORT_CHANNEL
 
 /**
  * `support/receive` (plans/people-and-hosts.md §5): the Sphinx daemon hands
- * Support its DM records, through `strut/staff`'s `hosts:` (§3) — one
+ * Support its DM records, through `strut/workers`'s `hosts:` (§3) — one
  * contact's at a time, the one `x-strut-account` names, in the feed's order.
  * Each is kept in one transaction: the conversation, the message (a new one,
  * or a change to one: a send's status, a deletion), a worker's file's bytes.
@@ -16,7 +16,7 @@ import { dmOf, keepRecord, OUTBOX_WORKFLOW, RECEIVE_MAX_RECORDS, SUPPORT_CHANNEL
  *
  * Then it tells the app's channel — a contact's key exchange also says
  * `invites`, since the daemon marked the invite used before pushing it, so
- * the staff page shows it used at once — and when a welcome is due starts
+ * the Workers page shows it used at once — and when a welcome is due starts
  * `support-outbox` (one run at a time) — this call cannot send: a host's bag
  * has no `sphinx`.
  */
@@ -24,7 +24,7 @@ export default defineStep({
   type: "support/receive",
   effect: "write",
   description:
-    "The Sphinx daemon's call (strut/staff's hosts:): keep these DM records of the contact x-strut-account names, in order, in one transaction. " +
+    "The Sphinx daemon's call (strut/workers's hosts:): keep these DM records of the contact x-strut-account names, in order, in one transaction. " +
     "Each is a record of the daemon's DM feed ({ seq, id, clientId?, time, fromMe, peer: { pubkey, alias? }, kind, text, replyTo, sats, deleted, mediaType, fileName, status?, error? }), a worker's file with its bytes as file: { data, name? } (or fileError). " +
     "A record kept before changes nothing. Answers { kept, skipped: [{ seq?, id?, error }] }.",
   input: z.object({
@@ -33,7 +33,7 @@ export default defineStep({
   output: z.object({ kept: z.number(), skipped: z.array(z.object({ seq: z.number().optional(), id: z.string().optional(), error: z.string() })) }),
   async run(cfg, ctx?: StepContext<StrutCapabilities>) {
     const account = /^sphinx:(0[23][0-9a-f]{64})$/.exec(ctx?.host?.account ?? "")?.[1];
-    if (!ctx?.host || !account) throw new Error("support/receive is the Sphinx daemon's call, as the contact the records are about (x-strut-account: sphinx:<pubkey>), through strut/staff's hosts:");
+    if (!ctx?.host || !account) throw new Error("support/receive is the Sphinx daemon's call, as the contact the records are about (x-strut-account: sphinx:<pubkey>), through strut/workers's hosts:");
     const db = await supportDb(ctx, "support/receive");
     const app = ctx.app!;
     const at = Date.now();

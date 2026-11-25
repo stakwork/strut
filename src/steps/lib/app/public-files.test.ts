@@ -45,7 +45,7 @@ describe("app/public-files", () => {
       orchestrator: false,
       builder: false,
       views: false,
-      staff: false,
+      workersApp: false,
       jamie: false,
       knowledge: false,
       earnings: false,
