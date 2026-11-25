@@ -73,6 +73,13 @@ export interface InstalledPackage {
    *  its own `admin: true` app the deployment's (src/packages/fence.ts);
    *  `git`, the hosts a token it holds serves (src/git-hosts.ts). */
   provides?: { secrets?: string[]; git?: GitHost[] };
+  /** `calls` in its `strut.yaml`: what a group call on the box records
+   *  onto — `kind`, the scribe's job kind (a Concept page of the package),
+   *  and `app`, what Jamie's screen shows, by its full name
+   *  (`stadeum/canvas/canvas`). Voice records onto every package that has
+   *  it. Absent when it has none, and once the package no longer holds
+   *  its own (`holdsItsOwn`: uninstalled, a fork kept). */
+  calls?: { kind: string; app: string };
   /** `GET /packages`'s (`withMissingSecrets`): the secrets it requires
    *  (`secrets` less `optional`) that the deployment has no value for, read
    *  as an install's `missing` and a subscription's gate read them — the
@@ -191,11 +198,12 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
       releasedAt.set(upstream.package, at);
       const source = versions[installed]!.source;
       const door: PackageDoor = source === "distro" || source === "repo" ? source : "install";
-      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, ...(upstream.commit ? { commit: upstream.commit } : {}), secrets: upstream.secrets, ...(upstream.optional ? { optional: upstream.optional } : {}), ...(upstream.git ? { git: true } : {}), ...(upstream.provides ? { provides: upstream.provides } : {}), door });
+      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, ...(upstream.commit ? { commit: upstream.commit } : {}), secrets: upstream.secrets, ...(upstream.optional ? { optional: upstream.optional } : {}), ...(upstream.git ? { git: true } : {}), ...(upstream.provides ? { provides: upstream.provides } : {}), ...(upstream.calls ? { calls: upstream.calls } : {}), door });
       if (!upstream.commit) delete p.commit;
       if (!upstream.optional) delete p.optional;
       if (!upstream.git) delete p.git;
       if (!upstream.provides) delete p.provides;
+      if (!upstream.calls) delete p.calls;
     }
     const helper = kind === "step" && name.split("/").pop()!.startsWith("_");
     p.items.push({ kind, name, ...(helper ? { helper: true as const } : {}), installed, active, modified: active !== installed });
@@ -232,7 +240,12 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
 
   const kinds = ["workflow", "step", "app", "concept"];
   return [...packages.values()]
-    .map((p) => ({ ...p, items: p.items.sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind) || a.name.localeCompare(b.name)) }))
+    .map((p) => {
+      const out = { ...p, items: p.items.sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind) || a.name.localeCompare(b.name)) };
+      // A package that left only forks records nothing: its kind's page may be gone.
+      if (out.calls && !holdsItsOwn(out)) delete out.calls;
+      return out;
+    })
     .sort((a, b) => a.package.localeCompare(b.package));
 }
 

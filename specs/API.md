@@ -3647,6 +3647,12 @@ workflow of the package may spend, "A run cap a package ships" below;
 `on?: [{ created|updated|deleted: <Type>, workflow }]` — workflows of the
 package strut runs when a node of a type is written, "Workflows on graph
 writes" below;
+`calls?: { kind, app }` — what a group call on the box records onto:
+`kind`, the scribe's job kind, the name of a Concept page the package
+ships, and `app`, the app Jamie's screen shows, one of its apps by its
+folder; a kind or an app it does not ship is `400 bad_package: strut.yaml:
+calls.kind|calls.app: <why>`, and `GET /packages` lists it with the app by
+its full name (stadeum `plans/call-canvas.md` §8);
 `bundle?: [<git+ ref>, …]` — a BUNDLE, which lists other packages and holds
 nothing of its own, "Bundles" below) and
 the folders `workflows/`,
@@ -4195,6 +4201,7 @@ refused), `remote_not_found:`, `remote_unreachable:` or `remote_empty:`
   "missing": { "secrets": [] },       // the required ones (secrets less optional) the deployment has no value for: its store, then strut's environment, an empty value counting as none — read as the gate and an install's `missing` read them; what a host offers an admin to set (absent for a package that reads no secret)
   // "provides": { "secrets": ["LINEAR_API_KEY"] },  // its strut.yaml's provides, when it has one (`git` too)
   // "git": true,                     // requires.git: its steps read the run's token for a repository's host
+  // "calls": { "kind": "Call Canvas", "app": "stadeum/canvas/canvas" },  // its strut.yaml's calls, the app by its full name: what a group call records onto (absent when it has none, and once only forks of the package are left)
   // "commit": "8f2c…",               // a git+ ref: the commit its newest installed version was read at
   "door": "install",                  // or "distro": the distro wrote it (absent for a package of Concepts alone)
   "items": [

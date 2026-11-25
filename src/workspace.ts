@@ -276,6 +276,10 @@ export interface Upstream {
    *  (src/packages/fence.ts); `git`, the hosts a token it holds serves
    *  (src/git-hosts.ts). Absent when the package provides nothing. */
   provides?: { secrets?: string[]; git?: GitHost[] };
+  /** The manifest's `calls` (src/packages/format.ts): what a group call
+   *  records onto, the scribe's job kind and the app Jamie's screen shows
+   *  by its full name. Absent when the package declares none. */
+  calls?: { kind: string; app: string };
   /** The manifest's `maxRunCostUsd` for this workflow: the most one run of
    *  it may spend, in dollars, unless an admin set a cap of their own
    *  (`workflowRunCap`, src/run-cap.ts). Workflow versions only. */
