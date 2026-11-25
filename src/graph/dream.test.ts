@@ -13,6 +13,7 @@
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import yaml from "js-yaml";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -586,8 +587,18 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
       ["knowledge/add-claim", "knowledge/add-evidence", "dream/turns", "dream/done", "knowledge/page", "knowledge/claims"].map((t) => isSealedStep(t, registry, patterns)),
       [true, true, true, true, false, false],
     );
+    // The door stays the dream's. What the person's assistant and a job hold
+    // of `knowledge/` is the two steps a page is changed with, each a
+    // proposal the person accepts (2026-11-25: changing a page is the
+    // assistant's to do when asked, and a job records a new kind); never
+    // the claims' writers, the tender's read, or the dream's own steps.
+    const PAGE_TOOLS = ["knowledge/edit-page", "knowledge/add-page"];
     for (const seed of ["job", "orchestrator", "builder"]) {
-      assert.doesNotMatch(await readFile(new URL(`../workflows/${seed}.yaml`, import.meta.url), "utf-8"), /knowledge\/|dream\//, `${seed} is not granted the Knowledge door`);
+      const text = await readFile(new URL(`../workflows/${seed}.yaml`, import.meta.url), "utf-8");
+      const { tools, approve = [] } = (yaml.load(text) as { params: { tools: string[]; approve?: string[] } }).params;
+      const held = tools.filter((t) => t.startsWith("knowledge/") || t.startsWith("dream/"));
+      assert.deepEqual(held, seed === "builder" ? [] : PAGE_TOOLS, `${seed}: the two page steps, never the Knowledge door`);
+      for (const t of held) assert.ok(approve.includes(t), `${seed} asks the person before ${t}`);
     }
   });
 });

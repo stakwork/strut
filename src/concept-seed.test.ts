@@ -12,6 +12,7 @@ import { accessedNodesOf, defineStep } from "./core.js";
 import { runSingleStep } from "./run-step.js";
 import { z } from "zod";
 import { createRegistry } from "./steps/registry.js";
+import { buildRegistryTools } from "./steps/core/agent.js";
 import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
@@ -683,6 +684,45 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
   };
   // namesLike answers nothing for an empty query: every name here has an "a" or an "o".
   const names = async () => [...new Set([...(await b.reader.namesLike("Concept", "a", 20)), ...(await b.reader.namesLike("Concept", "o", 20))].map((n) => n.name))].sort();
+
+  it("a job adds a page as a proposal that carries the job and its person; nothing is written until they accept", async () => {
+    type Tool = { execute: (input: unknown) => Promise<unknown> };
+    const out: Record<string, unknown> = {};
+    // Stands in for the core `agent` step: builds its tools from the seeded
+    // job's grants and approvals as the step does, then calls them the way
+    // a model would.
+    const fakeAgent = defineStep({
+      type: "agent",
+      input: z.object({ agentTools: z.array(z.string()), approve: z.array(z.string()) }).passthrough(),
+      output: z.any(),
+      async run(cfg, ctx) {
+        const tools = buildRegistryTools(cfg.agentTools, ctx.registry, ctx, (d: unknown) => d, { approve: new Set(cfg.approve), session: ctx.job }) as Record<string, Tool>;
+        out["held"] = Object.keys(tools).filter((k) => k.startsWith("knowledge_")).sort();
+        const job = (await tools["graph_graph_get"]!.execute({ node_type: "Concept", name: "Job" })) as { ref_id: string };
+        out["add"] = await tools["knowledge_add_page"]!.execute({
+          source_ref_id: job.ref_id,
+          edge_type: "PARENT_OF",
+          target_type: "Concept",
+          target_data: { name: "Release Notes", description: "Writing a release's notes.", docs: "Keep them short." },
+        });
+        return { result: "ok", object: { text: "ok", artifacts: [] }, steps: 1, usage: {}, cost: 0 };
+      },
+    });
+    const strut = await make({ registry: await createRegistry([fakeAgent]), views: false, jamie: false, knowledge: false, earnings: false, staff: false, worker: false });
+    const page = async () => (await names()).includes("Release Notes");
+    const run = await strut.run("job", { prompt: "Record a kind for release notes." }, { job: "job-pages", actor: "ann" });
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    // The two steps a page is changed with, never the rest of `knowledge/`.
+    assert.deepEqual(out["held"], ["knowledge_add_page", "knowledge_edit_page"]);
+    assert.equal(await page(), false, "a proposal: nothing is written by the call");
+
+    const listed = (await (await strut.app.request("/proposals?status=pending")).json()) as { proposals: Array<{ id: string; step: string; by: { job?: string; actor?: string } }> };
+    assert.deepEqual(listed.proposals.map((p) => [p.step, p.by.job, p.by.actor]), [["knowledge/add-page", "job-pages", "ann"]], "the card is the job's and the person's, so their conversation shows it");
+
+    const decided = await strut.app.request(`/proposals/${listed.proposals[0]!.id}/decide`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "accept" }) });
+    assert.equal(decided.status, 200, await decided.clone().text());
+    assert.equal(await page(), true, "accepted: the page is in the tree");
+  });
 
   it("seeds Workflow Builder, Job and Dream at boot, with the pages under them; concepts: false seeds nothing", async () => {
     await make({ concepts: false });

@@ -131,6 +131,15 @@ describe("the orchestrator workflow strut ships", () => {
     // and whichever peer holds it: "an interface for peel" (a phone app)
     // once went to a builder on the peer that lists Peel's repositories.
     assert.ok(system.includes("Code in a repository is a code change, even when the person calls it an app"), system);
+    // Changing a page of knowledge is the turn's own, a proposal like its others: never a job's.
+    assert.ok(
+      system.includes("A page of this server's knowledge — a Concept: what you and the jobs here are told — is yours to change in the turn, when the person asks for the change: knowledge/edit-page for a page that exists, knowledge/add-page for a new one under its parent, each found with graph/graph-get. Each is a card the person accepts; say in a line what it will change."),
+      system,
+    );
+    for (const t of ["knowledge/edit-page", "knowledge/add-page"]) {
+      assert.ok(tools.includes(t), `the assistant holds ${t}`);
+      assert.ok((yaml.load(text) as { params: { approve: string[] } }).params.approve.includes(t), `and asks before ${t}`);
+    }
     assert.ok(system.includes("a change to a peer's code is still a job here, with its repositories"), system);
     assert.doesNotMatch(system, /builder job/i, "no internal noun for the person to repeat");
     assert.ok(system.includes("under `Workflow Builder`, the kinds of workflow built here, and the apps over them"), "the second list says what it is");
