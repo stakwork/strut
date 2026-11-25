@@ -3,6 +3,7 @@ import { useEffect, useState } from "preact/hooks";
 import * as api from "./api";
 import { App } from "./app";
 import { reportReady } from "./embed";
+import { renamedAppUrl } from "../../src/apps/renamed.js";
 
 /** A host signed this tab in with a ticket (./api `ticketSignIn`) that was
  *  refused, or whose session has since ended: only the host can sign the
@@ -24,6 +25,11 @@ function Root({ refused, session }: { refused: boolean; session: api.SessionInfo
   }, []);
   return expired ? <SignInExpired /> : <App session={session} />;
 }
+
+// A link made before its app was renamed (src/apps/renamed.ts) opens the
+// app by its new name: every reader of the address below sees that one.
+const renamed = renamedAppUrl(location.href);
+if (renamed) history.replaceState(history.state, "", renamed);
 
 // A host's ticket is traded before anything renders, so it is the page's
 // first request and every later one is signed in as its person. Then the

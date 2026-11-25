@@ -95,7 +95,7 @@
  *
  * The INVITE routes (plans/human-steps.md §5.8): a worker's one link, made
  * through the payer (the daemon pays the mixer for an invite), opening
- * TASKS (`strut/worker`), the server's one work page.
+ * TASKS (`strut/tasks`), the server's one work page.
  *
  * - `POST /tasks/invites { sats?, type? }` → `{ code, link, sats, status,
  *   type? }`: `link` is `https://<public view>/public/join#<the invite>&a=<
@@ -110,7 +110,7 @@
  * - `POST /tasks/invites/:code/cancel` → `{ code, status }`
  * - `POST /tasks/online` → `{ app, public: true }`: puts Tasks in the public
  *   view, as the Public view tab does with nothing unticked — the one app a
- *   staff page puts online itself, since strut ships it and it calls only
+ *   Workers page puts online itself, since strut ships it and it calls only
  *   the worker's `task/*` steps
  */
 import type { Context, Hono } from "hono";

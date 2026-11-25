@@ -1,6 +1,6 @@
 /**
  * What the `support/*` tools share (plans/people-and-hosts.md §5): Support's
- * tables in the app's own SQLite (`strut/staff`'s `db/001-support.sql`), the
+ * tables in the app's own SQLite (`strut/workers`'s `db/001-support.sql`), the
  * daemon's DM records as Support keeps them, and a message from Support kept
  * before it goes.
  *
@@ -22,7 +22,7 @@ export const SUPPORT_CHANNEL = "support";
 /** The workflow that sends the welcomes due (`support/send-due`). */
 export const OUTBOX_WORKFLOW = "support-outbox";
 /** The app Support is a tab of: the payout line's (the engine's own hook). */
-export const SUPPORT_APP = "strut/staff";
+export const SUPPORT_APP = "strut/workers";
 /** The largest file kept from a worker (plans/support-chat.md ruling 10). */
 export const RECEIVE_FILE_MAX_BYTES = 25 * 1024 * 1024;
 /** A file goes to a page in pieces this size (a multiple of 3, so the
@@ -59,7 +59,7 @@ export function actorOfPubkey(pubkey: string): string {
 /** The app's database, for a step that runs for it (`ctx.app`). */
 export async function supportDb(ctx: StepContext<StrutCapabilities> | undefined, type: string): Promise<DatabaseSync> {
   const app = ctx?.app;
-  if (!app) throw new Error(`${type} runs for an app (ctx.app): strut/staff's page, the Sphinx daemon's call of its tools, or a run it launched`);
+  if (!app) throw new Error(`${type} runs for an app (ctx.app): strut/workers's page, the Sphinx daemon's call of its tools, or a run it launched`);
   const dbs = (ctx?.services as { appDb?: AppDatabases } | undefined)?.appDb;
   if (!dbs) throw new Error(`${type} needs the apps' databases (ctx.services.appDb)`);
   return dbs.open(app.name);

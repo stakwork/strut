@@ -8,7 +8,7 @@ export default defineStep({
   effect: "write",
   description:
     "Send a round of a ROUND type (POST /tasks/types/:name/round): its workflow is launched as the admin, with input — the items ticked, under the input's name staff/round-items gives ({ shops: [ … ] }) — or with none, its defaults sending every item. Its human step makes one task for each item. " +
-    "Answers { runId, workflow }. Only strut's own staff app, shown to an admin.",
+    "Answers { runId, workflow }. Only strut's own Workers app, shown to an admin.",
   input: z.object({
     type: z.string().min(1),
     input: z.record(z.string(), z.any()).optional().describe("The round's input: the items to send under the input's name; left out, every item."),

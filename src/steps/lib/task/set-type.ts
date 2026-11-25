@@ -19,7 +19,7 @@ import { proposalsOf } from "../../../proposals.js";
  * Its input is merged over the type when there is one, so a field left out
  * keeps its value; a new type with no `answer` takes the empty object (a
  * files-only task: photos and nothing else). It grants no worker, deletes
- * no type and changes no worker: those are a person's, in `strut/staff`. A
+ * no type and changes no worker: those are a person's, in `strut/workers`. A
  * type is open by default (ruling 9); a paid open type with fewer ready
  * tests than its K is refused when saved, and the card says so first.
  * Only the `builder` seed grants it (not `job`, not `orchestrator`, not the
@@ -42,7 +42,7 @@ export default defineStep({
     "Ask an admin to make or change a TASK TYPE — what a workflow's `human` step names: the app that draws its tasks, the answer's shape, lease, expiry, on or off, open or invite-only, pay, tests and copies. " +
     "The call becomes a proposal an ADMIN of this strut server approves on a card that shows the type, what changes, its workers and its pay; strut saves it when they accept, and tells you the result on a later turn. " +
     "Read task/types first: an existing name is CHANGED, the fields you leave out kept as they are — and so is a name whose card is still waiting for approval in this conversation: ask for the change alone, and the new card is built on the waiting one and replaces it; a new name with no `answer` takes an empty one (a files-only task: photos and nothing else). The app must grant task/next and task/submit. " +
-    "A type is OPEN by default: any signed-in worker of the app takes its tasks with no grant. A PAID open type needs at least tests.qualify ready tests (task/types' readyTests), so ask for a new paid type with open: false (invite-only: an admin grants workers in Workers, strut/staff) and say so in your reply. Put the reason in `rationale`, in the person's terms. " +
+    "A type is OPEN by default: any signed-in worker of the app takes its tasks with no grant. A PAID open type needs at least tests.qualify ready tests (task/types' readyTests), so ask for a new paid type with open: false (invite-only: an admin grants workers in Workers, strut/workers) and say so in your reply. Put the reason in `rationale`, in the person's terms. " +
     "Never saves on its own: a direct call is refused. When the person is not an admin, the call is refused (admin_required:) — tell them an admin makes task types, and to ask one.",
   input: typeChangeInput,
   output: z.any(),

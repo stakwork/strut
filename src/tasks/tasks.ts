@@ -240,7 +240,7 @@ export async function openTaskStores(o: { dataDir: string } | { file: string }):
 export const TASKS_IN_MEMORY = ":memory:";
 
 /** Support's tables as it was first built (plans/support-chat.md §4),
- *  dropped whenever the file is opened: Support is strut/staff's own now, in
+ *  dropped whenever the file is opened: Support is strut/workers's own now, in
  *  the app's SQLite, and nothing of these was copied
  *  (plans/people-and-hosts.md §5, ruling 7). */
 export const DROPPED_SUPPORT_TABLES = ["support_messages", "support_conversations", "support_state"] as const;
@@ -862,6 +862,10 @@ export interface TasksService {
    *  first; none when the store was never opened. The invites list's "who
    *  took it", read without the staff worker view's cost. Never on a bag. */
   grantedBy(by: string): Promise<string[]>;
+  /** Every task type drawn by app `from`, drawn by `to`, nothing else
+   *  changed: a renamed app's boot step (src/apps/renamed-boot.ts). The
+   *  names of the types changed; none when the store was never opened. */
+  retypeApp(from: string, to: string): Promise<string[]>;
   /** Frozen: the whole store — the staff routes' (`src/tasks/routes.ts`),
    *  which hold it. Never on a services bag (plans/human-steps.md §9.2). */
   capability: TasksCapability;
@@ -2868,6 +2872,13 @@ export function createTasks(deps: TasksDeps): TasksService {
     grantedBy: async (by) => {
       const s = await storesIfAny();
       return s ? s.workers.grantedBy(by) : [];
+    },
+    retypeApp: async (from, to) => {
+      const s = await storesIfAny();
+      if (!s) return [];
+      const types = (await s.tasks.types()).filter((t) => t.app === from);
+      for (const t of types) await s.tasks.putType({ ...t, app: to });
+      return types.map((t) => t.name);
     },
     capability: frozen,
     human: Object.freeze({ ensure: frozen.ensure, reply: frozen.reply }),

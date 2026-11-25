@@ -4,7 +4,7 @@
 // with New invite at the upper right (it opens the form), and the invites
 // made so far below (./Invite `InviteList`), the group link folded at the end.
 // First an INVITE: a link for one person, used once, that sets up Peel when
-// they have none and opens Tasks (`strut/worker`, the server's one work
+// they have none and opens Tasks (`strut/tasks`, the server's one work
 // page) on the kind of work it is for — giving it them when it is
 // invite-only. Someone who has Peel already goes straight to Tasks, so staff
 // never need to ask. Then, folded, the ONE link for a group: Tasks' own

@@ -45,7 +45,7 @@ import { words } from "../words";
 // `public` kept, the address the browser's — or Peel's web view's — history
 // goes Back through, and `&back=<the app it came from>`, for which this page
 // draws a Back bar over the app — except in Peel's web view, whose own bar
-// has Back. A worker's dashboard (strut/worker) lists every app's task
+// has Back. A worker's dashboard (strut/tasks) lists every app's task
 // types and opens a type of another app this way.
 //
 // `&embed_page=<the host's page>` (../embed `embedPage`, on the origin the

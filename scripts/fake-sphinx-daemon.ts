@@ -70,7 +70,7 @@
  * `strutHostKey` are set (`STRUT_URL`, `STRUT_HOST_KEY`): SUPPORT's push
  * (plans/people-and-hosts.md §5, §7). Every DM record —
  * a worker's and the account's own, a new one or one that changed — goes to
- * strut's `POST /mcp` as `step_run { app: "strut/staff", type:
+ * strut's `POST /mcp` as `step_run { app: "strut/workers", type:
  * "support/receive", config: { records: [record] } }` with the host key, as
  * the contact it is about (`x-strut-account: sphinx:<pubkey>`, their alias
  * in `x-strut-account-name`). In order, one call at a time, a worker's file
@@ -243,7 +243,7 @@ export async function startFakeSphinxDaemon(opts: FakeSphinxDaemonOptions = {}):
         "x-strut-account": `sphinx:${r.peer.pubkey}`,
         ...(alias ? { "x-strut-account-name": encodeURIComponent(alias) } : {}),
       },
-      body: JSON.stringify({ jsonrpc: "2.0", id: r.seq, method: "tools/call", params: { name: "step_run", arguments: { app: "strut/staff", type: "support/receive", config: { records: [record] } } } }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: r.seq, method: "tools/call", params: { name: "step_run", arguments: { app: "strut/workers", type: "support/receive", config: { records: [record] } } } }),
     });
     const text = await res.text();
     if (!res.ok) log(`push ${r.kind} #${r.seq} to strut: ${res.status} ${text.slice(0, 200)}`);

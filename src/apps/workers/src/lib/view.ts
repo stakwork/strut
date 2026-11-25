@@ -1,6 +1,6 @@
-// The staff app's pure parts (plans/human-steps.md §9.5): where a deep link
+// The Workers app's pure parts (plans/human-steps.md §9.5): where a deep link
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
-// and how things read. No React here: src/apps/staff.test.ts tests them.
+// and how things read. No React here: src/apps/workers.test.ts tests them.
 import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, SentFile, Standing, SupportConversation, SupportFilter, SupportMessage, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
 
 export const TABS = ["queue", "types", "workers", "tasks", "groups", "tests", "payouts", "support"] as const;

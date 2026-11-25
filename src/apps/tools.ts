@@ -563,7 +563,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
   const appOfCall = async (identity: string): Promise<{ app: AppRef; manifest: AppManifest; package?: string } | { error: string }> => {
     if (deps.host) {
       const live = await deps.apps.manifestOf(identity).catch(() => null);
-      if (!live) return { error: `step_run: no app "${identity}" on this strut server — a host names the app by its name, such as strut/staff` };
+      if (!live) return { error: `step_run: no app "${identity}" on this strut server — a host names the app by its name, such as strut/workers` };
       return { app: { name: identity, version: live.version }, manifest: live.manifest };
     }
     const named = deps.visitor ? deps.visitor.identity(identity) : appOfIdentity(identity);
@@ -591,7 +591,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
         type: z.string().describe("The step type."),
         config: z.record(z.string(), z.any()).optional().describe("The step's config (its fields)."),
         input: z.any().optional().describe("The scope the config's {{ input.* }} templates read."),
-        app: z.string().describe(deps.host ? "The app's name, such as strut/staff." : "The app's identity: the content of the document's <meta name=\"strut-app-token\">."),
+        app: z.string().describe(deps.host ? "The app's name, such as strut/workers." : "The app's identity: the content of the document's <meta name=\"strut-app-token\">."),
       }),
       execute: async ({ type, config, input, app: identity }) => {
         const found = await appOfCall(identity);

@@ -6,7 +6,7 @@ import { staffCall, seg, query } from "./_door.js";
 export default defineStep({
   type: "staff/revoke",
   effect: "write",
-  description: "Revoke a worker's grant of a task type (DELETE /tasks/workers/:actor/grants/:type), with why; a lease of it they hold ends now. Answers { worker }. Only strut's own staff app, shown to an admin.",
+  description: "Revoke a worker's grant of a task type (DELETE /tasks/workers/:actor/grants/:type), with why; a lease of it they hold ends now. Answers { worker }. Only strut's own Workers app, shown to an admin.",
   input: z.object({ actor: z.string().min(1), type: z.string().min(1), why: z.string().optional() }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {

@@ -114,7 +114,7 @@ describe("the photo-remix demo: a photo snapped, reimagined, and shown back", ()
       workspace: new WorkspaceManager(join(root, "ws")),
       kit: await kitForTests(),
       scheduler: false, serveUi: false, autoResume: false, wakeDelayMs: 0,
-      views: false, jamie: false, knowledge: false, earnings: false, staff: false, worker: false, job: false, orchestrator: false, builder: false,
+      views: false, jamie: false, knowledge: false, earnings: false, workersApp: false, tasksApp: false, job: false, orchestrator: false, builder: false,
       browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false,
     });
 

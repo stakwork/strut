@@ -146,8 +146,8 @@ describe("the job workflow strut ships (plans/jobs.md §5)", () => {
         jamie: false,
         knowledge: false,
         earnings: false,
-        staff: false,
-        worker: false,
+        workersApp: false,
+        tasksApp: false,
         ...quiet,
       });
       const app = join(dir, "trials-src");

@@ -6,7 +6,7 @@ import { staffCall, seg } from "./_door.js";
 export default defineStep({
   type: "staff/set-worker",
   effect: "write",
-  description: "Change a worker's status or note (PUT /tasks/workers/:actor). Suspended or banned ends a lease they hold now. Answers { worker }. Only strut's own staff app, shown to an admin.",
+  description: "Change a worker's status or note (PUT /tasks/workers/:actor). Suspended or banned ends a lease they hold now. Answers { worker }. Only strut's own Workers app, shown to an admin.",
   input: z.object({ actor: z.string().min(1), status: z.enum(["new", "active", "suspended", "banned"]).optional(), note: z.string().nullable().optional() }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {
