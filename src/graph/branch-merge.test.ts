@@ -334,6 +334,7 @@ for (const tb of testBackends()) describe(`merging a Concept branch, on ${tb.nam
     const skipped = await step(strut, "knowledge/edit-page", { ref_id: app!.ref_id, edits: [{ old: app!.docs!.split("\n")[0]!, new: "DREAM app docs." }] });
     assert.equal(skipped.status, "skipped");
     assert.match(skipped.note, /comes from git \(strut\/concepts\/App\.md\)/);
+    assert.match(skipped.note, /A change meant for this server goes on a NEW page under App, made here, with a description that says when to open it\./, "and says where the change goes");
     assert.equal((await pageOf("App"))?.docs, app!.docs);
     assert.deepEqual((await json(strut, "/proposals"))["proposals"], []);
     const guide = await pageOf("Guide");

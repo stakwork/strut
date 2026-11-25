@@ -25,7 +25,17 @@ export default defineStep({
     "otherwise it is skipped (`status: skipped`); either way the answer's `note` says so, and so should you (in the lesson's change, when you are writing one).",
   input: editNode.input,
   output: editNode.output,
-  ...(editNode.describe ? { describe: editNode.describe } : {}),
+  // The same card as graph/edit-node's (a person reviewing the tree sees the
+  // same change), in a page's words: "Edit page: <name>", its text's change.
+  async describe(cfg, ctx: StepContext<StrutCapabilities>) {
+    const card = await editNode.describe?.(cfg, ctx);
+    if (!card) return card;
+    return {
+      ...card,
+      ...(card.title ? { title: card.title.replace(/^Edit node /, "Edit page: ") } : {}),
+      ...(card.fields ? { fields: card.fields.map((f) => (f.label === "Change docs" ? { ...f, label: "Change text" } : f)) } : {}),
+    };
+  },
   async answerGated(cfg, ctx: StepContext<StrutCapabilities>) {
     requireTree(ctx, "knowledge/edit-page");
     return editNode.answerGated!(cfg, ctx);

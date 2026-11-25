@@ -754,7 +754,8 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     assert.deepEqual(out["held"], ["knowledge_add_page", "knowledge_edit_page"]);
     assert.equal(await page(), false, "a proposal: nothing is written by the call");
 
-    const listed = (await (await strut.app.request("/proposals?status=pending")).json()) as { proposals: Array<{ id: string; step: string; by: { job?: string; actor?: string } }> };
+    const listed = (await (await strut.app.request("/proposals?status=pending")).json()) as { proposals: Array<{ id: string; step: string; title: string; by: { job?: string; actor?: string } }> };
+    assert.equal(listed.proposals[0]?.title, "Add page: Release Notes", "the card names the page, in the person's words");
     assert.deepEqual(listed.proposals.map((p) => [p.step, p.by.job, p.by.actor]), [["knowledge/add-page", "job-pages", "ann"]], "the card is the job's and the person's, so their conversation shows it");
 
     const decided = await strut.app.request(`/proposals/${listed.proposals[0]!.id}/decide`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "accept" }) });
