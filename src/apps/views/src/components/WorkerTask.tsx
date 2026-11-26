@@ -922,8 +922,6 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: LocalTex
   const e = item.earned;
   let badge: ReactNode;
   if (item.status === "open") badge = <Badge tone="accent">{w.inYourHand}</Badge>;
-  else if (item.status === "skipped") badge = <Badge>{w.skipped}</Badge>;
-  else if (item.status === "expired") badge = <Badge>{w.notFinished}</Badge>;
   else if (item.review?.verdict === "rejected") badge = <Badge tone="error">{w.sentBack}</Badge>;
   else if (item.pending) badge = <Badge>{w.held}</Badge>;
   else if (!e) badge = <Badge tone="done">{w.sent}</Badge>;

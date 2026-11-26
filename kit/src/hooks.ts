@@ -993,8 +993,8 @@ export interface WorkerHistoryItem {
   /** When they took it, and when it left their hand; epoch ms. */
   taken: number;
   closed?: number;
-  /** `open`: in hand; `submitted`: answered; `skipped`; `expired`: it ran
-   *  out, or was closed. */
+  /** `open`: in hand; `submitted`: answered. The server lists no task
+   *  skipped or run out; a server from before may (`skipped`, `expired`). */
   status: "open" | "submitted" | "skipped" | "expired";
   /** A paid answer: what it earned, when its hold ends (then it can be
    *  withdrawn), and whether it was taken back. */

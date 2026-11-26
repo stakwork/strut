@@ -623,8 +623,9 @@ export interface TaskStore {
   byIds(ids: string[]): Promise<TaskRecord[]>;
   /** Every lease on these tasks, oldest first. */
   leasesOf(taskIds: string[]): Promise<Lease[]>;
-  /** §9.4: one worker's newest leases, by when taken, at most `limit`. */
-  recentLeases(worker: string, limit: number): Promise<Lease[]>;
+  /** §9.4: one worker's newest leases, by when taken, at most `limit`;
+   *  with `worked`, only those in hand or answered (never a skip or a run-out). */
+  recentLeases(worker: string, limit: number, o?: { worked?: boolean }): Promise<Lease[]>;
   /** §9.5's Workers list, one grouped read: each worker's answers since
    *  `since`, and the type of the live lease each holds now. */
   workersNow(since: number, now: number): Promise<{ answered: Record<string, number>; holding: Record<string, string> }>;
@@ -899,9 +900,9 @@ export class MemoryTaskStore implements TaskStore {
     return [...this.leases.values()].filter((l) => ids.has(l.task)).map(clone);
   }
 
-  async recentLeases(worker: string, limit: number): Promise<Lease[]> {
+  async recentLeases(worker: string, limit: number, o: { worked?: boolean } = {}): Promise<Lease[]> {
     return [...this.leases.values()]
-      .filter((l) => l.worker === worker)
+      .filter((l) => l.worker === worker && (!o.worked || l.status === "open" || l.status === "submitted"))
       .reverse()
       .sort((a, b) => b.taken - a.taken)
       .slice(0, Math.max(0, limit))
