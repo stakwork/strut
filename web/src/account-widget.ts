@@ -7,9 +7,8 @@
 // the one state the widget draws. That state is only a corner and a
 // `collapsed` flag — there is no value in it that hides the widget, so no
 // message can; a collapsed widget is a handle that stays visible.
-import { formats, type FiatRate, type Formats } from "@strut/kit/folds";
+import { formats, withdrawState, type FiatRate, type Formats, type PayoutRead } from "@strut/kit/folds";
 import { ACCOUNT_CORNERS, type AccountCorner, type AccountPlacement } from "@strut/kit/visitor";
-import { defaultMaxFeeMsat } from "../../src/payments/fee.js";
 import { HOST_WORDS, type HostWords } from "./words";
 
 export interface AccountState {
@@ -183,40 +182,32 @@ export interface WorkerView {
    *  nothing to. */
   blocked?: string;
 }
-type PayoutRead = { on?: unknown; why?: unknown; minMsat?: unknown; dayLeftMsat?: unknown; maxMsat?: unknown; out?: { msat?: unknown } };
 export function workerOf(me: unknown, w: HostWords = HOST_WORDS.en, f: Formats = formats("en-US")): WorkerView | null {
   const m = me as { balance?: { heldMsat?: unknown; withdrawableMsat?: unknown }; payout?: PayoutRead; rate?: { perBtc?: unknown } } | null;
   const held = m?.balance?.heldMsat;
   const free = m?.balance?.withdrawableMsat;
   if (typeof held !== "number" || typeof free !== "number") return null;
   const max = typeof m?.payout?.maxMsat === "number" ? m.payout.maxMsat : 0;
-  const canWithdraw = m?.payout?.on === true && max > 0;
-  const blocked = canWithdraw ? undefined : withdrawBlocked(free, m?.payout, w, f);
+  const state = withdrawState(free, m?.payout);
+  const canWithdraw = state.kind === "ready";
+  const blocked = withdrawBlocked(state, w, f);
   const perBtc = m?.rate?.perBtc;
   const rate = perBtc && typeof perBtc === "object" ? { perBtc: perBtc as Record<string, number> } : undefined;
   return { heldMsat: held, withdrawableMsat: free, maxMsat: max, canWithdraw, ...(rate ? { rate } : {}), ...(blocked ? { blocked } : {}) };
 }
 
-/** Why `task/me`'s payout offers no withdrawal (src/payments/payouts.ts
- *  `view`): a payout out, its `why`, or — open, `maxMsat` 0 — the day's cap
- *  or the minimum. The minimum is said with the routing fee the worker pays
- *  on top (src/payments/fee.ts), as `payoutMaxMsat` counts it. */
-function withdrawBlocked(freeMsat: number, p: PayoutRead | undefined, w: HostWords, f: Formats): string | undefined {
-  if (!p) return undefined;
-  const out = typeof p.out?.msat === "number" ? p.out.msat : undefined;
-  if (out !== undefined) return w.onTheWay(f.sats(out));
-  if (freeMsat <= 0) return undefined;
-  switch (p.why) {
+/** Why there is no Withdraw (`withdrawState`, @strut/kit/folds), in the
+ *  page's words: a payout on its way, or why one can't go now. */
+function withdrawBlocked(state: ReturnType<typeof withdrawState>, w: HostWords, f: Formats): string | undefined {
+  if (state.kind === "out") return w.onTheWay(f.sats(state.msat));
+  if (state.kind !== "blocked") return undefined;
+  switch (state.why) {
     case "no_address": return w.noAddress;
     case "off": return w.payoutsOff;
-    case "no_wallet":
-    case "no_keysend": return w.cannotPay;
+    case "cannot_pay": return w.cannotPay;
     case "not_here": return w.noPayouts;
+    case "day_limit": return w.dayLimit;
+    case "below_min": return w.belowMin(f.sats(state.minMsat), f.sats(state.feeMsat));
+    case "paused": return w.paused;
   }
-  if (p.on !== true) return undefined;
-  const minMsat = typeof p.minMsat === "number" ? p.minMsat : 0;
-  if (typeof p.dayLeftMsat === "number" && p.dayLeftMsat < minMsat) return w.dayLimit;
-  const feeMsat = defaultMaxFeeMsat(minMsat);
-  if (freeMsat < minMsat + feeMsat) return w.belowMin(f.sats(minMsat), f.sats(feeMsat));
-  return w.paused;
 }
