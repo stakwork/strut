@@ -171,8 +171,8 @@ list of 35, not 22.
 ## What it needs first
 
 Three things about trials, one about cases, and two outside this
-repository. The first three belong in `plans/experiments.md`'s "What
-strut needs", and are written here until that plan is next edited.
+repository. The first three are rows of `plans/experiments.md`'s "What
+strut needs".
 
 | # | Need | Today |
 | --- | --- | --- |
@@ -188,6 +188,11 @@ the Knowledge app, a test of several pages and the `Experiment` page are
 not needed for this.
 
 ## Building it in Jamie, on a pod
+
+The pod is here because this change is to strut's own code, so the lab
+has to be a second strut, run from the branch. An experiment on a page
+or on an app needs none: the box is the lab (`plans/experiments.md`).
+Needs 1 to 4 say nothing of pods.
 
 1. **Set up** strut as a workspace (need 5), once.
 2. A person asks Jamie for this plan, with a budget. Jamie starts a Code
