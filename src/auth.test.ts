@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { inviteOf, inviteToken } from "./auth.js";
-import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, scopeFromKey, actorFromHeader, _resetAuthState, sessionToken, verifySessionToken, personToken, verifyPersonToken, channelTicket, verifyChannelTicket, issueSession, sessionCookie, sessionOf, sessionFromCookie, sessionTtlMs, apiKeyMatches, carriesApiKey, foreignUpgrade, bareOrigin } from "./auth.js";
+import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, scopeFromKey, actorFromHeader, _resetAuthState, sessionToken, verifySessionToken, personToken, verifyPersonToken, channelTicket, verifyChannelTicket, issueSession, sessionCookie, sessionOf, sessionFromCookie, sessionTtlMs, apiKeyMatches, carriesApiKey, catalogToken, catalogTokenOf, foreignUpgrade, bareOrigin } from "./auth.js";
 
 /**
  * Tests for the deployment-scoped shared-secret middleware.
@@ -610,5 +610,39 @@ describe("channel tickets (plans/app-channels.md §2)", () => {
     assert.deepEqual(verifyChannelTicket(ticket), { actor: "alice", app: "chess", version: "v1", exp });
     assert.equal(verifyChannelTicket(ticket, exp), undefined, "still expires");
     assert.equal(verifyChannelTicket("strut-channel.not-json."), undefined);
+  });
+});
+
+describe("catalogTokenOf: header or query", () => {
+  const saved = process.env["STRUT_API_KEY"];
+  beforeEach(() => {
+    process.env["STRUT_API_KEY"] = "k";
+    _resetAuthState();
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env["STRUT_API_KEY"];
+    else process.env["STRUT_API_KEY"] = saved;
+    _resetAuthState();
+  });
+
+  const read = async (url: string, headers: Record<string, string> = {}) => {
+    let out: ReturnType<typeof catalogTokenOf> = undefined;
+    const app = new Hono();
+    app.get("*", (c) => {
+      out = catalogTokenOf(c);
+      return c.text("ok");
+    });
+    await app.request(url, { headers });
+    return out as ReturnType<typeof catalogTokenOf>;
+  };
+
+  it("accepts the header, still accepts ?t=, and the header wins when both are present", async () => {
+    const a = catalogToken("pub-a", "sub")!.token;
+    const b = catalogToken("pub-b", "sub")!.token;
+    assert.equal((await read("http://x/packages/catalog", { "x-strut-catalog-token": a }))?.key, "pub-a");
+    assert.equal((await read(`http://x/packages/catalog?t=${b}`))?.key, "pub-b");
+    assert.equal((await read(`http://x/packages/catalog?t=${b}`, { "x-strut-catalog-token": a }))?.key, "pub-a");
+    assert.equal(await read("http://x/packages/catalog", { "x-strut-catalog-token": "bogus" }), undefined);
+    assert.equal(await read("http://x/packages/other", { "x-strut-catalog-token": a }), undefined);
   });
 });

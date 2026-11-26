@@ -40,7 +40,7 @@ import { bindPrincipal, runWorkflow, settleUnfinishedRun, summaryFromLog } from 
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { inviteOf, principalRequired } from "./auth.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostKeys, hostOf, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, trustedEmbedOrigin, frameAncestors, foreignUpgrade, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, linkChallenge, readLinkChallenge, redeemLinkChallenge, LINKED_TOKEN_DAYS, RENEW_CHALLENGE_MS, type LinkChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, carriesCatalogToken, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostKeys, hostOf, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, trustedEmbedOrigin, frameAncestors, foreignUpgrade, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, linkChallenge, readLinkChallenge, redeemLinkChallenge, LINKED_TOKEN_DAYS, RENEW_CHALLENGE_MS, type LinkChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
 import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, keptSphinxAddress, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
 import type { ArtifactsCapability, HttpCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
@@ -5652,7 +5652,7 @@ export async function createStrut<TServices = unknown>(
     }
     // A subscriber's read (§12.1): a catalog token opens the digests this
     // strut's catalog names, no other package the cache holds.
-    else if (c.req.query("t") !== undefined) {
+    else if (carriesCatalogToken(c)) {
       const token = catalogTokenOf(c);
       const current = token ? await catalogDeps.catalogs.current() : undefined;
       if (!token || token.key !== current?.card.key) return c.json({ error: "unauthorized: not a catalog token this strut server minted" }, 401);
@@ -6356,8 +6356,8 @@ export async function createStrut<TServices = unknown>(
     const file = digest ? await store.get(digest) : await store.current();
     // A `?t=` strut cannot vouch for is refused whatever the gate's mode,
     // as for a file token: a host's gate hands a token-bearing read through.
-    const token = c.req.query("t") !== undefined ? catalogTokenOf(c) : undefined;
-    if (!publicPackageRead(c) && c.req.query("t") !== undefined && (!token || token.key !== (await publisher.get())?.key)) {
+    const token = carriesCatalogToken(c) ? catalogTokenOf(c) : undefined;
+    if (!publicPackageRead(c) && carriesCatalogToken(c) && (!token || token.key !== (await publisher.get())?.key)) {
       return c.json({ error: "unauthorized: not a catalog token this strut server minted" }, 401);
     }
     if (!file) {

@@ -1117,11 +1117,24 @@ export function verifyCatalogToken(token: string, now = Date.now()): CatalogToke
   return { key: claims["key"], subscriber: claims["subscriber"], exp: claims.exp };
 }
 
-/** The catalog token a READ of one of its routes carries as `?t=`, verified. */
+/** The header a catalog token may ride in, out of the access log's URL. */
+export const CATALOG_TOKEN_HEADER = "x-strut-catalog-token";
+
+/** The raw catalog token a request carries: the header first, else `?t=`. Never log it. */
+export function catalogTokenRaw(c: Context): string | undefined {
+  return c.req.header(CATALOG_TOKEN_HEADER)?.trim() || c.req.query("t")?.trim() || undefined;
+}
+
+/** Whether a request offers a catalog token at all (header or `?t=`), valid or not. */
+export function carriesCatalogToken(c: Context): boolean {
+  return c.req.header(CATALOG_TOKEN_HEADER) !== undefined || c.req.query("t") !== undefined;
+}
+
+/** The catalog token a READ of one of its routes carries (header `x-strut-catalog-token`, else `?t=`), verified. */
 export function catalogTokenOf(c: Context): CatalogToken | undefined {
   if (c.req.method !== "GET" && c.req.method !== "HEAD") return undefined;
   if (!CATALOG_TOKEN_PATH.test(c.req.path)) return undefined;
-  const t = c.req.query("t")?.trim();
+  const t = catalogTokenRaw(c);
   return t ? verifyCatalogToken(t) : undefined;
 }
 
