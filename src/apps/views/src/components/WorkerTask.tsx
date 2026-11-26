@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronDown, ChevronRight, Clock, FileText, ImagePlus, Loader2, LogIn, MessageSquare, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
-  appLink, fieldsOf, fiatOfMsat, fiatText, formats, satsWithFiat, formProblem, localText, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useLocale, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
-  type FormSchema, type LocalText, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerTaskGroup, type WorkerType,
+  appLink, fieldsOf, fiatOfMsat, fiatText, formats, satsWithFiat, formProblem, localText, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useLocale, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWithdraw, useWorker, withdrawState,
+  type FormSchema, type Formats, type LocalText, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerTaskGroup, type WorkerType, type WithdrawState,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -344,8 +344,8 @@ export interface WorkerPageProps {
    *  employer, `useHost().name`) when it has one, else "Tasks" in the page's
    *  language. */
   title?: string;
-  /** The header's second line: what the work is, in a few words ("Tasks"
-   *  under the server's name; else "Do tasks · get paid"; "" for none). */
+  /** The header's second line ("Tasks" under the server's name; else none;
+   *  "" for none). */
   subtitle?: string;
   /** The header's mark (a lucide icon); a briefcase without one. */
   icon?: ReactNode;
@@ -575,7 +575,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
         )}
         <div className="min-w-0">
           <div className="truncate text-[15px] leading-tight font-semibold">{back && working ? typeLabel(working, me.data?.types.find((t) => t.name === working)?.title, locale) : title}</div>
-          {subtitle && <div className="truncate text-xs text-muted-foreground">{back && working ? title : subtitle}</div>}
+          {(back && working ? title : subtitle) && <div className="truncate text-xs text-muted-foreground">{back && working ? title : subtitle}</div>}
         </div>
       </header>
       <main className="flex flex-1 flex-col px-4 pt-1">{body}</main>
@@ -607,7 +607,6 @@ const HOME_POLL_MS = 15_000;
  */
 export function WorkHome({ only, all = false, first, onStart }: { only?: string; all?: boolean; first?: string; onStart: (type: string | null) => void }) {
   const w = useWorkerWords();
-  const fmt = useFormats();
   const here = useApp()?.name;
   const me = useWorker({ all });
   const history = useTaskHistory({ all, groups: true });
@@ -647,7 +646,7 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
 
   return (
     <div className="flex flex-1 flex-col gap-6 pb-[max(1rem,env(safe-area-inset-bottom))]" data-testid="work-home">
-      {info.xp && <LevelCard xp={info.xp} {...(info.pendingMsat ? { pendingMsat: info.pendingMsat } : {})} />}
+      <WalletCard info={info} />
       {holding && (
         <InHand
           holding={holding}
@@ -682,19 +681,6 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
         )}
       </section>
 
-      <section className="flex flex-col gap-2.5">
-        <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{w.earnedHere}</h2>
-        <div className="grid grid-cols-2 gap-2">
-          <Stat label={w.readyToWithdraw} msat={info.balance.withdrawableMsat} />
-          <Stat
-            label={w.held}
-            msat={info.balance.heldMsat}
-            {...(info.balance.nextReleaseAt ? { note: w.nextClears(fmt.until(info.balance.nextReleaseAt)) } : {})}
-          />
-          {!!info.pendingMsat && <Stat label={w.waitingForOk} msat={info.pendingMsat} note={w.paidOnceOk} />}
-        </div>
-      </section>
-
       {!history.error && (
         <section className="flex flex-col gap-2.5">
           <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{w.yourWork}</h2>
@@ -719,47 +705,114 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
 }
 
 /**
- * Their level (plans/worker-progress.md): XP is every sat they ever earned
- * here, and the bar how far they are from where this level starts to where
- * the next does. Drawn only when `task/me` says it: a missing XP is not
- * Level 0. Still, as numbers are: nothing moves on the dashboard.
+ * Their wallet, on top: what they can withdraw now, with Withdraw beside it
+ * (`withdrawState`, the same decision as the host's account widget: a button
+ * only when a withdrawal can go through, for the most `task/me` says one may
+ * ask now; the server picks the address), what is still in review, and why
+ * none can go when one can't. Under it their level (plans/worker-progress.md):
+ * XP is every sat they ever earned here, so it is the same money, smaller.
  */
-function LevelCard({ xp, pendingMsat }: { xp: NonNullable<WorkerInfo["xp"]>; pendingMsat?: number }) {
+function WalletCard({ info }: { info: WorkerInfo }) {
   const w = useWorkerWords();
   const fmt = useFormats();
   const rate = useWorker().data?.rate;
-  const earned = fiatOfMsat(xp.sats * 1000, rate);
-  const to = xp.toSats;
-  const share = to === undefined ? 1 : Math.min(1, Math.max(0, (xp.sats - xp.fromSats) / (to - xp.fromSats)));
-  const pendingSats = Math.floor((pendingMsat ?? 0) / 1000);
+  const { withdraw, status } = useWithdraw();
+  const [note, setNote] = useState<string | null>(null);
+  const free = info.balance.withdrawableMsat;
+  // Held in its hold, or (a type that pays on OK) not yet booked: both still being checked.
+  const review = info.balance.heldMsat + (info.pendingMsat ?? 0);
+  const fiat = fiatOfMsat(free, rate);
+  const state = withdrawState(free, info.payout);
+  const sending = status === "sending";
+  const line = note ?? withdrawLine(state, w, fmt);
+  const go = async (msat: number) => {
+    setNote(null);
+    try {
+      const r = await withdraw(msat);
+      setNote(r.state === "failed" ? w.withdrawFailed : r.state === "pending" ? w.withdrawPending : w.withdrawSent);
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      setNote(refusalText(err, w) || errorText(err));
+    }
+  };
+  // Under a cent the fiat reads "≈ US$0.00": no figure at all says more.
+  const under = [fiat !== undefined && fiat >= 0.005 ? `≈ ${fiatText(fiat, undefined, fmt.locale)}` : "", review > 0 ? w.inReview(fmt.sats(review)) : ""].filter(Boolean).join(" · ");
   return (
-    <div className={cn("flex flex-col gap-2.5 rounded-2xl border px-4 py-3.5", ACCENT_EDGE, ACCENT_TINT)} data-testid="level">
-      <div className="flex items-center gap-3">
-        <div className={cn("grid size-11 shrink-0 place-items-center rounded-[14px] text-lg font-bold tabular-nums", ACCENT_FILL)}>{xp.level}</div>
-        <div className="min-w-0">
-          <div className="text-[17px] leading-tight font-semibold">{w.level(xp.level)}</div>
-          <div className="text-[13px] text-muted-foreground tabular-nums">{w.xp(fmt.number(xp.sats))}{earned !== undefined && ` (≈ ${fiatText(earned, undefined, fmt.locale)})`}</div>
+    <div className="overflow-hidden rounded-2xl border bg-card" data-testid="wallet">
+      <div className="flex flex-col gap-2.5 px-4 pt-4 pb-3.5">
+        <div className="flex items-end gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] text-muted-foreground">{w.balance}</div>
+            <div className="text-[28px] leading-tight font-bold tracking-tight tabular-nums">{fmt.sats(free)}</div>
+            {under && <div className="text-[13px] text-muted-foreground tabular-nums">{under}</div>}
+          </div>
+          {state.kind === "ready" && (
+            <Button disabled={sending} onClick={() => void go(state.maxMsat)} className={cn("h-11 shrink-0 rounded-xl px-4 text-[15px] font-semibold", ACCENT_BUTTON)}>
+              {sending ? <Loader2 className="size-4 animate-spin" /> : null}
+              {sending ? w.withdrawing : w.withdraw}
+            </Button>
+          )}
         </div>
+        {line && <p className="m-0 text-[13px] text-muted-foreground" role="status" data-testid="withdraw-line">{line}</p>}
       </div>
-      <div
-        role="progressbar"
-        aria-label={to === undefined ? w.topLevel : w.toLevel(xp.level + 1)}
-        aria-valuemin={xp.fromSats}
-        aria-valuemax={to ?? xp.sats}
-        aria-valuenow={xp.sats}
-        className="h-2 overflow-hidden rounded-full bg-foreground/10"
-      >
-        <div className={cn("h-full rounded-full", ACCENT_FILL)} style={{ width: `${share * 100}%` }} />
-      </div>
-      <div className="flex flex-wrap justify-between gap-x-3 gap-y-0.5 text-[13px] text-muted-foreground">
-        {to === undefined ? (
-          <span>{w.topLevel}</span>
-        ) : (
-          <span>
-            <span className="font-semibold text-foreground tabular-nums">{w.xp(fmt.number(to - xp.sats))}</span> {w.toLevel(xp.level + 1)}
-          </span>
-        )}
-        <span className="tabular-nums">{pendingSats > 0 ? w.xpWaiting(fmt.number(pendingSats)) : w.xpPerSat}</span>
+      {info.xp && <LevelStrip xp={info.xp} {...(info.pendingMsat ? { pendingMsat: info.pendingMsat } : {})} />}
+    </div>
+  );
+}
+
+/** What the withdraw line says for a state: a payout on its way, or why none can go now. */
+function withdrawLine(state: WithdrawState, w: WorkerWords, fmt: Formats): string | undefined {
+  switch (state.kind) {
+    case "none":
+    case "ready": return undefined;
+    case "out": return w.withdrawOut(fmt.sats(state.msat));
+    case "blocked":
+      switch (state.why) {
+        case "no_address": return w.withdrawNoAddress;
+        case "off": return w.withdrawOff;
+        case "cannot_pay": return w.withdrawCannotPay;
+        case "not_here": return w.withdrawNotHere;
+        case "day_limit": return w.withdrawDayLimit;
+        // The minimum with the most a routing fee may take on top: one figure, what they need.
+        case "below_min": return w.withdrawBelowMin(fmt.sats(state.minMsat + state.feeMsat));
+        case "paused": return w.withdrawPaused;
+      }
+  }
+}
+
+/**
+ * Their level along the wallet's foot: the bar from where this level starts
+ * to where the next does, what a type that pays on OK would add drawn faint
+ * after it. Drawn only when `task/me` says it: a missing XP is not Level 0.
+ * Still, as numbers are: nothing moves on the dashboard.
+ */
+function LevelStrip({ xp, pendingMsat }: { xp: NonNullable<WorkerInfo["xp"]>; pendingMsat?: number }) {
+  const w = useWorkerWords();
+  const fmt = useFormats();
+  const to = xp.toSats;
+  const pendingSats = Math.floor((pendingMsat ?? 0) / 1000);
+  const shareOf = (sats: number) => (to === undefined ? 1 : Math.min(1, Math.max(0, (sats - xp.fromSats) / (to - xp.fromSats))));
+  const share = shareOf(xp.sats);
+  const pendingShare = shareOf(xp.sats + pendingSats) - share;
+  return (
+    <div className={cn("flex items-center gap-3 border-t px-4 py-3", ACCENT_TINT)} data-testid="level">
+      <div className={cn("grid size-8 shrink-0 place-items-center rounded-[10px] text-[15px] font-bold tabular-nums", ACCENT_FILL)}>{xp.level}</div>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex flex-wrap justify-between gap-x-3 text-[13px]">
+          <span className="font-semibold">{w.level(xp.level)}</span>
+          <span className="text-muted-foreground tabular-nums">{to === undefined ? w.topLevel : `${w.xp(fmt.number(to - xp.sats))} ${w.toLevel(xp.level + 1)}`}</span>
+        </div>
+        <div
+          role="progressbar"
+          aria-label={to === undefined ? w.topLevel : w.toLevel(xp.level + 1)}
+          aria-valuemin={xp.fromSats}
+          aria-valuemax={to ?? xp.sats}
+          aria-valuenow={xp.sats}
+          className="flex h-1.5 overflow-hidden rounded-full bg-foreground/10"
+        >
+          <div className={cn("h-full", ACCENT_FILL)} style={{ width: `${share * 100}%` }} />
+          {pendingShare > 0 && <div className={cn("h-full opacity-40", ACCENT_FILL)} style={{ width: `${pendingShare * 100}%` }} />}
+        </div>
       </div>
     </div>
   );
@@ -840,10 +893,10 @@ function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; on
   const w = useWorkerWords();
   const locale = useLocale();
   const waiting = type.waiting ?? 0;
-  const status = blocked ? w.finishFirst : type.standing ? w.anyTime : waiting > 0 ? w.waiting(waiting) : w.noneNow;
-  // Another app draws it: where it opens.
-  const now = app && !blocked ? w.inApp(status, typeLabel(app)) : status;
-  const ready = !blocked && (!!type.standing || waiting > 0);
+  // A standing type is always there to start: nothing to say. Another app's
+  // type opens there, which the ↗ shows; its name means nothing to a worker.
+  const now = blocked ? w.finishFirst : type.standing ? undefined : waiting > 0 ? w.waiting(waiting) : w.noneNow;
+  const ready = !blocked && waiting > 0;
   return (
     <button
       type="button"
@@ -853,22 +906,11 @@ function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; on
     >
       <div className="min-w-0 flex-1">
         <div className="truncate text-base font-semibold">{typeLabel(type.name, type.title, locale)}</div>
-        <div className={cn("mt-0.5 text-[13px]", ready ? "font-medium text-emerald-700 dark:text-emerald-400" : "text-muted-foreground")}>{now}</div>
+        {now && <div className={cn("mt-0.5 text-[13px]", ready ? "font-medium text-emerald-700 dark:text-emerald-400" : "text-muted-foreground")}>{now}</div>}
       </div>
       {type.payMsat > 0 && <PayPill msat={type.payMsat} className="shrink-0" />}
       {app ? <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
     </button>
-  );
-}
-
-function Stat({ label, msat, note }: { label: string; msat: number; note?: string }) {
-  const sats = useSatsWithFiat();
-  return (
-    <div className="rounded-2xl border bg-card p-3.5">
-      <div className="text-[13px] text-muted-foreground">{label}</div>
-      <div className="mt-0.5 text-lg font-semibold tabular-nums">{sats(msat)}</div>
-      {note && <div className="mt-0.5 text-xs text-muted-foreground">{note}</div>}
-    </div>
   );
 }
 
@@ -882,13 +924,11 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: LocalTex
   const e = item.earned;
   let badge: ReactNode;
   if (item.status === "open") badge = <Badge tone="accent">{w.inYourHand}</Badge>;
-  else if (item.status === "skipped") badge = <Badge>{w.skipped}</Badge>;
-  else if (item.status === "expired") badge = <Badge>{w.notFinished}</Badge>;
   else if (item.review?.verdict === "rejected") badge = <Badge tone="error">{w.sentBack}</Badge>;
-  else if (item.pending) badge = <Badge>{w.waitingForOk}</Badge>;
+  else if (item.pending) badge = <Badge>{w.held}</Badge>;
   else if (!e) badge = <Badge tone="done">{w.sent}</Badge>;
   else if (e.takenBack) badge = <Badge tone="error">{w.notPaid}</Badge>;
-  else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.until(e.releases))}</Badge>;
+  else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.day(e.releases))}</Badge>;
   else badge = <Badge tone="done">{w.cleared}</Badge>;
   return (
     <li className={cn("flex min-w-0 items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
@@ -1042,7 +1082,8 @@ const isPicture = (f: TaskReplyFile) => f.mediaType.startsWith("image/") || IMAG
  *  it, anything else (or a picture that cannot be read here) named. */
 function ReplyFile({ item, file }: { item?: Pick<WorkerHistoryItem, "lease">; file: TaskReplyFile }) {
   const picture = isPicture(file);
-  const read = useTaskFileUrl(item, file.path, { enabled: picture });
+  // A reply of a task another app draws (the dashboard lists every app's) reads too.
+  const read = useTaskFileUrl(item, file.path, { enabled: picture, all: true });
   if (picture && !read.error) {
     return (
       <figure className="m-0 w-full max-w-full min-w-0 overflow-hidden rounded-2xl border bg-muted/50">
@@ -1189,7 +1230,7 @@ function SentScreen({ sent, next, onNext, onHome }: { sent: Sent; next: boolean;
         <div className="relative flex flex-wrap justify-center gap-2">
           <PayPill msat={sent.msat} earned />
           <span className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[13px] font-medium text-muted-foreground">
-            <Clock className="size-3.5" /> {sent.onOk ? w.waitingForOk : w.held}
+            <Clock className="size-3.5" /> {w.held}
           </span>
         </div>
       )}

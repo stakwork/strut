@@ -524,8 +524,8 @@ export interface WorkerTypeView {
 }
 
 /** One of a worker's tasks as THEY read it (`task/history`): the type, when
- *  they took it and when it left their hand, how it ended (`open`: in hand;
- *  `submitted`: answered; `skipped`; `expired`: ran out or was closed), and
+ *  they took it and when it left their hand, where it is (`open`: in hand;
+ *  `submitted`: answered; never a skip or one run out, which did nothing), and
  *  for a paid answer what it earned — when the hold ends and whether it was
  *  taken back. Never the run, the task's other answers, whether it was a
  *  test, or why anything was taken back (§7.2: a worker cannot tell a test). */
@@ -809,7 +809,8 @@ export interface TasksCapability {
    *  live lease, whether or not another path exists. Through a lease they
    *  ANSWERED, only a file the run's reply lists (`task/reply`), and
    *  nothing else of the run. */
-  file(actor: string, o: { lease: string; path: string; app?: string }): Promise<RunFile>;
+  /** `all`: the call reads across apps (`apps`, or any when absent), as `history { all }` lists them: a reply's file is then read for any of those apps' tasks. */
+  file(actor: string, o: { lease: string; path: string; app?: string; apps?: string[]; all?: boolean }): Promise<RunFile>;
   /** Who the worker is here, what they may take, what they are owed, and
    *  whether they may withdraw (`address`: the Sphinx address their session
    *  carries, §8.2); the first call writes them as `new`. `invite`, as on
@@ -1910,7 +1911,13 @@ export function createTasks(deps: TasksDeps): TasksService {
       const answered = typeof o.lease === "string" && o.lease ? await s.tasks.lease(o.lease) : undefined;
       const replied = answered?.worker === w.actor && answered.status === "submitted" ? await s.tasks.task(answered.task) : undefined;
       if (replied?.reply) {
-        await appOk(s, answered!, o.app);
+        // Their own answered lease alone (checked above), so a call that lists
+        // across apps (the dashboard) may read a reply of any app it lists:
+        // the calling app task/file names beside `all` doesn't narrow it.
+        if (o.all) {
+          const k = await s.tasks.type(answered!.type);
+          if (!k || !drawnBy(k, o.apps ? { apps: o.apps } : {})) throw new TaskError("wrong_app", `task type ${answered!.type} is drawn by an app you can't open here`);
+        } else await appOk(s, answered!, o.app);
         if (!replied.reply.files?.some((f) => f.path === path)) throw new TaskError("not_listed", `${JSON.stringify(path)} is not one of the files the run replied with`);
         const f = deps.file ? await deps.file({ ...replied, root: "run" }, path) : null;
         if (!f) throw new TaskError("no_file", `${JSON.stringify(path)} is no longer there`);
@@ -1989,12 +1996,14 @@ export function createTasks(deps: TasksDeps): TasksService {
         const k = kinds.get(type);
         return !!k && drawnBy(k, o);
       };
-      // One group's answers, all of them; else the newest leases.
+      // One group's answers, all of them; else the newest leases. Only work
+      // in hand or handed in: a skip or a run-out did nothing and earned
+      // nothing, so it is not theirs to read, nor to crowd the newest out.
       const grouped = o.group ? await s.tasks.list({ group: o.group, by: w.actor, test: false, limit: TASK_LIST_MAX }) : undefined;
       const leases = (
         grouped
-          ? (await s.tasks.leasesOf(grouped.map((t) => t.id))).filter((l) => l.worker === w.actor).sort((a, b) => b.taken - a.taken)
-          : await s.tasks.recentLeases(w.actor, RECENT_LEASES)
+          ? (await s.tasks.leasesOf(grouped.map((t) => t.id))).filter((l) => l.worker === w.actor && (l.status === "open" || l.status === "submitted")).sort((a, b) => b.taken - a.taken)
+          : await s.tasks.recentLeases(w.actor, RECENT_LEASES, { worked: true })
       ).filter((l) => mine(l.type));
       const byId = new Map((grouped ?? (await s.tasks.byIds([...new Set(leases.map((l) => l.task))]))).map((t) => [t.id, t]));
       const paid = leases.filter((l) => l.status === "submitted" && l.payMsat);

@@ -993,8 +993,8 @@ export interface WorkerHistoryItem {
   /** When they took it, and when it left their hand; epoch ms. */
   taken: number;
   closed?: number;
-  /** `open`: in hand; `submitted`: answered; `skipped`; `expired`: it ran
-   *  out, or was closed. */
+  /** `open`: in hand; `submitted`: answered. The server lists no task
+   *  skipped or run out; a server from before may (`skipped`, `expired`). */
   status: "open" | "submitted" | "skipped" | "expired";
   /** A paid answer: what it earned, when its hold ends (then it can be
    *  withdrawn), and whether it was taken back. */
@@ -1347,12 +1347,12 @@ export function useWithdraw(): UseWithdraw {
  *  `useTask().task`; nothing is read without one. After an answer, pass the
  *  `useTaskHistory()` item instead: its lease reads the files of the
  *  workflow's `reply`, and nothing else. */
-export function useTaskFile(task: Pick<WorkerTask, "lease"> | null | undefined, path: string | undefined, opts: { enabled?: boolean } = {}): UseQueryResult<RunFile> {
+export function useTaskFile(task: Pick<WorkerTask, "lease"> | null | undefined, path: string | undefined, opts: { enabled?: boolean; all?: boolean } = {}): UseQueryResult<RunFile> {
   const client = useStrutClient();
   const lease = task?.lease;
   return useQuery({
-    queryKey: ["strut", "task", "file", lease ?? "", path ?? ""],
-    queryFn: () => client.run<RunFile>(TASK_STEPS.file, { lease, path }),
+    queryKey: ["strut", "task", "file", lease ?? "", path ?? "", !!opts.all],
+    queryFn: () => client.run<RunFile>(TASK_STEPS.file, { lease, path, ...(opts.all ? { all: true } : {}) }),
     enabled: (opts.enabled ?? true) && !!lease && !!path,
     staleTime: Infinity,
     retry: false,
@@ -1362,7 +1362,7 @@ export function useTaskFile(task: Pick<WorkerTask, "lease"> | null | undefined, 
 /** A task's file as a `blob:` URL (`task/file` → `runFileBlob`), for an
  *  `<img>`, a `<video>`, a viewer: let go of when the file changes or the
  *  component unmounts. A file cut short (past its cap) is an `error`. */
-export function useTaskFileUrl(task: Pick<WorkerTask, "lease"> | null | undefined, path: string | undefined, opts: { enabled?: boolean } = {}): UseRunFileUrl {
+export function useTaskFileUrl(task: Pick<WorkerTask, "lease"> | null | undefined, path: string | undefined, opts: { enabled?: boolean; all?: boolean } = {}): UseRunFileUrl {
   const q = useTaskFile(task, path, opts);
   return useBlobUrl(q.data, q.isLoading, q.error as Error | null, () => void q.refetch());
 }

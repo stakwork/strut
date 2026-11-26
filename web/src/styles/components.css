@@ -6406,6 +6406,9 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 @keyframes camera-flash { from { opacity: 0.75; } to { opacity: 0; } }
 .camera-btn { min-width: 128px; height: 46px; padding: 0 var(--sp-4); border: 0; border-radius: 14px; background: rgba(255, 255, 255, 0.18); color: #fff; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
 .camera-btn.is-primary { background: #fff; color: #000; }
+.camera-btn.is-busy { display: inline-flex; align-items: center; justify-content: center; gap: 8px; opacity: 0.85; cursor: progress; }
+.camera-spinner { width: 16px; height: 16px; border: 2px solid rgba(0, 0, 0, 0.25); border-top-color: #000; border-radius: 50%; animation: camera-spin 0.8s linear infinite; }
+@keyframes camera-spin { to { transform: rotate(360deg); } }
 .public-sign-in-scope { padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); background: var(--surface-2); border-left: 3px solid var(--accent); color: var(--text); font-size: 13px; font-weight: 500; }
 .public-pick { position: relative; flex: 1; min-width: 0; }
 .public-pick input.package-search { width: 100%; height: 34px; margin-bottom: 0; padding: 0 var(--sp-3); font-family: inherit; font-size: 13px; }

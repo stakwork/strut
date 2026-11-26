@@ -371,6 +371,7 @@ export class SqliteTaskStore implements TaskStore {
       // §9.4's reads: a worker's leases, and each type's queue.
       byIds: p("select * from tasks where id in (select value from json_each(?))"),
       recentLeases: p("select * from leases where worker = ? order by taken desc, rowid desc limit ?"),
+      recentWorked: p("select * from leases where worker = ? and status in ('open', 'submitted') order by taken desc, rowid desc limit ?"),
       answeredSince: p("select worker, count(*) n from leases where status = 'submitted' and closed >= ? group by worker"),
       holdingNow: p("select worker, type from leases where status = 'open' and expires > ?"),
       totals: p(
@@ -683,8 +684,8 @@ export class SqliteTaskStore implements TaskStore {
     return (this.s.byIds.all(JSON.stringify(ids)) as Row[]).map(taskOf);
   }
 
-  async recentLeases(worker: string, limit: number): Promise<Lease[]> {
-    return (this.s.recentLeases.all(worker, Math.max(0, Math.floor(limit))) as Row[]).map(leaseOf);
+  async recentLeases(worker: string, limit: number, o: { worked?: boolean } = {}): Promise<Lease[]> {
+    return ((o.worked ? this.s.recentWorked : this.s.recentLeases).all(worker, Math.max(0, Math.floor(limit))) as Row[]).map(leaseOf);
   }
 
   async workersNow(since: number, now: number): Promise<{ answered: Record<string, number>; holding: Record<string, string> }> {

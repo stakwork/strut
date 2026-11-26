@@ -28,6 +28,18 @@ export function photoSize(w: number, h: number, max: number): { width: number; h
   return { width: Math.max(1, Math.round(w * scale)), height: Math.max(1, Math.round(h * scale)) };
 }
 
+/**
+ * What the viewfinder asks the camera for: no more than a shot can use. The
+ * shot is drawn at most `maxSide` on its longest side, so a stream bigger than
+ * that is decoded, composited and scaled for nothing — and on Android, where
+ * the web view is far slower at it than iOS, it is what makes the live picture
+ * stutter. Capped at 1920, the most a viewfinder needs; 30 fps likewise.
+ */
+export function streamSize(maxSide: number): { width: { ideal: number }; height: { ideal: number } } {
+  const side = Math.max(640, Math.min(1920, Math.round(maxSide)));
+  return { width: { ideal: side }, height: { ideal: side } };
+}
+
 const base64Of = (blob: Blob) =>
   new Promise<string>((resolve, reject) => {
     const r = new FileReader();
@@ -66,7 +78,7 @@ export function CameraSheet(props: {
     let stream: MediaStream | undefined;
     let gone = false;
     navigator.mediaDevices
-      ?.getUserMedia({ video: { facingMode: props.facing, width: { ideal: 1920 }, height: { ideal: 1920 } }, audio: false })
+      ?.getUserMedia({ video: { facingMode: props.facing, ...streamSize(props.maxSide), frameRate: { ideal: 30, max: 30 } }, audio: false })
       .then((s) => {
         if (gone) return s.getTracks().forEach((t) => t.stop());
         stream = s;
@@ -80,14 +92,23 @@ export function CameraSheet(props: {
     };
   }, [props.facing]);
 
+  // Set at the press, before any state renders, so a second tap is refused
+  // even in the frame before the buttons disable.
+  const handing = useRef(false);
   const hand = async (jpeg: Promise<Blob | null>, size: Size) => {
+    if (handing.current) return;
+    handing.current = true;
     setBusy(true);
     try {
+      // Let the loading state paint before the heavy part (waiting on the
+      // JPEG, reading it to base64) can keep the main thread.
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
       const blob = await jpeg;
       if (!blob) throw new Error("could not make the photo");
       props.onDone({ name: "photo.jpg", mediaType: "image/jpeg", data: await base64Of(blob), width: size.width, height: size.height });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      handing.current = false;
       setBusy(false);
     }
   };
@@ -99,7 +120,7 @@ export function CameraSheet(props: {
     const c = document.createElement("canvas");
     c.width = size.width;
     c.height = size.height;
-    c.getContext("2d")!.drawImage(v, 0, 0, size.width, size.height);
+    c.getContext("2d", { alpha: false })!.drawImage(v, 0, 0, size.width, size.height);
     const jpeg = new Promise<Blob | null>((resolve) => c.toBlob(resolve, "image/jpeg", 0.88));
     if (!props.review) return void hand(jpeg, size);
     // The picture stops on the shot at once; the JPEG is made behind it.
@@ -127,7 +148,10 @@ export function CameraSheet(props: {
         {shot ? (
           <>
             <button type="button" class="camera-btn" disabled={busy} onClick={retake}>{words.retake}</button>
-            <button type="button" class="camera-btn is-primary" disabled={busy} onClick={() => void hand(shot.jpeg, shot)}>{words.usePhoto}</button>
+            <button type="button" class={`camera-btn is-primary${busy ? " is-busy" : ""}`} disabled={busy} aria-busy={busy} onClick={() => void hand(shot.jpeg, shot)}>
+              {busy && <span class="camera-spinner" aria-hidden="true" />}
+              {words.usePhoto}
+            </button>
           </>
         ) : (
           <>

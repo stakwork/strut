@@ -10,6 +10,7 @@ import {
   createTasks,
   memoryTaskStores,
   openTaskStores,
+  RECENT_LEASES,
   tasksPath,
   TaskError,
   type TaskErrorCode,
@@ -347,6 +348,17 @@ for (const impl of impls) {
       const view = (await tasks().task(t.id))!;
       assert.equal(view.status, "open");
       assert.deepEqual(view.leases.map((x) => [x.worker, x.status, x.reason]), [["ann", "skipped", "blurry"], ["bob", "open", undefined]]);
+    });
+
+    it("history: skips never crowd an answer out of the newest", async () => {
+      await setup({ n: RECENT_LEASES + 1, answer: MATCH });
+      const one = await take("ann");
+      await tasks().submit("ann", { lease: one.lease, answer: { same: true } });
+      for (let i = 0; i < RECENT_LEASES; i++) {
+        clock += 1;
+        await tasks().skip("ann", { lease: (await take("ann")).lease });
+      }
+      assert.deepEqual((await tasks().history("ann", { app: "workers" })).items.map((i) => [i.lease, i.status]), [[one.lease, "submitted"]]);
     });
 
     it("me counts, per type, the tasks waiting that this worker could take, and names the one in their hand", async () => {
@@ -781,7 +793,7 @@ for (const impl of earningsImpls) {
       assert.equal((await tasks().me("ann")).balance.totalMsat, 21_000);
     });
 
-    it("history: the worker's own tasks, newest first, each with how it ended and what it earned — never another app's, never why", async () => {
+    it("history: the worker's own tasks in hand or handed in, newest first, with what each earned — never a skip, another app's, or why", async () => {
       const [a] = await paid({ paySats: 10, holdHours: 1, paths: ["pets/a", "pets/b", "pets/c"] });
       await tasks().setType("ballot", { app: "ballots", answer: MATCH, open: false }, "staff");
       await tasks().grant("ann", "ballot", "staff");
@@ -805,12 +817,11 @@ for (const impl of earningsImpls) {
         items.map((i) => [i.lease, i.status, i.earned]),
         [
           [three.lease, "open", undefined],
-          [two.lease, "skipped", undefined],
           [one.lease, "submitted", { msat: 10_000, releases: answered + HOUR }],
         ],
+        "the skip did nothing: not theirs to read",
       );
-      assert.equal(Object.hasOwn(items[1]!, "reason"), false, "why it was skipped stays staff's");
-      assert.equal(items[2]!.closed, answered);
+      assert.equal(items[1]!.closed, answered);
       assert.deepEqual((await tasks().history("bob", { app: "workers" })).items.map((i) => i.status), ["open"], "their own only");
       await svc.takeBack({ task: a!.id, why: "the wrong dog", by: "admin-1" });
       const back = (await tasks().history("ann", { app: "workers" })).items.at(-1)!;
@@ -818,8 +829,8 @@ for (const impl of earningsImpls) {
       assert.equal(JSON.stringify(back).includes("wrong dog"), false, "never why it was taken back");
       assert.deepEqual((await tasks().history("ann", { app: "ballots" })).items.map((i) => [i.lease, i.type, i.ask, i.status]), [[vote.lease, "ballot", "Is it the same dog?", "submitted"]], "each app sees its own types' tasks, with what each asked");
       // A dashboard across apps: the apps the caller can open, each type naming its app.
-      assert.deepEqual((await tasks().history("ann", { apps: ["workers", "ballots"] })).items.length, 4);
-      assert.deepEqual((await tasks().history("ann", { apps: ["workers"] })).items.length, 3, "an app the caller cannot open is left out");
+      assert.deepEqual((await tasks().history("ann", { apps: ["workers", "ballots"] })).items.length, 3);
+      assert.deepEqual((await tasks().history("ann", { apps: ["workers"] })).items.length, 2, "an app the caller cannot open is left out");
       const across = await tasks().me("ann", { apps: ["workers", "ballots"] });
       assert.deepEqual(across.types.map((t) => [t.name, t.app]).sort(), [["ballot", "ballots"], ["pet-match", "workers"]]);
       assert.deepEqual(across.holding, { type: "pet-match", expires: three.expires, lease: three.lease }, "the task in hand, whichever app draws it");
@@ -1197,8 +1208,17 @@ for (const impl of impls) {
       await assert.rejects(tasks().file("ann", { lease: l.lease, path: "found.jpg" }), refused("not_listed", /replied with/), "the task's own files are no longer theirs");
       await assert.rejects(tasks().file("ann", { lease: l.lease, path: "images/other.png" }), refused("not_listed"), "only a path the reply lists");
       await assert.rejects(tasks().file("ann", { lease: l.lease, path: REMIX.path, app: "other-app" }), refused("wrong_app"));
-      // A worker who skipped sees none of it; another worker cannot use the answering lease.
-      assert.deepEqual((await tasks().history("bob", { app: "workers" })).items.map((i) => [i.status, i.reply]), [["skipped", undefined]]);
+      // A dashboard listing across apps (all) reads the reply of a task another app draws — their own answered lease alone.
+      assert.deepEqual(await tasks().file("ann", { lease: l.lease, path: REMIX.path, all: true }), { path: REMIX.path, mediaType: "image/png", bytes: 3, base64: "AAAA" });
+      // As task/file sends it: the calling app named beside all, which doesn't narrow it to that app.
+      assert.deepEqual(await tasks().file("ann", { lease: l.lease, path: REMIX.path, app: "dashboard", all: true }), { path: REMIX.path, mediaType: "image/png", bytes: 3, base64: "AAAA" });
+      assert.deepEqual(await tasks().file("ann", { lease: l.lease, path: REMIX.path, app: "dashboard", apps: ["dashboard", "workers"], all: true }), { path: REMIX.path, mediaType: "image/png", bytes: 3, base64: "AAAA" });
+      await assert.rejects(tasks().file("ann", { lease: l.lease, path: REMIX.path, apps: ["dashboard"], all: true }), refused("wrong_app"), "an app the viewer can't open here");
+      await assert.rejects(tasks().file("ann", { lease: l.lease, path: REMIX.path, app: "dashboard", apps: ["dashboard"], all: true }), refused("wrong_app"));
+      await assert.rejects(tasks().file("ann", { lease: l.lease, path: "images/other.png", all: true }), refused("not_listed"));
+      await assert.rejects(tasks().file("bob", { lease: l.lease, path: REMIX.path, all: true }), refused("no_lease"), "another worker's");
+      // A worker who skipped sees none of it, not even the skip; another worker cannot use the answering lease.
+      assert.deepEqual((await tasks().history("bob", { app: "workers" })).items, []);
       await assert.rejects(tasks().file("bob", { lease: skipped.lease, path: REMIX.path }), refused("lease_closed"));
       await assert.rejects(tasks().file("bob", { lease: l.lease, path: REMIX.path }), refused("no_lease"));
       // The same worker on another task: its own reply alone, and none until there is one.
@@ -1213,7 +1233,7 @@ for (const impl of impls) {
       assert.deepEqual((await tasks().task(t.id))!.reply, reply);
       assert.deepEqual(await tasks().taskFile(t.id, REMIX.path), { path: REMIX.path, mediaType: "image/png", bytes: 3, base64: "AAAA" });
       await assert.rejects(tasks().taskFile(t.id, "images/other.png"), refused("not_listed"));
-      assert.deepEqual(read, [`run:r1:${REMIX.path}`, `run:r1:${REMIX.path}`], "nothing else of the run was read");
+      assert.deepEqual(read, Array(5).fill(`run:r1:${REMIX.path}`), "nothing else of the run was read");
 
       if (impl.reopen) {
         await svc.close();
