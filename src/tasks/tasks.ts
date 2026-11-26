@@ -524,8 +524,8 @@ export interface WorkerTypeView {
 }
 
 /** One of a worker's tasks as THEY read it (`task/history`): the type, when
- *  they took it and when it left their hand, how it ended (`open`: in hand;
- *  `submitted`: answered; `skipped`; `expired`: ran out or was closed), and
+ *  they took it and when it left their hand, where it is (`open`: in hand;
+ *  `submitted`: answered; never a skip or one run out, which did nothing), and
  *  for a paid answer what it earned — when the hold ends and whether it was
  *  taken back. Never the run, the task's other answers, whether it was a
  *  test, or why anything was taken back (§7.2: a worker cannot tell a test). */
@@ -1996,12 +1996,14 @@ export function createTasks(deps: TasksDeps): TasksService {
         const k = kinds.get(type);
         return !!k && drawnBy(k, o);
       };
-      // One group's answers, all of them; else the newest leases.
+      // One group's answers, all of them; else the newest leases. Only work
+      // in hand or handed in: a skip or a run-out did nothing and earned
+      // nothing, so it is not theirs to read, nor to crowd the newest out.
       const grouped = o.group ? await s.tasks.list({ group: o.group, by: w.actor, test: false, limit: TASK_LIST_MAX }) : undefined;
       const leases = (
         grouped
-          ? (await s.tasks.leasesOf(grouped.map((t) => t.id))).filter((l) => l.worker === w.actor).sort((a, b) => b.taken - a.taken)
-          : await s.tasks.recentLeases(w.actor, RECENT_LEASES)
+          ? (await s.tasks.leasesOf(grouped.map((t) => t.id))).filter((l) => l.worker === w.actor && (l.status === "open" || l.status === "submitted")).sort((a, b) => b.taken - a.taken)
+          : await s.tasks.recentLeases(w.actor, RECENT_LEASES, { worked: true })
       ).filter((l) => mine(l.type));
       const byId = new Map((grouped ?? (await s.tasks.byIds([...new Set(leases.map((l) => l.task))]))).map((t) => [t.id, t]));
       const paid = leases.filter((l) => l.status === "submitted" && l.payMsat);

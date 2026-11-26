@@ -653,8 +653,8 @@ was taken — then `submit(answer)` (it must fit the type's `answer` schema)
 and `skip()` let it go and the next is asked for; both read `useWorker()`
 and `useTaskHistory()` again, so a balance on the page moves as the answer
 goes in. `useTaskHistory()` (grant `task/history`) is what they did here,
-newest first: each task's `ask`, how it ended, what it earned and when it
-clears.
+newest first: each task in hand or handed in (never one skipped or run out:
+those did nothing), its `ask`, what it earned and when it clears.
 
 Money is SATS: what a task pays and what a worker earns is in sats, and
 every amount the page shows is sats first. A worker may want to see what
