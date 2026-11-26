@@ -207,7 +207,7 @@ function withdrawBlocked(state: ReturnType<typeof withdrawState>, w: HostWords, 
     case "cannot_pay": return w.cannotPay;
     case "not_here": return w.noPayouts;
     case "day_limit": return w.dayLimit;
-    case "below_min": return w.belowMin(f.sats(state.minMsat), f.sats(state.feeMsat));
+    case "below_min": return w.belowMin(f.sats(state.minMsat + state.feeMsat));
     case "paused": return w.paused;
   }
 }
