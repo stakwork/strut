@@ -11,7 +11,6 @@ import { taskErrorCode, useWords, type AnswerIssue, type Lang } from "@strut/kit
 const en = {
   // The page.
   title: "Tasks",
-  subtitle: "Do tasks · get paid",
   oneMoment: "One moment…",
   signInHeading: "Get paid for small tasks",
   signInText: "Sign in, then answer the tasks that show up here. Each one pays what it says.",
@@ -153,7 +152,6 @@ const REFUSED_ES: Record<string, string> = {
 
 const es: WorkerWords = {
   title: "Tareas",
-  subtitle: "Haz tareas · cobra",
   oneMoment: "Un momento…",
   signInHeading: "Gana dinero con tareas cortas",
   signInText: "Inicia sesión y responde las tareas que aparezcan aquí. Cada una paga lo que dice.",

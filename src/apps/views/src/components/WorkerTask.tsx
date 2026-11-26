@@ -327,8 +327,8 @@ export interface WorkerPageProps {
    *  employer, `useHost().name`) when it has one, else "Tasks" in the page's
    *  language. */
   title?: string;
-  /** The header's second line: what the work is, in a few words ("Tasks"
-   *  under the server's name; else "Do tasks · get paid"; "" for none). */
+  /** The header's second line ("Tasks" under the server's name; else none;
+   *  "" for none). */
   subtitle?: string;
   /** The header's mark (a lucide icon); a briefcase without one. */
   icon?: ReactNode;
@@ -557,7 +557,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
         )}
         <div className="min-w-0">
           <div className="truncate text-[15px] leading-tight font-semibold">{back && working ? typeLabel(working, me.data?.types.find((t) => t.name === working)?.title) : title}</div>
-          {subtitle && <div className="truncate text-xs text-muted-foreground">{back && working ? title : subtitle}</div>}
+          {(back && working ? title : subtitle) && <div className="truncate text-xs text-muted-foreground">{back && working ? title : subtitle}</div>}
         </div>
       </header>
       <main className="flex flex-1 flex-col px-4 pt-1">{body}</main>
