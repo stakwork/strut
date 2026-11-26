@@ -891,10 +891,10 @@ function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; on
   const w = useWorkerWords();
   const locale = useLocale();
   const waiting = type.waiting ?? 0;
-  const status = blocked ? w.finishFirst : type.standing ? w.anyTime : waiting > 0 ? w.waiting(waiting) : w.noneNow;
-  // Another app draws it: where it opens.
-  const now = app && !blocked ? w.inApp(status, typeLabel(app)) : status;
-  const ready = !blocked && (!!type.standing || waiting > 0);
+  // A standing type is always there to start: nothing to say. Another app's
+  // type opens there, which the ↗ shows; its name means nothing to a worker.
+  const now = blocked ? w.finishFirst : type.standing ? undefined : waiting > 0 ? w.waiting(waiting) : w.noneNow;
+  const ready = !blocked && waiting > 0;
   return (
     <button
       type="button"
@@ -904,7 +904,7 @@ function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; on
     >
       <div className="min-w-0 flex-1">
         <div className="truncate text-base font-semibold">{typeLabel(type.name, type.title, locale)}</div>
-        <div className={cn("mt-0.5 text-[13px]", ready ? "font-medium text-emerald-700 dark:text-emerald-400" : "text-muted-foreground")}>{now}</div>
+        {now && <div className={cn("mt-0.5 text-[13px]", ready ? "font-medium text-emerald-700 dark:text-emerald-400" : "text-muted-foreground")}>{now}</div>}
       </div>
       {type.payMsat > 0 && <PayPill msat={type.payMsat} className="shrink-0" />}
       {app ? <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
