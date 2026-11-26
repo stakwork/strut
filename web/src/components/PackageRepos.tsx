@@ -30,18 +30,22 @@ export function PackageRepos(props: { onChanged?: () => void }) {
     props.onChanged?.();
   };
   return (
-    <div class="flyout-section">
-      <div class="flyout-section-title">Repos</div>
+    // Folded away until a repo is open: most people never need it.
+    <details class="flyout-section publish-advanced" open={!!repos?.length || !!error}>
+      <summary>
+        <span class="flyout-section-title">Advanced: a package kept in git</span>
+        {repos && repos.length > 0 && <span class="auto-hint">{repos.length} open</span>}
+      </summary>
       {error && <div class="auto-error">{error}</div>}
       {repos === null && !error && <div class="auto-hint">Loading…</div>}
       {repos?.length === 0 && (
         <div class="auto-hint">
-          No repo is open here. A git repository that holds a package (strut.yaml at its root, or in a folder) is opened on a branch: its items are installed, edited here, and committed back.
+          For developers. Open a git repository that holds a package (strut.yaml at its root, or in a folder) on a branch: its items are installed, edited here, and committed back.
         </div>
       )}
       {repos?.map((r) => <RepoRow key={r.package} repo={r} onChanged={changed} />)}
       <OpenRepo onOpened={changed} />
-    </div>
+    </details>
   );
 }
 

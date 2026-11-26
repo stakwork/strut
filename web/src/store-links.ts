@@ -79,7 +79,7 @@ export function normalizeStrutUrl(text: string): string | null {
   }
 }
 
-/** The link into a strut's UI that opens its Publish dialog's Packages tab on the package. */
+/** The link into a strut's UI that opens its Publish dialog's Store tab on the package. */
 export function installLink(strutUrl: string, link: InstallLink): string {
   const p = new URLSearchParams();
   p.set("install", link.pkg);

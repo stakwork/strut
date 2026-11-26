@@ -220,7 +220,7 @@ function InstallButton(props: { pkg: string; target: string | null; link: (pkg: 
         </form>
       )}
       <div class="store-paste">
-        Or find <code>{props.pkg}</code> <CopyButton value={props.pkg} label="Copy the package name" /> in your strut server's Publish dialog, on the Packages tab.
+        Or find <code>{props.pkg}</code> <CopyButton value={props.pkg} label="Copy the package name" /> in your strut server's Publish dialog, on the Store tab.
       </div>
     </div>
   );

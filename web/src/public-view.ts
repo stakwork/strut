@@ -269,11 +269,11 @@ export type SignInMethod = PublicVisitors["signIn"][number];
 /** The sign-ins a server may offer, in the order the record keeps them,
  *  as the tab says them. */
 export const SIGN_IN_METHODS: ReadonlyArray<{ method: SignInMethod; label: string; short: string; note: string }> = [
-  { method: "sphinx", label: "Their Sphinx account", short: "Sphinx", note: "the wallet that holds it signs in — Peel today — as one visitor on every app, or a new identity for this one" },
-  { method: "key", label: "This browser's key", short: "browser key", note: "one tap: a key the visitor's browser makes and keeps — lost with its data" },
-  { method: "lnurl", label: "A Lightning wallet", short: "Lightning wallet", note: "LNURL-auth: the visitor scans a code with any wallet that signs in" },
-  { method: "nostr", label: "A Nostr extension", short: "Nostr", note: "signs with the visitor's one Nostr key — not offered with a key per domain" },
-  { method: "ticket", label: "A host's ticket", short: "host ticket", note: "a server holding your key signs in someone it knows (POST /auth/ticket, role visitor)" },
+  { method: "sphinx", label: "The Sphinx app", short: "Sphinx", note: "They sign in with the Sphinx (Peel) app on their phone, and are the same person on every app you share." },
+  { method: "key", label: "Automatically, in their browser", short: "browser", note: "Nothing to do: the browser remembers them. Clearing its data or switching device makes them a new visitor." },
+  { method: "lnurl", label: "Any Lightning wallet", short: "Lightning wallet", note: "They scan a QR code with a Lightning wallet app (LNURL-auth)." },
+  { method: "nostr", label: "A Nostr browser extension", short: "Nostr", note: "For people who use Nostr. Not offered with a separate identity per domain." },
+  { method: "ticket", label: "Your own website, for developers", short: "your website", note: "Another server of yours vouches for people it already knows (POST /auth/ticket, role visitor)." },
 ];
 
 /** What a visitor may do in a day when the record says nothing: the

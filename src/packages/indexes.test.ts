@@ -329,10 +329,10 @@ describe("following a package index", () => {
         const found = mcpJson(await mcp.callTool({ name: "search_packages", arguments: { query: "civil" } }));
         assert.deepEqual(found.packages.map((h: { package: string; index: string }) => [h.package, h.index]), [["openlaw/civil", "public"]]);
         assert.equal(found.packages[0].detail.concepts, 2);
-        assert.match(found.install, /Packages, Find the name, Install/);
+        assert.match(found.install, /Publish, Store, find the name, Install/);
         const got = mcpJson(await mcp.callTool({ name: "get_package", arguments: { package: "openlaw/civil" } }));
         assert.equal(got.index, "public");
-        assert.equal(got.ui, `${base}/?install=openlaw%2Fcivil`, "the person's door on this strut: the Publish dialog's Packages tab on the name");
+        assert.equal(got.ui, `${base}/?install=openlaw%2Fcivil`, "the person's door on this strut: the Publish dialog's Store tab on the name");
         assert.deepEqual(got.detail.concepts.map((c: { name: string; docs?: string }) => [c.name, c.docs]), [["Civil procedure", undefined], ["Law", undefined]]);
         const missing = await mcp.callTool({ name: "get_package", arguments: { package: "zeta/thing" } });
         assert.ok(missing.isError);

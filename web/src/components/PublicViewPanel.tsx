@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import * as api from "../api";
 import { errorMessage } from "../helpers";
 import { CopyButton } from "./CopyButton";
 import { EarningsLine, useEarnings } from "./EarningsLine";
 import { ListingLines } from "./ListingLines";
 import { canWords } from "../store-links";
-import { ChevronRightIcon } from "../icons";
+import { AppGlyph, CheckIcon, ChevronRightIcon, CloseIcon, FileIcon, SearchIcon, StepIcon, SubflowIcon } from "../icons";
 import {
   boxesOf,
   checkedOf,
@@ -54,6 +54,9 @@ import {
 // record's `visitors`, which a served box's serve.yaml writes instead.
 
 type Kind = "app" | "workflow" | "step" | "concept";
+/** One thing the Add bar offers: `builtIn` is strut's own (seeded), listed after the person's. */
+type Choice = { name: string; description?: string; builtIn?: boolean };
+
 const KINDS: Array<{ kind: Kind; label: string }> = [
   { kind: "app", label: "App" },
   { kind: "workflow", label: "Workflow" },
@@ -164,32 +167,43 @@ function ItemRow(props: {
   const boxes = boxesOf(draft, row);
   const item = draft.runnable.find((r) => r.kind === row.kind && r.name === row.name);
   const box = (key: "definition" | "runs" | "run", label: string, title: string) => (
-    <label class="public-box" title={title}>
+    <label class={`share-toggle${boxes[key] ? " on" : ""}`} title={title}>
       <input type="checkbox" checked={boxes[key]} onChange={() => props.edit((r) => setBox(r, row, key, !boxes[key]))} />
+      <span class="share-toggle-mark">{boxes[key] && <CheckIcon size={10} />}</span>
       {label}
     </label>
   );
   const hints = item && info ? runHints(item, info) : [];
   const tick = needsTick(row, info, props.saved);
   const nothing = !boxes.definition && !boxes.runs && !boxes.run;
+  // The price and limits fold to one line; they stay open while something
+  // there needs the person (a tick before Save, a refusal, a warning).
+  const [open, setOpen] = useState(false);
+  const mustShow = (tick && !props.ticked) || !!props.infoError || hints.length > 0 || (item ? !!capNote(item) : false);
+  const shown = open || mustShow;
   return (
-    <div class={`public-item${nothing ? " is-off" : ""}`}>
-      <div class="public-row">
-        <span class="package-name">{row.name} {props.gone}</span>
-        <span class="public-boxes">
-          {box("definition", "definition", row.kind === "workflow" ? "Anyone reads its definition and versions" : "Anyone reads its schema, its source and the helpers it imports")}
-          {row.kind === "workflow" && box("runs", "runs", "Anyone reads every run, whole: its input, outputs, agents' transcripts and files")}
-          {box("run", "anyone can run it", "Anyone may start it, free or for sats, with their own input")}
-        </span>
-        <button class="btn btn-sm" title="Take it out of the public view" onClick={props.onRemove}>Remove</button>
+    <div class={`share-card${nothing ? " is-off" : ""}`}>
+      <div class="share-card-head">
+        <span class={`share-card-icon is-${row.kind}`}>{row.kind === "workflow" ? <SubflowIcon size={14} /> : <StepIcon size={14} />}</span>
+        <span class="share-card-name">{row.name} {props.gone}</span>
+        {nothing && <span class="auto-hint">nothing ticked: Save takes it out</span>}
+        <button type="button" class="share-card-x" title="Stop sharing it" aria-label={`Stop sharing ${row.name}`} onClick={props.onRemove}><CloseIcon size={12} /></button>
+      </div>
+      <div class="share-toggles">
+        {box("run", "Anyone can run it", "Anyone may start it, free or for sats, with their own input")}
+        {box("definition", "Show how it's built", row.kind === "workflow" ? "Anyone reads its definition and versions" : "Anyone reads its schema, its source and the helpers it imports")}
+        {row.kind === "workflow" && box("runs", "Show past runs", "Anyone reads every run, whole: its input, outputs, agents' transcripts and files")}
       </div>
       {item && (
         <div class="public-run">
-          {info && (
-            <div class="public-run-can">
+          <div class="public-run-can">
+            <span class={`badge${isPricedItem(item) ? " badge-accent" : ""}`} title={isPricedItem(item) ? "What one run costs the person who starts it" : "Anyone may run it, and you carry what it costs"}>{priceWords(item)}</span>
+            {info && (
               <span class="store-can" title="What running it reaches: spends = a model is called; acts = a step changes something outside the run; code = code runs in this server; reads = none of those">
                 {canWords(info.can).map((w) => <span key={w} class={`badge store-can-${w}`}>{w}</span>)}
               </span>
+            )}
+            {info && (
               <span class="auto-hint">
                 {info.costs.measured
                   ? `Its runs here, last ${info.costs.days} days: ${info.costs.runs} · average ${usd(info.costs.average)} · highest ${usd(info.costs.highest)}`
@@ -197,9 +211,15 @@ function ItemRow(props: {
                     ? `No kept runs of this step here in the last ${info.costs.days} days (a call inside a workflow counts as the workflow's)`
                     : `No runs here in the last ${info.costs.days} days`}
               </span>
-            </div>
-          )}
+            )}
+            {!mustShow && (
+              <button type="button" class={`share-more${shown ? " open" : ""}`} aria-expanded={shown} onClick={() => setOpen(!open)}>
+                Price and limits <ChevronRightIcon size={12} />
+              </button>
+            )}
+          </div>
           {props.infoError && <div class="auto-error">{props.infoError}</div>}
+          {shown && <>
           <div class="public-price">
             {PRICE_FIELDS.map((f) => (
               <label key={f.field} title={f.title}>
@@ -238,6 +258,7 @@ function ItemRow(props: {
             <div class="auto-hint">No gateway here: nothing stops a run at its cap. Overspend shows after the run, bounded by the agent's step limit and the daily cap.</div>
           )}
           {hints.map((h) => <div class="public-run-hint" key={h}>{h}</div>)}
+          </>}
           {props.earned && props.earned.calls > 0 && <EarningsLine label="Here, all time" row={props.earned} />}
           {tick && (
             <label class="public-tick">
@@ -252,8 +273,8 @@ function ItemRow(props: {
 }
 
 const LIMIT_FIELDS: Array<{ field: VisitorLimitField; label: string; title: string }> = [
-  { field: "writesPerDay", label: "Writes", title: "Saved state, graph rows and error reports, per visitor per UTC day" },
-  { field: "launchesPerDay", label: "Launches", title: "Runs started, per visitor per UTC day" },
+  { field: "writesPerDay", label: "Saves a day", title: "Saved state, graph rows and error reports, per visitor per UTC day" },
+  { field: "launchesPerDay", label: "Runs a day", title: "Runs started, per visitor per UTC day" },
 ];
 
 /** Who may sign in to the public apps, and what one visitor may do in a
@@ -268,12 +289,13 @@ function SignInSection(props: { draft: api.PublicViewRecord; setDraft: (r: api.P
     <details class="flyout-section public-sign-in">
       <summary>
         <ChevronRightIcon size={12} class="public-sign-in-chev" />
-        <span class="flyout-section-title">Sign-in</span>
-        <span class="auto-hint">{shown.length ? shown.join(", ") : "off: every visitor is anonymous"}</span>
+        <span class="flyout-section-title">How visitors sign in (all apps)</span>
+        <span class="auto-hint">{shown.length ? shown.join(", ") : "off: everyone is anonymous"}</span>
       </summary>
+      <div class="public-sign-in-scope">One setting for this whole server: it covers every app you share, the ones already shared and any you add later.</div>
       <div class="auto-hint">
-        Visitors of the public apps may sign in with a key they hold, and are then that key here: their own saved state, channels and rows.
-        Nothing about them is kept but the key. With none ticked, every visitor is anonymous.
+        Signing in lets an app remember a person when they come back, so they keep their own saved data.
+        No email or password: strut keeps only a key that proves it is the same person. Tick the ways you allow; tick none and everyone stays anonymous.
       </div>
       {SIGN_IN_METHODS.map((m) => (
         <label class="public-need" key={m.method}>
@@ -289,17 +311,18 @@ function SignInSection(props: { draft: api.PublicViewRecord; setDraft: (r: api.P
           <label class="public-need">
             <input type="checkbox" checked={domain} onChange={() => setDraft(setVisitorKey(draft, !domain))} />
             <span class="public-need-text">
-              <span class="package-name">A key per domain</span>
+              <span class="package-name">Privacy: a separate identity per domain</span>
               <span class="auto-hint">
-                a visitor is someone else on each domain this server answers on, and no domain can tie them to another
-                {offered.has("nostr") ? " — a Nostr extension then is not offered" : ""}
+                If your apps live on several domains, the same person looks like a different visitor on each, so the domains cannot be linked.
+                {offered.has("nostr") ? " A Nostr extension is then not offered." : ""}
               </span>
             </span>
           </label>
+          <div class="auto-hint">Daily limits for each signed-in visitor, so one person cannot flood your server:</div>
           <div class="public-price">
             {LIMIT_FIELDS.map((f) => (
               <label key={f.field} title={f.title}>
-                <span>{f.label} <span class="auto-hint">a visitor a day</span></span>
+                <span>{f.label}</span>
                 <NumberBox
                   step="1"
                   value={v.limits?.[f.field]}
@@ -309,7 +332,7 @@ function SignInSection(props: { draft: api.PublicViewRecord; setDraft: (r: api.P
               </label>
             ))}
           </div>
-          {draft.apps.length === 0 && <div class="auto-hint">No app is in the public view yet: a visitor signs in to one.</div>}
+          {draft.apps.length === 0 && <div class="auto-hint">Sign-in only applies to apps: share an app below for it to matter.</div>}
         </>
       )}
     </details>
@@ -327,7 +350,7 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
   const [kind, setKind] = useState<Kind>("app");
   const [name, setName] = useState("");
   const [needs, setNeeds] = useState<api.PublicViewNeeds | null>(null);
-  const [names, setNames] = useState<Record<Kind, string[]>>({ app: [], workflow: [], step: [], concept: [] });
+  const [names, setNames] = useState<Record<Kind, Choice[]>>({ app: [], workflow: [], step: [], concept: [] });
   // The workflow and step rows, kept in the order first shown, so a row the
   // person unticks everything on stays where it is until Remove.
   const [rows, setRows] = useState<Row[]>([]);
@@ -350,9 +373,9 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
       api.listWorkflows().catch(() => []),
       api.listSteps().catch(() => ({ core: [], workspace: [] })),
     ]).then(([apps, wfs, steps]) => setNames({
-      app: apps.map((a) => a.name).sort(),
-      workflow: wfs.map((w) => w.name).sort(),
-      step: [...new Set([...steps.workspace.map((s) => s.type), ...steps.core.filter((s) => s.source === "custom").map((s) => s.type)])].sort(),
+      app: apps.map((a) => ({ name: a.name, description: a.description ?? (a.title !== a.name ? a.title : undefined), builtIn: a.publisher === "seed" })).sort(byName),
+      workflow: wfs.map((w) => ({ name: w.name, description: w.description, builtIn: w.activeSource === "seed" })).sort(byName),
+      step: [...new Set([...steps.workspace.map((s) => s.type), ...steps.core.filter((s) => s.source === "custom").map((s) => s.type)])].sort().map((name) => ({ name })),
       concept: [],
     }));
   }, []);
@@ -376,8 +399,8 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
     return i && "can" in i ? i : undefined;
   };
   const untickedRows = saved ? rows.filter((r) => boxesOf(draft, r).run && needsTick(r, infoOf(r), saved.surface) && !ticks.has(rowKey(r))) : [];
-  const add = async () => {
-    const n = name.trim();
+  const add = async (picked?: string) => {
+    const n = (picked ?? name).trim();
     if (!n) return;
     setError(null);
     if (kind === "app" || kind === "workflow") {
@@ -435,39 +458,65 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
 
   return (
     <div class="public-view-panel">
-      <div class="auto-hint">
-        What anyone can read on this server, live and read-only, with no account: under <code>/public</code>. Nothing here is a copy — take an item out and it closes again.
-        A workflow or a step may also be run by anyone, free or for sats, whether or not its definition is shown.
-      </div>
       {error && <div class="auto-error">{error.split("; ").map((line) => <div key={line}>{line}</div>)}</div>}
       {saved === null && !error && <div class="auto-hint">Loading…</div>}
-      {saved && publisher !== undefined && (
-        <div class="flyout-section">
-          <div class="flyout-section-title">In the store</div>
-          <ListingLines mode="view" publisher={publisher} viewShows={shows} onPublisher={setPublisher} />
-        </div>
-      )}
-
       {saved && (
         <>
+          {needs ? (
+            <Cascade
+              needs={needs}
+              onCancel={() => setNeeds(null)}
+              onAdd={(checked) => {
+                setDraft(mergeNeeds(draft, needs, checked));
+                setNeeds(null);
+                setName("");
+              }}
+            />
+          ) : (
+            <div class="flyout-section">
+              <div class="public-add-head">
+                <span class="flyout-section-title">Add</span>
+                <div class="public-kinds" role="tablist" aria-label="What to share">
+                  {KINDS.map((k) => (
+                    <button type="button" role="tab" key={k.kind} aria-selected={kind === k.kind} class={`public-kind${kind === k.kind ? " active" : ""}`} onClick={() => { setKind(k.kind); setName(""); }}>
+                      {k.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div class="public-add">
+                <PickName
+                  kind={kind}
+                  choices={names[kind].filter((c) => !sharedNames(draft, kind).has(c.name))}
+                  value={name}
+                  onInput={setName}
+                  onPick={(n) => { setName(n); void add(n); }}
+                />
+                {/* A Concept tree has no list to pick from: its name is typed, then added. */}
+                {kind === "concept" && <button class="btn btn-primary" disabled={!name.trim()} onClick={() => void add()}>Add</button>}
+              </div>
+            </div>
+          )}
+
           <div class="flyout-section">
-            {nothing && <div class="auto-hint">Nothing is in the public view.</div>}
-            {draft.apps.length > 0 && <div class="flyout-section-title">Apps</div>}
+            {nothing && <div class="publish-empty">Nothing is shared yet. Pick an app or a workflow above, then Save.</div>}
+            {draft.apps.length > 0 && <div class="flyout-section-title">Apps <span class="share-count">{draft.apps.length}</span></div>}
             {draft.apps.map((a) => (
-              <div class="auto-card" key={`app:${a.name}`}>
-                <div class="auto-card-head">
-                  <span class="package-name">{a.name} {gone(`app:${a.name}`)}</span>
-                  <button class="btn btn-sm" title="Take it out of the public view" onClick={() => edit((r) => { r.apps = r.apps.filter((x) => x.name !== a.name); })}>Remove</button>
+              <div class="share-card" key={`app:${a.name}`}>
+                <div class="share-card-head">
+                  <span class="share-card-icon is-app"><AppGlyph size={14} /></span>
+                  <span class="share-card-name">{a.name} {gone(`app:${a.name}`)}</span>
+                  <button type="button" class="share-card-x" title="Stop sharing it" aria-label={`Stop sharing ${a.name}`} onClick={() => edit((r) => { r.apps = r.apps.filter((x) => x.name !== a.name); })}><CloseIcon size={12} /></button>
                 </div>
-                <div class="auto-meta">
-                  <span>reads: {a.reads?.length ? a.reads.join(", ") : "runs and the graph only"}</span>
+                <div class="share-card-foot">
+                  <span class="auto-hint">Reads: {a.reads?.length ? a.reads.join(", ") : "runs and the graph only"}</span>
+                  {!missing.has(`app:${a.name}`) && saved.surface.apps.some((x) => x.name === a.name) && (
+                    <span class="share-card-actions">
+                      <a class="btn btn-sm" href={visitorAppLink(a.name, location.href)} target="_blank" rel="noopener">Open as a visitor</a>
+                      <CopyButton value={visitorAppLink(a.name, location.href)} label="Copy link" />
+                    </span>
+                  )}
                 </div>
-                {!missing.has(`app:${a.name}`) && saved.surface.apps.some((x) => x.name === a.name) && (
-                  <div class="auto-card-actions">
-                    <a class="btn btn-sm" href={visitorAppLink(a.name, location.href)} target="_blank" rel="noopener">Open as a visitor</a>
-                    <CopyButton value={visitorAppLink(a.name, location.href)} label="Copy link" />
-                  </div>
-                )}
               </div>
             ))}
             {(["workflow", "step"] as const).map((k) => {
@@ -475,7 +524,7 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
               if (!of.length) return null;
               return (
                 <div key={k}>
-                  <div class="flyout-section-title">{k === "workflow" ? "Workflows" : "Steps"}</div>
+                  <div class="flyout-section-title">{k === "workflow" ? "Workflows" : "Steps"} <span class="share-count">{of.length}</span></div>
                   {of.map((row) => {
                     const key = rowKey(row);
                     const info = infos[key];
@@ -506,54 +555,28 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
             })}
             {draft.concepts.length > 0 && <div class="flyout-section-title">Concept trees</div>}
             {draft.concepts.map((c) => (
-              <div class="public-row" key={`concept:${c}`}>
-                <span class="package-name">{c} {gone(`concept:${c}`)}</span>
-                <span class="auto-hint">the root and every page under it, live</span>
-                <button class="btn btn-sm" onClick={() => edit((r) => { r.concepts = r.concepts.filter((x) => x !== c); })}>Remove</button>
+              <div class="share-card" key={`concept:${c}`}>
+                <div class="share-card-head">
+                  <span class="share-card-icon is-concept"><FileIcon size={14} /></span>
+                  <span class="share-card-name">{c} {gone(`concept:${c}`)}</span>
+                  <span class="auto-hint">the root and every page under it, live</span>
+                  <button type="button" class="share-card-x" title="Stop sharing it" aria-label={`Stop sharing ${c}`} onClick={() => edit((r) => { r.concepts = r.concepts.filter((x) => x !== c); })}><CloseIcon size={12} /></button>
+                </div>
               </div>
             ))}
             {draft.types.length > 0 && <div class="flyout-section-title">Node types</div>}
             {draft.types.map((t) => (
-              <div class="public-row" key={`type:${t}`}>
-                <span class="package-name">{t}</span>
-                <button class="btn btn-sm" onClick={() => edit((r) => { r.types = r.types.filter((x) => x !== t); })}>Remove</button>
+              <div class="share-card" key={`type:${t}`}>
+                <div class="share-card-head">
+                  <span class="share-card-icon is-concept"><FileIcon size={14} /></span>
+                  <span class="share-card-name">{t}</span>
+                  <button type="button" class="share-card-x" title="Stop sharing it" aria-label={`Stop sharing ${t}`} onClick={() => edit((r) => { r.types = r.types.filter((x) => x !== t); })}><CloseIcon size={12} /></button>
+                </div>
               </div>
             ))}
           </div>
 
           <SignInSection draft={draft} setDraft={setDraft} />
-
-          {needs ? (
-            <Cascade
-              needs={needs}
-              onCancel={() => setNeeds(null)}
-              onAdd={(checked) => {
-                setDraft(mergeNeeds(draft, needs, checked));
-                setNeeds(null);
-                setName("");
-              }}
-            />
-          ) : (
-            <div class="flyout-section">
-              <div class="flyout-section-title">Add</div>
-              <div class="public-add">
-                <select value={kind} onChange={(e) => setKind((e.target as HTMLSelectElement).value as Kind)}>
-                  {KINDS.map((k) => <option value={k.kind} key={k.kind}>{k.label}</option>)}
-                </select>
-                <input
-                  class="package-search"
-                  type="text"
-                  list="public-view-names"
-                  placeholder={kind === "concept" ? "Root page name" : `${KINDS.find((k) => k.kind === kind)!.label} name`}
-                  value={name}
-                  onInput={(e) => setName((e.target as HTMLInputElement).value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") void add(); }}
-                />
-                <datalist id="public-view-names">{names[kind].map((n) => <option value={n} key={n} />)}</datalist>
-                <button class="btn" disabled={!name.trim()} onClick={() => void add()}>{kind === "app" || kind === "workflow" ? "Add…" : "Add"}</button>
-              </div>
-            </div>
-          )}
 
           {held?.map((h) => (
             <div class={h.error ? "auto-error" : "auto-hint"} key={h.app}>
@@ -561,6 +584,13 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
             </div>
           ))}
         </>
+      )}
+
+      {saved && publisher !== undefined && (
+        <div class="flyout-section">
+          <div class="flyout-section-title">Listed in the store</div>
+          <ListingLines mode="view" publisher={publisher} viewShows={shows} onPublisher={setPublisher} />
+        </div>
       )}
 
       {dirty && (
@@ -572,6 +602,106 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
           </span>
           <button class="btn" disabled={busy} onClick={() => { if (saved) { setDraft(saved.surface); setRows(rowsOf(saved.surface)); setError(null); } }}>Discard</button>
           <button class="btn btn-primary" disabled={busy || untickedRows.length > 0} onClick={() => void save()}>{busy ? "Saving…" : "Save"}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A runnable item's price on one line: "Free", "$0.10 a run", "$0.10 + 2 × cost a run". */
+function priceWords(item: api.PublicRunnable): string {
+  if (!isPricedItem(item)) return "Free";
+  const parts = [item.base ? usd(item.base) : "", item.markup ? `${item.markup} × cost` : ""].filter(Boolean);
+  return `${parts.join(" + ")} a run`;
+}
+
+const byName = (a: Choice, b: Choice) => a.name.localeCompare(b.name);
+
+/** What the record shares already, of one kind: the Add bar leaves it out. */
+function sharedNames(r: api.PublicViewRecord, kind: Kind): Set<string> {
+  if (kind === "app") return new Set(r.apps.map((a) => a.name));
+  if (kind === "workflow") return new Set(r.workflows.map((w) => w.name));
+  return new Set(kind === "step" ? r.steps : r.concepts);
+}
+
+/** The Add bar's name box: a themed list under it, filtered as one types,
+ *  the person's own things first and strut's built-in ones after. A click
+ *  (or ↑ ↓ Enter) picks one; Enter on typed text adds what was typed. */
+function PickName(props: { kind: Kind; choices: Choice[]; value: string; onInput: (v: string) => void; onPick: (name: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [at, setAt] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  const q = props.value.trim().toLowerCase();
+  const hits = props.choices.filter((c) => !q || c.name.toLowerCase().includes(q) || c.description?.toLowerCase().includes(q));
+  const mine = hits.filter((c) => !c.builtIn);
+  const builtIn = hits.filter((c) => c.builtIn);
+  const ordered = [...mine, ...builtIn];
+  const label = KINDS.find((k) => k.kind === props.kind)!.label.toLowerCase();
+  useEffect(() => setAt(0), [q, props.kind]);
+  useEffect(() => {
+    listRef.current?.querySelector(".public-pick-item.active")?.scrollIntoView({ block: "nearest" });
+  }, [at]);
+  const pick = (n: string) => {
+    setOpen(false);
+    props.onPick(n);
+  };
+  const row = (c: Choice) => {
+    const i = ordered.indexOf(c);
+    return (
+      <button
+        type="button"
+        key={c.name}
+        class={`public-pick-item${i === at ? " active" : ""}`}
+        onMouseDown={(e) => e.preventDefault()}
+        onMouseEnter={() => setAt(i)}
+        onClick={() => pick(c.name)}
+      >
+        <span class="public-pick-name">{c.name}</span>
+        {c.description && <span class="public-pick-desc">{c.description}</span>}
+      </button>
+    );
+  };
+  const listed = props.kind !== "concept";
+  return (
+    <div class="public-pick">
+      <SearchIcon size={14} class="public-pick-icon" />
+      <input
+        class="package-search"
+        type="text"
+        placeholder={props.kind === "concept" ? "Type the root page's name" : `Pick ${label === "app" ? "an" : "a"} ${label} to make public…`}
+        value={props.value}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onInput={(e) => { props.onInput((e.target as HTMLInputElement).value); setOpen(true); }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            setOpen(true);
+            if (ordered.length) setAt((n) => (n + (e.key === "ArrowDown" ? 1 : ordered.length - 1)) % ordered.length);
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            if (open && ordered[at]) pick(ordered[at].name);
+            else if (props.value.trim()) pick(props.value);
+          } else if (e.key === "Escape" && open) {
+            e.stopPropagation();
+            setOpen(false);
+          }
+        }}
+      />
+      {open && listed && (
+        <div class="public-pick-list" ref={listRef} role="listbox">
+          {ordered.length === 0 ? (
+            <div class="public-pick-empty">
+              {props.choices.length === 0 ? `No ${label}s left to share.` : `No ${label} matches “${props.value.trim()}”.`}
+            </div>
+          ) : (
+            <>
+              {mine.length > 0 && builtIn.length > 0 && <div class="public-pick-group">Yours</div>}
+              {mine.map(row)}
+              {builtIn.length > 0 && <div class="public-pick-group">Built into strut</div>}
+              {builtIn.map(row)}
+            </>
+          )}
         </div>
       )}
     </div>
