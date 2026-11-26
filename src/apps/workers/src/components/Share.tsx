@@ -16,6 +16,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, Copy, Globe, Plus, UserPlus, Users, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useStrutClient } from "@strut/kit";
+import { localText } from "@strut/kit/folds";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -256,7 +257,7 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
         </>
       )}
       <ErrorLine error={error ?? q.error} />
-      {shown && <MadeCard invite={shown} work={props.types?.find((t) => t.name === shown.type)?.title?.trim() || shown.type} />}
+      {shown && <MadeCard invite={shown} work={localText(props.types?.find((t) => t.name === shown.type)?.title) || shown.type} />}
     </div>
   );
 }
