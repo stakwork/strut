@@ -4,7 +4,8 @@
 >
 > - **Written against:** strut `main` @ea159f30, stakwork/sphinx `master`
 >   @add04696 (`wasm/daemon`), stakwork/stadeum `main` @57904c3.
-> - **The Rulings** are Evan's, from 2026-11-26.
+> - **The Rulings** are Evan's, from 2026-11-26 (ruling 4 relayed later
+>   that day).
 > - **The decisions in §8** are this plan's defaults. Evan may overrule them.
 > - **Builds on** `jamie-in-tribes.md` (every item built): the daemon as a
 >   strut HOST, linked accounts, linked places, the host's hook.
@@ -21,6 +22,7 @@
 | 1 | Who may post | **Anyone linked to the box, in any place linked there.** A run whose person has a linked account of the host's kind may post. They need not be the place's linker, nor an admin |
 | 2 | Who calls the step | **Only workflows.** It is not one of Jamie's tools, nor any agent's |
 | 3 | Spending | **No cap.** Each post pays the tribe's price from the box's treasury, as Jamie's replies do (`jamie-in-tribes.md` ruling 6) |
+| 4 | A Sphinx step, or a generic one | **Generic.** A workflow written for a tribe switches to, or adds, another kind of place by changing `host` and `key`. Strut routes a post by the place's `host` alone, to that host's hook, and knows nothing of the medium |
 
 ## Problem
 
@@ -36,6 +38,10 @@ daemon is the `sphinx` capability (`src/payments/sphinx-dm.ts`), which sends
 DMs as Support on the daemon's MESSAGE token. That token opens DMs only.
 The daemon's `POST /send` takes a tribe, but only on the ADMIN token, which
 strut never holds.
+
+A Sphinx tribe is the only kind of linked place today. The step is generic
+all the same (ruling 4); §5, "A second host", says what another kind would
+need.
 
 ## Design in one paragraph
 
@@ -184,9 +190,23 @@ host's `hook`, the URL from `PUT /hosts/me`:
 Strut logs the hook's origin alone: its URL carries the host's token,
 which `PUT /hosts/me` never answers either.
 
-**Any host.** This is the whole contract: a hook that takes `{ event:
-"post" }` and answers the message's id, posting one id once. A Slack or
-email host would do the same with its channels.
+**Routing.** Strut reads `host` and `key` only to check the person and
+the place, then hands the post to that host's hook. It knows nothing of
+the medium: no tribe, no thread root, no chunking. Every word of §6 is the
+daemon's.
+
+**A second host** (ruling 4). The daemon is the only host with places
+today. Another kind of place needs two things, and nothing in strut's
+step, capability or contract changes:
+
+1. **Its hook takes the post**: `{ event: "post" }` as above, answering the
+   message's id and posting one id once.
+2. **Its places are in strut's table.** Today only a person adds one,
+   through Peel (`POST /people/places`), because nobody can reach the
+   daemon. `jamie-in-tribes.md` §5.4, "Other hosts", expects a host to
+   write its own (a Slack host the channels it was `/invite`d to) through a
+   host route that is not built. §10 has what Slack and mail would need
+   besides.
 
 ## 6. The daemon posts it
 
@@ -227,8 +247,9 @@ capability over it, as Support's DMs are. Rejected:
    account is in it, a reply's thread root, chunking: the daemon already
    does each for its replies. `jamie-in-tribes.md` rulings 3 to 5 keep all
    of it in the host.
-2. **Not generic.** The step would be `sphinx/post`, one medium's. On the
-   hook, any host's place is posted to the same way.
+2. **Not generic** (ruling 4). A capability over a Sphinx token makes a
+   Sphinx step, and a workflow written with it is tied to tribes. On the
+   hook, it moves to another kind of place by changing `host` and `key`.
 3. **A wider token.** The message token would post in every tribe the
    account is in, places or not.
    The hook posts only in the daemon's places, checked twice: strut checks
@@ -290,12 +311,21 @@ with `host_cannot_post:` and posts nothing.
   post in, beside Connect (`jamie-in-tribes.md` §11).
 - **A reply to a workflow's post going to the workflow** (a poll, an
   approval asked in the tribe) rather than to Jamie.
+- **Slack channels as places.** stadeum `plans/jamie-in-slack.md` (proposed,
+  nothing built) has no places, its decision 6: Slack's `/invite` decides
+  where Jamie is, and stadeum-ui is the host. Posting there would need that
+  decision revisited, and the host route that adds a host's own places
+  (§5, "A second host").
+- **Mail as a place.** stakwork/strut-gmail is a package whose own steps
+  send with each person's token: no host, no places. It would need a
+  ruling on whether a package can act as a host.
 
 ## 11. Rejected
 
 - **The daemon's message token opened to tribes**, with a strut capability
   over it (§7).
 - **`place/post` as an agent's tool.** Ruling 2.
+- **A Sphinx-only step.** Ruling 4.
 - **A queue in strut the daemon reads** (Hive's outbox). A store and a
   loop, and the step would wait for the post's answer by parking.
 - **Strut retrying with a fresh id.** A lost answer would post twice.
