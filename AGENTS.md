@@ -37,7 +37,7 @@ namespace `src/steps/lib/x/`.
 | --- | --- | --- |
 | The engine: workflows, steps, runs, run control, the services bag, artifacts, shell | [docs/engine.md](docs/engine.md) | `core.ts`, `runner.ts`, `expr.ts`, `journal.ts`, `run-control.ts`, `park.ts`, `store.ts`, `workspace.ts`, `closure.ts`, `runs.ts`, `run-view.ts`, `provenance.ts`, `capabilities.ts`, `extensions.ts`, `shell.ts`, `steps/core/`, `steps/registry.ts`, `run/*` |
 | The server: `createStrut()`, callbacks, rooms, the drain, the events sink, MCP servers, peers | [docs/server.md](docs/server.md) | `createStrut.ts`, `server.ts`, `callback.ts`, `rooms.ts`, `drain.ts`, `events-sink.ts`, `mcp-servers.ts`, `mcp-registry.ts`, `peers.ts`, `strut/*`, `specs/` |
-| Auth, people's names, secrets and the env boundary | [docs/security.md](docs/security.md) | `auth.ts`, `people.ts`, `secret-store.ts`, `actor-secrets.ts`, `env.ts`, `step-lint.ts`, `secret/*`, `people/*`, `account/*` |
+| Auth, people's names, secrets and the env boundary | [docs/security.md](docs/security.md) | `auth.ts`, `people.ts`, `secret-store.ts`, `actor-secrets.ts`, `env.ts`, `step-lint.ts`, `secret/*`, `people/*`, `account/*`, `place/*` |
 | Models: aieo, LLM calls, media, the Mothership | [docs/models.md](docs/models.md) | `aieo/`, `llm.ts`, `media.ts`, `media-seed.ts`, `mothership.ts`, `llm/*`; the npm package in `aieo/` at the root |
 | The `agent` step and agent sessions | [docs/agent-step.md](docs/agent-step.md) | `steps/core/agent.ts`, `session-store.ts`, `acp/*` |
 | The AI workflow builder (chat and `builder` job) | [docs/builder.md](docs/builder.md) | `ai/`, `chat-store.ts`, `chat-view.ts`, `compaction.ts`, `builder-seed.ts`, `meta/*` |

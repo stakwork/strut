@@ -350,17 +350,17 @@ describe("work nobody launched runs as a person", () => {
   it("from a package's step, nothing on strut's own bag reaches what the fence holds or takes off", async () => {
     const bag = strut.services as Record<string, unknown>;
     const originals = new Map<unknown, string>([[bag, "the shared bag"]]);
-    for (const k of ["runs", "authoring", "jobs", "proposals", "peers", "automations", "trials", "secretBlanks"]) {
+    for (const k of ["runs", "authoring", "jobs", "proposals", "peers", "places", "automations", "trials", "secretBlanks"]) {
       const cap = bag[k] as Record<string, unknown> | undefined;
       if (!cap) continue;
       originals.set(cap, k);
-      for (const m of ["launch", "runWorkflow", "resumeRun", "controlRun", "propose", "decide", "fetch", "api", "fill", "trial", "test"]) {
+      for (const m of ["launch", "runWorkflow", "resumeRun", "controlRun", "propose", "decide", "fetch", "post", "list", "api", "fill", "trial", "test"]) {
         if (cap[m] && typeof cap[m] === "object") originals.set(cap[m], `${k}.${m}`);
         else if (typeof cap[m] === "function") originals.set(cap[m], `${k}.${m}`);
       }
     }
     assert.deepEqual(
-      ["runs", "authoring", "jobs", "proposals", "peers", "automations", "secretBlanks"].filter((k) => !originals.has(bag[k])),
+      ["runs", "authoring", "jobs", "proposals", "peers", "places", "automations", "secretBlanks"].filter((k) => !originals.has(bag[k])),
       [],
       "the box's bag has each of them, so the walk below means something",
     );
@@ -385,6 +385,8 @@ describe("the fence holds a package's step to its run's person", () => {
       await s.authoring.resumeRun("w", "r", {}, { principal: "mallory" });
       await s.authoring.controlRun("w", "r", "cancel", { principal: "mallory", force: true });
       await s.peers.fetch("hq", "/workflows/w/run", { method: "POST", headers: { "X-Strut-Actor": "mallory", "content-type": "application/json" } });
+      await s.places.post({ host: "sphinx", key: "k", text: "t", id: "i", run: "r", workflow: "w" }, "mallory");
+      await s.places.list("mallory");
       return null;
     },
   } as unknown as AnyStepDef;
@@ -398,6 +400,7 @@ describe("the fence holds a package's step to its run's person", () => {
       controlRun: async (...a: unknown[]) => (calls.push(["authoring.controlRun", a[3]]), {}),
     },
     peers: { list: async () => [], self: async () => undefined, fetch: async (...a: unknown[]) => (calls.push(["peers.fetch", (a[2] as { headers: unknown }).headers]), new Response("{}")) },
+    places: { post: async (_p: unknown, person: unknown) => (calls.push(["places.post", person]), { id: "m" }), list: async (person: unknown) => (calls.push(["places.list", person]), []) },
   });
 
   it("names the run's own actor and principal on every launcher, whatever the step passed", async () => {
@@ -409,6 +412,8 @@ describe("the fence holds a package's step to its run's person", () => {
       ["authoring.resumeRun", { principal: "alice" }],
       ["authoring.controlRun", { force: true, principal: "alice" }],
       ["peers.fetch", { "content-type": "application/json", "x-strut-actor": "alice" }],
+      ["places.post", "alice"],
+      ["places.list", "alice"],
     ]);
   });
 

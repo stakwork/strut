@@ -73,7 +73,7 @@ import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/le
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { taskAppProblem } from "./tasks/answer-schema.js";
 import { createTaskTypes } from "./tasks/set-type.js";
-import { ACCOUNT_HEADER, ACCOUNT_NAME_HEADER, accountAddress, accountKey, accountText, createPeople, ownName, parseAccount, placeInput, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader, accountsCapability, type Account, type AccountActor, type People } from "./people.js";
+import { ACCOUNT_HEADER, ACCOUNT_NAME_HEADER, accountAddress, accountKey, accountText, createPeople, ownName, parseAccount, placeInput, PEOPLE_IN_MEMORY, PEOPLE_READ_MAX, peoplePath, peopleReader, accountsCapability, placesCapability, type Account, type AccountActor, type People } from "./people.js";
 import { createTasks, memoryTaskStores, openTaskDb, openTaskStores, TaskError, TASKS_IN_MEMORY, tasksPath, TASK_PARK_PREFIX, TASK_REQUESTS_PER_MINUTE, type TasksCapability, type TasksService, type WorkerTasksCapability } from "./tasks/tasks.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, salesOf, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
@@ -1810,6 +1810,11 @@ export async function createStrut<TServices = unknown>(
     // request one bound to where it reached strut (`requestServices`); this
     // one has only `STRUT_PUBLIC_URL`.
     accounts: accountsCapability(people, opts.publicUrl ? { base: opts.publicUrl.replace(/\/+$/, ""), host: hostOfRequest({ url: opts.publicUrl }) } : undefined),
+    // Posts in linked places (`place/*`, plans/place-posts.md): the places
+    // here, and a post handed to its place's host on the hook it named
+    // (`PUT /hosts/me`), as the run's person. `place/post` runs only as a
+    // step of a workflow.
+    places: placesCapability(people),
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env). Borrowed: a step's `close()`
     // must not close the connection the workspace and claims read through.

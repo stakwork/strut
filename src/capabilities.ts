@@ -43,6 +43,7 @@ import { isValidSecretName } from "./secret-store.js";
 import { strutGitSecret, type GitHostsCapability, type GitSecretOf } from "./git-hosts.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { SphinxCapability } from "./payments/sphinx-dm.js";
+import type { PlacesCapability } from "./people.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
 import type { HumanTasksCapability } from "./tasks/tasks.js";
 import type { TaskTypesCapability } from "./tasks/set-type.js";
@@ -708,6 +709,14 @@ export interface StrutCapabilities {
    *  an app launched (`support-outbox`). Not on an agent's tools, not on a
    *  host's call. */
   sphinx?: SphinxCapability;
+  /** POSTS IN LINKED PLACES (plans/place-posts.md, src/people.ts
+   *  `placesCapability`): what the `place/*` steps reach — the places linked
+   *  here, and a post handed to its place's host on the host's hook, as the
+   *  run's person, who must hold a linked account of the host's kind. On the
+   *  shared bag; `place/post` itself refuses to run as anything but a step of
+   *  a workflow (run-step.ts `workflowStep`). A package's step holds it for
+   *  its run's person. Set by the standard server. */
+  places?: PlacesCapability;
   /** What this server earned (plans/paid-runs.md §8, src/payments/earnings.ts):
    *  the read `GET /earnings` answers, what the `earnings/read` step is thin
    *  over. Reads only: nothing on it pays — the payer is never on the bag. */
