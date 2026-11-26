@@ -1,6 +1,9 @@
 # Place posts: a workflow posts in a linked place
 
-> **Status (2026-11-26): a plan, nothing built.**
+> **Status (2026-11-26): every item built, none merged.** Item 1 on
+> stakwork/strut#933, item 2 on stakwork/sphinx#447, item 3 (docs) on
+> stakwork/stadeum#121, each against its default branch. Evan approved
+> building it the same day.
 >
 > - **Written against:** strut `main` @ea159f30, stakwork/sphinx `master`
 >   @add04696 (`wasm/daemon`), stakwork/stadeum `main` @57904c3.
@@ -292,9 +295,9 @@ Each is its own PR against its repo's default branch, never stacked.
 
 | Item | Repo | What | Needs | State |
 | --- | --- | --- | --- | --- |
-| 1 | strut | **The steps** (§2 to §5): `place/post` and `place/list` in `src/steps/lib/place/`; `workflowStep(ctx)` in `src/run-step.ts`; `placesCapability` in `src/people.ts`, on the shared bag in `createStrut.ts`, `places` on `StrutCapabilities`; `places.post` in `heldToItsRun`. Tests in `src/places.test.ts` with a stand-in hook: one id posts once; `not_linked:`, `no_place:`, `no_host:`, `host_cannot_post:`, `host_unreachable:`; `workflow_only:` as an agent's tool, through `meta/run-step` and on a proposal's apply. Docs: `specs/API.md` §13.4 (the hook's two events and the post's contract), `docs/security.md` "Linked places", `AGENTS.md`'s Areas row for security adds `place/*` | — | Not started |
-| 2 | sphinx | **The daemon posts** (§6): `{ event: "post" }` on `POST /strut/places`; the place and membership checks; once per id in `strut.json`; threading; a reply to a workflow's post. Tests post to its own hook, so no strut is needed. `wasm/daemon/README.md`: the admin API's row for `/strut/places` names both events, and "Answering in tribes as strut's host" gains "A workflow's post" | — | Not started |
-| 3 | stadeum | **Docs only.** `docs/stack-spec.md`, "Jamie in tribes": a workflow run as a person linked to the box may post in a linked tribe, paid from the treasury as replies are. `AGENTS.md` rule 4: posting through strut is a designed door, fenced from agents. No setting changes | 1, 2 on `stable` | Not started |
+| 1 | strut | **The steps** (§2 to §5): `place/post` and `place/list` in `src/steps/lib/place/`; `workflowStep(ctx)` in `src/run-step.ts`; `placesCapability` in `src/people.ts`, on the shared bag in `createStrut.ts`, `places` on `StrutCapabilities`; `places.post` in `heldToItsRun`. Tests in `src/places.test.ts` with a stand-in hook: one id posts once; `not_linked:`, `no_place:`, `no_host:`, `host_cannot_post:`, `host_unreachable:`; `workflow_only:` as an agent's tool, through `meta/run-step` and on a proposal's apply. Docs: `specs/API.md` §13.4 (the hook's two events and the post's contract), `docs/security.md` "Linked places", `AGENTS.md`'s Areas row for security adds `place/*` | — | **Built (stakwork/strut#933)**, open. The tests are `src/place-posts.test.ts` (a stand-in hook end to end, the agent fence through `buildRegistryTools` itself, ids, the capability's answers) and `src/packages/runs-as.test.ts` (the package fence); the docs as listed, plus `docs/engine.md` (`workflowStep`) |
+| 2 | sphinx | **The daemon posts** (§6): `{ event: "post" }` on `POST /strut/places`; the place and membership checks; once per id in `strut.json`; threading; a reply to a workflow's post. Tests post to its own hook, so no strut is needed. `wasm/daemon/README.md`: the admin API's row for `/strut/places` names both events, and "Answering in tribes as strut's host" gains "A workflow's post" | — | **Built (stakwork/sphinx#447)**, open: `strutservice.ts` `placePost`, the post event on `http.ts`'s hook route, `repliesToMe` in `daemon.ts`. Tests in `test/strut-posts.test.ts` against `strutkit.ts`'s stand-in strut. The README's "What it answers" gains the reply rule too |
+| 3 | stadeum | **Docs only.** `docs/stack-spec.md`, "Jamie in tribes": a workflow run as a person linked to the box may post in a linked tribe, paid from the treasury as replies are. `AGENTS.md` rule 4: posting through strut is a designed door, fenced from agents. No setting changes | 1, 2 on `stable` | **Built (stakwork/stadeum#121)**, open: to merge once 1 and 2 are on `stable`. `docs/stack-spec.md`'s "Money" and "Who calls it" name posts too |
 
 Items 1 and 2 can be built at once: each tests against a stand-in for the
 other. A box gets posts once both are on `stable`; until then a post fails
