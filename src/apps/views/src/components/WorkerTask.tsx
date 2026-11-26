@@ -913,7 +913,7 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: LocalTex
 /** Their grouped work (`task/reply`'s `group`: a book its pages): one row a
  *  group, the ones still going first, the finished ones under their own
  *  heading when both exist. */
-function WorkGroups({ groups, all, titleOf }: { groups: WorkerTaskGroup[]; all: boolean; titleOf: (type: string) => string | undefined }) {
+function WorkGroups({ groups, all, titleOf }: { groups: WorkerTaskGroup[]; all: boolean; titleOf: (type: string) => LocalText | undefined }) {
   const w = useWorkerWords();
   const { active, done } = splitGroups(groups);
   const list = (gs: WorkerTaskGroup[]) => (
@@ -938,7 +938,7 @@ function WorkGroups({ groups, all, titleOf }: { groups: WorkerTaskGroup[]; all: 
 /** One group: its name, pages, earnings and how its pages were judged;
  *  opened, its pages (each a history row). Its answers are read with the row,
  *  so the earnings are the group's all, not the newest fifty's. */
-function GroupRow({ group, all, titleOf }: { group: WorkerTaskGroup; all: boolean; titleOf: (type: string) => string | undefined }) {
+function GroupRow({ group, all, titleOf }: { group: WorkerTaskGroup; all: boolean; titleOf: (type: string) => LocalText | undefined }) {
   const w = useWorkerWords();
   const fmt = useFormats();
   const [open, setOpen] = useState(false);
