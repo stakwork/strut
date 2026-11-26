@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import { createStrut } from "./createStrut.js";
+import { manifestSchema } from "./apps/manifest.js";
 import { createRegistry } from "./steps/registry.js";
 import { defineStep, flow, step, withAccessedNodes, withMessages, type StepContext, type RunEvent, type RunSummary } from "./core.js";
 import { apiKeyMatches, fileToken, inProcessRequest, sessionToken, signInTicket } from "./auth.js";
@@ -1995,6 +1996,17 @@ describe("the API key gate", () => {
     // A session cookie claiming a role strut does not know is no session.
     const forged = sessionToken({ actor: "x", exp: Date.now() + 60_000, role: "owner" as never })!;
     assert.equal((await strut.app.request("/apps", { headers: { cookie: `strut_session=${forged}` } })).status, 401);
+    // ?pinned=1 filters after the admin filter: a member never sees an admin-only app, pinned or not.
+    const mf = (title: string, admin?: boolean) => manifestSchema.parse({ title, grants: { workflows: [] }, ...(admin ? { admin } : {}) });
+    await strut.workspace.publishApp("pub", "p1", mf("Pub"));
+    await strut.workspace.publishApp("secret", "s1", mf("Secret", true));
+    await strut.workspace.setAppPinned("pub", true);
+    await strut.workspace.setAppPinned("secret", true);
+    const names = async (q: string, headers: Record<string, string>) => ((await (await strut.app.request(`/apps${q}`, { headers })).json()) as { apps: Array<{ name: string }> }).apps.map((a) => a.name).filter((n) => n === "pub" || n === "secret");
+    assert.deepEqual(await names("", ui), ["pub"]);
+    assert.deepEqual(await names("?pinned=1", ui), ["pub"]);
+    assert.deepEqual(await names("?pinned=1", { cookie: admin.cookie, "x-strut-ui": "1" }), ["pub", "secret"]);
+    assert.deepEqual(await names("", { cookie: admin.cookie, "x-strut-ui": "1" }), ["pub", "secret"]);
     // The app list is never cached: the UI reads it again after each change.
     const listedApps = await strut.app.request("/apps", { headers: { cookie: admin.cookie, "x-strut-ui": "1" } });
     assert.equal(listedApps.status, 200);

@@ -204,6 +204,9 @@ interface AppVersionRow {
 const APP_FIELDS = ["ref_id", "name", "title", "description", "publisher", "owner", "pinned", "active_version", "live", "releases"] as const;
 const APP_VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "published_at", "manifest", "publisher", "version_source", "actor", "upstream", "summary", "created_at"] as const;
 
+/** What the app list reads of a version row: no manifest, upstream or summary. */
+const APP_VERSION_LIST_FIELDS = ["ref_id", "name", "content_hash", "version_label", "published_at", "publisher", "version_source", "actor", "created_at"] as const;
+
 /** A JSON attribute, or undefined when absent or unreadable. */
 function parseJson<T>(text: string | undefined): T | undefined {
   if (!text) return undefined;
@@ -1059,10 +1062,21 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       `MATCH ${d.node("a", "StrutApp", { namespace: "$ns" })} WHERE ${d.live("a")} RETURN ${d.project("a", APP_FIELDS)} AS p`,
       { ns: this.ns },
     );
+    // Slim rows for every version (the labels are all the list needs of the
+    // inactive ones), the manifest only of each app's active version.
     const versionRows = await this.rows<AppVersionRow>(
-      `MATCH ${d.node("v", "StrutAppVersion", { namespace: "$ns" })} WHERE ${d.live("v")} RETURN ${d.project("v", APP_VERSION_FIELDS)} AS p`,
+      `MATCH ${d.node("v", "StrutAppVersion", { namespace: "$ns" })} WHERE ${d.live("v")} RETURN ${d.project("v", APP_VERSION_LIST_FIELDS)} AS p`,
       { ns: this.ns },
     );
+    const hashes = [...new Set(apps.map((a) => a.active_version).filter((h): h is string => !!h))];
+    const manifestRows = hashes.length
+      ? await this.rows<AppVersionRow>(
+          `MATCH ${d.node("v", "StrutAppVersion", { namespace: "$ns" })} WHERE ${d.live("v")} AND v.content_hash IN $hashes RETURN ${d.project("v", ["name", "content_hash", "version_label", "manifest"])} AS p`,
+          { ns: this.ns, hashes },
+        )
+      : [];
+    const manifests = new Map<string, string | undefined>();
+    for (const m of manifestRows) manifests.set(`${m.name}\u0000${m.content_hash}`, m.manifest);
     const byApp = new Map<string, AppVersionRow[]>();
     for (const v of versionRows) {
       const g = byApp.get(v.name);
@@ -1071,10 +1085,20 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     }
     const out: AppListEntry[] = [];
     for (const a of apps.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0))) {
-      const meta = this.appMetadata(a, (byApp.get(a.name) ?? []).sort(byCreation));
-      const active = meta?.versions[meta.active];
-      if (!meta || !active) continue;
-      out.push(appListEntry(a.name, meta, active));
+      const rows = (byApp.get(a.name) ?? []).sort(byCreation);
+      const activeRow = rows.find((v) => v.content_hash === a.active_version && v.version_label);
+      const manifest = activeRow && parseJson<AppManifest>(manifests.get(`${a.name}\u0000${a.active_version}`));
+      if (!activeRow || !manifest) continue;
+      // The same record `appMetadata` builds, with a manifest on the active
+      // version alone (the rest are never read by the entry).
+      const versions: Record<string, AppVersionInfo> = {};
+      for (const v of rows) {
+        if (!v.version_label) continue;
+        if (v === activeRow) versions[v.version_label] = { createdAt: isoFromSeconds(v.published_at), hash: v.content_hash, manifest };
+        else if (!(v.version_label in versions)) versions[v.version_label] = { createdAt: isoFromSeconds(v.published_at), hash: v.content_hash } as AppVersionInfo;
+      }
+      const meta = { active: activeRow.version_label, versions, publisher: a.publisher, owner: a.owner, pinned: a.pinned, live: a.live };
+      out.push(appListEntry(a.name, meta, versions[activeRow.version_label]!));
     }
     return out;
   }

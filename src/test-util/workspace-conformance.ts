@@ -398,6 +398,25 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
 
     // ── Apps (plans/apps.md §1.3): the pointers ──
 
+    it("the app list: every version's label, the active version's manifest, apps in name order, pinned/live/owner carried", async () => {
+      const m = (title: string, extra: Record<string, unknown> = {}) => manifestSchema.parse({ title, grants: { workflows: [] }, ...extra });
+      await ws.publishApp("zed", "z1", m("Zed one"), { publisher: "ai", actor: "bob" });
+      await ws.publishApp("alpha", "a1", m("Alpha one"));
+      await ws.publishApp("alpha", "a2", m("Alpha two", { description: "d2", icon: "star" }));
+      await ws.publishApp("alpha", "a3", m("Alpha three", { description: "d3" }));
+      await ws.setActiveAppVersion("alpha", "v2");
+      await ws.setAppPinned("alpha", true);
+      const list = await ws.listApps();
+      assert.deepEqual(list.map((a) => a.name), ["alpha", "zed"]);
+      const alpha = list[0]!;
+      assert.deepEqual(
+        [alpha.activeVersion, alpha.versions, alpha.title, alpha.description, alpha.icon, alpha.pinned],
+        ["v2", ["v1", "v2", "v3"], "Alpha two", "d2", "star", true],
+        "a non-active newest version: its label listed, its manifest not the one shown",
+      );
+      assert.deepEqual(list[1], { name: "zed", activeVersion: "v1", versions: ["v1"], title: "Zed one", grants: m("Zed one").grants, publisher: "ai", owner: "bob" });
+    });
+
     it("app publish → list → get → versions → active switching → delete; the files are the caller's", async () => {
       await ws.publishWorkflow("wf", "v1", { steps });
       const one = APP("One", ["wf"]);

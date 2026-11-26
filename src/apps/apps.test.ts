@@ -713,6 +713,10 @@ describe("the /apps routes", () => {
       assert.deepEqual(await pinned.json(), { ok: true, name: "hello", pinned: true, live: "r1" }, "held already: pinning makes no release");
       const tabs = (await (await strut.app.request("/apps", auth)).json()) as { apps: Array<{ name: string; pinned?: boolean }> };
       assert.deepEqual(tabs.apps.filter((a) => a.pinned).map((a) => a.name), ["hello"]);
+      const pinnedOnly = async (q: string) => ((await (await strut.app.request(`/apps${q}`, auth)).json()) as { apps: Array<{ name: string; pinned?: boolean }> }).apps;
+      for (const q of ["?pinned=1", "?pinned=true"]) assert.deepEqual((await pinnedOnly(q)).map((a) => a.name), ["hello"], q);
+      assert.deepEqual(await pinnedOnly(""), tabs.apps, "without the query the list is whole");
+      assert.ok((await pinnedOnly("?pinned=0")).length === tabs.apps.length, "pinned=0 is no filter");
       assert.equal(((await (await strut.app.request("/apps/hello", auth)).json()) as { pinned?: boolean }).pinned, true);
       assert.equal(((await (await strut.app.request("/apps/hello/versions", auth)).json()) as { pinned?: boolean }).pinned, true);
       assert.equal((await pin("hello", {})).status, 400);

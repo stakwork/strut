@@ -4943,7 +4943,9 @@ export async function createStrut<TServices = unknown>(
     const full = (await scopeOf(c)) === "full";
     // No Cache-Control: the UI reads the list again right after a publish,
     // set-live or pin, and a cached copy would hide the change.
-    return c.json({ apps: full ? listed : listed.filter((a) => !a.admin) });
+    const visible = full ? listed : listed.filter((a) => !a.admin);
+    const pinned = c.req.query("pinned");
+    return c.json({ apps: pinned === "1" || pinned === "true" ? visible.filter((a) => a.pinned === true) : visible });
   });
   const adminAppRefusal = async (c: Context, name: string, version?: string): Promise<Response | null> => {
     if (version && isPreviewLabel(version)) return null;
