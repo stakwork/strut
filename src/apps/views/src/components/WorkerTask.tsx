@@ -646,7 +646,7 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
 
   return (
     <div className="flex flex-1 flex-col gap-6 pb-[max(1rem,env(safe-area-inset-bottom))]" data-testid="work-home">
-      {info.xp && <LevelCard xp={info.xp} {...(info.pendingMsat ? { pendingMsat: info.pendingMsat } : {})} />}
+      <WalletCard info={info} />
       {holding && (
         <InHand
           holding={holding}
@@ -681,16 +681,6 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
         )}
       </section>
 
-      <section className="flex flex-col gap-2.5">
-        <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{w.earnedHere}</h2>
-        <div className="grid grid-cols-2 gap-2">
-          <Stat label={w.readyToWithdraw} msat={info.balance.withdrawableMsat} />
-          {/* Held in its hold, or (a type that pays on OK) not yet booked: both still being checked. */}
-          <Stat label={w.held} msat={info.balance.heldMsat + (info.pendingMsat ?? 0)} />
-        </div>
-        <WithdrawAction info={info} />
-      </section>
-
       {!history.error && (
         <section className="flex flex-col gap-2.5">
           <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{w.yourWork}</h2>
@@ -715,21 +705,26 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
 }
 
 /**
- * Withdraw, where the balance is (`withdrawState`, the same decision as the
- * host's account widget): a button only when a withdrawal can go through, for
- * the most `task/me` says one may ask now (the kit's `useWithdraw`,
- * `task/withdraw`; the server picks the address). Otherwise one line saying
- * why, and nothing at all when there is nothing to withdraw.
+ * Their wallet, on top: what they can withdraw now, with Withdraw beside it
+ * (`withdrawState`, the same decision as the host's account widget: a button
+ * only when a withdrawal can go through, for the most `task/me` says one may
+ * ask now; the server picks the address), what is still in review, and why
+ * none can go when one can't. Under it their level (plans/worker-progress.md):
+ * XP is every sat they ever earned here, so it is the same money, smaller.
  */
-function WithdrawAction({ info }: { info: WorkerInfo }) {
+function WalletCard({ info }: { info: WorkerInfo }) {
   const w = useWorkerWords();
   const fmt = useFormats();
+  const rate = useWorker().data?.rate;
   const { withdraw, status } = useWithdraw();
   const [note, setNote] = useState<string | null>(null);
-  const state = withdrawState(info.balance.withdrawableMsat, info.payout);
+  const free = info.balance.withdrawableMsat;
+  // Held in its hold, or (a type that pays on OK) not yet booked: both still being checked.
+  const review = info.balance.heldMsat + (info.pendingMsat ?? 0);
+  const fiat = fiatOfMsat(free, rate);
+  const state = withdrawState(free, info.payout);
   const sending = status === "sending";
   const line = note ?? withdrawLine(state, w, fmt);
-  if (state.kind !== "ready" && !line) return null;
   const go = async (msat: number) => {
     setNote(null);
     try {
@@ -740,24 +735,35 @@ function WithdrawAction({ info }: { info: WorkerInfo }) {
       setNote(refusalText(err, w) || errorText(err));
     }
   };
+  const under = [fiat !== undefined ? `≈ ${fiatText(fiat, undefined, fmt.locale)}` : "", review > 0 ? w.inReview(fmt.sats(review)) : ""].filter(Boolean).join(" · ");
   return (
-    <div className="flex flex-col gap-1.5" data-testid="withdraw-action">
-      {state.kind === "ready" && (
-        <Button disabled={sending} onClick={() => void go(state.maxMsat)} className={cn("h-12 w-full rounded-xl text-base font-semibold", ACCENT_BUTTON)}>
-          {sending ? <Loader2 className="size-4 animate-spin" /> : null}
-          {sending ? w.withdrawing : w.withdraw(fmt.sats(state.maxMsat))}
-        </Button>
-      )}
-      {line && <p className="m-0 text-xs text-muted-foreground" role="status">{line}</p>}
+    <div className="overflow-hidden rounded-2xl border bg-card" data-testid="wallet">
+      <div className="flex flex-col gap-2.5 px-4 pt-4 pb-3.5">
+        <div className="flex items-end gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] text-muted-foreground">{w.readyToWithdraw}</div>
+            <div className="text-[28px] leading-tight font-bold tracking-tight tabular-nums">{fmt.sats(free)}</div>
+            {under && <div className="text-[13px] text-muted-foreground tabular-nums">{under}</div>}
+          </div>
+          {state.kind === "ready" && (
+            <Button disabled={sending} onClick={() => void go(state.maxMsat)} className={cn("h-11 shrink-0 rounded-xl px-4 text-[15px] font-semibold", ACCENT_BUTTON)}>
+              {sending ? <Loader2 className="size-4 animate-spin" /> : null}
+              {sending ? w.withdrawing : w.withdraw}
+            </Button>
+          )}
+        </div>
+        {line && <p className="m-0 text-[13px] text-muted-foreground" role="status" data-testid="withdraw-line">{line}</p>}
+      </div>
+      {info.xp && <LevelStrip xp={info.xp} {...(info.pendingMsat ? { pendingMsat: info.pendingMsat } : {})} />}
     </div>
   );
 }
 
-/** What the withdraw line says for a state: where a Withdraw goes, a payout on its way, or why none can go now. */
+/** What the withdraw line says for a state: a payout on its way, or why none can go now. */
 function withdrawLine(state: WithdrawState, w: WorkerWords, fmt: Formats): string | undefined {
   switch (state.kind) {
-    case "none": return undefined;
-    case "ready": return w.withdrawHint;
+    case "none":
+    case "ready": return undefined;
     case "out": return w.withdrawOut(fmt.sats(state.msat));
     case "blocked":
       switch (state.why) {
@@ -773,51 +779,38 @@ function withdrawLine(state: WithdrawState, w: WorkerWords, fmt: Formats): strin
 }
 
 /**
- * Their level (plans/worker-progress.md): XP is every sat they ever earned
- * here, and the bar how far they are from where this level starts to where
- * the next does. Drawn only when `task/me` says it: a missing XP is not
- * Level 0. Still, as numbers are: nothing moves on the dashboard.
+ * Their level along the wallet's foot: the bar from where this level starts
+ * to where the next does, what a type that pays on OK would add drawn faint
+ * after it. Drawn only when `task/me` says it: a missing XP is not Level 0.
+ * Still, as numbers are: nothing moves on the dashboard.
  */
-function LevelCard({ xp, pendingMsat }: { xp: NonNullable<WorkerInfo["xp"]>; pendingMsat?: number }) {
+function LevelStrip({ xp, pendingMsat }: { xp: NonNullable<WorkerInfo["xp"]>; pendingMsat?: number }) {
   const w = useWorkerWords();
   const fmt = useFormats();
-  const rate = useWorker().data?.rate;
-  const earned = fiatOfMsat(xp.sats * 1000, rate);
   const to = xp.toSats;
   const pendingSats = Math.floor((pendingMsat ?? 0) / 1000);
   const shareOf = (sats: number) => (to === undefined ? 1 : Math.min(1, Math.max(0, (sats - xp.fromSats) / (to - xp.fromSats))));
   const share = shareOf(xp.sats);
-  // What a type that pays on OK would add once it's OK'd, drawn faint after what's earned.
   const pendingShare = shareOf(xp.sats + pendingSats) - share;
   return (
-    <div className={cn("flex flex-col gap-2.5 rounded-2xl border px-4 py-3.5", ACCENT_EDGE, ACCENT_TINT)} data-testid="level">
-      <div className="flex items-center gap-3">
-        <div className={cn("grid size-11 shrink-0 place-items-center rounded-[14px] text-lg font-bold tabular-nums", ACCENT_FILL)}>{xp.level}</div>
-        <div className="min-w-0">
-          <div className="text-[17px] leading-tight font-semibold">{w.level(xp.level)}</div>
-          <div className="text-[13px] text-muted-foreground tabular-nums">{w.xp(fmt.number(xp.sats))}{earned !== undefined && ` (≈ ${fiatText(earned, undefined, fmt.locale)})`}</div>
+    <div className={cn("flex items-center gap-3 border-t px-4 py-3", ACCENT_TINT)} data-testid="level">
+      <div className={cn("grid size-8 shrink-0 place-items-center rounded-[10px] text-[15px] font-bold tabular-nums", ACCENT_FILL)}>{xp.level}</div>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex flex-wrap justify-between gap-x-3 text-[13px]">
+          <span className="font-semibold">{w.level(xp.level)}</span>
+          <span className="text-muted-foreground tabular-nums">{to === undefined ? w.topLevel : `${w.xp(fmt.number(to - xp.sats))} ${w.toLevel(xp.level + 1)}`}</span>
         </div>
-      </div>
-      <div
-        role="progressbar"
-        aria-label={to === undefined ? w.topLevel : w.toLevel(xp.level + 1)}
-        aria-valuemin={xp.fromSats}
-        aria-valuemax={to ?? xp.sats}
-        aria-valuenow={xp.sats}
-        className="flex h-2 overflow-hidden rounded-full bg-foreground/10"
-      >
-        <div className={cn("h-full", ACCENT_FILL)} style={{ width: `${share * 100}%` }} />
-        {pendingShare > 0 && <div className={cn("h-full opacity-40", ACCENT_FILL)} style={{ width: `${pendingShare * 100}%` }} />}
-      </div>
-      <div className="flex flex-wrap justify-between gap-x-3 gap-y-0.5 text-[13px] text-muted-foreground">
-        {to === undefined ? (
-          <span>{w.topLevel}</span>
-        ) : (
-          <span>
-            <span className="font-semibold text-foreground tabular-nums">{w.xp(fmt.number(to - xp.sats))}</span> {w.toLevel(xp.level + 1)}
-          </span>
-        )}
-        <span className="tabular-nums">{pendingSats > 0 ? w.xpWaiting(fmt.number(pendingSats)) : w.xpPerSat}</span>
+        <div
+          role="progressbar"
+          aria-label={to === undefined ? w.topLevel : w.toLevel(xp.level + 1)}
+          aria-valuemin={xp.fromSats}
+          aria-valuemax={to ?? xp.sats}
+          aria-valuenow={xp.sats}
+          className="flex h-1.5 overflow-hidden rounded-full bg-foreground/10"
+        >
+          <div className={cn("h-full", ACCENT_FILL)} style={{ width: `${share * 100}%` }} />
+          {pendingShare > 0 && <div className={cn("h-full opacity-40", ACCENT_FILL)} style={{ width: `${pendingShare * 100}%` }} />}
+        </div>
       </div>
     </div>
   );
@@ -916,16 +909,6 @@ function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; on
       {type.payMsat > 0 && <PayPill msat={type.payMsat} className="shrink-0" />}
       {app ? <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
     </button>
-  );
-}
-
-function Stat({ label, msat }: { label: string; msat: number }) {
-  const sats = useSatsWithFiat();
-  return (
-    <div className="rounded-2xl border bg-card p-3.5">
-      <div className="text-[13px] text-muted-foreground">{label}</div>
-      <div className="mt-0.5 text-lg font-semibold tabular-nums">{sats(msat)}</div>
-    </div>
   );
 }
 
