@@ -285,8 +285,12 @@ index. A change in this area updates this file, not AGENTS.md.
   the jobs used in the last 7 days. It reads each pull request as that
   person, and once every check has finished and one failed, it launches one
   turn of the job: the PR card's Fix, naming the conversation, so its end
-  wakes it. That happens once per pull request, ever (`JobRecord.prFixes`,
-  taken before the launch and given back if the launch is refused). A job
+  wakes it. That happens once per failure: none is sent when a turn told to
+  fix it (strut's own, `JobRecord.prFixes`, or a person's Fix click, the same
+  words) started after its failed checks finished, and a pull request gets
+  at most `PR_FIXES_MAX` (3). A re-run or a pushed fix that fails again is a
+  new failure (peel#614). The mark is taken before the launch and given back
+  if the launch is refused. A job
   with a turn in flight is passed over until the next pass. Strut decides
   who and what. When to look is a caller's: `job/pr-checks`, which
   strut-github's schedule runs, takes no person and no text.
@@ -475,7 +479,9 @@ A JOB'S PULL REQUEST FAILS ITS CHECKS (plans/pr-checks.md), Hive's `check-failur
   - The PR is read with `readPullRequest` and the person's `secrets.git(url)`.
 - **The outcome** (`outcomeOf`): merged or closed, a check still running, or none failed — nothing. Otherwise the job gets ONE turn, the job's own workflow (`turnOf`), as that person, `{ input: { prompt, kind? }, job, conversation, wake: true }` (createStrut's `launchJobTurn`, shared with follow-ups: the job's kind carried as a continue carries it) — what the card's Fix sends — so `wake.ts` relays its end.
 - **The words** are `checksFixPrompt` (the card's `fixPrompt`, pinned by a test) for each failed PR, then `STRUT_SENT`.
-- **Once per pull request, ever:** `JobRecord.prFixes[url]`, taken under the record's lock before the launch (`editPrFixes`, jobs.ts: not a use), stamped with the run's id once launched, given back when the launch throws.
+- **Once per failure:** a failure is its failed checks, done at the last one's `finishedAt` (`failedAt`). It is in hand once a turn told to fix it started after that: strut's own (`JobRecord.prFixes[url].at`) or a person's Fix click (a turn of the job since then whose `run.start` prompt holds `checksFixPrompt`, read through `deps.reporter`'s `prompt`). A re-run that fails, or a pushed fix that fails, is a new failure (peel#614, 2026-11-26: the one-per-PR wake repeated a Fix click, then the re-run's real failure got nothing). A failure with no time is in hand once marked.
+- **At most `PR_FIXES_MAX` (3) a pull request:** `prFixes[url].count` (a mark from before the count is one). A spent pull request is not read again; the next fix is a person's click.
+- **The mark:** taken under the record's lock before the launch (`editPrFixes`, jobs.ts: not a use), stamped with the run's id once launched, put back as it was when the launch throws.
 - **Never beside a live turn:** a job with a run in flight (createStrut's `jobBusy`, what `job/start` checks) is passed over without taking anything, and the next pass is the retry. The launch checks again with nothing awaited before it (`launchJobTurn`), so a turn that started meanwhile refuses it and the mark is given back.
 - **One pass at a time:** a call while a pass runs gets that pass's result.
 - A missing token or a refused read is warned once per process, not every pass.

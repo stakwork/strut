@@ -51,6 +51,7 @@ interface CheckRun {
   conclusion?: string | null;
   html_url?: string | null;
   details_url?: string | null;
+  completed_at?: string | null;
   app?: { slug?: string } | null;
 }
 
@@ -58,6 +59,7 @@ interface CommitStatus {
   context: string;
   state: string;
   target_url?: string | null;
+  updated_at?: string | null;
 }
 
 export type PrState = "open" | "draft" | "merged" | "closed";
@@ -67,6 +69,9 @@ export interface PrCheck {
   name: string;
   status: CheckStatus;
   url?: string;
+  /** When it finished (GitHub's clock): absent while it runs. A re-run of a
+   *  failed check finishes again, later. */
+  finishedAt?: string;
   /** With `logs`, a failed GitHub Actions check's job log. */
   log?: CheckLog;
   /** With `logs`, why that log could not be had. */
@@ -79,8 +84,9 @@ export interface CheckLog {
   /** Absolute path of the file: the log, each line's timestamp stripped. */
   path: string;
   lines: number;
-  /** The last lines up to the job's first `##[error]` (the failing step's
-   *  end, or the first error a problem matcher marked), else the log's own. */
+  /** The lines up to the job's first `##[error]` (the failing step's end,
+   *  or the first error a problem matcher marked), from that step's start,
+   *  at most END_LINES; else the log's own last lines. */
   end: string;
 }
 
@@ -145,13 +151,27 @@ export function githubError(err: unknown, what: string): Error {
 
 const STAMP = /^\uFEFF?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/;
 
+/** Where GitHub starts a step's lines in a job log: `##[group]Run <step>`. */
+const STEP = /^##\[group\]Run /;
+
 /** A job log as text without its timestamps, and its end: the lines up to
- *  the first `##[error]`, else the log's last. */
+ *  the first `##[error]`, from the start of the step it is in, else the
+ *  log's last. A step that passed prints its warnings above the one that
+ *  failed, and an end that reached up into them read as the cause
+ *  (peel#614, 2026-11-26: a passing step's "set GITHUB_TOKEN" warning
+ *  blamed for a failed dependency fetch). */
 export function logOf(raw: string): { text: string; lines: number; end: string } {
   const lines = raw.replace(/\r?\n$/, "").split(/\r?\n/).map((l) => l.replace(STAMP, ""));
   const err = lines.findIndex((l) => l.includes("##[error]"));
   const stop = err >= 0 ? err + 1 : lines.length;
-  return { text: lines.join("\n") + "\n", lines: lines.length, end: lines.slice(Math.max(0, stop - END_LINES), stop).join("\n") };
+  let from = Math.max(0, stop - END_LINES);
+  for (let i = err - 1; i > from; i--) {
+    if (STEP.test(lines[i]!)) {
+      from = i;
+      break;
+    }
+  }
+  return { text: lines.join("\n") + "\n", lines: lines.length, end: lines.slice(from, stop).join("\n") };
 }
 
 /** A failed Actions check's job log, written where the run keeps its files.
@@ -202,13 +222,15 @@ export async function readPullRequest(api: PrStatusApi, owner: string, repo: str
   for (const c of runs) {
     if (byName.has(c.name)) continue; // the API lists the newest run of a name first
     const url = c.html_url ?? c.details_url ?? undefined;
-    const check: PrCheck = { name: c.name, status: checkRunStatus(c.status, c.conclusion), ...(url ? { url } : {}) };
+    const status = checkRunStatus(c.status, c.conclusion);
+    const check: PrCheck = { name: c.name, status, ...(url ? { url } : {}), ...(status !== "running" && c.completed_at ? { finishedAt: c.completed_at } : {}) };
     byName.set(c.name, check);
     if (c.app?.slug === "github-actions" && typeof c.id === "number") actionsJob.set(check, c.id);
   }
   for (const s of statuses) {
     if (byName.has(s.context)) continue;
-    byName.set(s.context, { name: s.context, status: commitStatus(s.state), ...(s.target_url ? { url: s.target_url } : {}) });
+    const status = commitStatus(s.state);
+    byName.set(s.context, { name: s.context, status, ...(s.target_url ? { url: s.target_url } : {}), ...(status !== "running" && s.updated_at ? { finishedAt: s.updated_at } : {}) });
   }
   const checks = [...byName.values()].sort((a, b) => ORDER[a.status] - ORDER[b.status] || a.name.localeCompare(b.name));
   if (opts.logs) {
@@ -244,9 +266,9 @@ export default defineStep({
   secrets: ["GITHUB_TOKEN"],
   effect: "read",
   description:
-    `A GitHub pull request as it is now: { url, repo, number, title, state (open | draft | merged | closed), author, head, base, headSha, body, mergeable, checks: [{ name, status (failed | running | passed | skipped), url }], counts }. ` +
+    `A GitHub pull request as it is now: { url, repo, number, title, state (open | draft | merged | closed), author, head, base, headSha, body, mergeable, checks: [{ name, status (failed | running | passed | skipped), url, finishedAt }], counts }. ` +
     `Checks are the head commit's check runs and commit statuses, failed first. ` +
-    `With logs: true, each failed GitHub Actions check (at most ${MAX_LOGS}) also has log: { path, lines, end }: its job's whole log in a file (timestamps stripped) and the lines up to the job's first error. ` +
+    `With logs: true, each failed GitHub Actions check (at most ${MAX_LOGS}) also has log: { path, lines, end }: its job's whole log in a file (timestamps stripped) and the failing step's lines up to the job's first error. ` +
     `The cause is often thousands of lines above the end, so search the file (rg in bash). A log GitHub refuses is logError on the check (a GitHub App's token needs "Actions: read"). ` +
     `Auth: token, else the GITHUB_TOKEN secret. ` +
     `Fails with "github_unauthorized: …", "github_not_found: …" (the token cannot see it), "github_rate_limited: …" or "github_error: …".\n\n${EXAMPLE}`,

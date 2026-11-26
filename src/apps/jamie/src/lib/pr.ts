@@ -24,7 +24,7 @@ export interface PrStatus {
   headSha: string;
   body?: string;
   mergeable: boolean | null;
-  checks: Array<{ name: string; status: "failed" | "running" | "passed" | "skipped"; url?: string }>;
+  checks: Array<{ name: string; status: "failed" | "running" | "passed" | "skipped"; url?: string; finishedAt?: string }>;
   counts: { passed: number; failed: number; running: number; skipped: number; total: number };
 }
 

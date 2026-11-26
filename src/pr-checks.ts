@@ -1,5 +1,5 @@
 /**
- * A job's pull request fails its checks: strut sends the job ONE turn to fix
+ * A job's pull request fails its checks: strut sends the job a turn to fix
  * it (plans/pr-checks.md), as Hive does for the jobs it hosts (hive
  * `src/services/strut-jobs/check-failures.ts`).
  *
@@ -12,9 +12,15 @@
  * launches one turn of the job — the PR card's Fix, made by the server —
  * naming the conversation, so its end wakes it (src/wake.ts).
  *
- * - **Once per pull request, ever** (`JobRecord.prFixes`): taken before the
- *   launch, given back when the launch is refused. A fix that fails again is
- *   a person's click on the card.
+ * - **Once per failure:** a failure is its failed checks, done at the last
+ *   one's `finishedAt`. It is already in hand once a turn of the job has
+ *   started since then with the fix's words: strut's own (`JobRecord.prFixes`,
+ *   taken before the launch, given back when the launch is refused) or a
+ *   person's Fix on the card, the same words. A re-run that fails, or a
+ *   pushed fix that fails, is a new failure (peel#614, 2026-11-26: the one
+ *   wake repeated a Fix click, then the re-run's real failure got none).
+ * - **At most `PR_FIXES_MAX` a pull request:** a fix that keeps failing
+ *   stops there, and the next is a person's click on the card.
  * - **One turn per job:** two failing pull requests are named in one turn.
  * - **Never beside a live turn:** a job with a run in flight is passed
  *   over, and the next pass is the retry.
@@ -26,11 +32,14 @@
  * text, so a caller can only make strut look sooner.
  */
 
-import { editPrFixes, jobRoot, jobsByUse, turnOf, type JobRecord } from "./jobs.js";
+import { editPrFixes, jobRoot, jobsByUse, turnOf, type JobRecord, type PrFix } from "./jobs.js";
 import type { PrStatus, PrStatusApi } from "./steps/lib/github/pr-status.js";
 
 /** How long after its last use a job's pull requests are still read. */
 export const PR_WATCH_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Automatic fixes one pull request gets, at most. */
+export const PR_FIXES_MAX = 3;
 
 /** The turn's second line: for the agent, and for whoever reads the thread. */
 export const STRUT_SENT = "Strut sent this when the checks finished. The person didn't type it.";
@@ -76,6 +85,26 @@ export function outcomeOf(s: Pick<PrStatus, "state" | "counts">): PrOutcome {
   return s.counts.failed > 0 ? "failed" : "clean";
 }
 
+/** When the failure was done (ms): the last of its failed checks to finish.
+ *  Undefined when one has no time. */
+export function failedAt(s: Pick<PrStatus, "checks">): number | undefined {
+  let at: number | undefined;
+  for (const c of s.checks) {
+    if (c.status !== "failed") continue;
+    const t = Date.parse(c.finishedAt ?? "");
+    if (Number.isNaN(t)) return undefined;
+    at = Math.max(at ?? 0, t);
+  }
+  return at;
+}
+
+/** How many automatic fixes a mark counts: one from before `count`. */
+const fixesIn = (fix: PrFix | undefined) => (fix ? (fix.count ?? 1) : 0);
+
+/** Strut's own fix was for this failure: sent since it was done (or it
+ *  has no time, as a mark from before failures did). */
+const fixedSince = (fix: PrFix | undefined, since: number | undefined) => !!fix && (since === undefined || Date.parse(fix.at) >= since);
+
 /** The fix turn's words for one pull request: the Jamie card's `fixPrompt`. */
 export function checksFixPrompt(s: Pick<PrStatus, "repo" | "number" | "head" | "checks">): string {
   const failed = s.checks.filter((c) => c.status === "failed").map((c) => c.name);
@@ -90,6 +119,8 @@ export interface Reporter {
   principal?: string;
   /** Its `params.model`. */
   model?: string;
+  /** Its `input.prompt`: what the turn was told. */
+  prompt?: string;
   /** It is a trial's run (`RunTrial`): nothing it starts outlives it. */
   trial?: true;
 }
@@ -149,12 +180,25 @@ export function createPrChecks(deps: PrChecksDeps): PrChecksCapability & { check
     const prs: Array<{ pr: PrRef; runId: string }> = [];
     for (const a of await deps.artifacts(job)) {
       const pr = prOf(a);
-      if (!pr || fixed[pr.url] || (only && pr.url !== only) || prs.some((p) => p.pr.url === pr.url)) continue;
+      if (!pr || fixesIn(fixed[pr.url]) >= PR_FIXES_MAX || (only && pr.url !== only) || prs.some((p) => p.pr.url === pr.url)) continue;
       prs.push({ pr, runId: a.runId });
     }
 
+    /** A turn of the job started since the failure was done, told to fix
+     *  it: strut's own, or a person's Fix on the card (the same words). */
+    const inHand = async (status: PrStatus, since: number | undefined): Promise<boolean> => {
+      if (fixedSince(fixed[status.url], since)) return true;
+      if (since === undefined) return false;
+      const words = checksFixPrompt(status);
+      for (const r of rec.runs ?? []) {
+        if (r.parentRunId || !(Date.parse(r.at) >= since)) continue;
+        if ((await deps.reporter(rec, r.runId))?.prompt?.includes(words)) return true;
+      }
+      return false;
+    };
+
     let didRead = false;
-    const failed: Array<{ status: PrStatus; url: string; who: Reporter & { conversation: string } }> = [];
+    const failed: Array<{ status: PrStatus; url: string; since: number | undefined; who: Reporter & { conversation: string } }> = [];
     for (const { pr, runId } of prs) {
       const who = await deps.reporter(rec, runId);
       // Nowhere for the reply to land: the person fixes it from the card.
@@ -172,19 +216,24 @@ export function createPrChecks(deps: PrChecksDeps): PrChecksCapability & { check
         continue;
       }
       didRead = true;
-      if (outcomeOf(status) === "failed") failed.push({ status, url: pr.url, who: { ...who, conversation: who.conversation } });
+      if (outcomeOf(status) !== "failed") continue;
+      const since = failedAt(status);
+      if (!(await inHand(status, since))) failed.push({ status, url: pr.url, since, who: { ...who, conversation: who.conversation } });
     }
     if (!failed.length || deps.busy(job)) return { read: didRead, sent: false };
 
-    // The one automatic fix, taken under the record's lock before the
-    // launch: a pass and a webhook's call beside it send one turn.
+    // The fix, taken under the record's lock before the launch: a pass and
+    // a webhook's call beside it send one turn.
     const root = jobRoot(deps.dataDir, job);
     const at = new Date(now()).toISOString();
+    const before = new Map<string, PrFix | undefined>();
     const taken =
       (await editPrFixes(root, (fixes) =>
         failed.filter((f) => {
-          if (fixes[f.url]) return false;
-          fixes[f.url] = { at };
+          const fix = fixes[f.url];
+          if (fixesIn(fix) >= PR_FIXES_MAX || fixedSince(fix, f.since)) return false;
+          before.set(f.url, fix);
+          fixes[f.url] = { at, count: fixesIn(fix) + 1 };
           return true;
         }),
       )) ?? [];
@@ -209,7 +258,11 @@ export function createPrChecks(deps: PrChecksDeps): PrChecksCapability & { check
     } catch (err) {
       // Refused (strut could not launch it): given back, so the next pass tries again.
       await editPrFixes(root, (fixes) => {
-        for (const t of taken) delete fixes[t.url];
+        for (const t of taken) {
+          const was = before.get(t.url);
+          if (was) fixes[t.url] = was;
+          else delete fixes[t.url];
+        }
       });
       warn(`[pr-checks] job ${job}: the fix turn was not launched: ${err instanceof Error ? err.message : String(err)}`);
       return { read: didRead, sent: false };

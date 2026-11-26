@@ -1677,11 +1677,13 @@ export async function createStrut<TServices = unknown>(
     if (!start) return undefined;
     const conversation = start.startedBy?.session ?? start.conversation;
     const model = start.params?.["model"];
+    const prompt = (start.input as { prompt?: unknown } | undefined)?.prompt;
     return {
       ...(conversation ? { conversation } : {}),
       ...(start.actor ? { actor: start.actor } : {}),
       ...(start.principal ? { principal: start.principal } : {}),
       ...(typeof model === "string" ? { model } : {}),
+      ...(typeof prompt === "string" ? { prompt } : {}),
       ...(start.trial ? { trial: true as const } : {}),
     };
   };

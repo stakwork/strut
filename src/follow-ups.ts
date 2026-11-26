@@ -119,7 +119,8 @@ export function createFollowUps(deps: FollowUpsDeps): FollowUps {
     const root = jobRoot(deps.dataDir, a.job);
     const rec = await readJobRecord(root);
     if (!rec?.runs?.some((r) => r.runId === a.runId)) throw new Error(`follow_up: run ${a.runId} is not a run of job "${a.job}"`);
-    const { trial, ...who } = (await deps.person(rec, a.runId)) ?? {};
+    // Who ran it, not what it was told: the prompt stays on the run.
+    const { trial, prompt: _prompt, ...who } = (await deps.person(rec, a.runId)) ?? {};
     // A trial's job is closed once its run is judged (src/trials.ts).
     if (trial) throw new Error("follow_up: a trial's run asks for no follow-up: nothing a trial starts outlives it");
     const t = now();
