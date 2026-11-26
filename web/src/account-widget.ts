@@ -7,7 +7,7 @@
 // the one state the widget draws. That state is only a corner and a
 // `collapsed` flag — there is no value in it that hides the widget, so no
 // message can; a collapsed widget is a handle that stays visible.
-import { formats, type Formats } from "@strut/kit/folds";
+import { formats, type FiatRate, type Formats } from "@strut/kit/folds";
 import { ACCOUNT_CORNERS, type AccountCorner, type AccountPlacement } from "@strut/kit/visitor";
 import { defaultMaxFeeMsat } from "../../src/payments/fee.js";
 import { HOST_WORDS, type HostWords } from "./words";
@@ -176,6 +176,8 @@ export interface WorkerView {
   /** The most one withdrawal may ask now (0: none). */
   maxMsat: number;
   canWithdraw: boolean;
+  /** The exchange rate `task/me` carries, to show fiat beside sats; absent when none can be read. */
+  rate?: FiatRate;
   /** Why there is no Withdraw while something is withdrawable or on its
    *  way, said for the worker; absent when they may withdraw or have
    *  nothing to. */
@@ -183,14 +185,16 @@ export interface WorkerView {
 }
 type PayoutRead = { on?: unknown; why?: unknown; minMsat?: unknown; dayLeftMsat?: unknown; maxMsat?: unknown; out?: { msat?: unknown } };
 export function workerOf(me: unknown, w: HostWords = HOST_WORDS.en, f: Formats = formats("en-US")): WorkerView | null {
-  const m = me as { balance?: { heldMsat?: unknown; withdrawableMsat?: unknown }; payout?: PayoutRead } | null;
+  const m = me as { balance?: { heldMsat?: unknown; withdrawableMsat?: unknown }; payout?: PayoutRead; rate?: { perBtc?: unknown } } | null;
   const held = m?.balance?.heldMsat;
   const free = m?.balance?.withdrawableMsat;
   if (typeof held !== "number" || typeof free !== "number") return null;
   const max = typeof m?.payout?.maxMsat === "number" ? m.payout.maxMsat : 0;
   const canWithdraw = m?.payout?.on === true && max > 0;
   const blocked = canWithdraw ? undefined : withdrawBlocked(free, m?.payout, w, f);
-  return { heldMsat: held, withdrawableMsat: free, maxMsat: max, canWithdraw, ...(blocked ? { blocked } : {}) };
+  const perBtc = m?.rate?.perBtc;
+  const rate = perBtc && typeof perBtc === "object" ? { perBtc: perBtc as Record<string, number> } : undefined;
+  return { heldMsat: held, withdrawableMsat: free, maxMsat: max, canWithdraw, ...(rate ? { rate } : {}), ...(blocked ? { blocked } : {}) };
 }
 
 /** Why `task/me`'s payout offers no withdrawal (src/payments/payouts.ts

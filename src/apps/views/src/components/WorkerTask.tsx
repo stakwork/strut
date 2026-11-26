@@ -1,13 +1,14 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronDown, ChevronRight, Clock, FileText, ImagePlus, Loader2, LogIn, MessageSquare, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
-  appLink, fieldsOf, formats, formProblem, localText, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useLocale, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
-  type FormSchema, type LocalText, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerType,
+  appLink, fieldsOf, fiatOfMsat, fiatText, formats, satsWithFiat, formProblem, localText, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useLocale, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
+  type FormSchema, type LocalText, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerTaskGroup, type WorkerType,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ACCENT_BUTTON, ACCENT_EDGE, ACCENT_FILL, ACCENT_LINE, ACCENT_TINT, TaskForm } from "./TaskForm";
 import { errorText } from "../lib/format";
+import { groupEarnings, splitGroups } from "../lib/work-groups";
 import { refusalText, useWorkerWords, type WorkerWords } from "../lib/words";
 import { workerHeading } from "../lib/heading";
 import { shownFields } from "../lib/shown-fields";
@@ -76,10 +77,21 @@ async function shrink(file: File): Promise<File> {
   }
 }
 
-/** What a task pays, as a pill: `⚡ Earn 50 sats`, or `+50 sats` once earned. */
-export function PayPill({ msat, earned = false, className }: { msat: number; earned?: boolean; className?: string }) {
+/** msat as sats with their fiat beside them (`50 sats (≈ $0.03)`) at the
+ *  server's rate (`task/me`'s `rate`), in `currency` (USD by default); the
+ *  sats alone when no rate can be read. */
+export function useSatsWithFiat(currency?: string): (msat: number) => string {
+  const fmt = useFormats();
+  const rate = useWorker().data?.rate;
+  return (msat) => satsWithFiat(msat, rate, fmt, currency);
+}
+
+/** What a task pays, as a pill: `⚡ Earn 50 sats (≈ $0.03)`, or `+50 sats`
+ *  once earned. The fiat is the server's rate (`task/me`'s `rate`) in
+ *  `currency` (USD by default), left off when no rate can be read. */
+export function PayPill({ msat, earned = false, currency, className }: { msat: number; earned?: boolean; currency?: string; className?: string }) {
   const w = useWorkerWords();
-  const sats = useFormats().sats(msat);
+  const sats = useSatsWithFiat(currency)(msat);
   return (
     <span
       className={cn(
@@ -598,7 +610,7 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
   const fmt = useFormats();
   const here = useApp()?.name;
   const me = useWorker({ all });
-  const history = useTaskHistory({ all });
+  const history = useTaskHistory({ all, groups: true });
   const { refetch } = me;
   const { refetch: reread } = history;
   // Read both again on coming back (a task just taken is in neither), then
@@ -625,7 +637,9 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
   const holding = info.holding && types.some((t) => t.name === info.holding!.type) ? info.holding : undefined;
   /** What a type is called here: its title, when the worker still holds it. */
   const titleOf = (name: string) => info.types.find((t) => t.name === name)?.title;
-  const items = history.data?.items.filter((i) => only === undefined || i.type === only) ?? [];
+  // A task of a group is drawn by its group's row; the rest stay a flat list.
+  const items = history.data?.items.filter((i) => !i.group && (only === undefined || i.type === only)) ?? [];
+  const groups = (history.data?.groups ?? []).filter((g) => only === undefined || g.type === only);
   /** A kind another app draws: it opens there. */
   const elsewhere = (t: WorkerType) => !!here && t.app !== here;
   const mine = types.filter((t) => !elsewhere(t));
@@ -684,14 +698,19 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
       {!history.error && (
         <section className="flex flex-col gap-2.5">
           <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{w.yourWork}</h2>
-          {items.length === 0 ? (
+          {items.length === 0 && groups.length === 0 ? (
             <p className="text-sm text-muted-foreground">{w.nothingYet}</p>
           ) : (
-            <ul className="flex flex-col divide-y rounded-2xl border bg-card" data-testid="work-history">
-              {items.map((i) => (
-                <HistoryRow key={i.lease} item={i} title={titleOf(i.type)} />
-              ))}
-            </ul>
+            <>
+              <WorkGroups groups={groups} all={all} titleOf={titleOf} />
+              {items.length > 0 && (
+                <ul className="flex flex-col divide-y rounded-2xl border bg-card" data-testid="work-history">
+                  {items.map((i) => (
+                    <HistoryRow key={i.lease} item={i} title={titleOf(i.type)} />
+                  ))}
+                </ul>
+              )}
+            </>
           )}
         </section>
       )}
@@ -708,6 +727,8 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
 function LevelCard({ xp, pendingMsat }: { xp: NonNullable<WorkerInfo["xp"]>; pendingMsat?: number }) {
   const w = useWorkerWords();
   const fmt = useFormats();
+  const rate = useWorker().data?.rate;
+  const earned = fiatOfMsat(xp.sats * 1000, rate);
   const to = xp.toSats;
   const share = to === undefined ? 1 : Math.min(1, Math.max(0, (xp.sats - xp.fromSats) / (to - xp.fromSats)));
   const pendingSats = Math.floor((pendingMsat ?? 0) / 1000);
@@ -717,7 +738,7 @@ function LevelCard({ xp, pendingMsat }: { xp: NonNullable<WorkerInfo["xp"]>; pen
         <div className={cn("grid size-11 shrink-0 place-items-center rounded-[14px] text-lg font-bold tabular-nums", ACCENT_FILL)}>{xp.level}</div>
         <div className="min-w-0">
           <div className="text-[17px] leading-tight font-semibold">{w.level(xp.level)}</div>
-          <div className="text-[13px] text-muted-foreground tabular-nums">{w.xp(fmt.number(xp.sats))}</div>
+          <div className="text-[13px] text-muted-foreground tabular-nums">{w.xp(fmt.number(xp.sats))}{earned !== undefined && ` (≈ ${fiatText(earned, undefined, fmt.locale)})`}</div>
         </div>
       </div>
       <div
@@ -841,11 +862,11 @@ function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; on
 }
 
 function Stat({ label, msat, note }: { label: string; msat: number; note?: string }) {
-  const fmt = useFormats();
+  const sats = useSatsWithFiat();
   return (
     <div className="rounded-2xl border bg-card p-3.5">
       <div className="text-[13px] text-muted-foreground">{label}</div>
-      <div className="mt-0.5 text-lg font-semibold tabular-nums">{fmt.sats(msat)}</div>
+      <div className="mt-0.5 text-lg font-semibold tabular-nums">{sats(msat)}</div>
       {note && <div className="mt-0.5 text-xs text-muted-foreground">{note}</div>}
     </div>
   );
@@ -857,6 +878,7 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: LocalTex
   const w = useWorkerWords();
   const locale = useLocale();
   const fmt = useFormats();
+  const sats = useSatsWithFiat();
   const e = item.earned;
   let badge: ReactNode;
   if (item.status === "open") badge = <Badge tone="accent">{w.inYourHand}</Badge>;
@@ -871,19 +893,88 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: LocalTex
   return (
     <li className={cn("flex min-w-0 items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[15px] font-medium">{taskAsk(item.ask, locale) ?? typeLabel(item.type, title, locale)}</div>
+        <div className="truncate text-[15px] font-medium">{localText(item.ask, locale) ?? typeLabel(item.type, title, locale)}</div>
         <div className="truncate text-xs text-muted-foreground">
           {fmt.ago(item.closed ?? item.taken)}
           {item.ask ? ` · ${typeLabel(item.type, title, locale)}` : ""}
         </div>
       </div>
       <div className="flex flex-col items-end gap-1">
-        {e && <span className={cn("text-sm font-semibold tabular-nums", e.takenBack && "text-muted-foreground line-through")}>+{fmt.sats(e.msat)}</span>}
-        {item.pending && <span className="text-sm font-semibold text-muted-foreground tabular-nums">+{fmt.sats(item.pending.msat)}</span>}
+        {e && <span className={cn("text-sm font-semibold tabular-nums", e.takenBack && "text-muted-foreground line-through")}>+{sats(e.msat)}</span>}
+        {item.pending && <span className="text-sm font-semibold text-muted-foreground tabular-nums">+{sats(item.pending.msat)}</span>}
         {badge}
       </div>
       {item.review?.verdict === "rejected" && item.review.why && <div className="w-full min-w-0 text-sm [overflow-wrap:anywhere] text-destructive">{w.toFix(item.review.why)}</div>}
       {item.reply && <ReplyLine item={item} reply={item.reply} />}
+    </li>
+  );
+}
+
+/** Their grouped work (`task/reply`'s `group`: a book its pages): one row a
+ *  group, the ones still going first, the finished ones under their own
+ *  heading when both exist. */
+function WorkGroups({ groups, all, titleOf }: { groups: WorkerTaskGroup[]; all: boolean; titleOf: (type: string) => string | undefined }) {
+  const w = useWorkerWords();
+  const { active, done } = splitGroups(groups);
+  const list = (gs: WorkerTaskGroup[]) => (
+    <ul className="flex flex-col divide-y rounded-2xl border bg-card" data-testid="work-groups">
+      {gs.map((g) => (
+        <GroupRow key={`${g.type}\u0000${g.group}`} group={g} all={all} titleOf={titleOf} />
+      ))}
+    </ul>
+  );
+  const heading = (text: string) => <h3 className="mt-1 text-[13px] font-medium text-muted-foreground">{text}</h3>;
+  if (groups.length === 0) return null;
+  return (
+    <>
+      {done.length > 0 && active.length > 0 && heading(w.inProgress)}
+      {active.length > 0 && list(active)}
+      {done.length > 0 && active.length > 0 && heading(w.completed)}
+      {done.length > 0 && list(done)}
+    </>
+  );
+}
+
+/** One group: its name, pages, earnings and how its pages were judged;
+ *  opened, its pages (each a history row). Its answers are read with the row,
+ *  so the earnings are the group's all, not the newest fifty's. */
+function GroupRow({ group, all, titleOf }: { group: WorkerTaskGroup; all: boolean; titleOf: (type: string) => string | undefined }) {
+  const w = useWorkerWords();
+  const fmt = useFormats();
+  const [open, setOpen] = useState(false);
+  const read = useTaskHistory({ group: group.group, all });
+  const pages = read.data?.items ?? [];
+  const { earnedMsat, pendingMsat } = groupEarnings(pages);
+  const parts = [
+    group.ok > 0 ? w.nApproved(group.ok) : "",
+    group.unreviewed > 0 ? w.nUnderReview(group.unreviewed) : "",
+    group.rejected > 0 ? w.nSentBack(group.rejected) : "",
+  ].filter(Boolean);
+  return (
+    <li className="min-w-0">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full min-w-0 items-center gap-3 px-4 py-3 text-left">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[15px] font-medium">{group.group}</div>
+          <div className="truncate text-xs text-muted-foreground">{[w.nPages(group.answers), ...parts].join(" · ")}</div>
+        </div>
+        <div className="flex flex-col items-end gap-0.5 tabular-nums">
+          {earnedMsat > 0 && <span className="text-sm font-semibold">+{fmt.sats(earnedMsat)}</span>}
+          {pendingMsat > 0 && <span className="text-sm font-semibold text-muted-foreground">+{fmt.sats(pendingMsat)}</span>}
+        </div>
+        <ChevronDown className={cn("size-4 shrink-0 transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <ul className="flex flex-col divide-y border-t bg-muted/20" data-testid="group-pages">
+          {read.isLoading && (
+            <li className="flex justify-center px-4 py-3">
+              <Loader2 className="size-4 animate-spin text-muted-foreground" />
+            </li>
+          )}
+          {pages.map((i) => (
+            <HistoryRow key={i.lease} item={i} title={titleOf(i.type)} />
+          ))}
+        </ul>
+      )}
     </li>
   );
 }
