@@ -1891,7 +1891,7 @@ reads included.
 | POST   | `/workflows/:name/run` | a linked person | A turn of a CONVERSATION workflow (one with `params.wake`) on the host's own conversation: `input.session` under `host/<name>/`. With `input`, `wake`, `callback` and `attachments` alone: `params`, `paramOverrides`, `runId`, `settings`, `conversation`, `branch`, `job`, `title`, `mcp` and `jobCallback` are `403`. `run.start` records `origin: "host"` and `host: "<name>"`; strut wakes it like a person's turn (§9.1). Never an admin's: a step only an admin accepts proposes nothing in it (`admin_required:`), nor in the jobs and wakes it starts. Its agents' sessions open under `host/<name>/` |
 | GET    | `/conversations/item?id=` | — | One of the host's own conversations (`host/<name>/…`), whoever spoke in it; any other id is `404` (§9.1) |
 | POST   | `/proposals/:id/decide` | a linked person | A proposal made in one of the host's conversations, decided as the person it was made for (anyone else `403`, a proposal elsewhere `404`), never as an admin |
-| PUT    | `/hosts/me` | — | `{ account, hook }` → `200 { name, account, at }`: who the host is on its medium (`account`, its own key, bare or as `<kind>:<key>` of its own kind; handed to Peel with each place, `POST /people/places`) and where strut nudges it when its places change (`hook`, an http(s) URL of at most 2,000 characters). Kept in `people.db`; the latest wins. `400` for an account or hook that is not one. The Sphinx daemon sends it at every start |
+| PUT    | `/hosts/me` | — | `{ account, hook }` → `200 { name, account, at }`: who the host is on its medium (`account`, its own key, bare or as `<kind>:<key>` of its own kind; handed to Peel with each place, `POST /people/places`) and where strut nudges it when its places change and hands it a workflow's post in one (`hook`, an http(s) URL of at most 2,000 characters; "Posts in a place", below). Kept in `people.db`; the latest wins. `400` for an account or hook that is not one. The Sphinx daemon sends it at every start |
 | GET    | `/hosts/places` | — | `{ places: Place[] }`: the host's places, every linker's, the oldest first, each with `linkerName` (below) |
 | DELETE | `/hosts/places/:key` | — | `{ removed }`: a place the host no longer answers in (it was removed from the tribe, or couldn't join its link) |
 | POST   | `/mcp` | the account's person, or (where the app says `unlinked: true`) the key's own actor | `step_run` on an app's tools its `hosts:` lists for this host (§13.5) |
@@ -1953,6 +1953,42 @@ curl -s https://strut.box.example/workflows/orchestrator/run -H "authorization: 
   -H "x-strut-account: sphinx:02ab…" -H "content-type: application/json" \
   -d '{"input":{"prompt":"Ada: @jamie what did we decide?","session":"host/sphinx/3f9a0c21b7e4"},"wake":true,"callback":{"url":"http://treasury:8095/strut/end?m=1&token=…"}}'
 ```
+
+**Posts in a place** (`plans/place-posts.md`; `src/people.ts`
+`placesCapability`). A WORKFLOW posts in a linked place with the
+`place/post` step, `{ host, key, text, reply?, id? }`; it runs only as a
+step of a workflow, never an agent's tool, a single-step run (`step_run`,
+`meta/run-step`, `POST /steps/:type/run`) or a proposal's apply
+(`workflow_only:`). The run's person (who launched it, else the workflow's
+owner) must hold a linked account of the host's kind (`not_linked:`), the
+place must be one of the host's here (`no_place:`), and the host must be
+ready (`no_host:`). Strut then hands the post to the host's `hook`, the
+same URL its places' nudge goes to, and waits for the answer:
+
+```json
+POST <hook>
+{ "event": "post", "id": "9f86d081884c7d659a2feaa0c55ad015", "key": "<the place's key>",
+  "text": "…", "reply": "<a message id>", "run": "<runId>", "workflow": "morning-digest" }
+```
+
+| Answer | Means | The step |
+| ------ | ----- | -------- |
+| `200 { id, sats? }` | Posted: the message's id on the medium (what a later `reply` takes), and what it paid | `{ id, sats? }` |
+| `200 { id, again: true }` | This id was posted before: nothing posted now | `{ id, again: true }` |
+| `4xx { error, code }` | Refused: `no_place` (no such place), `not_joined` (a place it isn't in yet), `bad_reply` (no such message there) | fails `<code>: …`, at once |
+| `502 { error, code }` | The medium refused the send (`send_failed`): nothing kept, so the same id may try again | fails `send_failed: …`, at once |
+| no answer, `429`, another `5xx` | Tried again after 1 and 5 s, 30 s a try | then fails `host_unreachable:` |
+| `2xx` with no `id` | A host from before posts (it answers the nudge `{ ok: true }` whatever the body) | fails `host_cannot_post:`; nothing posted |
+
+`id` is 32 hex: a hash of the run's workflow and the step's `id`, or, with
+none, of the run and the step's path. The host posts one id once, so a
+retry, a resumed run and a lost answer post once. `reply` is omitted when
+the step names none. Errors name the hook's origin, never its URL.
+
+`place/list` answers the places of each host whose kind of account the
+run's person holds, `{ places: [{ host, key, name? }] }`: never a link or a
+linker. A host takes posts by answering `{ event: "post" }` on its hook as
+above, and has places in this table; that is all strut asks of one.
 
 ### 13.5 A host calls an app's tools
 

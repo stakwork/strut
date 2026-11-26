@@ -37,7 +37,8 @@
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { linkChallenge } from "./auth.js";
+import { hostKeys, linkChallenge } from "./auth.js";
+import { callbackOrigin } from "./callback.js";
 import { qrSvg } from "./move/link.js";
 
 /** A name's most characters (code points), after trimming. */
@@ -597,6 +598,122 @@ export function accountsCapability(people: People, box?: { base: string; host: s
       const account = parseAccount(raw);
       if (!account) throw new Error(`"${raw}" is not an account: <kind>:<key>, such as sphinx:<66 hex>`);
       return people.unlink(account, actor);
+    },
+  });
+}
+
+// ── Posts in a place (plans/place-posts.md) ──────────────────────────────
+
+/** A post in a linked place, as strut hands it to the place's host. */
+export interface PlacePost {
+  /** The place's host: "sphinx". */
+  host: string;
+  /** The place on the host's medium: a tribe's pubkey. */
+  key: string;
+  text: string;
+  /** The id of a message in that place to post under. */
+  reply?: string;
+  /** What the host posts once: 32 hex (`place/post` makes it). */
+  id: string;
+  /** The run that posts, and its workflow, for the host's references. */
+  run: string;
+  workflow: string;
+}
+
+/** What the host answers: the message's id on its medium, what it paid,
+ *  and `again` when this id was posted before and nothing was posted now. */
+export interface PlacePosted {
+  id: string;
+  sats?: number;
+  again?: true;
+}
+
+/** A place as `place/list` shows it: never its link, nor its linker. */
+export interface PlaceListed {
+  host: string;
+  key: string;
+  name?: string;
+}
+
+/** What the `place/*` steps reach (`ctx.services.places`, plans/place-posts.md
+ *  §2 to §5). `person` is the run's (`ctx.principal`); a package's step
+ *  holds both for its run's (src/packages/fence.ts). */
+export interface PlacesCapability {
+  /** The places linked here, of every host whose kind of account `person`
+   *  holds. `not_linked:` when they hold none. */
+  list(person: string | undefined): Promise<PlaceListed[]>;
+  /** Hands `post` to its place's host on the host's hook, as `person`: one
+   *  of the host's places, and a person with a linked account of the host's
+   *  kind. The host posts one id once. */
+  post(post: PlacePost, person: string | undefined): Promise<PlacePosted>;
+}
+
+/** How long one try at a host's hook waits: a send waits for its medium. */
+const POST_TIMEOUT_MS = 30_000;
+/** The waits before the second and third tries. */
+const POST_RETRY_MS = [1_000, 5_000];
+
+/** Posts in places over `people`, handed to each host on its hook
+ *  (`PUT /hosts/me`). Strut reads `host` and `key` only to check the person
+ *  and the place: what a post is on the medium is the host's. */
+export function placesCapability(people: People, deps: { fetch?: typeof fetch; retryMs?: readonly number[] } = {}): PlacesCapability {
+  const fetchImpl = deps.fetch ?? globalThis.fetch;
+  const retryMs = deps.retryMs ?? POST_RETRY_MS;
+  /** The kinds of account `person` holds, or `not_linked:`. */
+  const kindsOf = async (person: string | undefined, host?: string): Promise<Set<string>> => {
+    const kinds = new Set(person ? (await people.accountsOf(person)).map((a) => a.kind) : []);
+    if (!kinds.size || (host !== undefined && !kinds.has(host))) {
+      const what = host ?? "any";
+      throw new Error(`not_linked: posting in a place here takes a person with a linked ${what} account, and this run's ${person ? `person (${person}) has none` : "has no person"} — they link one through Peel, in the Jamie app's Connect`);
+    }
+    return kinds;
+  };
+  return Object.freeze({
+    async list(person: string | undefined) {
+      const kinds = await kindsOf(person);
+      const out: PlaceListed[] = [];
+      for (const host of hostKeys().keys()) {
+        if (!kinds.has(host)) continue;
+        for (const p of await people.hostPlaces(host)) out.push({ host: p.host, key: p.key, ...(p.name ? { name: p.name } : {}) });
+      }
+      return out;
+    },
+    async post(post: PlacePost, person: string | undefined) {
+      await kindsOf(person, post.host);
+      const self = hostKeys().has(post.host) ? await people.hostOf(post.host) : undefined;
+      if (!self) throw new Error(`no_host: no ${post.host} host is ready here — it needs a key (STRUT_HOST_KEYS) and to have said who it is (PUT /hosts/me)`);
+      if (!(await people.hostPlaces(post.host)).some((p) => p.key === post.key)) {
+        throw new Error(`no_place: ${post.host}:${post.key} is not a place linked here — a person links one (Peel's Jamie row for a tribe); place/list names them`);
+      }
+      const where = `the ${post.host} host (${callbackOrigin(self.hook)})`;
+      const body = JSON.stringify({ event: "post", id: post.id, key: post.key, text: post.text, ...(post.reply ? { reply: post.reply } : {}), run: post.run, workflow: post.workflow });
+      let failure = "";
+      for (let attempt = 0; attempt <= retryMs.length; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, retryMs[attempt - 1]));
+        let res: Response;
+        try {
+          res = await fetchImpl(self.hook, { method: "POST", headers: { "content-type": "application/json" }, body, signal: AbortSignal.timeout(POST_TIMEOUT_MS) });
+        } catch (err) {
+          failure = err instanceof Error ? err.message : String(err);
+          continue;
+        }
+        const b = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+        // No answer to read, or a busy one: the same id again posts once.
+        if (res.status === 429 || (res.status >= 500 && res.status !== 502)) {
+          failure = `HTTP ${res.status}`;
+          continue;
+        }
+        if (!res.ok) {
+          const code = typeof b?.["code"] === "string" && /^[a-z_]+$/.test(b["code"]) ? b["code"] : `http_${res.status}`;
+          const error = typeof b?.["error"] === "string" ? b["error"].replace(/^[a-z_]+: /, "") : `HTTP ${res.status}`;
+          throw new Error(`${code}: ${where} refused the post: ${error}`);
+        }
+        const id = b?.["id"];
+        if (typeof id !== "string" || !id) throw new Error(`host_cannot_post: ${where} answered without a message id, so it takes no posts (a host from before them): nothing was posted`);
+        const sats = b?.["sats"];
+        return { id, ...(typeof sats === "number" && Number.isFinite(sats) && sats >= 0 ? { sats } : {}), ...(b?.["again"] === true ? { again: true as const } : {}) };
+      }
+      throw new Error(`host_unreachable: ${where} did not take the post after ${retryMs.length + 1} tries (${failure}); the same id posts once, so trying again is safe`);
     },
   });
 }

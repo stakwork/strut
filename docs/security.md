@@ -355,6 +355,36 @@ container in the compose (strut and any service that registers steps).
   the host reads its whole list, so a lost or repeated one changes nothing.
   Strut checks no tribe's owner: a turn as the linker has the linker's
   access alone, never an admin's.
+- **Posts in a place** (plans/place-posts.md; specs/API.md §13.4, "Posts
+  in a place"; `src/people.ts` `placesCapability`, `src/steps/lib/place/`).
+  A WORKFLOW posts in a linked place with `place/post { host, key, text,
+  reply?, id? }`, over `ctx.services.places` (on the shared bag). The run's
+  person (`ctx.principal`: who launched it, else the workflow's owner, as
+  `runsAs` names it for an automation) must hold a linked account of the
+  host's kind — anyone linked to the box, in any place linked there, not
+  only its linker (ruling 1); else `not_linked:`. The place must be one of
+  the host's here (`no_place:`), the host ready (`no_host:`). Strut then
+  POSTs `{ event: "post", id, key, text, reply?, run, workflow }` to the
+  host's hook and returns its answer, `{ id, sats?, again? }`; it reads
+  `host` and `key` for these checks alone and knows nothing of the medium.
+  The id is 32 hex, a hash of the run's workflow and the `id` given, or of
+  the run and the step's path, and the host posts one id once, so the
+  capability's own tries (no answer, a `429`, a `5xx` but `502`: three,
+  then `host_unreachable:`), a workflow's `retry:` and a resume post once.
+  A host's refusal fails at once with its code (`not_joined:`,
+  `bad_reply:`, `send_failed:` for a `502`); a `2xx` with no id is a host
+  from before posts (`host_cannot_post:`). Errors name the hook's origin,
+  never its URL, which carries the host's token. ONLY A WORKFLOW'S STEP
+  posts (ruling 2): `place/post` refuses unless `workflowStep(ctx)`
+  (run-step.ts) — never an agent's tool call (`ctx.agentTool`), a
+  single-step run (`step_run`, `meta/run-step`, `POST /steps/:type/run`)
+  or a proposal's apply (`ctx.proposal`): `workflow_only:`. A workflow an
+  agent wrote is a workflow, and posts; a host that wants otherwise leaves
+  `place/*` out of `builder.reach`. `place/list` (a read) names the places
+  of each host whose kind of account the person holds, `{ host, key,
+  name? }`, never a link or a linker. A package's step holds both for its
+  run's principal (`heldToItsRun`). No cap: each post pays the place's
+  price from the treasury (ruling 3).
 - **A host calls an app's tools** (plans/people-and-hosts.md §3, §9;
   docs/apps.md has the door). On `POST /mcp` a host key gets `step_run`
   alone, and only the steps an app's `hosts:` lists for that key's name —

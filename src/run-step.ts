@@ -41,6 +41,15 @@ export function pageCall(ctx: Partial<Pick<StepContext, "app" | "nested" | "path
   return !!ctx.app && !ctx.nested && workflowOf(ctx) === RUN_STEP_FLOW;
 }
 
+/** Is this call a STEP OF A WORKFLOW's run (plans/place-posts.md §4): never
+ *  an agent's tool call (`ctx.agentTool`), a single-step run (an app's or a
+ *  host's `step_run`, `meta/run-step`, `POST /steps/:type/run`) or a
+ *  proposal's apply (`ctx.proposal`). What a step only a workflow may call
+ *  asks. */
+export function workflowStep(ctx: Partial<Pick<StepContext, "agentTool" | "proposal" | "path" | "workflow">>): boolean {
+  return !ctx.agentTool && !ctx.proposal && workflowOf(ctx) !== RUN_STEP_FLOW;
+}
+
 /** The id of that flow's one step: the step TYPE, slashes as dots (an id
  *  cannot hold a `/` — it would read as a nested path), the version pin
  *  dropped. So the event path — and the agent name the Mothership bills,

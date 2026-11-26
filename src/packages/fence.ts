@@ -51,6 +51,7 @@ import { gitTokens, keepGitTokens, secretScopesOf, type HttpCapability, type Sec
 import type { AuthoringCapability } from "../authoring.js";
 import type { JobsCapability } from "../jobs.js";
 import type { PeersCapability } from "../peers.js";
+import type { PlacesCapability } from "../people.js";
 import type { ProposalsCapability } from "../proposals.js";
 import type { RunsCapability } from "../runs.js";
 import type { Upstream, WorkspaceStore } from "../workspace.js";
@@ -216,7 +217,8 @@ function held<T extends object>(cap: T, methods: Record<string, unknown>): T {
  * `jobs.followUp` takes the run itself, whose person strut reads, and
  * looks only with the package's own steps;
  * a request to a peer carries the run's principal as `x-strut-actor`, or
- * none. A run that acts for nobody launches none from it (`runs.launch`,
+ * none; a post in a place (`places.post`, `places.list`) is the run's
+ * principal's. A run that acts for nobody launches none from it (`runs.launch`,
  * `jobs.launch`): with no person, a launch runs as the launched workflow's
  * owner (`principalFor`). A nested run (`runWorkflow`) has no such
  * fallback, so it runs as nobody, as its parent does. Deciding a proposal
@@ -303,6 +305,14 @@ function heldToItsRun(services: Record<string, unknown>, ctx: StepContext<any>, 
         const headers = Object.fromEntries(Object.entries(init?.headers ?? {}).filter(([k]) => k.toLowerCase() !== "x-strut-actor"));
         return peers.fetch(id, path, { ...init, headers: { ...headers, ...(principal ? { "x-strut-actor": principal } : {}) } });
       },
+    });
+  }
+  // Posts in places (plans/place-posts.md): as its run's person alone.
+  const places = services["places"] as PlacesCapability | undefined;
+  if (places?.post) {
+    out["places"] = held(places, {
+      post: (post: Parameters<PlacesCapability["post"]>[0]) => places.post(post, principal),
+      list: () => places.list(principal),
     });
   }
   return out;
