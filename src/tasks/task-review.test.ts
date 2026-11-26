@@ -13,7 +13,7 @@ import { MemoryLedgerStore } from "../payments/ledger-memory.js";
  * The review verdict (plans/human-steps.md §9.6, ruled §9.12 4 and 5): a
  * person marks one ANSWER ok or rejected, with why. One suite over the
  * SQLite file and the memory twin, through the service. The route, the
- * `staff/review` step and who reaches them are in src/apps/staff.test.ts.
+ * `staff/review` step and who reaches them are in src/apps/workers.test.ts.
  */
 
 const T0 = Date.parse("2026-11-13T12:00:00Z");

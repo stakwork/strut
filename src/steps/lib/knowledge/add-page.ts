@@ -1,6 +1,7 @@
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { defineStep, type StepContext } from "../../../core.js";
+import { defineStep, type CardField, type ProposalDescription, type StepContext } from "../../../core.js";
 import createTriplet from "../graph/create-triplet.js";
+import { namesOf } from "../graph/_shared.js";
 import { requireTree } from "./_shared.js";
 
 /**
@@ -17,12 +18,12 @@ import { requireTree } from "./_shared.js";
  * holds the rule. On a Concept branch every page is ordinary.
  */
 type Cfg = Parameters<typeof createTriplet.run>[0];
+const isConcept = (t: unknown) => typeof t === "string" && t.trim().toLowerCase() === "concept";
 
 /** The refusal for a triplet that would change a page from git, or undefined. */
 async function touchesGit(cfg: Cfg, ctx: StepContext<StrutCapabilities>): Promise<Record<string, unknown> | undefined> {
   const sources = ctx.services?.conceptSources;
   if (ctx.branch || !sources) return undefined;
-  const isConcept = (t: unknown) => typeof t === "string" && t.trim().toLowerCase() === "concept";
   const named = [cfg.source_data, cfg.target_data]
     .map((d, i) => (d && isConcept(i === 0 ? cfg.source_type : cfg.target_type) && typeof d["name"] === "string" ? (d["name"] as string) : undefined))
     .filter((n): n is string => !!n);
@@ -35,6 +36,23 @@ async function touchesGit(cfg: Cfg, ctx: StepContext<StrutCapabilities>): Promis
   };
 }
 
+/** The person's CARD for a new page: its name, the page it goes under and
+ *  what it says, where `graph/create-triplet`'s own card shows the link
+ *  alone (`Job -PARENT_OF-> Release Notes`), in the graph's words. Any
+ *  other triplet (an existing page put under a parent) keeps that card. */
+async function describePage(cfg: Cfg, ctx: StepContext<StrutCapabilities>): Promise<ProposalDescription | undefined> {
+  const data = cfg.target_data as Record<string, unknown> | undefined;
+  const name = typeof data?.["name"] === "string" ? data["name"].trim() : "";
+  if (!name || !isConcept(cfg.target_type) || String(cfg.edge_type ?? "").toUpperCase().replace(/ /g, "_") !== "PARENT_OF") return createTriplet.describe?.(cfg, ctx);
+  const parent = (cfg.source_ref_id ? (await namesOf(ctx, [cfg.source_ref_id])).get(cfg.source_ref_id) : undefined) ?? (cfg.source_data as Record<string, unknown> | undefined)?.["name"];
+  const text = (k: string) => (typeof data?.[k] === "string" && (data[k] as string).trim() ? (data[k] as string).trim() : undefined);
+  const fields: CardField[] = [];
+  if (typeof parent === "string" && parent) fields.push({ label: "Under", value: parent });
+  if (text("description")) fields.push({ label: "Description", value: text("description")! });
+  if (text("docs")) fields.push({ label: "Text", value: text("docs")! });
+  return { title: `Add page: ${name}`, fields };
+}
+
 export default defineStep({
   type: "knowledge/add-page",
   effect: "write",
@@ -44,7 +62,7 @@ export default defineStep({
     "A new page is yours whatever its parent. A call that would change a page whose text comes from git (naming it, or moving it under another parent) is refused: change such a page with knowledge_edit_page.",
   input: createTriplet.input,
   output: createTriplet.output,
-  ...(createTriplet.describe ? { describe: createTriplet.describe } : {}),
+  describe: describePage,
   async answerGated(cfg, ctx: StepContext<StrutCapabilities>) {
     requireTree(ctx, "knowledge/add-page");
     return touchesGit(cfg, ctx);

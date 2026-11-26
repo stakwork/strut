@@ -9,7 +9,7 @@
  * The invite rides after `#`, so it never reaches a server; `/public/join`
  * (src/public-join.ts) turns it back into `sphinx.chat://?action=i&…` for
  * Peel. `a=` is strut's own section, in the link alone: the share `link` of
- * TASKS (`strut/worker`, `publicAppLinks`), percent-encoded, which Peel
+ * TASKS (`strut/tasks`, `publicAppLinks`), percent-encoded, which Peel
  * opens once the worker is signed up (or at once, for someone who has Peel
  * already: Peel ignores the invite then). Every link opens Tasks, the
  * server's one work page, so a worker keeps one page per employer; the kind
@@ -39,7 +39,7 @@ import { INVITE_CODE, NO_INVITES, type InviteStatus, type Payer, type WalletInvi
 import { INVITE_SATS_MAX } from "./ledger.js";
 import { publicAppLinks } from "../public-routes.js";
 import { inviteToken } from "../auth.js";
-import { WORKER_APP } from "../apps/worker-seed.js";
+import { TASKS_APP } from "../apps/tasks-seed.js";
 
 /** How long an invite's token lets its worker in. */
 export const INVITE_TOKEN_DAYS = 90;
@@ -52,9 +52,9 @@ export const INVITE_TOKEN_DAYS = 90;
  *  invite's code, creation time and note, so a listing shows the link the
  *  worker was sent. */
 export function invitedAppUrl(base: string, code: string, o: { createdAt?: string | undefined; type?: string | undefined; types?: string[] | undefined } = {}): string {
-  const link = publicAppLinks(base, WORKER_APP).link;
+  const link = publicAppLinks(base, TASKS_APP).link;
   const made = o.createdAt ? Date.parse(o.createdAt) : NaN;
-  const token = inviteToken(code, WORKER_APP, (Number.isFinite(made) ? made : Date.now()) + INVITE_TOKEN_DAYS * 86_400_000, o.types);
+  const token = inviteToken(code, TASKS_APP, (Number.isFinite(made) ? made : Date.now()) + INVITE_TOKEN_DAYS * 86_400_000, o.types);
   const input = new URLSearchParams({ ...(token ? { invite: token } : {}), ...(o.type ? { type: o.type } : {}) }).toString();
   return input ? `${link}&input=${encodeURIComponent(input)}` : link;
 }
@@ -247,7 +247,7 @@ export function createInvites(deps: InvitesDeps): Invites {
       ...(note?.by ? { by: note.by } : {}),
     };
   };
-  const tasksOnline = async () => (await deps.publicApps()).includes(WORKER_APP);
+  const tasksOnline = async () => (await deps.publicApps()).includes(TASKS_APP);
   const payerOf = async (): Promise<Payer & Required<Pick<Payer, "invite" | "invites" | "cancelInvite">>> => {
     const payer = await deps.payer();
     if (!payer) throw new InviteError("no_pay_credential", "this server's wallet has no pay credential: an invite is paid for by the Sphinx daemon's pay token");
@@ -260,8 +260,8 @@ export function createInvites(deps: InvitesDeps): Invites {
       const sats = o.sats ?? (await deps.inviteSats());
       if (!Number.isSafeInteger(sats) || sats < 1 || sats > INVITE_SATS_MAX) throw new InviteError("bad_request", `sats is a whole number from 1 to ${INVITE_SATS_MAX}`);
       const apps = await deps.publicApps();
-      if (!apps.includes(WORKER_APP)) {
-        throw new InviteError("no_worker_app", `the Tasks page (${WORKER_APP}) is not in the public view: put it online first, so the link has somewhere to open`);
+      if (!apps.includes(TASKS_APP)) {
+        throw new InviteError("no_worker_app", `the Tasks page (${TASKS_APP}) is not in the public view: put it online first, so the link has somewhere to open`);
       }
       if (o.type !== undefined) {
         const app = await deps.typeApp(o.type);

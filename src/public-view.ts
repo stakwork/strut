@@ -281,7 +281,7 @@ export interface PublicViewCapability {
   addApp(name: string, version: string, o: { proposal: string; actor?: string }): Promise<MadePublic>;
   /** Whether the app is in the public view, and its share links
    *  (`publicAppLinks`) when it is and this server has seen where it is
-   *  reached: what strut/staff hands a task type's workers. A read. */
+   *  reached: what strut/workers hands a task type's workers. A read. */
   share(name: string): Promise<AppShare>;
   /** The names of the apps in the public view: what `app/public-files`
    *  reads (plans/support-ai.md §2.2). A read. Optional: a host's own

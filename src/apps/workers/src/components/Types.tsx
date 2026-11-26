@@ -346,8 +346,8 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
             <NativeSelectOption value="">Choose an app…</NativeSelectOption>
             {d.app && !appRow && <NativeSelectOption value={d.app}>{d.app} (not here)</NativeSelectOption>}
             {(apps.data?.apps ?? [])
-              // Strut's own apps are not worker apps — but strut/worker is.
-              .filter((a) => !a.name.startsWith("strut/") || a.name === "strut/worker")
+              // Strut's own apps are not worker apps — but strut/tasks is.
+              .filter((a) => !a.name.startsWith("strut/") || a.name === "strut/tasks")
               .map((a) => (
                 <NativeSelectOption key={a.name} value={a.name}>
                   {a.title ? `${a.title} (${a.name})` : a.name}

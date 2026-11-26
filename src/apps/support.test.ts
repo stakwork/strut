@@ -17,21 +17,21 @@ import { createRegistry } from "../steps/registry.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { publicAppToken, setEnv, sphinxSignIn, stepCall, type Fetch } from "../test-util/public-door.js";
 import { STEP_RUN_TOOL } from "./tools.js";
-import { STAFF_APP } from "./staff-seed.js";
-import { WORKER_APP } from "./worker-seed.js";
+import { WORKERS_APP } from "./workers-seed.js";
+import { TASKS_APP } from "./tasks-seed.js";
 import { DROPPED_SUPPORT_TABLES, tasksPath } from "../tasks/tasks.js";
 import { sphinxCapability } from "../payments/sphinx-dm.js";
 import { payoutLine } from "../steps/lib/support/_shared.js";
 import { batchWithActor, withActor } from "../steps/lib/sqlite/_shared.js";
-import { COUNTS_SQL, CONVERSATION_SQL, LIST_SQL, PAYOUT_LINES_SQL, TAKE_SQL, THREAD_SQL, WELCOME_SQL } from "./staff/src/lib/support.js";
+import { COUNTS_SQL, CONVERSATION_SQL, LIST_SQL, PAYOUT_LINES_SQL, TAKE_SQL, THREAD_SQL, WELCOME_SQL } from "./workers/src/lib/support.js";
 import { startFakeSphinxDaemon, type FakeSphinxDaemon } from "../../scripts/fake-sphinx-daemon.js";
 
 /**
  * SUPPORT AS AN APP (plans/people-and-hosts.md §4, §5): the stand-in daemon
  * pushes each DM record to a real strut over HTTP — `support/receive` on
- * strut/staff's `hosts:` — and the admin's page reads Support's tables with
+ * strut/workers's `hosts:` — and the admin's page reads Support's tables with
  * SQL, writes its own columns, and sends through the `support/*` tools.
- * The `sphinx` capability is on an admin page's bag and on a run strut/staff
+ * The `sphinx` capability is on an admin page's bag and on a run strut/workers
  * launched (`support-outbox`), and on nothing else.
  */
 
@@ -40,7 +40,7 @@ const HOST = "support-app-host";
 const MESSAGE = "support-app-message";
 const json = { "content-type": "application/json" };
 const quiet = { serveUi: false, enableChat: false, enableMcp: true, scheduler: false, autoResume: false, wakeDelayMs: 0 } as const;
-/** strut/views stays: strut/staff imports its TaskForm. */
+/** strut/views stays: strut/workers imports its TaskForm. */
 const seedsOff = { jamie: false, knowledge: false, earnings: false, job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false } as const;
 
 const key = (n: number) => `0${2 + (n % 2)}${n.toString(16).padStart(2, "0").repeat(32)}`;
@@ -112,12 +112,12 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
     assert.equal(res.status, 200, await res.clone().text());
     return (res.headers.get("set-cookie") ?? "").split(";")[0]!;
   };
-  /** strut/staff's page shown to an admin: `{ result }` or `{ error }`. */
+  /** strut/workers's page shown to an admin: `{ result }` or `{ error }`. */
   const page = async (type: string, config: Record<string, unknown> = {}, cookie = admin): Promise<{ result?: any; error?: string }> => {
     const res = await strut.app.request("/mcp", {
       method: "POST",
       headers: { "x-strut-ui": "1", cookie, ...json, accept: "application/json, text/event-stream" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: STEP_RUN_TOOL, arguments: { type, config, app: appIdentity(STAFF_APP, "v1") } } }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: STEP_RUN_TOOL, arguments: { type, config, app: appIdentity(WORKERS_APP, "v1") } } }),
     });
     const text = await res.text();
     const line = text.split("\n").find((l) => l.startsWith("data: "));
@@ -136,7 +136,7 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
     const res = await strut.app.request("/mcp", {
       method: "POST",
       headers: { authorization: `Bearer ${HOST}`, "x-strut-account": `sphinx:${account}`, ...json, accept: "application/json, text/event-stream" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: STEP_RUN_TOOL, arguments: { app: STAFF_APP, type, config: { records } } } }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: STEP_RUN_TOOL, arguments: { app: WORKERS_APP, type, config: { records } } } }),
     });
     const body = (await res.json()) as { result?: { isError?: boolean; content: Array<{ text: string }> } };
     return { status: res.status, value: JSON.parse(body.result?.content[0]?.text ?? "null") };
@@ -158,7 +158,7 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
     assert.deepEqual((await thread(ADA)).map((m) => [m.kind, m.from_me, m.text]), [["contact", 0, null], ["message", 0, "hello, Support"]]);
     assert.equal(await strut.people.nameOf(actorOf(ADA)), "Ada", "x-strut-account-name: the name is hers, kept by the people store");
     // The page reads again on the app's channel.
-    const said = await strut.services.channels!.read({ name: STAFF_APP, version: "v1" }, "support");
+    const said = await strut.services.channels!.read({ name: WORKERS_APP, version: "v1" }, "support");
     assert.ok(said.messages.some((m) => m.from.code === "support/receive"), JSON.stringify(said.messages));
     // Her key exchange also says `invites`: the daemon marked the invite used before pushing it.
     assert.ok(said.messages.some((m) => m.key === "invites"), "a new contact says invites");
@@ -180,7 +180,7 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
 
   it("an ordinary text DM from a known contact says changed, not invites", async () => {
     const bob = "02" + "b0".repeat(32);
-    const at = (key: string) => strut.services.channels!.read({ name: STAFF_APP, version: "v1" }, "support").then((r) => r.messages.filter((m) => m.key === key).length);
+    const at = (key: string) => strut.services.channels!.read({ name: WORKERS_APP, version: "v1" }, "support").then((r) => r.messages.filter((m) => m.key === key).length);
     await host([{ seq: 1, id: "bob-contact", time: "2030-01-01T00:00:00Z", fromMe: false, peer: { pubkey: bob }, kind: "contact" }], bob);
     const before = await at("invites");
     assert.ok(before > 0);
@@ -254,7 +254,7 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
     const welcome = await until("Cy's welcome", async () => (await thread(cy)).find((m) => m.from_me && m.by === "welcome" && m.status === "sent"));
     assert.equal(welcome.text, "Welcome! This is Support.");
     assert.ok((await rows(CONVERSATION_SQL, { worker: actorOf(cy) }))[0].welcomed_at > 0);
-    // The outbox ran for strut/staff, and could send: its bag carries `sphinx`.
+    // The outbox ran for strut/workers, and could send: its bag carries `sphinx`.
     const runs = await store.listRuns("support-outbox");
     assert.ok(runs.length >= 1);
     // Her contact record again (a retry), and Bo writing now: no second welcome, none for Bo.
@@ -284,9 +284,9 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
 
   it("a worker's first time in Tasks, signed in with Peel: the welcome goes to their address, met there, once; none for a contact, none with no welcome", async () => {
     const req: Fetch = (path, init) => strut.app.request(path, init);
-    const view = await strut.app.request("/public-view", { method: "PUT", headers: { authorization: `Bearer ${KEY}`, ...json }, body: JSON.stringify({ apps: [{ name: WORKER_APP }], visitors: { signIn: ["sphinx"] } }) });
+    const view = await strut.app.request("/public-view", { method: "PUT", headers: { authorization: `Bearer ${KEY}`, ...json }, body: JSON.stringify({ apps: [{ name: TASKS_APP }], visitors: { signIn: ["sphinx"] } }) });
     assert.equal(view.status, 200, await view.text());
-    const tasks = await publicAppToken(req, WORKER_APP);
+    const tasks = await publicAppToken(req, TASKS_APP);
     const me = async (token: string) => {
       const r = await stepCall(req, "/public/mcp", "task/me", {}, { authorization: `Bearer ${token}` }, tasks);
       assert.equal(r.error, undefined, r.error);
@@ -372,7 +372,7 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
   });
 
   it("a settled payout's line goes to a worker who is Support's contact, once, while payout lines are on", async () => {
-    const db = await strut.services.appDb!.open(STAFF_APP);
+    const db = await strut.services.appDb!.open(WORKERS_APP);
     const sphinx = sphinxCapability({ daemon: async () => ({ url: daemon.url, token: MESSAGE }) });
     await payoutLine(db, sphinx, { key: "payout-1", worker: actorOf(ADA), msat: 1_200_000 });
     await payoutLine(db, sphinx, { key: "payout-1", worker: actorOf(ADA), msat: 1_200_000 });
@@ -385,7 +385,7 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
     assert.equal((await thread(ADA)).filter((m) => m.by === "payout").length, 1);
   });
 
-  it("the sphinx capability: on an admin's page and on a run strut/staff launched; never on the shared bag or another app's run", async () => {
+  it("the sphinx capability: on an admin's page and on a run strut/workers launched; never on the shared bag or another app's run", async () => {
     assert.equal((strut.services as Record<string, unknown>)["sphinx"], undefined, "the shared bag");
     await strut.workspace.publishWorkflowByContent("bag-probe", "name: bag-probe\nsteps:\n  - id: probe\n    type: test/bag\n");
     const ranFor = async (app?: AppRef) => {
@@ -396,7 +396,7 @@ describe("Support as an app (plans/people-and-hosts.md §5)", () => {
       });
       return s.output as { sphinx: boolean };
     };
-    assert.equal((await ranFor({ name: STAFF_APP, version: "v1" })).sphinx, true, "strut/staff's run (support-outbox's place)");
+    assert.equal((await ranFor({ name: WORKERS_APP, version: "v1" })).sphinx, true, "strut/workers's run (support-outbox's place)");
     assert.equal((await ranFor({ name: "strut/views", version: "v1" })).sphinx, false, "strut's own app that is not an admin's");
     assert.equal((await ranFor()).sphinx, false, "a run of no app: a workflow, an agent's tools");
   });
@@ -415,7 +415,7 @@ describe("Support as first built is dropped at boot, with no copy (ruling 7)", (
       db.close();
       await mkdir(join(dataDir, "support", "files"), { recursive: true });
       await writeFile(join(dataDir, "support", "files", "abc"), "a worker's photo");
-      const strut = await createStrut({ ...quiet, ...seedsOff, views: false, staff: false, workspace: new WorkspaceManager(join(root, "ws")), store: new FileRunStore(join(root, "runs")), dataDir });
+      const strut = await createStrut({ ...quiet, ...seedsOff, views: false, workersApp: false, workspace: new WorkspaceManager(join(root, "ws")), store: new FileRunStore(join(root, "runs")), dataDir });
       try {
         await until("<dataDir>/support/ removed", async () => !existsSync(join(dataDir, "support")));
         // The task store opens the file at boot (its sweep); the tables go then.

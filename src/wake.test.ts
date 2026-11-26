@@ -75,7 +75,12 @@ describe("wakePrompt on the template strut ships", () => {
     // The plan's job is the hub (ruling 1: it reviews each item with the work in front of it). Said the
     // other way round, "start the item its job names next", a real model started every item itself from
     // the plan's first reply and the plan's job never ran again (2026-11-21, two runs).
-    assert.ok(p.includes('A plan the person approved is such a request, and its job runs it: the person\'s "go" and every item that ends, the last one too, go to the plan\'s job (job/continue)'), p);
+    assert.ok(p.includes("A plan the person approved once its questions reached them is such a request"), p);
+    assert.ok(p.includes('and its job runs it: the person\'s "go" and every item that ends, the last one too, go to the plan\'s job (job/continue)'), p);
+    // A go given before the plan came back is not a go on it. Told "ok do the strut change" 41 s before the
+    // plan's five questions arrived, the wake took every default and started the build 16 s later; the
+    // person first saw the plan's choices in a 1,300-line pull request (2026-11-25, strut#906).
+    assert.ok(p.includes("a go sent before that started the plan, not the work: ask them its questions"), p);
     // The item goes back to be CHECKED, with its job id, so the plan's job reads the work. Handed back as "is
     // finished and verified … update plan.md and name the next", with no id, the plan's job only edited its
     // file and called both items verified (2026-11-22, one run).

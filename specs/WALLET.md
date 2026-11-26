@@ -414,7 +414,7 @@ challenge minted for the seller's host and has not ended.
    calls `signIn()`, which a page does on a press; otherwise strut's own
    sheet shows **Sign in with ⟨wallet⟩**, whose press is a fresh tap, and
    sends `sign_in` again. A page may also ask SILENTLY as it loads
-   (`signIn({ silent: true })`, @strut/kit/visitor; strut/worker's Tasks
+   (`signIn({ silent: true })`, @strut/kit/visitor; strut/tasks's Tasks
    does): strut's UI sends `sign_in` once and takes only a signature — a
    refusal draws no sheet of strut's and tries no other method
    (web/src/visitor-signin.ts `signInSilently`). Untapped, only a grant

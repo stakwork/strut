@@ -90,6 +90,7 @@ import {
   DEFAULT_HOLD_HOURS,
   DEFAULT_TEST_RULES,
   GROUP_MAX,
+  GROUP_STATUSES,
   MemoryTaskStore,
   TASK_LIST_MAX,
   STATS_WINDOWS,
@@ -114,6 +115,7 @@ import {
   type StandingRule,
   type Verdict,
   type PayOn,
+  type GroupStatus,
   type TaskGroup,
   type TaskListQuery,
   type TaskRecord,
@@ -139,11 +141,11 @@ import { liveGrants, MemoryWorkerStore, noStatuses, WORKER_STATUSES, type Grant,
 
 export type { AnswerSchema } from "./answer-schema.js";
 export type { LimitRule, LeaseTotals } from "./task-store.js";
-export type { CopiesRule, GradeResult, GradeRule, Lease, PayOn, ReviewRecord, StatsWindow, TaskGroup, TaskRecord, TaskReply, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
+export type { CopiesRule, GradeResult, GradeRule, GroupStatus, Lease, PayOn, ReviewRecord, StatsWindow, TaskGroup, TaskRecord, TaskReply, TaskSettled, TaskStatus, TaskType, TestInstance, TestRecord, TestRules, Verdict, WorkerWeek } from "./task-store.js";
 export type { PayeeBalance } from "../payments/ledger.js";
 export type { AttachmentRule } from "./answer-files.js";
 export type { Standing } from "./task-tests.js";
-export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, GROUP_MAX, PAY_ON, TASK_STATUSES, VERDICTS } from "./task-store.js";
+export { DEFAULT_HOLD_HOURS, DEFAULT_TEST_RULES, GROUP_MAX, GROUP_STATUSES, PAY_ON, TASK_STATUSES, VERDICTS } from "./task-store.js";
 export { COPIES_MAX, DEFAULT_COPIES_RULE } from "./task-copies.js";
 export type { Grant, WorkerRecord, WorkerStatus } from "./worker-store.js";
 export { OPEN_GRANT_BY } from "./worker-store.js";
@@ -240,7 +242,7 @@ export async function openTaskStores(o: { dataDir: string } | { file: string }):
 export const TASKS_IN_MEMORY = ":memory:";
 
 /** Support's tables as it was first built (plans/support-chat.md §4),
- *  dropped whenever the file is opened: Support is strut/staff's own now, in
+ *  dropped whenever the file is opened: Support is strut/workers's own now, in
  *  the app's SQLite, and nothing of these was copied
  *  (plans/people-and-hosts.md §5, ruling 7). */
 export const DROPPED_SUPPORT_TABLES = ["support_messages", "support_conversations", "support_state"] as const;
@@ -287,6 +289,7 @@ export type TaskErrorCode =
   | "bad_answer"
   | "unknown_worker"
   | "unknown_task"
+  | "unknown_group"
   | "too_many"
   | "not_listed"
   | "no_file"
@@ -836,9 +839,10 @@ export interface TasksCapability {
   list(q?: TaskListQuery): Promise<TaskView[]>;
   /** The groups of tasks the runs named (`task/reply`'s `group`), of one
    *  type when asked, the one with the newest task first: each with its
-   *  tasks, answers, verdicts and who answered. Strut's own store's; a
-   *  host's may have none. */
-  groups?(q?: { type?: string; limit?: number }): Promise<TaskGroup[]>;
+   *  tasks, answers, verdicts, who answered and the status staff set; of
+   *  one name or one status when asked. Strut's own store's; a host's may
+   *  have none. */
+  groups?(q?: { type?: string; group?: string; status?: GroupStatus; limit?: number }): Promise<TaskGroup[]>;
   task(id: string): Promise<TaskView | undefined>;
   /** One worker as staff read them, with their standing (§7.5). */
   worker(actor: string): Promise<StaffWorker | undefined>;
@@ -862,6 +866,10 @@ export interface TasksService {
    *  first; none when the store was never opened. The invites list's "who
    *  took it", read without the staff worker view's cost. Never on a bag. */
   grantedBy(by: string): Promise<string[]>;
+  /** Every task type drawn by app `from`, drawn by `to`, nothing else
+   *  changed: a renamed app's boot step (src/apps/renamed-boot.ts). The
+   *  names of the types changed; none when the store was never opened. */
+  retypeApp(from: string, to: string): Promise<string[]>;
   /** Frozen: the whole store — the staff routes' (`src/tasks/routes.ts`),
    *  which hold it. Never on a services bag (plans/human-steps.md §9.2). */
   capability: TasksCapability;
@@ -910,6 +918,10 @@ export interface TasksService {
    *  others. A person's act (`POST /tasks/groups/review`); never on a
    *  capability. */
   reviewGroup(o: { group: string; type?: string; verdict: Verdict; why?: string; by?: string }): Promise<{ reviewed: number; more: boolean }>;
+  /** A group's status, `open` or `done`, kept with who set it, when and
+   *  why beside every change before; answers the group as it now stands.
+   *  A person's act (`POST /tasks/groups/status`); never on a capability. */
+  setGroupStatus(o: { type: string; group: string; status: GroupStatus; why?: string; by?: string }): Promise<TaskGroup>;
   /** §7.1: the staff's tests, for the test routes alone. */
   tests: TestAuthoring;
   /** §7.9: every test instance graded. Returns the unsubscribe. */
@@ -1979,7 +1991,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       // Staff's verdict on each answer of theirs (§9.6): what to fix, and why.
       const answered = leases.filter((l) => l.status === "submitted");
       const verdicts = answered.length ? new Map((await s.tasks.reviewsOf([...new Set(answered.map((l) => l.task))])).filter((r) => r.worker === w.actor).map((r) => [r.task, r])) : new Map<string, ReviewRecord>();
-      const groups = o.groups ? (await s.tasks.groups({ worker: w.actor, types: [...kinds.keys()].filter(mine) })).map(({ workers: _w, ...g }) => g) : undefined;
+      const groups = o.groups ? (await s.tasks.groups({ worker: w.actor, types: [...kinds.keys()].filter(mine) })).map(({ workers: _w, statusBy: _b, ...g }) => g) : undefined;
       return {
         items: leases.map((l): WorkerHistoryItem => {
           const e = earned.get(l.id);
@@ -2180,8 +2192,12 @@ export function createTasks(deps: TasksDeps): TasksService {
 
     async groups(q = {}) {
       if (q.type !== undefined && typeof q.type !== "string") throw new TaskError("bad_request", "type is a task type's name");
+      if (q.status !== undefined && !GROUP_STATUSES.includes(q.status)) throw new TaskError("bad_request", `status is ${GROUP_STATUSES.join(" or ")}`);
+      const group = q.group === undefined ? undefined : groupOf(q.group);
       const s = await storesIfAny();
-      return s ? s.tasks.groups({ ...(q.type ? { types: [q.type] } : {}), ...(q.limit !== undefined ? { limit: q.limit } : {}) }) : [];
+      return s
+        ? s.tasks.groups({ ...(q.type ? { types: [q.type] } : {}), ...(group !== undefined ? { group } : {}), ...(q.status ? { status: q.status } : {}), ...(q.limit !== undefined ? { limit: q.limit } : {}) })
+        : [];
     },
 
     async task(id) {
@@ -2414,6 +2430,19 @@ export function createTasks(deps: TasksDeps): TasksService {
       }
     }
     return { reviewed, more: tasks.length >= TASK_LIST_MAX };
+  };
+
+  const setGroupStatus: TasksService["setGroupStatus"] = async (o) => {
+    if (!o || typeof o !== "object") throw new TaskError("bad_request", "a group's status is { type, group, status, why? }");
+    const type = need("type", o.type);
+    const group = groupOf(o.group);
+    if (!GROUP_STATUSES.includes(o.status)) throw new TaskError("bad_request", `status is ${GROUP_STATUSES.join(" or ")}`);
+    const why = o.why === undefined || o.why === null ? undefined : text("why", o.why).trim() || undefined;
+    const s = await storesIfAny();
+    const one = async () => (s ? (await s.tasks.groups({ types: [type], group, limit: 1 }))[0] : undefined);
+    if (!(await one())) throw new TaskError("unknown_group", `no task of ${type} is in the group ${group}`);
+    await s!.tasks.setGroupStatus({ type, group, status: o.status, ...(why ? { why } : {}), ...(o.by !== undefined ? { by: o.by } : {}), at: now() });
+    return (await one())!;
   };
 
   // ── the queue: grading (§7.4) and deciding copies (§7.6) ──────────────
@@ -2869,6 +2898,13 @@ export function createTasks(deps: TasksDeps): TasksService {
       const s = await storesIfAny();
       return s ? s.workers.grantedBy(by) : [];
     },
+    retypeApp: async (from, to) => {
+      const s = await storesIfAny();
+      if (!s) return [];
+      const types = (await s.tasks.types()).filter((t) => t.app === from);
+      for (const t of types) await s.tasks.putType({ ...t, app: to });
+      return types.map((t) => t.name);
+    },
     capability: frozen,
     human: Object.freeze({ ensure: frozen.ensure, reply: frozen.reply }),
     worker: Object.freeze({ next: frozen.next, submit: frozen.submit, skip: frozen.skip, file: frozen.file, me: frozen.me, history: frozen.history, withdraw }),
@@ -2899,6 +2935,7 @@ export function createTasks(deps: TasksDeps): TasksService {
     takeBack,
     review,
     reviewGroup,
+    setGroupStatus,
     tests,
     onGraded(listener) {
       gradedListeners.add(listener);

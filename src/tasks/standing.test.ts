@@ -243,7 +243,7 @@ describe("a standing type on a strut: a pick-up, an answer, the run", () => {
       orchestrator: false,
       builder: false,
       views: false,
-      staff: false,
+      workersApp: false,
       jamie: false,
       knowledge: false,
       earnings: false,

@@ -44,6 +44,11 @@
 > trials UI right?)"* *"what about Experiment being the Job kind, and
 > then it has its own children?"*
 >
+> **Work done, then a new prompt (owner, 2026-11-25),** on proving that
+> an agent knows what a person means: *"By running examples of work
+> being done, and then a brand new prompt that should understand
+> immediately what the user is talking about"*.
+>
 > Only the quoted words are the owner's. The rest is proposed. Read
 > against strut `main` @07101d4b and stakwork/pods `main` @95d6c37, and
 > strut checked again @20fca3ee.
@@ -105,6 +110,53 @@ home, and nobody types it twice.
 **A person can do any of it by hand,** through the same steps, and it
 is the same record drawn the same way. The record says who made each
 case, claim and change.
+
+## The box is the lab
+
+An experiment runs on the server it is asked on. Its cases are runs of
+workflows there, and a change is tried on a copy of the pages (a Concept
+branch). It needs no repository and no pod.
+
+Most experiments are this kind (owner, 2026-11-25): *"The core purpose
+of strut apps is to make generative-AI-powered apps (text, image, etc),
+so people will want jamie to know how to make experiments for them too!
+A nice automatic testing paradigm for prompts sort of?"*
+
+```text
+person:  make the summaries shorter but keep every action item
+jamie:   what's your budget?
+person:  $5
+jamie:   9 of 10 with the new wording, 6 of 10 before.      [Use it]
+```
+
+A pod comes in only when what is being changed is code in a repository:
+strut's own (`plans/tools-as-pages.md`), or an app that lives in one.
+Then the lab is a second server, run from the branch. The pods example
+below is neither: its cases set pods up, so a pod is what it tests, not
+where it runs.
+
+### An app's own prompts
+
+What an app's model is told goes on a page, as everywhere in strut
+(AGENTS.md, "Core ideas"). The app's workflow reads the page
+(`context/concept`), and its YAML holds no instructions. Then a claim on
+the page, cases that are inputs to the app's workflow, a test of a new
+wording and Use it all work on it as built: by an admin in the Knowledge
+app today, and by Jamie once the test steps are his ("What strut
+needs").
+
+- **The `App` page says so,** where it tells how an app's workflows are
+  written, so an app Jamie builds can be tested from its first version.
+  `Workflow Language` is rendered from the builder's rules, which stay as
+  they are.
+- **It costs a card.** A job adds a page with `knowledge/add-page`,
+  which asks the person first. Proposed: one card at an app's first
+  build, for a page named for the app; a second prompt is a page under
+  it. Later an app could ship its pages in its own directory, as a
+  package does.
+- **What is kept in `params` instead** (a model's name, a temperature, a
+  tool list) is tried with a case that carries `params` ("What strut
+  needs").
 
 ## Starting one
 
@@ -172,11 +224,16 @@ stay after it ends.
 | --- | --- |
 | **A budget on a job:** a cap on the model calls of the job and every run it starts, kept at the gateway ("The budget" below) | A run carries a cap the gateway keeps, and a person's delegation a ceiling over all their work. Nothing caps a job and what it starts |
 | **A test of a change that spans pages,** either side able to start from an earlier test's change ("A test of several pages") | `test` takes one page's new wording against the page as it is |
+| **A case with a history:** launches that run first, in order, before the one that is judged, and a judge that reads all of it ("A case with a history") | A case is one launch: a workflow and its input. "A case of more than one message" is not built (docs/knowledge.md) |
 | **The test steps as Jamie's tools:** `knowledge/checks`, `add-check`, `cases`, `trial`, `test` and `sample`, for a job with a budget, which is told when a test's last sample is judged | They answer only strut's own page shown to an admin: "a trial spends, and a page's words are an agent's rules" (open question 1). A trial's end wakes nothing |
 | **The form and the list** in the Knowledge app, and a page's experiments on its card | A page's card has its checks and tests |
 | **A sample's files kept with its verdict:** what its run left, for whoever opens the dot | A sample that ran as a job loses them. Strut closes the job once it is judged, and that deletes its directory |
 | **As many cases as a benchmark has,** and samples of each: for a job with a budget, the budget is the limit | At most 20 cases on a claim, and 20 samples of each (`CASES_MAX`, `TRIAL_N_MAX` in `src/trials.ts`) |
 | **The `Experiment` page,** under `Job`, and the list reading the kinds under it | Not there. A kind under a kind works already |
+| **A case carries `params`:** a model's name, a tool list, a prompt that is not on a page. Narrower only, where they grant tools (`plans/tools-as-pages.md`) | A case is a workflow and its input. A launch already takes `params`, and refuses ones that widen a grant (`grantWidenedBy`, `src/closure.ts`) |
+| **A build leaves nothing behind:** what a trial's job published (workflows, steps, apps) goes when the job closes, and two samples of one case never run at once | Closing a job removes its directory, its record and what it held. What it published stays, and the next sample builds on it |
+| **A real run as a case:** a run a person's app already made, kept as a case with its input | A case is typed in. `knowledge/sample` opens a trial's run and no other |
+| **A judge that hears and watches,** for an app that makes sound or video | The standard judge reads text and is shown images (`context/work-file`) |
 
 That is all. The budget is any job's to have, not only an experiment's.
 No new kind of node, no workflow of its own, and nothing in stadeum: the
@@ -224,6 +281,69 @@ changed side, so a climb builds on its best so far. A Concept branch is
 a copy of the whole tree, a package's pages included (`src/branches.ts`),
 so the changed side runs as it does today.
 
+### A case with a history
+
+A case gains `before`: launches that run first, in order, each a
+workflow and its input. The case's own launch then runs, and it alone is
+judged. So a case can say: this work was done, then this was asked.
+
+```yaml
+claims:
+  - text: A new conversation knows which earlier work a message means, without asking.
+    workflow: orchestrator
+    cases:
+      - before:
+          - { workflow: job, input: { prompt: "Write a one-page brief on the spring price change, as brief.md." } }
+        prompt: Make the pricing brief shorter.
+```
+
+In a page's file a case is the workflow's input, so `before` is a key
+beside it. An entry is a case, `{ workflow, input }`, or the input alone
+when it runs the claim's workflow.
+
+- **One sample is one history.** Every launch of it is the sample's
+  trial and runs on its branch. A page the history writes is there for
+  the launch that is judged, and goes with the branch.
+- **The judged launch starts new.** The history's turns are one
+  conversation, and each of its jobs is a job of its own, as a job's case
+  is today. The judged launch is a new conversation. It knows of the
+  history only what the box kept: its pages, and what its lists show
+  (`plans/recent-work.md`).
+- **What a launch would start is held,** as in any trial. A history
+  names each job as an entry (open question 7), and the judged turn's
+  answer carries the brief it would have sent (`held`). The judge reads
+  that brief: whether it names the right thing is the test.
+- **The judge reads the history, and the run never does.** The work a
+  judge is handed (`src/work.ts`) holds the history's runs before the
+  judged one, marked as the history. So one claim covers every case, and
+  no case needs its answer written down.
+- **A sample's work is its own.** The jobs and conversations a history
+  makes are listed to that sample's runs alone, a list kept for a person
+  (Recent Work keeps each for five minutes) is read new inside a sample,
+  and all of it is closed once the sample is judged. Today a trial's job
+  is in every list until it closes, so two samples of one case would
+  each see the other's history (open question 8).
+- **A sample's time and cost are the judged launch's,** so a change that
+  understands sooner shows as a number. The history's cost is spent from
+  the budget like any run's.
+- **A case's id covers its history** (`testCaseId`), so one question
+  asked after two histories is two cases.
+
+The first cases are the two failures `plans/recent-work.md` item 6
+names, checked by hand so far and for apps only: "experiments.md … in
+the stadium repo", and a screenshot of the trials UI asked by a person
+who never opened the Knowledge app. Any plan whose last step is "replay
+this on a scratch strut, then look" can keep that step as a case
+(stakwork/strut#894 item 5).
+
+A dream can be an entry too, once `dream/turns` reads a sample's turns
+alone inside one. Today it reads every conversation on the box.
+
+Where: `src/claims-schemas.ts` (the case, and a page's `claims:` block),
+`src/graph/claims.ts` (`testCaseId`), `src/trials.ts` (`sampleRun`, and
+the sample on `RunTrial`), `src/work.ts` (the history in a work), the
+job and conversation lists, and the case form in the Knowledge app.
+
 ## Everything else is a prompt
 
 The owner's list. Each could be a page under `Experiment`. Only the
@@ -238,6 +358,7 @@ Jamie would make up.
 | **Making a video** | A brief | A model watching the result |
 | **Writing concepts** | Conversations to learn from | A model reading the pages that were written |
 | **A benchmark** | One of its tasks | Its grader |
+| **Knowing what a person means** | Work done, then a new message that names it loosely ("A case with a history") | A model reading what the turn would start against the history |
 
 The answer to a case is a claim's sentence, or something its check
 knows. The run sees neither: it is handed the page, never its claims.
@@ -318,3 +439,13 @@ Each is the same steps, used by something else:
    take hours, and pod time is uncapped. Proposed: `Pod Setup Experiment`
    asks for one sample of each case at first, and four at a time stays
    until a climb shows it is the wall.
+7. **A history's jobs.** A trial holds what a turn would start, so a
+   history's turn starts nothing. Proposed: a history names each job as
+   an entry of its own. Or do a history's turns start their jobs inside
+   the sample, with the wake turns that follow?
+8. **Whose work a sample sees.** A sample runs as whoever started the
+   trial, so that person's real work is in its lists beside the
+   history's. Proposed: as it is, with made-up names in the cases, and a
+   sample's own jobs and conversations hidden from everything else. A
+   person of the sample's own, and a history by two people, need a run
+   seen as one person that spends as another.

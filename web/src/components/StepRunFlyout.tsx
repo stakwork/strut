@@ -42,10 +42,10 @@ export function StepRunFlyout(props: {
    *  step (RUN_CONTROL_SPEC §5.2). Only passed for non-live runs. Rejects
    *  with the server's reason, shown under the button. */
   onRerunFrom?: () => Promise<void>;
-  /** A parked step's task opens strut/staff on it, for a viewer the app is
+  /** A parked step's task opens strut/workers on it, for a viewer the app is
    *  listed to (plans/human-steps.md §9.1). */
   onOpenApp?: (name: string, input?: string) => void;
-  staffListed?: boolean;
+  workersListed?: boolean;
 }) {
   const { step } = props;
   const [rerunError, setRerunError] = useState<string | null>(null);
@@ -84,7 +84,7 @@ export function StepRunFlyout(props: {
               <div class="flyout-meta-row">
                 <span class="flyout-meta-label">Waiting on</span>
                 <span class="flyout-meta-value">
-                  <WaitingOn on={disp.parked.on} staffListed={props.staffListed} onOpenApp={props.onOpenApp} />
+                  <WaitingOn on={disp.parked.on} workersListed={props.workersListed} onOpenApp={props.onOpenApp} />
                 </span>
               </div>
             )}

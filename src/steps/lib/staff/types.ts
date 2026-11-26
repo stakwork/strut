@@ -17,7 +17,7 @@ export default defineStep({
   type: "staff/types",
   effect: "read",
   description:
-    "The task types (GET /tasks/types): each with its app, answer shape, lease, expiry, on or off, pay and hold, tests and copies, and `share`: whether its app is in the public view, and its links for workers (`link`, `peelLink`, a QR of the Peel one); and `tasks`, the same for Tasks (strut/worker), the page every invite opens. Only strut's own staff app, shown to an admin.",
+    "The task types (GET /tasks/types): each with its app, answer shape, lease, expiry, on or off, pay and hold, tests and copies, and `share`: whether its app is in the public view, and its links for workers (`link`, `peelLink`, a QR of the Peel one); and `tasks`, the same for Tasks (strut/tasks), the page every invite opens. Only strut's own Workers app, shown to an admin.",
   input: z.object({}),
   output: z.any(),
   async run(cfg, ctx: StepContext) {
@@ -44,8 +44,8 @@ export default defineStep({
         return share ? { ...t, share } : t;
       }),
     );
-    const { WORKER_APP } = await import("../../../apps/worker-seed.js");
-    const tasks = await shareOf(WORKER_APP);
+    const { TASKS_APP } = await import("../../../apps/tasks-seed.js");
+    const tasks = await shareOf(TASKS_APP);
     return { ...out, types: withShare, ...(tasks ? { tasks } : {}) };
   },
 });

@@ -62,7 +62,7 @@ export async function fromGit(cfg: EditCfg, ctx: StepContext<StrutCapabilities>)
     status: "skipped",
     page: source.name,
     source: at,
-    note: `Nothing changed: the text of ${source.name} comes from git (${at}), and ${why}. Say so in the lesson's change, and do not change this page another way.`,
+    note: `Nothing changed: the text of ${source.name} comes from git (${at}), and ${why}. Say so (in the lesson's change, when you are writing one), and do not change this page another way. A change meant for this server goes on a NEW page under ${source.name}, made here, with a description that says when to open it.`,
   });
   if (typeof cfg.node_data?.["name"] === "string" && cfg.node_data["name"] !== source.name) return skipped("a page from git keeps its name");
   // The page as it would read with the edit: what its file is to hold.

@@ -7,7 +7,7 @@ export default defineStep({
   type: "staff/review-group",
   effect: "write",
   description:
-    "Mark every answer in a group (task/reply's group; of one type when given) that has no verdict yet ok, or rejected with why (POST /tasks/groups/review): one review each, as staff/review gives it; a verdict already given stays. At most 1000 tasks a call: more says there may be others. Answers { reviewed, more }. Only strut's own staff app, shown to an admin.",
+    "Mark every answer in a group (task/reply's group; of one type when given) that has no verdict yet ok, or rejected with why (POST /tasks/groups/review): one review each, as staff/review gives it; a verdict already given stays. At most 1000 tasks a call: more says there may be others. Answers { reviewed, more }. Only strut's own Workers app, shown to an admin.",
   input: z.object({ group: z.string().min(1), type: z.string().optional(), verdict: z.enum(["ok", "rejected"]), why: z.string().optional() }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {

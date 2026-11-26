@@ -16,10 +16,10 @@ import { createRegistry } from "../steps/registry.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { readFile } from "node:fs/promises";
 import { STEP_RUN_TOOL, redactedConfig } from "./tools.js";
-import { STAFF_APP, STAFF_DIR, seedStaffApp } from "./staff-seed.js";
+import { WORKERS_APP, WORKERS_DIR, seedWorkersApp } from "./workers-seed.js";
 import { answerSchemaProblem } from "../tasks/answer-schema.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
-import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./staff/src/lib/schema.js";
+import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./workers/src/lib/schema.js";
 import {
   anyOpenWork, answerFiles, fmtWhen, grantedBy, inviteChoices, inviteWorkText, isPicture, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, needsYou, navOf, toReviewOf, moneyOf, captionOf, answerLine, answerFields, emptyFields, pictureOf, tookText, happenings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
   INVITE_WORDS, acceptedBy, inviteBadge, inviteExpiry, sortInvites, inviteOpen, invitesReadMs, inviteSatsOf, inviteWhyText, whatsappUrl,
@@ -29,16 +29,16 @@ import {
   attachProblem,
   SUPPORT_FILTERS,
   jpgName,
-} from "./staff/src/lib/view.js";
-import { draftOf, saveOf, shapeChanged } from "./staff/src/lib/draft.js";
-import { conversationOf, likeOf, messageOf, searchHit, settingsOf, type MessageRow } from "./staff/src/lib/support.js";
-import type { TaskStats, TaskType, Worker } from "./staff/src/lib/types.js";
+} from "./workers/src/lib/view.js";
+import { draftOf, saveOf, shapeChanged } from "./workers/src/lib/draft.js";
+import { conversationOf, likeOf, messageOf, searchHit, settingsOf, type MessageRow } from "./workers/src/lib/support.js";
+import type { TaskStats, TaskType, Worker } from "./workers/src/lib/types.js";
 import statsStep from "../steps/lib/staff/stats.js";
 import saveTestStep from "../steps/lib/staff/save-test.js";
 import { qrSvg } from "../move/link.js";
 
 /**
- * `strut/staff` (plans/human-steps.md §9, §9.11): the task store's staff
+ * `strut/workers` (plans/human-steps.md §9, §9.11): the task store's staff
  * routes as an admin's page. Its pure parts (the answer's shape to schema
  * and back, the Queue's warnings, the deep links, which parts of items 4
  * and 5a show); its door (only strut's own page shown to an admin, and
@@ -52,12 +52,12 @@ const PEER_KEY = "staff-peer-key";
 const SECRET = "the-expected-answer-7f3a";
 const MATCH = { type: "object", properties: { same: { type: "boolean", title: "The same pet?" }, note: { type: "string", maxLength: 200 } }, required: ["same"] };
 const quiet = { serveUi: false, enableChat: false, enableMcp: true, scheduler: false, autoResume: false, wakeDelayMs: 0 } as const;
-/** strut/views stays: strut/staff imports its TaskForm. */
+/** strut/views stays: strut/workers imports its TaskForm. */
 const seedsOff = { jamie: false, knowledge: false, earnings: false, job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false, mediaWorkflows: false } as const;
 
 // ── its pure parts ─────────────────────────────────────────────────────────
 
-describe("strut/staff: the answer's shape in the type editor", () => {
+describe("strut/workers: the answer's shape in the type editor", () => {
   const drawable: unknown[] = [
     MATCH,
     { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4, title: "A box" },
@@ -116,7 +116,7 @@ describe("strut/staff: the answer's shape in the type editor", () => {
   });
 });
 
-describe("strut/staff: the type editor's draft", () => {
+describe("strut/workers: the type editor's draft", () => {
   const type: TaskType = {
     name: "pets", app: "workers", answer: MATCH as never, leaseSeconds: 900, withinHours: 48, enabled: false, open: false, paySats: 20, holdHours: 24, payOn: "ok",
     tests: { rate: 0.1, newRate: 0.3, newTasks: 40, qualify: 5, window: 10, minGraded: 5, threshold: 0.7, grade: { step: "grade/judge", config: { rubric: "same pet" } }, gradeCapUsd: 0.02 },
@@ -204,7 +204,7 @@ describe("strut/staff: the type editor's draft", () => {
   });
 });
 
-describe("strut/staff: the Queue, deep links, and what shows", () => {
+describe("strut/workers: the Queue, deep links, and what shows", () => {
   const row = (over: Partial<TaskStats["types"][number]>): TaskStats["types"][number] => ({
     type: "pets", app: "workers", enabled: true, waiting: 0, working: 0, dueSoon: 0, dueHour: 0, granted: 1, holding: 0, asking: 0,
     windows: { hour: zero(), day: zero(), week: zero() }, ...over,
@@ -540,15 +540,15 @@ describe("strut/staff: the Queue, deep links, and what shows", () => {
 
 // ── its door ───────────────────────────────────────────────────────────────
 
-describe("strut/staff: the door, outside its page", () => {
+describe("strut/workers: the door, outside its page", () => {
   it("a staff/* step refuses a workflow, a model-written page, a member's view of strut's own, and a call with no door", async () => {
     const door = { staffAdmin: { call: async () => ({ ok: true, status: 200, body: { types: [] } }) } };
     const run = (ctx: object) => statsStep.run({}, { services: door, ...ctx } as never);
     await assert.rejects(() => run({}), /an admin's/);
     await assert.rejects(() => run({ app: { name: "acme/x", version: "v1", admin: true } }), /an admin's/, "a model-written page, even granted it");
-    await assert.rejects(() => run({ app: { name: STAFF_APP, version: "v1", firstParty: true } }), /an admin's/, "strut's own page shown to a member");
-    await assert.rejects(() => statsStep.run({}, { app: { name: STAFF_APP, version: "v1", firstParty: true, admin: true }, services: {} } as never), /door is not on this call/);
-    assert.deepEqual(await run({ app: { name: STAFF_APP, version: "v1", firstParty: true, admin: true } }), { types: [] });
+    await assert.rejects(() => run({ app: { name: WORKERS_APP, version: "v1", firstParty: true } }), /an admin's/, "strut's own page shown to a member");
+    await assert.rejects(() => statsStep.run({}, { app: { name: WORKERS_APP, version: "v1", firstParty: true, admin: true }, services: {} } as never), /door is not on this call/);
+    assert.deepEqual(await run({ app: { name: WORKERS_APP, version: "v1", firstParty: true, admin: true } }), { types: [] });
   });
 
   it("the door reaches /tasks alone; a refusal comes back as the step's error, its code first", async () => {
@@ -559,7 +559,7 @@ describe("strut/staff: the door, outside its page", () => {
     assert.deepEqual(await door.call("DELETE", "/tasks/types/pets"), { ok: false, status: 409, body: { error: "in_use: open tasks", code: "in_use" } });
     assert.deepEqual(sent, ["/tasks/types/pets"]);
     const step = (await import("../steps/lib/staff/delete-type.js")).default;
-    await assert.rejects(() => step.run({ name: "pets" }, { app: { name: STAFF_APP, version: "v1", firstParty: true, admin: true }, services: { staffAdmin: door } } as never), /^Error: in_use: open tasks$/);
+    await assert.rejects(() => step.run({ name: "pets" }, { app: { name: WORKERS_APP, version: "v1", firstParty: true, admin: true }, services: { staffAdmin: door } } as never), /^Error: in_use: open tasks$/);
   });
 
   it("a step that carries an expected answer redacts it; the monitor keeps a call's config redacted", () => {
@@ -598,7 +598,7 @@ steps:
       files: ["found.txt"]
 `;
 
-describe("strut/staff — seeded, an admin's, and its page's calls", () => {
+describe("strut/workers — seeded, an admin's, and its page's calls", () => {
   let strut: Strut;
   let root: string;
   const saved = { api: process.env["STRUT_API_KEY"], peer: process.env["STRUT_PEER_KEY"] };
@@ -644,7 +644,7 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     return (res.headers.get("set-cookie") ?? "").split(";")[0]!;
   };
   /** A page's call through a door, as its host relays it: `{ result }` or `{ error }`. */
-  const door = async (path: string, headers: Record<string, string>, type: string, config: Record<string, unknown> = {}, app = appIdentity(STAFF_APP, "v1")) => {
+  const door = async (path: string, headers: Record<string, string>, type: string, config: Record<string, unknown> = {}, app = appIdentity(WORKERS_APP, "v1")) => {
     const res = await strut.app.request(path, {
       method: "POST",
       headers: { "x-strut-ui": "1", "content-type": "application/json", accept: "application/json, text/event-stream", ...headers },
@@ -669,32 +669,32 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     }
   };
 
-  it("is seeded at boot: built, first-party, `admin: true`; a reboot is a no-op; `staff: false` and STRUT_HOST_CONFIG turn it off", async () => {
-    const app = await strut.apps.get(STAFF_APP);
+  it("is seeded at boot: built, first-party, `admin: true`; a reboot is a no-op; `workersApp: false` and STRUT_HOST_CONFIG turn it off", async () => {
+    const app = await strut.apps.get(WORKERS_APP);
     assert.ok(app, "seeded");
     assert.deepEqual([app.version, app.publisher, app.versions[app.version]?.source, app.stale, app.manifest.admin, app.manifest.title], ["v1", "strut", "seed", false, true, "Workers"]);
-    assert.equal(app.hash, await treeHash(STAFF_DIR));
+    assert.equal(app.hash, await treeHash(WORKERS_DIR));
     const info = JSON.parse(await readFile(join(app.dir, "dist", "build.json"), "utf8"));
     assert.deepEqual(info.warnings, []);
-    assert.deepEqual(await seedStaffApp({ workspace: strut.workspace, kit: await kitForTests() }), { version: "v1", changed: false });
-    const off = await createStrut({ ...quiet, ...seedsOff, views: false, workspace: new WorkspaceManager(join(root, "off")), kit: await kitForTests(), staff: false });
-    assert.equal(await off.apps.get(STAFF_APP), null);
+    assert.deepEqual(await seedWorkersApp({ workspace: strut.workspace, kit: await kitForTests() }), { version: "v1", changed: false });
+    const off = await createStrut({ ...quiet, ...seedsOff, views: false, workspace: new WorkspaceManager(join(root, "off")), kit: await kitForTests(), workersApp: false });
+    assert.equal(await off.apps.get(WORKERS_APP), null);
     await off.close?.();
     const file = join(root, "host.json");
-    await writeFile(file, JSON.stringify({ staff: false }));
-    assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { staff: false });
-    await writeFile(file, JSON.stringify({ staff: true }));
-    assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"staff" must be false/);
+    await writeFile(file, JSON.stringify({ workersApp: false }));
+    assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { workersApp: false });
+    await writeFile(file, JSON.stringify({ workersApp: true }));
+    assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"workersApp" must be false/);
   });
 
   it("is an admin's: GET /apps lists it to full scope alone; its files, versions and usage refuse a member and a peer", async () => {
     const names = async (headers: Record<string, string>) => ((await (await strut.app.request("/apps", { headers })).json()) as { apps?: Array<{ name: string }> }).apps?.map((a) => a.name) ?? [];
-    assert.ok((await names(auth)).includes(STAFF_APP));
-    assert.ok((await names({ cookie: await signIn("ada", "admin") })).includes(STAFF_APP), "an admin's session");
+    assert.ok((await names(auth)).includes(WORKERS_APP));
+    assert.ok((await names({ cookie: await signIn("ada", "admin") })).includes(WORKERS_APP), "an admin's session");
     const member = await signIn("bo", "member");
-    assert.ok(!(await names({ cookie: member })).includes(STAFF_APP), "never a member's");
-    assert.ok(!(await names(peer)).includes(STAFF_APP), "never a peer's");
-    const at = `/apps/${encodeURIComponent(STAFF_APP)}`;
+    assert.ok(!(await names({ cookie: member })).includes(WORKERS_APP), "never a member's");
+    assert.ok(!(await names(peer)).includes(WORKERS_APP), "never a peer's");
+    const at = `/apps/${encodeURIComponent(WORKERS_APP)}`;
     for (const path of [`${at}/v1/files`, `${at}/v1/files/dist/index.html`, `${at}/versions`, `${at}/usage`]) {
       assert.equal((await strut.app.request(path, { headers: { cookie: member, "x-strut-ui": "1" } })).status, 403, path);
       assert.notEqual((await strut.app.request(path, { headers: peer })).status, 200, path);
@@ -782,6 +782,8 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     assert.deepEqual((await admin("staff/tasks", { group: "Book one" })).result.tasks, []);
     assert.deepEqual((await admin("staff/review-group", { group: "Book one", verdict: "ok" })).result, { reviewed: 0, more: false });
     assert.match((await admin("staff/review-group", { group: "Book one", verdict: "rejected" })).error ?? "", /bad_request: a rejection says why/);
+    assert.deepEqual((await admin("staff/groups", { status: "done" })).result, { groups: [] });
+    assert.match((await admin("staff/group-status", { type: "pets", group: "Book one", status: "done" })).error ?? "", /unknown_group/);
     assert.equal((await strut.store.getRunEvents("pets", runId)).length, events, "the run is not touched");
     assert.deepEqual(await strut.store.getRunSummary("pets", runId), summary);
   });
@@ -798,14 +800,14 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     const types = async () => (await answer()).types.find((t: { name: string }) => t.name === "pets") as TaskType;
     assert.deepEqual((await types()).share, { public: false }, "workers is not in the public view: no links");
     assert.deepEqual((await answer()).tasks, { public: false }, "nor is Tasks, which every invite opens");
-    const put = await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [{ name: "workers" }, { name: "strut/worker" }] }) });
+    const put = await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [{ name: "workers" }, { name: "strut/tasks" }] }) });
     assert.equal(put.status, 200, await put.clone().text());
     const share = (await types()).share!;
     const link = "https://box.example/lab/?app=workers&solo=1&public=1";
     assert.deepEqual([share.public, share.link, share.peelLink], [true, link, `peel://open?url=${encodeURIComponent(link)}`]);
     assert.equal(share.qrSvg, qrSvg(share.peelLink!), "the QR is the Peel link's");
     const tasks = (await answer()).tasks!;
-    assert.deepEqual([tasks.public, tasks.link], [true, "https://box.example/lab/?app=strut%2Fworker&solo=1&public=1"]);
+    assert.deepEqual([tasks.public, tasks.link], [true, "https://box.example/lab/?app=strut%2Ftasks&solo=1&public=1"]);
     assert.equal(tasks.qrSvg, qrSvg(tasks.peelLink!));
     // The invite panel's choices: each type that is on, open or invite-only, its app online or not.
     const pets = await types();
@@ -822,13 +824,19 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
 
   it("a member's session on the same page, a visitor and a peer are refused every staff/* step", async () => {
     const member = page(signIn("bo", "member"));
-    const configs: Record<string, Record<string, unknown>> = { "staff/grant": { actor: "x", type: "pets" }, "staff/save-type": { name: "x", app: "workers", answer: MATCH }, "staff/review": { task: "t1", verdict: "ok" }, "staff/review-group": { group: "g", verdict: "ok" } };
-    for (const type of ["staff/stats", "staff/types", "staff/workers", "staff/tests", "staff/save-type", "staff/grant", "staff/review", "staff/groups", "staff/review-group"]) {
+    const configs: Record<string, Record<string, unknown>> = {
+      "staff/grant": { actor: "x", type: "pets" },
+      "staff/save-type": { name: "x", app: "workers", answer: MATCH },
+      "staff/review": { task: "t1", verdict: "ok" },
+      "staff/review-group": { group: "g", verdict: "ok" },
+      "staff/group-status": { type: "pets", group: "g", status: "done" },
+    };
+    for (const type of ["staff/stats", "staff/types", "staff/workers", "staff/tests", "staff/save-type", "staff/grant", "staff/review", "staff/groups", "staff/review-group", "staff/group-status"]) {
       const r = await member(type, configs[type] ?? {});
       assert.ok(r.error, type);
       assert.match(r.error, /admin/, type);
     }
-    // A visitor: strut/staff is not in the public view (and its steps are an admin's).
+    // A visitor: strut/workers is not in the public view (and its steps are an admin's).
     const visitor = await door("/public/mcp", {}, "staff/stats");
     assert.ok(visitor.error, "a visitor gets nothing");
     assert.ok((await door("/public/mcp", {}, "staff/review", { task: "t1", verdict: "ok" })).error, "nor a verdict");
@@ -847,6 +855,14 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     }
     assert.equal((await strut.app.request("/tasks/t1/review", { ...put, headers: { "content-type": "application/json" } })).status, 401, "no key");
     assert.equal((await strut.app.request("/tasks/t1/review", { ...put, headers: { ...auth, "content-type": "application/json" } })).status, 404, "the key reaches it: no task t1");
+    // A group's status: the same gate.
+    const post = { method: "POST", body: JSON.stringify({ type: "pets", group: "g", status: "done" }) };
+    for (const headers of [peer, { cookie: await signIn("bo", "member"), "x-strut-ui": "1" }]) {
+      assert.equal((await strut.app.request("/tasks/groups/status", { ...post, headers: { ...headers, "content-type": "application/json" } })).status, 403, JSON.stringify(Object.keys(headers)));
+    }
+    assert.equal((await strut.app.request("/tasks/groups/status", { ...post, headers: { "content-type": "application/json" } })).status, 401, "no key");
+    const reached = await strut.app.request("/tasks/groups/status", { ...post, headers: { ...auth, "content-type": "application/json" } });
+    assert.deepEqual([reached.status, ((await reached.json()) as { code: string }).code], [404, "unknown_group"], "the key reaches it: no group g");
   });
 
   it("an expected answer and a grader's note never reach a run, an event or the monitor", async () => {
@@ -883,21 +899,21 @@ describe("strut/staff — seeded, an admin's, and its page's calls", () => {
     };
     await walk(root);
     assert.deepEqual(kept, []);
-    const report = strut.appMonitor.report(STAFF_APP);
+    const report = strut.appMonitor.report(WORKERS_APP);
     assert.ok(text(report).includes("staff/save-test"), "the monitor saw the calls");
     assert.ok(!text(report).includes(SECRET), "and kept no expected answer");
     assert.ok(!text(await (await strut.app.request("/tasks", { headers: auth })).json()).includes(SECRET), "GET /tasks holds none");
   });
 });
 
-describe("strut/staff with a host's own task store", () => {
+describe("strut/workers with a host's own task store", () => {
   it("the test routes answer not_available and the queue 501: the page shows no Tests tab", async () => {
     const saved = process.env["STRUT_API_KEY"];
     delete process.env["STRUT_API_KEY"];
     const root = await mkdtemp(join(tmpdir(), "strut-staff-host-"));
     try {
       const own = { types: async () => [], workers: async () => [], list: async () => [], task: async () => undefined, ensure: async () => { throw new Error("no"); } };
-      const strut = await createStrut({ ...quiet, ...seedsOff, views: false, staff: false, workspace: new WorkspaceManager(root), services: { tasks: own as never } });
+      const strut = await createStrut({ ...quiet, ...seedsOff, views: false, workersApp: false, workspace: new WorkspaceManager(root), services: { tasks: own as never } });
       const tests = await strut.app.request("/tasks/tests");
       assert.equal(tests.status, 501);
       const body = (await tests.json()) as { code: string };

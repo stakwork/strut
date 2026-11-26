@@ -8,7 +8,7 @@ export default defineStep({
   effect: "write",
   // The expected answer never reaches a run's events (§7.9).
   redact: ["expected"],
-  description: "A new test (POST /tasks/tests { type, show, files, expected, grade }), or, with id, a change to one never served (PUT /tasks/tests/:id { show, expected, grade }; in_use once served: retire it and make another). expected is checked against the type's answer shape. Answers { test }. Only strut's own staff app, shown to an admin; never kept as a run, and expected is redacted from any event.",
+  description: "A new test (POST /tasks/tests { type, show, files, expected, grade }), or, with id, a change to one never served (PUT /tasks/tests/:id { show, expected, grade }; in_use once served: retire it and make another). expected is checked against the type's answer shape. Answers { test }. Only strut's own Workers app, shown to an admin; never kept as a run, and expected is redacted from any event.",
   input: z.object({
     id: z.string().optional(),
     type: z.string().optional(),

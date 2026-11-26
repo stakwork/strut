@@ -141,10 +141,12 @@ import { createAppMonitor, type AppCallStatus, type AppMonitor } from "./apps/mo
 import { seedViewsApp } from "./apps/views-seed.js";
 import { createAppDatabases } from "./apps/data.js";
 import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
+import { renamedApp } from "./apps/renamed.js";
+import { carryRenamedRecords, retireRenamedApps } from "./apps/renamed-boot.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
 import { seedEarningsApp } from "./apps/earnings-seed.js";
-import { seedStaffApp } from "./apps/staff-seed.js";
-import { seedWorkerApp, WORKER_APP } from "./apps/worker-seed.js";
+import { seedWorkersApp } from "./apps/workers-seed.js";
+import { seedTasksApp, TASKS_APP } from "./apps/tasks-seed.js";
 import { createKnowledge, type KnowledgeCapability } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isFirstPartyName, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
@@ -636,16 +638,16 @@ export interface StrutOptions<TServices = unknown> {
    *  bought elsewhere — as a first-party, ADMIN-ONLY app a host frames for
    *  an admin. `false` seeds nothing. */
   earnings?: false;
-  /** `strut/staff` (`src/apps/staff-seed.ts`, plans/human-steps.md §9):
+  /** `strut/workers` (`src/apps/workers-seed.ts`, plans/human-steps.md §9):
    *  task types, workers, the queue and what was answered, as a
    *  first-party, ADMIN-ONLY app — the `/tasks` routes as a page. Seeded
    *  after `strut/views` (it imports `TaskForm`). `false` seeds nothing. */
-  staff?: false;
-  /** `strut/worker` (`src/apps/worker-seed.ts`, plans/human-steps.md §5): a
+  workersApp?: false;
+  /** `strut/tasks` (`src/apps/tasks-seed.ts`, plans/human-steps.md §5): a
    *  worker app for any task type whose answer is a photo and plain fields
    *  (strut/views' `WorkerPage`). Seeded after `strut/views`; nobody outside
    *  sees it until an admin makes it public. `false` seeds nothing. */
-  worker?: false;
+  tasksApp?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -1626,7 +1628,7 @@ export async function createStrut<TServices = unknown>(
   };
   const sphinx = sphinxCapability({ daemon: sphinxDaemon, ...(opts.sphinx?.fetch ? { fetch: opts.sphinx.fetch } : {}) });
   /** A settled payout's line from Support, the engine's own (§4): to a
-   *  worker who is Support's contact, while strut/staff has its tables and
+   *  worker who is Support's contact, while strut/workers has its tables and
    *  the daemon its message token. */
   const supportPayoutLine = async (p: { key: string; worker: string; msat: number }): Promise<void> => {
     try {
@@ -1637,7 +1639,7 @@ export async function createStrut<TServices = unknown>(
     }
   };
   /** A worker's first time in Tasks: Support's welcome to their Sphinx
-   *  address (plans/support-chat.md §11), while strut/staff has its tables
+   *  address (plans/support-chat.md §11), while strut/workers has its tables
    *  and the daemon its message token. */
   const supportWelcome = async (w: { actor: string; address: string }): Promise<void> => {
     if (!appDb.has(SUPPORT_APP) || !(await sphinxDaemon())) return;
@@ -1645,7 +1647,7 @@ export async function createStrut<TServices = unknown>(
   };
   /** Does a run for this app carry `sphinx` (§4)? An admin's first-party
    *  app — a `strut/` name at a version strut seeded, its manifest
-   *  `admin: true` — so `strut/staff`'s `support-outbox`. No other run's. */
+   *  `admin: true` — so `strut/workers`'s `support-outbox`. No other run's. */
   const sendsAsSupport = async (app: AppRef | undefined): Promise<boolean> => {
     if (!app || !isFirstPartyName(app.name)) return false;
     const found = await apps.manifestOf(app.name, app.version).catch(() => null);
@@ -1966,7 +1968,11 @@ export async function createStrut<TServices = unknown>(
     // while the daemon still has the invite — cancelled or failed, it
     // gives nothing; a daemon that cannot answer, nothing now.
     invite: {
-      read: (token) => inviteOf(token),
+      // An invite made before its app was renamed opens it by the new name.
+      read: (token) => {
+        const inv = inviteOf(token);
+        return inv && { ...inv, app: renamedApp(inv.app) };
+      },
       live: async (code) => {
         // A grant link's code is strut's own: its signed token is the proof.
         if (code.startsWith(GRANT_LINK_PREFIX)) return true;
@@ -2560,29 +2566,43 @@ export async function createStrut<TServices = unknown>(
       console.warn(`[earnings] could not seed strut/earnings:`, err instanceof Error ? err.message : err);
     }
   }
-  // `strut/staff` (src/apps/staff-seed.ts, plans/human-steps.md §9): the
+  // `strut/workers` (src/apps/workers-seed.ts, plans/human-steps.md §9): the
   // task store's staff routes as an admin-only first-party app, after
   // strut/views (it imports TaskForm). A served box too, as strut/earnings.
-  if (opts.staff !== false) {
+  if (opts.workersApp !== false) {
     try {
-      const r = await seedStaffApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
-      if (r?.changed) console.log(`[staff] seeded app: strut/staff @ ${r.version}`);
+      const r = await seedWorkersApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[workers] seeded app: strut/workers @ ${r.version}`);
     } catch (err) {
-      console.warn(`[staff] could not seed strut/staff:`, err instanceof Error ? err.message : err);
+      console.warn(`[workers] could not seed strut/workers:`, err instanceof Error ? err.message : err);
     }
   }
-  // `strut/worker` (src/apps/worker-seed.ts, plans/human-steps.md §5): the
+  // `strut/tasks` (src/apps/tasks-seed.ts, plans/human-steps.md §5): the
   // worker app every server has, after strut/views (it is WorkerPage).
-  if (opts.worker !== false) {
+  if (opts.tasksApp !== false) {
     try {
-      const r = await seedWorkerApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
-      if (r?.changed) console.log(`[worker] seeded app: strut/worker @ ${r.version}`);
+      const r = await seedTasksApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[tasks] seeded app: strut/tasks @ ${r.version}`);
     } catch (err) {
-      console.warn(`[worker] could not seed strut/worker:`, err instanceof Error ? err.message : err);
+      console.warn(`[tasks] could not seed strut/tasks:`, err instanceof Error ? err.message : err);
     }
   }
   if (await workspace.getApp(RETIRED_APP).catch(() => null)) {
     await apps.delete(RETIRED_APP).catch((err) => console.warn(`[jamie] could not remove ${RETIRED_APP}:`, err instanceof Error ? err.message : err));
+  }
+  // Seeded apps that were renamed (src/apps/renamed.ts): an old name's
+  // database and state go to the new name and the old app is deleted,
+  // before the migrations below open any database; its task types and its
+  // place in the public view follow once the public view is up.
+  try {
+    const retired = await retireRenamedApps({
+      ...(store instanceof MemoryRunStore ? {} : { dataDir }),
+      hasApp: async (name) => !!(await workspace.getApp(name).catch(() => null)),
+      deleteApp: (name) => apps.delete(name),
+    });
+    for (const line of retired) console.log(`[apps] ${line}`);
+  } catch (err) {
+    console.warn(`[apps] a renamed app was not carried over:`, err instanceof Error ? err.message : err);
   }
   // A seeded app's migrations (plans/people-and-hosts.md item 4): its
   // version's `db/*.sql`, applied to its database at every boot, once each,
@@ -4573,6 +4593,13 @@ export async function createStrut<TServices = unknown>(
     store: localStore,
     ...(graph ? { graph: { reader: graph.reader, schemas: graph.schemas } } : {}),
   });
+  // The renamed apps' task types and public view (src/apps/renamed-boot.ts).
+  try {
+    const carried = await carryRenamedRecords({ retypeApp: (from, to) => tasks.retypeApp(from, to), publicView: publicSurface });
+    for (const line of carried) console.log(`[apps] ${line}`);
+  } catch (err) {
+    console.warn(`[apps] a renamed app's task types or public view were not carried over:`, err instanceof Error ? err.message : err);
+  }
   {
     // Keep the public view's visible-refs index current as steps end.
     const bag = services as Record<string, unknown>;
@@ -4942,7 +4969,7 @@ export async function createStrut<TServices = unknown>(
   app.get("/apps/:name/usage", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
-    // An admin's app (strut/earnings, strut/staff): its calls are an admin's too.
+    // An admin's app (strut/earnings, strut/workers): its calls are an admin's too.
     const admin = await adminAppRefusal(c, at.name);
     if (admin) return admin;
     if (!(await workspace.getApp(at.name))) return c.json({ error: `App "${at.name}" not found` }, 404);
@@ -7507,7 +7534,7 @@ export async function createStrut<TServices = unknown>(
     // A person's take-back of an earning in its hold (§8.1), a verdict on
     // an answer (§9.6) and the tests (§7.1): the service's, never a
     // capability's. None with a host's own store.
-    ...(hostTasks ? {} : { takeBack: tasks.takeBack, review: tasks.review, reviewGroup: tasks.reviewGroup, tests: tasks.tests }),
+    ...(hostTasks ? {} : { takeBack: tasks.takeBack, review: tasks.review, reviewGroup: tasks.reviewGroup, setGroupStatus: tasks.setGroupStatus, tests: tasks.tests }),
     // Withdraw's settings and payouts (§8.2): the payer's, whatever task
     // store the routes hold.
     payouts,
@@ -7523,15 +7550,15 @@ export async function createStrut<TServices = unknown>(
       takenBy: async (code) => (await tasks.grantedBy(`invite:${code}`))[0],
       ...(store instanceof MemoryRunStore ? {} : { notes: fileInviteNotes(join(dataDir, "tasks", "invites.json")) }),
     }),
-    // Tasks online (§5.8): the one app a staff page puts in the public view
+    // Tasks online (§5.8): the one app a Workers page puts in the public view
     // itself, as the Public view tab saves it with nothing unticked —
     // strut's own seed, calling only the worker's task/* steps.
     tasksOnline: async (actor) => {
-      const needs = await publicViewNeeds(publicViewDeps, { app: WORKER_APP });
+      const needs = await publicViewNeeds(publicViewDeps, { app: TASKS_APP });
       if ("error" in needs) throw new TaskError("refused", needs.error);
       const out = await savePublicView(withNeeds(await publicSurface.get(), needs), actor ? { actor } : {});
       if (out.status !== 200) throw new TaskError("refused", out.body.error ?? `the public view was not saved (${out.status})`);
-      return { app: WORKER_APP, public: true as const };
+      return { app: TASKS_APP, public: true as const };
     },
     // The share links' base (`baseOfRequest`, with a mount path): a staff
     // page's in-process request is `http://strut.invalid`, so it takes where
@@ -7583,7 +7610,7 @@ export async function createStrut<TServices = unknown>(
   // The ADMIN DOORS (src/steps/lib/_admin-door.ts): the routes above as an
   // in-process request, the viewer's own, for the steps strut's own admin
   // apps call — `earnings/*` (`strut/earnings`: /earnings and /remote/credit)
-  // and `staff/*` (`strut/staff`, plans/human-steps.md §9.3: /tasks).
+  // and `staff/*` (`strut/workers`, plans/human-steps.md §9.3: /tasks).
   // Handed to the app door's bag for a first-party page shown to an admin,
   // never to the shared one (src/apps/tools.ts `adminServices`). Each reaches
   // its own routes alone. A `Uint8Array` body goes as the raw bytes (a test's
@@ -11248,7 +11275,7 @@ export async function createStrut<TServices = unknown>(
         ...(actor ? { actor } : {}),
         admin: scope === "full",
         // And the `sphinx` capability (plans/people-and-hosts.md §4): Support's
-        // sends from strut/staff's page.
+        // sends from strut/workers's page.
         ...(scope === "full" ? { adminServices: { earningsAdmin: earningsAdminDoor, staffAdmin: staffAdminDoor, sphinx } } : {}),
         // A worker's step (plans/human-steps.md §5.2, §9.2): the worker's
         // calls of the task store on that call's bag alone. A member's
@@ -12056,7 +12083,7 @@ export async function createStrut<TServices = unknown>(
   tasks.start();
   // Support as it was first built kept its files in `<dataDir>/support/`
   // (and its tables in the task store's file, which its first open drops,
-  // src/tasks/tasks.ts): it is strut/staff's own now, in the app's SQLite,
+  // src/tasks/tasks.ts): it is strut/workers's own now, in the app's SQLite,
   // and nothing of it was copied (plans/people-and-hosts.md §5, ruling 7).
   if (!(store instanceof MemoryRunStore)) void rm(join(dataDir, "support"), { recursive: true, force: true }).catch((err) => console.warn(`[support] ${join(dataDir, "support")} could not be removed: ${err instanceof Error ? err.message : String(err)}`));
   // Withdrawals the wallet answered `pending` (on file from a past process

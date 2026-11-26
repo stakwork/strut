@@ -6,7 +6,7 @@ import { staffCall, query } from "./_door.js";
 export default defineStep({
   type: "staff/workers",
   effect: "read",
-  description: "The workers (GET /tasks/workers), newest first: status, first seen, note, grants (revoked ones with when, who and why), balance and standing per type. Only strut's own staff app, shown to an admin.",
+  description: "The workers (GET /tasks/workers), newest first: status, first seen, note, grants (revoked ones with when, who and why), balance and standing per type. Only strut's own Workers app, shown to an admin.",
   input: z.object({ status: z.enum(["new", "active", "suspended", "banned"]).optional() }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {

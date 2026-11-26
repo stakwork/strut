@@ -1,7 +1,7 @@
 /**
  * The STAFF's door (plans/human-steps.md §9.3): the `/tasks…` routes, as
  * an in-process request in the admin's own name, for the `staff/*` steps
- * strut's own staff app (`strut/staff`) calls. The check and the door are
+ * strut's own Workers app (`strut/workers`) calls. The check and the door are
  * `../_admin-door.ts`'s, shared with `earnings/*`: only a first-party page
  * shown to an admin of this server, never a workflow, an agent's tool, a
  * model-written page or a member's. A route's refusal is the step's error,

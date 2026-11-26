@@ -2417,7 +2417,7 @@ Peel's web view's) history and swipe-back go back through it, and the
 visitor stays signed in (the visitor's cookie is the origin's). A page with
 `&back=` draws a slim Back bar over the app, which goes back in history (or
 to the app it names, with no history). Any other link opens a new window,
-as before. The worker's dashboard (strut/worker) opens a task type of
+as before. The worker's dashboard (strut/tasks) opens a task type of
 another app this way, `appLink(app, { type })`; strut/views' `WorkerPage`
 goes straight to work on the `type` input it is opened with.
 
@@ -3001,7 +3001,7 @@ version's files (`GET /apps/:name/:version/files[/…]`) answer those `403`.
 A file read by the version's FILE TOKEN (`?t=`) is served as for any app:
 only a full-scope listing mints one, and the framed document is read with
 it. The flag hides the app; what it may DO is its grants and its steps'
-own checks. `strut/earnings` and `strut/staff` (§14.15) say it; their
+own checks. `strut/earnings` and `strut/workers` (§14.15) say it; their
 usage (`GET /apps/:name/usage`, §14.6) is an admin's too. A PACKAGE's
 `admin: true` app — its version installed by the package, under its
 prefix — shown on a full-scope connection gets the admin's scope for that
@@ -3035,22 +3035,23 @@ page or member's page reaches it, and each step refuses without both.
 
 Any other refusal is the step's error, the route's `code` first.
 
-### 14.15 `strut/staff` — Workers, for an admin (`plans/human-steps.md` §9)
+### 14.15 `strut/workers` — Workers, for an admin (`plans/human-steps.md` §9)
 
 The staff's `/tasks` routes (§22) as an app strut seeds on every server
-(`src/apps/staff/`, `src/apps/staff-seed.ts`, after `strut/views`: it
-imports `TaskForm`), titled "Workers", `admin: true` as
+(`src/apps/workers/`, `src/apps/workers-seed.ts`, after `strut/views`: it
+imports `TaskForm`), titled "Workers" (named `strut/staff` until
+2026-11-25: an old name still opens it, below), `admin: true` as
 `strut/earnings` is (§14.14): listed to full scope alone, its files,
 versions and usage `403` to anyone else. Strut's UI lists it under Apps to
 an admin, and a waiting run's `task:<id>` (the run overview's "Waiting on",
 a parked step's flyout) opens it on that task; a host (Stadeum) frames
-`?app=strut/staff&solo=1` for a person it signed in as an admin.
+`?app=strut/workers&solo=1` for a person it signed in as an admin.
 `createStrut({ staff: false })` or `STRUT_HOST_CONFIG`'s `"staff": false`
 seeds nothing. The page is only a face: the routes decide.
 
 Six tabs, one a job: **Overview**, **Answers**, **Workers**, **Task
 types**, **Payouts**, **Support**. Every place is a deep link
-(`?app=strut/staff&input=…`), the same as before the tabs were regrouped:
+(`?app=strut/workers&input=…`), the same as before the tabs were regrouped:
 `tab=queue|types|workers|tasks|groups|tests|payouts|support`, `type=<name>`,
 `worker=<actor>`, `task=<id>`, `test=<id>`, `run=<workflow>/<runId>`,
 `group=<name>` (with `type=`: one group's page), `by=<actor>`,
@@ -3091,7 +3092,10 @@ worker** is in the header, on every tab (the panel below).
   by what is left to review. A group's page reads its tasks (`GET
   /tasks?group=&type=`) and draws them oldest first as tiles, each with its
   verdict, a filter (to review, rejected, OK) and **Mark the others OK**
-  (`POST /tasks/groups/review`).
+  (`POST /tasks/groups/review`). A group marked done shows **Done**; the
+  list filters **Open** / **Done** (`GET /tasks/groups?status=`), and a
+  group's page has **Mark done** or **Reopen**, with a reason if given
+  (`POST /tasks/groups/status`).
 - **One answer** (`task=<id>`), in the order a person asks: what was asked
   (the task's `show`: its words, its plain fields, its files), what the
   worker sent (its pictures large, the fields with a value as a short list,
@@ -3180,7 +3184,7 @@ and the app monitor keeps a call's config with those fields redacted.
 | ---- | --------- | ------- |
 | `staff/stats { type? }` | `GET /tasks/stats` | `TaskStats` |
 | `staff/numbers { type?, days? }` | `GET /tasks/numbers` | `{ types: TypeNumbers[] }` |
-| `staff/types` | `GET /tasks/types` | `{ types, tasks? }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); `tasks` the same for Tasks (`strut/worker`), the page every invite opens; neither when the public view door has no share read (a host's own) |
+| `staff/types` | `GET /tasks/types` | `{ types, tasks? }`, each type with `share: { public, link?, peelLink?, qrSvg? }` — whether its `app` is in the public view and, when it is, its share links (`publicAppLinks`, §17) and `peelLink` as a QR code (an SVG string); `tasks` the same for Tasks (`strut/tasks`), the page every invite opens; neither when the public view door has no share read (a host's own) |
 | `staff/save-type { name, title?, app, answer, leaseSeconds?, withinHours?, enabled?, paySats?, holdHours?, payOn?, limits?, tests?, copies?, attachments?, standing?, round?, check? }` | `PUT /tasks/types/:name` | `{ type }` |
 | `staff/delete-type { name }` | `DELETE /tasks/types/:name` | `{ name, revoked }` |
 | `staff/round-items { type }` | `GET /tasks/types/:name/round` | `{ type, workflow, input?, items, last? }` |
@@ -3196,8 +3200,9 @@ and the app monitor keeps a call's config with those fields redacted.
 | `staff/file { task, path }` | `GET /tasks/:id/files/<path>` | one file, as `run/files` answers: the task's own, an answer's, or one its reply lists |
 | `staff/take-back { task, worker?, why }` | `POST /tasks/:id/take-back` | `{ task, earnings }` |
 | `staff/review { task, worker?, verdict, why? }` | `PUT /tasks/:id/review` | `{ task, worker, lease, review, earning? }` |
-| `staff/groups { type?, limit? }` | `GET /tasks/groups` | `{ groups: [{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last }] }`, the one with the newest task first |
+| `staff/groups { type?, group?, status?, limit? }` | `GET /tasks/groups` | `{ groups: [{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last, status, statusAt?, statusBy?, why? }] }`, the one with the newest task first |
 | `staff/review-group { group, type?, verdict, why? }` | `POST /tasks/groups/review` | `{ reviewed, more }`: the verdict on every answer in the group with none yet, one `review` each; a verdict given stays |
+| `staff/group-status { type, group, status, why? }` | `POST /tasks/groups/status` | the group as `staff/groups` lists it: its status `open` or `done`, every change kept with who and when |
 | `staff/tests { type?, retired? }` | `GET /tasks/tests` | `{ tests }` |
 | `staff/test { id }` | `GET /tasks/tests/:id` | `{ test, instances }` |
 | `staff/save-test { id?, type?, show?, files?, expected?, grade? }` | `POST /tasks/tests`, or with `id` `PUT /tasks/tests/:id` | `{ test }` |
@@ -3224,22 +3229,32 @@ and, under More, the starting sats (blank: the payout settings'
 in WhatsApp; a wallet that cannot invite says why; work answered in an app
 that is not in the public view says so, and makes none. Then, folded and
 only while some work is open, "Anyone with the link": Tasks' `peelLink`
-(`staff/types`' `tasks`, the share of `strut/worker`) as a QR and a Copy
+(`staff/types`' `tasks`, the share of `strut/tasks`) as a QR and a Copy
 button, open work only, for people who have Peel. While Tasks is not in the
 public view the panel offers "Put Tasks online" (`staff/tasks-online`)
 instead; it puts no other app online (the Public view dialog or
 `app/make-public`). The Workers tab lists the invites below, each with its
 work.
 
-### 14.16 `strut/worker` — the worker app every server has (`plans/human-steps.md` §5)
+### 14.16 `strut/tasks` — the worker app every server has (`plans/human-steps.md` §5)
 
-A worker app strut seeds on every server (`src/apps/worker/`,
-`src/apps/worker-seed.ts`, after `strut/views`: it is `WorkerPage`),
-titled "Worker", for any task type whose answer is plain fields and photos:
-a type names `strut/worker` as its `app`, and no app is built for it. It is
+AN OLD NAME (`src/apps/renamed.ts`): `strut/staff` is `strut/workers` and
+`strut/worker` is `strut/tasks`. `GET /public/apps/<old name>` and its
+`/document` answer for the new name (`name` in the body is the new one),
+the web UI's `?app=` / `?back=` is put to the new name before it loads, and
+an invite token naming the old app opens the new one. A box that ran the
+old names carries them over at its first boot: the old app's database and
+viewer state move to the new name, the old app is deleted, and each task
+type's `app` and the public view's entry name the new one.
+
+A worker app strut seeds on every server (`src/apps/tasks/`,
+`src/apps/tasks-seed.ts`, after `strut/views`: it is `WorkerPage`),
+titled "Tasks" (named `strut/worker` until 2026-11-25), for any task type
+whose answer is plain fields and photos:
+a type names `strut/tasks` as its `app`, and no app is built for it. It is
 NOT an admin's: anyone with the deployment's key or a member lists it, and
 nobody outside reaches it until an admin puts it in the public view (`PUT
-/public-view { apps: [{ name: "strut/worker" }] }`, or `app/make-public`).
+/public-view { apps: [{ name: "strut/tasks" }] }`, or `app/make-public`).
 Its page signs a VISITOR in (the public view); a member or an admin — the
 page in their assistant's chat, or strut's UI — is signed in already, as
 `task/me` says, and works and earns as themselves. Then it shows their
@@ -4514,7 +4529,7 @@ proposal only an admin accepts (below).
 | POST   | `/packages/repos` | **Open repo**: `{ url, ref?, path? }` (a `tokenSecret` is 400) → 201 `RepoView` + `install` (an `InstallResult`). The repository fetched into `git/checkout`'s bare cache; `ref` a BRANCH (default the remote's default branch), followed from then on; a KEPT working copy at `<dataDir>/packages/work/<publisher>/<name>/`, a worktree of the cache on a branch of its own (`repo/<publisher>/<name>`) tracking the remote's; the package at the branch's commit installed through the `repo` door — every item checked before the first write, missing secrets reported, each version stamped `source: "repo"` with `upstream: { …, source: { ref }, commit }`. 409 `package_repo_open` when the package is a repo here already; `package_conflict` when it is installed by another door (uninstall it first), when workflows, steps or apps made here are already under its name, or when a Concept page made here has the name of one of its pages — a first Open takes nothing it did not bring, as an ordinary install; 400 `package_repo_branch` for a ref that is no branch; 502 `package_repo_unreachable` |
 | POST   | `/packages/repos/create` | **Create repo**: a `BuildRequest` (`package`, `version`, the picks — as `POST /packages/build`) + `{ url, branch?, path? }` (a `tokenSecret` is 400) → 201 `RepoView` + `install` + `originals`. The picks built, written as the first commit of the EMPTY remote at `url` on `branch` (default `main`), in the folder `path` when given, with the person's identity, pushed, then opened as above. `originals` are the bare workflows, steps and apps the package was built from: they stay until the person retires them (below). 409 `package_repo_not_empty` when the remote has any branch or tag, `package_conflict` when the package is installed here already or items made here are under its name — each refused before anything is pushed; 400 a build's refusal. Its open takes the Concept pages the package was built from as the package's (the same nodes) |
 | GET    | `/packages/repos/:publisher/:name` | One `RepoView`; 404 when the package is not a repo here |
-| GET    | `/packages/repos/:publisher/:name/diff` | What a Commit would push: the workspace's edits written into the working copy and staged → `RepoDiff`: `{ files: [{ path, status: added \| modified \| deleted }], stat, patch, truncated? }` (the patch cut at 200,000 characters). 409 `package_repo_merging` while a pull's merge waits |
+| GET    | `/packages/repos/:publisher/:name/diff` | What a Commit would push: the workspace's edits written into a scratch worktree at the working copy's HEAD and staged there, the working copy and its index untouched → `RepoDiff`: `{ files: [{ path, status: added \| modified \| deleted }], stat, patch, truncated? }` (the patch cut at 200,000 characters). 409 `package_repo_merging` while a pull's merge waits |
 | POST   | `/packages/repos/:publisher/:name/commit` | **Commit**: `{ message, branch?, pr? }` → 201 `CommitResult` `{ package, committed: true, commit, branch, pushed, pr?, prSkipped?, diff, stamped, install }`, or 200 `{ committed: false, … }` when nothing changed here and nothing waits to be pushed. Below. 409 `package_repo_merging` while a pull's merge waits, `push_rejected` when the remote refused the push (a straight push to a branch that moved: Pull, then Commit again); 403 `no_push_permission` |
 | POST   | `/packages/repos/:publisher/:name/pull` | **Pull** → 200 `{ package, commit, local?, install }`, or 409 `{ error: "package_repo_conflict: …", package, commit, local?, conflict: [files] }` with nothing installed. Below |
 | POST   | `/packages/repos/:publisher/:name/retire` | `{ items: [{ kind: workflow \| step \| app, name }] }` → `{ retired, failed }`: Create repo's bare originals deleted, on the person's word — only those Create named (any other is `failed`); a workflow with a run in flight is `failed` |
@@ -4541,12 +4556,17 @@ proposal only an admin accepts (below).
   added and not committed stays, a local item that runs and can be edited
   but takes no new name beside it, and is written by the first Commit
   after the repo is opened again.
-- **Commit** writes the edited items' files — `packageFiles(…, { under })`
-  (`src/packages/build.ts`): each workflow's and step's active version as
-  published, a step's live claims, an app's active sources whole, a page
-  under its key (its old file gone when that was another) — and removes the
-  deleted items' files; `strut.yaml`, `serve.yaml`, `graph/`, a README and
-  anything else stay as the repository has them. Then `git add` in the
+- **Commit** puts the package's folder in the working copy back to HEAD
+  (anything left there uncommitted goes), then writes the edited items'
+  files — `packageFiles(…, { under })` (`src/packages/build.ts`): each
+  workflow's and step's active version as published, a step's live claims,
+  an app's active sources whole, a page back to the file the repository
+  holds it in, in that file's form (its front matter byte for byte when
+  only the docs changed; a page renamed here moves to a file named after it
+  when the old file was named after the old name, else under its key; a
+  page new to the package under its key) — and removes the deleted items'
+  files; `strut.yaml`, `serve.yaml`, `graph/`, a README and anything else
+  stay as the repository has them. Then `git add` in the
   package's folder, a commit with the person's identity (on GitHub, the
   token's account, as `git/push`; elsewhere the actor's name at
   `strut@strut.invalid`), and a push with the token: to a new branch
@@ -6481,7 +6501,7 @@ call alone: no other step, workflow, agent tool or proposal finds them on
 | `task/skip` | `{ lease, reason?, all? }` | `{ ok: true }` |
 | `task/file` | `{ lease, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }` (`truncated: true` past 10 MB), as `run/files` answers |
 | `task/me` | `{ all?, invite? }` | `{ actor, status, types: [{ name, title?, app, payMsat, qualifying, standing, waiting }], holding?: { type, expires, lease }, balance: { heldMsat, withdrawableMsat, totalMsat, nextReleaseAt? }, pendingMsat?, payout: { on, why?, minMsat, dayLeftMsat, maxMsat, out? }, rate?: { perBtc, at, source }, xp?: { sats, level, fromSats, toSats? } }`: `xp`, their XP and level (plans/worker-progress.md, src/tasks/levels.ts) — everything they ever earned here in whole sats, accepted less taken back, which withdrawing never lowers; Level 1 at 1k sats, 2 at 2.5k, 3 at 5k, then from 10k at Level 4 round steps (12k, 15k, 20k, 25k, 30k, 40k, 50k, 60k, 80k) and ten times as much every ten levels (1 BTC at Level 44), the last level, 118, at 21M BTC; `toSats` absent at the top; absent with no ledger; `rate`, the exchange rate this server trusts (`GET /rate`'s, src/payments/rate.ts), units of each currency per bitcoin by ISO 4217 code (`perBtc.USD`, `perBtc.EUR`, …), for a page to show fiat beside sats — sats are what is paid; absent when no rate can be read (waited on at most 1.5 s; the kit's `fiatOfMsat(msat, rate, "EUR")`); `pendingMsat`, what their answers on types that pay on ok will earn once OK'd (not in `balance`; absent when nothing waits) |
-| `task/history` | `{ all?, group?, groups? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, pending?: { msat }, reply?: { show?, files?, at }, group?, review?: { verdict, why?, at } }], groups?: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last }] }`: with `group`, every answer of theirs in it (at most 1000) instead of the newest 50; `groups: true` adds their own groups, their answers alone counted ("A run's reply", §22) |
+| `task/history` | `{ all?, group?, groups? }` | `{ items: [{ lease, type, ask?, taken, closed?, status, earned?: { msat, releases, takenBack? }, pending?: { msat }, reply?: { show?, files?, at }, group?, review?: { verdict, why?, at } }], groups?: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last, status, statusAt?, why? }] }`: with `group`, every answer of theirs in it (at most 1000) instead of the newest 50; `groups: true` adds their own groups, their answers alone counted, each with the status staff set (never who set it) ("A run's reply", §22) |
 | `task/withdraw` | `{ msat }` | `{ state, key, msat, feeMsat, maxFeeMsat, error? }` ("Withdraw" below) |
 
 - **`task/next`** leases the oldest open task of a type the worker holds a
@@ -6557,7 +6577,7 @@ call alone: no other step, workflow, agent tool or proposal finds them on
   until it is answered or skipped. With `all: true` the types (and
   `holding`) are those of EVERY app the caller can open here, each naming
   its `app`: on the public door, the public view's apps; on a member's door,
-  every app. strut/worker's dashboard lists them so; `task/next` still hands
+  every app. strut/tasks's dashboard lists them so; `task/next` still hands
   out only the calling app's (`wrong_app`), so a type of another app is
   worked by opening that app. `balance` is what they
   are owed here, in msat: `totalMsat` (earned, less taken back), of which
@@ -6624,8 +6644,9 @@ server whose task store is its host's (which answers none of them).
 | `GET /tasks/:id/files/<path>` | one of the task's `files`, as `task/file` answers it, read by staff with no lease (§9.4): a path on the task's list, one its run's reply lists (`task.reply.files`), or one its answers carried (a lease's `attachments`, read from the run's artifacts), only; `404 not_listed` for any other whether or not it exists, `404 no_file` when it is gone. A test instance's are its test's |
 | `POST /tasks/:id/take-back` | `{ worker?, why }` → `{ task, earnings: TakeBackOutcome[] }`: what the task's answers earned (or `worker`'s alone) taken back while it is HELD; `409 released` (with `earnings`) when every earning asked for is past its hold — then it is the worker's |
 | `PUT /tasks/:id/review` | `{ worker?, verdict, why? }` → `{ task, worker, lease, review: LeaseReview, earning? }`: a person's VERDICT on one answer ("Review" below), `ok` or `rejected` (which says `why`). `worker` only when the task has several answers (`400` otherwise: say whose); `404 no_answer` when it has none (or none by `worker`); `400` for a test instance's. `409 final` to change one once the answer's hold has ended |
-| `GET /tasks/groups?type=&limit=` | `{ groups: TaskGroup[] }`: the groups the runs named with `task/reply`'s `group`, one row a type and group, the one with the newest task first, 100 a page (`limit` at most 1,000): `{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last }` — its real tasks, their answers and verdicts, who answered, when its first task was made and its newest answered. `501 not_available` on a host's own store |
+| `GET /tasks/groups?type=&group=&status=&limit=` | `{ groups: TaskGroup[] }`: the groups the runs named with `task/reply`'s `group`, one row a type and group, the one with the newest task first, 100 a page (`limit` at most 1,000): `{ group, type, tasks, answers, ok, rejected, unreviewed, workers, first, last, status, statusAt?, statusBy?, why? }` — its real tasks, their answers and verdicts, who answered, when its first task was made and its newest answered, and the status staff set (`open` until set; when, by whom and why from the newest change). `group` one group's rows; `status=open\|done` only those, filtered before the page. `501 not_available` on a host's own store |
 | `POST /tasks/groups/review` | `{ group, type?, verdict, why? }` → `{ reviewed, more }`: the verdict ("Review" below) on every answer in the group (of `type`, when given) that has none yet, one review each, oldest first; a verdict given stays. A rejection says `why`. At most 1,000 tasks a call: `more` when there may be others |
+| `POST /tasks/groups/status` | `{ type, group, status, why? }` → `TaskGroup`: the group's status, `open` or `done`, with `why` if given; every change is kept with who set it and when, and the newest is the status. A mark: nothing is refused for a done group. `400 bad_request` for another status, `404 unknown_group` for a group with no task of `type` |
 
 ```jsonc
 // TaskType
@@ -6651,7 +6672,7 @@ server whose task store is its host's (which answers none of them).
   "changedAt": 1762948800000, "changedBy": "admin-1"
 }
 // The answer schema is a subset strut checks itself (src/tasks/answer-schema.ts,
-// the same file as the kit's kit/src/folds/answer-schema.ts, which the staff app runs):
+// the same file as the kit's kit/src/folds/answer-schema.ts, which the Workers app runs):
 // type (one name), properties + required (no other key), items, minItems,
 // maxItems, enum, minimum, maximum, minLength, maxLength, title, description.
 
@@ -6904,7 +6925,7 @@ alone (anything else is refused). One withdrawal is one payment.
 | `maxMsat` | the most one withdrawal may ask now: the least of the largest amount whose fee cap fits in what is withdrawable, the worker's day left and the server's; 0 under `minMsat`, while one is out, or when not `on` |
 | `out` | `{ key, msat, maxFeeMsat, at, stale }`: the payout on its way |
 
-**The staff's side** (full scope, routes beside the rest, which `strut/staff`
+**The staff's side** (full scope, routes beside the rest, which `strut/workers`
 reaches through `staff/payouts`, `staff/save-payouts`, `staff/payout-read`
 and `staff/payout-resolve`; nothing else reaches the settings — no step on
 the shared bag, no proposal, no YAML, not `task/set-type`):
@@ -6936,7 +6957,7 @@ daemon for a Sphinx invite through the payer (the daemon pays the mixer for
 it: the starting sats, and the mixer's price on top; specs/LIGHTNING.md
 "Invites"), and answers the link on the base the share links use (§17.2
 `publicAppLinks`: `STRUT_PUBLIC_URL`, else the request's own origin with a
-proxy's headers and mount path honored; a staff page's in-process request
+proxy's headers and mount path honored; a Workers page's in-process request
 takes where the page's own request came):
 
 ```
@@ -6944,8 +6965,8 @@ https://<public view>/public/join#action=i&d=…&c=…&a=<percent-encoded Tasks 
 ```
 
 After `#`: the daemon's invite with its `sphinx.chat://?` taken off, then
-`a=`, strut's own section: the share `link` of TASKS (`strut/worker`, §14.16:
-`<base>/?app=strut%2Fworker&solo=1&public=1`) with `&input=<encoded>` after
+`a=`, strut's own section: the share `link` of TASKS (`strut/tasks`, §14.16:
+`<base>/?app=strut%2Ftasks&solo=1&public=1`) with `&input=<encoded>` after
 it, encoded whole. Every invite opens Tasks, the server's one work page, so
 a worker keeps one page per employer. The input carries `invite=<token>`,
 the invite's own token (`strut-invite.<claims>.<hmac>`, auth.ts
@@ -6973,7 +6994,7 @@ keeps the invites; strut notes only the kind of work each is for
 sent, and the task store keeps the grants an invite made. Open work (the
 default) lets anyone in on their first `task/next`.
 
-Full scope, beside the rest; `strut/staff` reaches them through
+Full scope, beside the rest; `strut/workers` reaches them through
 `staff/invite`, `staff/invites`, `staff/cancel-invite` and
 `staff/tasks-online` (§14.15):
 
@@ -6982,7 +7003,7 @@ Full scope, beside the rest; `strut/staff` reaches them through
 | `POST /tasks/invites { sats?, type? }` | `{ code, link, sats, status, type? }`: `sats` the worker's starting balance, the payout settings' `inviteSats` when left out (1 to 100,000); `type` the kind of work it is for (left out: open work alone). Tasks not in the public view is `409 no_worker_app`; the app that draws `type` not in it, `409 not_online`; no such type, `400`. Each refusal comes before the wallet is asked. `status` is the daemon's: `sending` until the mixer has it, then `ready` |
 | `GET /tasks/invites` | `{ invites: [{ code, link?, sats, status, createdAt?, type?, expiresAt?, by?, takenBy? }], sats, why? }`: the daemon's invites, newest first, each `link` the one it was sent with (none while Tasks is not in the public view) and `type` its work; one that made a grant is `used` with `takenBy` (the worker), whatever the daemon says, since an account Peel already had never makes the daemon say `used`; `sats` the default; `why` — `no_pay_credential` or `no_invites` — when this server cannot invite, with no invites |
 | `POST /tasks/invites/:code/cancel` | `{ code, status }`: one not used yet; `404 unknown_invite` |
-| `POST /tasks/online` | `{ app: "strut/worker", public: true }`: Tasks put in the public view in the admin's name, as the Public view tab saves it with nothing unticked (§14.16: it calls only the worker's `task/*` steps). The one app a staff page puts online itself; any other goes through the Public view or an `app/make-public` card |
+| `POST /tasks/online` | `{ app: "strut/tasks", public: true }`: Tasks put in the public view in the admin's name, as the Public view tab saves it with nothing unticked (§14.16: it calls only the worker's `task/*` steps). The one app a Workers page puts online itself; any other goes through the Public view or an `app/make-public` card |
 
 `status` is `sending`, `ready`, `failed` (the mixer was not paid), `used` (a
 new account took it) or `cancelled`. Refusals: `409 no_pay_credential`
@@ -7241,9 +7262,11 @@ an `image` step drew from their photo):
   leaves what was told as it was; a later reply without one keeps it. Staff
   read and review a group as one (`GET /tasks/groups`, `GET /tasks?group=`,
   `POST /tasks/groups/review`, §14.15's `staff/groups` and
-  `staff/review-group`, the staff app's Answers by group); the worker reads their
-  groups and each answer's verdict and why (`task/history { groups, group
-  }`), so their app can show what they handed in and what was sent back.
+  `staff/review-group`, the Workers app's Answers by group) and mark it done
+  (`POST /tasks/groups/status`, `staff/group-status`); the worker reads their
+  groups, each with its status and why, and each answer's verdict and why
+  (`task/history { groups, group }`), so their app can show what they handed
+  in and what was sent back.
 
 - **Only the run that asked.** A workflow's step (`effect: "write"`, on the
   shared bag): the store reads the CALLING run off the step's run control
@@ -7274,7 +7297,7 @@ an `image` step drew from their photo):
 
 A settled answer has woken its run, and the run has gone on. So a review
 is a MARK on the answer, never an undo: `PUT /tasks/:id/review` (full
-scope; the service's alone, so no step but the staff app's
+scope; the service's alone, so no step but the Workers app's
 `staff/review` reaches it) changes nothing in the run — its step's output,
 its events, the task and what a `human` step reads stay as they were, and
 no run is woken. Checking before the run goes on is the workflow's (a
@@ -7358,7 +7381,7 @@ says yes. Two steps, on every step's bag, over `ctx.services.taskTypes`:
   signed in earns from their first answer: the card's **Who can do it** says
   so as a danger, and the admin's accept saves it.
 - **What it cannot do.** It grants no worker, deletes no type and changes
-  no worker: those are an admin's, in `strut/staff` (§14.15).
+  no worker: those are an admin's, in `strut/workers` (§14.15).
 - **Seeds.** Only the `builder` workflow grants `task/types` and
   `task/set-type`, and lists `task/set-type` in `approve:`. The `job` and
   `orchestrator` seeds do not, nor the builder chat, which has no
@@ -7394,18 +7417,18 @@ it.
 ### Support — the staff's chat with workers (`plans/support-chat.md`; `plans/people-and-hosts.md` §5)
 
 Workers write to the treasury daemon's account, named "Support", from Peel,
-as to any contact; staff answer from the Support tab of `strut/staff`
+as to any contact; staff answer from the Support tab of `strut/workers`
 (§14.15). Support is an APP: it has no route of its own. Its tables are
-`strut/staff`'s own SQLite (`src/apps/staff/db/001-support.sql`: `conversations`,
+`strut/workers`'s own SQLite (`src/apps/workers/db/001-support.sql`: `conversations`,
 `messages`, `files`, `settings`; §14.1's `sqlite/*`), the page reads and
 writes them with SQL, and six `support/*` tools do what touches the
 daemon. Strut no longer reads the daemon's DMs: the daemon hands each
-record to `support/receive` through `strut/staff`'s `hosts:` (§13.5).
+record to `support/receive` through `strut/workers`'s `hosts:` (§13.5).
 
 **The daemon's call.** `POST /mcp` with the `sphinx` host key (§13.4),
 `x-strut-account: sphinx:<the contact's pubkey>` and the contact's alias in
 `x-strut-account-name` (which names them, §13.3), calling `step_run { app:
-"strut/staff", type: "support/receive", config: { records } }`. Each record
+"strut/workers", type: "support/receive", config: { records } }`. Each record
 is one of the daemon's DM feed (`specs/LIGHTNING.md`, "Support's DMs"),
 all of one contact, oldest first — a worker's file with its bytes (`file: {
 data, name? }`, or `fileError: "too_large"` over 25 MiB). The answer is `{
@@ -7418,7 +7441,7 @@ Support keeps the newest it saw per message, so an older one never undoes
 a newer one. Each call tells the app's channel `support` (a state, `key:
 "changed"`), and when a welcome is due starts `support-outbox`.
 
-| Tool (strut/staff's page unless said) | |
+| Tool (strut/workers's page unless said) | |
 | --- | --- |
 | `support/receive { records }` | The daemon's, above. Never a send: a host's bag has no `sphinx` |
 | `support/send { worker, text?, replyTo?, file?, retry? }` | `{ message }`: kept as `sending`, sent from "Support" (`POST /dm { id, to, text?, reply?, file? }`, `id` 64 hex strut made), kept `sent` or `failed` with `error`. `worker` is the worker's actor; `file` is `{ base64, type, name }`, at most 2.5 MiB, its bytes kept (a Retry sends them again), `text` then its caption; at most 32 KiB as the message's JSON with its quoted id (`bad_request: too long`). `retry: <key>` sends a failed one again under its id, or one still `sending` a minute on with no id; the daemon sends one id once. `no_conversation` for a worker who has not got Support as a contact |

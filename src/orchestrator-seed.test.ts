@@ -141,9 +141,25 @@ describe("the orchestrator workflow strut ships", () => {
       system,
     );
     // How the tree is built, the dream's own rule (Dream.md, "Where a
-    // lesson goes"): a root stays short and the tree grows under it.
+    // lesson goes"): a root stays short and the tree grows under it, and
+    // what applies on every turn is a page directly under the root, whose
+    // description the job's list always shows.
     assert.ok(
-      system.includes("The tree grows under its roots: a root (`Job`, `Workflow Builder`) is a short page that stays as it is, so a new kind of work is a new page under it, never more text on it. On any other page, change the lines the request is about and leave the rest as it was."),
+      system.includes("The tree grows under its roots: a root (`Job`, `Workflow Builder`) is a short page that stays as it is, so a new kind of work is a new page under it, never more text on it, and a rule for every job is a page directly under `Job` whose description says when it applies. On any other page, change the lines the request is about and leave the rest as it was."),
+      system,
+    );
+    // "Remember that…" is a change to the tree, not this conversation's
+    // memory: told to remember a rule for every job, the assistant called
+    // no tool and said it would pass it on (a real model, 2026-11-25).
+    assert.ok(
+      system.includes('What the person tells you to remember for work to come ("from now on", "always", "every job should") is such a change: what this conversation remembers reaches no other conversation and no job, and a page does.'),
+      system,
+    );
+    // A page from git: asked to change `Plan`, the assistant offered a pull
+    // request to strut's repository (a real model, 2026-11-25). The dream's
+    // rule again: the change goes on a page under it.
+    assert.ok(
+      system.includes("A page whose text comes from git (one this server ships, or a package's) is put back on every start, so a change to it is skipped: put the change on a new page under it, made for this server, with a description that says when to open it."),
       system,
     );
     for (const t of ["knowledge/edit-page", "knowledge/add-page"]) {

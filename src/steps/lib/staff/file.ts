@@ -6,7 +6,7 @@ import { staffCall, seg, pathSegs } from "./_door.js";
 export default defineStep({
   type: "staff/file",
   effect: "read",
-  description: "One of a task's files (GET /tasks/:id/files/<path>), as run/files answers one: text, or base64 for anything else. Only a path on the task's list. Only strut's own staff app, shown to an admin.",
+  description: "One of a task's files (GET /tasks/:id/files/<path>), as run/files answers one: text, or base64 for anything else. Only a path on the task's list. Only strut's own Workers app, shown to an admin.",
   input: z.object({ task: z.string().min(1), path: z.string().min(1) }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {

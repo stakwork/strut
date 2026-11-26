@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import { GROUP_MAX, LEASE_STATUSES, VERDICTS } from "../../../tasks/task-store.js";
+import { GROUP_MAX, GROUP_STATUSES, LEASE_STATUSES, VERDICTS } from "../../../tasks/task-store.js";
 import { appsOf, workerCall } from "./_shared.js";
 
 /**
@@ -25,7 +25,7 @@ export default defineStep({
     "reply { show?, files?, at } on an answer the workflow replied to (its task/reply step): what it told them, and files [{ name, mediaType, size, path }] they open with task/file { lease, path } — poll it after an answer to wait for one. " +
     "group: the group the workflow put the task in (task/reply's group: a book, a batch); review { verdict: ok | rejected, why?, at } on an answer staff reviewed — a rejection's why is what to fix. " +
     "Only the task types this app draws — with all: true, those of every app the viewer can open here — at most the 50 newest; with group, every answer of theirs in that group instead (at most 1000). " +
-    "groups: true adds groups: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last }], their own groups (only their own answers counted), the one with the newest task first. Only an app page's own call, as its viewer.",
+    "groups: true adds groups: [{ group, type, tasks, answers, ok, rejected, unreviewed, first, last, status, statusAt?, why? }], their own groups (only their own answers counted), the one with the newest task first; status open | done as staff set it, when and why. Only an app page's own call, as its viewer.",
   input: z.object({ all: z.boolean().optional(), group: z.string().min(1).max(GROUP_MAX).optional(), groups: z.boolean().optional() }),
   output: z.object({
     items: z.array(
@@ -50,7 +50,20 @@ export default defineStep({
     ),
     groups: z
       .array(
-        z.object({ group: z.string(), type: z.string(), tasks: z.number(), answers: z.number(), ok: z.number(), rejected: z.number(), unreviewed: z.number(), first: z.number(), last: z.number() }),
+        z.object({
+          group: z.string(),
+          type: z.string(),
+          tasks: z.number(),
+          answers: z.number(),
+          ok: z.number(),
+          rejected: z.number(),
+          unreviewed: z.number(),
+          first: z.number(),
+          last: z.number(),
+          status: z.enum(GROUP_STATUSES).optional(),
+          statusAt: z.number().optional(),
+          why: z.string().optional(),
+        }),
       )
       .optional(),
   }),

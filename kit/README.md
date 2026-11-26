@@ -147,7 +147,8 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   verdict (`review { verdict, why?, at }`: a rejection's `why` is what to
   fix), `WorkerHistoryItem`; `{ group }` every answer of theirs in one
   group, `{ groups: true }` also their groups, `WorkerTaskGroup`, each with
-  its answers, `ok`, `rejected` and `unreviewed`; grant `task/history`) and
+  its answers, `ok`, `rejected`, `unreviewed` and the `status` staff set
+  (`open` or `done`, with `statusAt` and `why`); grant `task/history`) and
   `useTaskFile(task, path)` / `useTaskFileUrl` (`task/file`: one of
   `task.files`, `run/files`' shape and a `blob:` URL); grant `task/next`,
   `task/submit`, `task/skip`, `task/file`, `task/me`. SQL and automation

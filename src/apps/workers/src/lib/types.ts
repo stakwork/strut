@@ -284,6 +284,11 @@ export interface TaskGroup {
   workers: string[];
   first: number;
   last: number;
+  /** Staff's status of it (`staff/group-status`): open until set. */
+  status?: "open" | "done";
+  statusAt?: number;
+  statusBy?: string;
+  why?: string;
 }
 
 /** A run's reply after the answer: a JSON object and files of its run. */
