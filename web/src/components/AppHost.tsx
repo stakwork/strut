@@ -408,6 +408,8 @@ export function AppHost(props: {
           maxSide={camera.maxSide}
           review={camera.review}
           {...(camera.actions ? { actions: camera.actions } : {})}
+          {...(camera.checks ? { checks: camera.checks } : {})}
+          {...(camera.checkBudgetMs !== undefined ? { checkBudgetMs: camera.checkBudgetMs } : {})}
           onDone={camera.done}
           {...(camera.title ? { title: camera.title } : {})}
         />

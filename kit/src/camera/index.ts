@@ -3,3 +3,4 @@
  *  no DOM, no dependency, so a host's page imports it alone. */
 export * from "./protocol.js";
 export * from "./client.js";
+export * from "./checks.js";

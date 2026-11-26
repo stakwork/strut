@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { CameraAction, CameraActionResult, CameraPhoto } from "@strut/kit/camera";
+import { CAMERA_CHECK_SIDE, runChecks, type CameraAction, type CameraActionResult, type CameraCheckReport, type CameraChecks, type CameraPhoto } from "@strut/kit/camera";
 import { words } from "../words";
 
 // ── The host's camera (@strut/kit/camera) ──────────────────────────────────
@@ -40,6 +40,30 @@ export function streamSize(maxSide: number): { width: { ideal: number }; height:
   return { width: { ideal: side }, height: { ideal: side } };
 }
 
+/**
+ * The page's quality checks on the photo just drawn (`canvas`): a small
+ * grayscale-sized copy is looked at, never the full photo, and it is made
+ * after the shot shows (a timeout), so the shutter never waits on it. A
+ * failure to check answers no report: the photo goes over as it is.
+ */
+function checkPhoto(canvas: HTMLCanvasElement, size: Size, checks: CameraChecks, budgetMs: number | undefined): Promise<CameraCheckReport | undefined> {
+  return new Promise((resolve) =>
+    setTimeout(() => {
+      try {
+        const { width, height } = photoSize(size.width, size.height, CAMERA_CHECK_SIDE);
+        const small = document.createElement("canvas");
+        small.width = width;
+        small.height = height;
+        const ctx = small.getContext("2d", { alpha: false, willReadFrequently: true })!;
+        ctx.drawImage(canvas, 0, 0, width, height);
+        resolve(runChecks(checks, ctx.getImageData(0, 0, width, height), size, budgetMs === undefined ? {} : { budgetMs }));
+      } catch {
+        resolve(undefined);
+      }
+    }, 0),
+  );
+}
+
 const base64Of = (blob: Blob) =>
   new Promise<string>((resolve, reject) => {
     const r = new FileReader();
@@ -60,12 +84,15 @@ export function CameraSheet(props: {
   review: boolean;
   /** Buttons the page adds beside the shutter, on the live viewfinder only. */
   actions?: CameraAction[];
+  /** Quality checks to run on each shot; the report goes with the photo. */
+  checks?: CameraChecks;
+  checkBudgetMs?: number;
   onDone: (photo: CameraPhoto | CameraActionResult | null) => void;
 }) {
   const video = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(null);
   /** The shot being looked at: its JPEG, made in the background. */
-  const [shot, setShot] = useState<({ jpeg: Promise<Blob | null> } & Size) | null>(null);
+  const [shot, setShot] = useState<({ jpeg: Promise<Blob | null>; report?: Promise<CameraCheckReport | undefined> } & Size) | null>(null);
   const [busy, setBusy] = useState(false);
   // The camera has a frame to take: until then a tap would take nothing.
   const [ready, setReady] = useState(false);
@@ -95,7 +122,7 @@ export function CameraSheet(props: {
   // Set at the press, before any state renders, so a second tap is refused
   // even in the frame before the buttons disable.
   const handing = useRef(false);
-  const hand = async (jpeg: Promise<Blob | null>, size: Size) => {
+  const hand = async (jpeg: Promise<Blob | null>, size: Size, report?: Promise<CameraCheckReport | undefined>) => {
     if (handing.current) return;
     handing.current = true;
     setBusy(true);
@@ -105,7 +132,8 @@ export function CameraSheet(props: {
       await new Promise<void>((r) => requestAnimationFrame(() => r()));
       const blob = await jpeg;
       if (!blob) throw new Error("could not make the photo");
-      props.onDone({ name: "photo.jpg", mediaType: "image/jpeg", data: await base64Of(blob), width: size.width, height: size.height });
+      const checks = await report;
+      props.onDone({ name: "photo.jpg", mediaType: "image/jpeg", data: await base64Of(blob), width: size.width, height: size.height, ...(checks ? { checks } : {}) });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       handing.current = false;
@@ -122,10 +150,11 @@ export function CameraSheet(props: {
     c.height = size.height;
     c.getContext("2d", { alpha: false })!.drawImage(v, 0, 0, size.width, size.height);
     const jpeg = new Promise<Blob | null>((resolve) => c.toBlob(resolve, "image/jpeg", 0.88));
-    if (!props.review) return void hand(jpeg, size);
+    const report = props.checks ? checkPhoto(c, size, props.checks, props.checkBudgetMs) : undefined;
+    if (!props.review) return void hand(jpeg, size, report);
     // The picture stops on the shot at once; the JPEG is made behind it.
     v.pause();
-    setShot({ jpeg, ...size });
+    setShot({ jpeg, ...(report ? { report } : {}), ...size });
   };
   const retake = () => {
     setShot(null);
@@ -148,7 +177,7 @@ export function CameraSheet(props: {
         {shot ? (
           <>
             <button type="button" class="camera-btn" disabled={busy} onClick={retake}>{words.retake}</button>
-            <button type="button" class={`camera-btn is-primary${busy ? " is-busy" : ""}`} disabled={busy} aria-busy={busy} onClick={() => void hand(shot.jpeg, shot)}>
+            <button type="button" class={`camera-btn is-primary${busy ? " is-busy" : ""}`} disabled={busy} aria-busy={busy} onClick={() => void hand(shot.jpeg, shot, shot.report)}>
               {busy && <span class="camera-spinner" aria-hidden="true" />}
               {words.usePhoto}
             </button>

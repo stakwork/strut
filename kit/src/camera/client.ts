@@ -1,7 +1,7 @@
 /** The app's side of the host's camera (./protocol): `available` when the
  *  host offers `experimental["strut/camera"]`; `capture` asks it for a photo
  *  and answers it as a `File`, or null when the person cancelled. No React. */
-import { CAMERA_CAPTURE_METHOD, CAMERA_CAPTURE_TIMEOUT_MS, CAMERA_PASS_THROUGH, cameraActionsOf, cameraCapabilityOf, cameraTitle, type CameraCaptureParams } from "./protocol.js";
+import { CAMERA_CAPTURE_METHOD, CAMERA_CAPTURE_TIMEOUT_MS, CAMERA_PASS_THROUGH, cameraActionsOf, cameraCapabilityOf, cameraChecksOf, cameraTitle,type CameraCheckReport, type CameraCaptureParams } from "./protocol.js";
 
 /** What of the MCP Apps `App` the client uses. */
 export interface CameraBridgeApp {
@@ -11,7 +11,7 @@ export interface CameraBridgeApp {
 
 /** What `captureOrAction` answers: the photo, or the id of the action the
  *  person tapped; null when they cancelled. */
-export type CameraOutcome = { photo: File } | { action: string } | null;
+export type CameraOutcome = { photo: File; checks?: CameraCheckReport } | { action: string } | null;
 
 export interface CameraClient {
   available(): boolean;
@@ -29,10 +29,20 @@ export function createBridgeCamera(app: CameraBridgeApp): CameraClient {
   const captureOrAction = async (params: CameraCaptureParams = {}): Promise<CameraOutcome> => {
     if (!available()) throw new Error(NO_CAMERA_ERROR);
     // A long title is cut to the camera's one line here, as the host would.
-    const { actions, ...rest } = params;
+    const { actions, checks, ...rest } = params;
     const sent: Record<string, unknown> = typeof rest.title === "string" ? { ...rest, title: cameraTitle(rest.title) } : { ...rest };
     // Actions only to a host that draws them; an older one would refuse the field.
     if (actions?.length && cameraActionsOf(app.getHostCapabilities())) sent["actions"] = actions;
+    // Checks only to a host that runs them (an object: only the ones it lists);
+    // their knobs go with them, and an older host never sees any of the fields.
+    const runs = cameraChecksOf(app.getHostCapabilities());
+    const asked = !checks ? [] : checks === true ? runs : runs.filter((n) => n in checks);
+    delete sent["checkBudgetMs"];
+    delete sent["onFail"];
+    if (asked.length) {
+      sent["checks"] = checks === true ? true : Object.fromEntries(asked.map((n) => [n, checks![n]]));
+      for (const k of ["checkBudgetMs", "onFail"] as const) if (rest[k] !== undefined) sent[k] = rest[k];
+    }
     const r = (await app.request({ method: CAMERA_CAPTURE_METHOD, params: sent }, CAMERA_PASS_THROUGH, { timeout: CAMERA_CAPTURE_TIMEOUT_MS })) as {
       cancelled?: unknown; action?: unknown; name?: unknown; mediaType?: unknown; data?: unknown;
     } | undefined;
@@ -42,7 +52,8 @@ export function createBridgeCamera(app: CameraBridgeApp): CameraClient {
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     const type = typeof r.mediaType === "string" ? r.mediaType : "image/jpeg";
-    return { photo: new File([bytes], typeof r.name === "string" && r.name ? r.name : "photo.jpg", { type }) };
+    const report = (r as { checks?: CameraCheckReport }).checks;
+    return { photo: new File([bytes], typeof r.name === "string" && r.name ? r.name : "photo.jpg", { type }), ...(report ? { checks: report } : {}) };
   };
   return {
     available,
