@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronDown, ChevronRight, Clock, FileText, ImagePlus, Loader2, LogIn, MessageSquare, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
-  appLink, fieldsOf, fiatOfMsat, fiatText, formats, satsWithFiat, formProblem, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
-  type FormSchema, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerTaskGroup, type WorkerType,
+  appLink, fieldsOf, fiatOfMsat, fiatText, formats, satsWithFiat, formProblem, localText, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useLocale, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
+  type FormSchema, type LocalText, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerTaskGroup, type WorkerType,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -33,12 +33,17 @@ export function satsText(msat: number, locale?: string): string {
 }
 
 /** What a task asks, in words: its `show.ask`, else `show.title`, else a
- *  `show` that is itself a string. */
-export function taskAsk(show: unknown): string | undefined {
-  if (typeof show === "string") return show.trim() || undefined;
+ *  `show` that is itself a string — each a string, or a language map
+ *  `{ en, es }`, read in `locale`'s language (English without one). */
+export function taskAsk(show: unknown, locale?: string | null): string | undefined {
+  if (typeof show === "string") return localText(show, locale);
   if (!show || typeof show !== "object" || Array.isArray(show)) return undefined;
   const o = show as Record<string, unknown>;
-  for (const k of ["ask", "title"]) if (typeof o[k] === "string" && (o[k] as string).trim()) return (o[k] as string).trim();
+  for (const k of ["ask", "title"]) {
+    const v = o[k];
+    const t = typeof v === "string" || (v && typeof v === "object" && !Array.isArray(v)) ? localText(v as LocalText, locale) : undefined;
+    if (t) return t;
+  }
   return undefined;
 }
 
@@ -296,7 +301,8 @@ export function WorkerTask({ task, submit, skip, label, className }: WorkerTaskP
   const [photos, setPhotos] = useState<File[]>([]);
   // A new task starts with no photos.
   useEffect(() => setPhotos([]), [task.lease]);
-  const ask = taskAsk(task.show);
+  const locale = useLocale();
+  const ask = taskAsk(task.show, locale);
   const fields = shownFields(task.show);
   const rule = task.attachments;
   const images = task.files.filter((p) => IMAGE_PATH.test(p));
@@ -383,6 +389,7 @@ interface Sent {
  * and works and earns as themselves.
  */
 export function WorkerPage({ type, title: named, subtitle: line, icon, intro, everyApp = false, className }: WorkerPageProps) {
+  const locale = useLocale();
   const w = useWorkerWords();
   const visitor = useVisitor();
   const account = useAccountWidget();
@@ -567,7 +574,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
           <div className={cn("grid size-8 shrink-0 place-items-center rounded-[10px] [&_svg]:size-4", ACCENT_FILL)}>{mark}</div>
         )}
         <div className="min-w-0">
-          <div className="truncate text-[15px] leading-tight font-semibold">{back && working ? typeLabel(working, me.data?.types.find((t) => t.name === working)?.title) : title}</div>
+          <div className="truncate text-[15px] leading-tight font-semibold">{back && working ? typeLabel(working, me.data?.types.find((t) => t.name === working)?.title, locale) : title}</div>
           {subtitle && <div className="truncate text-xs text-muted-foreground">{back && working ? title : subtitle}</div>}
         </div>
       </header>
@@ -578,9 +585,10 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
 
 /** A type as a worker reads it: its `title` (what the admin calls it, in
  *  the workers' language), else its name's last segment, words spaced and
- *  capitalised — `shops/photo-check` → "Photo check". */
-export function typeLabel(name: string, title?: string): string {
-  return title?.trim() || labelOf(name.split("/").pop() || name);
+ *  capitalised — `shops/photo-check` → "Photo check". A title may be a
+ *  language map `{ en, es }`: the `locale`'s language is read. */
+export function typeLabel(name: string, title?: LocalText, locale?: string | null): string {
+  return localText(title, locale) || labelOf(name.split("/").pop() || name);
 }
 
 /** How often the dashboard reads what waits again, while it is shown. */
@@ -765,8 +773,9 @@ const ALREADY_GONE = new Set(["no_lease", "lease_closed", "lease_expired", "task
  * framed page has no modals) — which frees it whichever app draws it
  * (`task/skip { lease, all: true }`), so the other kinds of work open again.
  */
-function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<WorkerInfo["holding"]>; title?: string | undefined; onContinue: () => void; onGone: () => void }) {
+function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<WorkerInfo["holding"]>; title?: LocalText | undefined; onContinue: () => void; onGone: () => void }) {
   const w = useWorkerWords();
+  const locale = useLocale();
   const skip = useStep("task/skip");
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -789,7 +798,7 @@ function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<W
       <div className="flex items-center gap-2">
         <button type="button" onClick={onContinue} className="min-w-0 flex-1 text-left">
           <div className="text-xs font-semibold tracking-wide text-foreground uppercase">{w.inYourHand}</div>
-          <div className="truncate text-base font-semibold">{typeLabel(holding.type, title)}</div>
+          <div className="truncate text-base font-semibold">{typeLabel(holding.type, title, locale)}</div>
         </button>
         {holding.lease && !asking && (
           <button
@@ -829,6 +838,7 @@ function InHand({ holding, title, onContinue, onGone }: { holding: NonNullable<W
  *  server hands out no other until it is answered or skipped. */
 function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; onStart: () => void; blocked?: boolean; app?: string }) {
   const w = useWorkerWords();
+  const locale = useLocale();
   const waiting = type.waiting ?? 0;
   const status = blocked ? w.finishFirst : type.standing ? w.anyTime : waiting > 0 ? w.waiting(waiting) : w.noneNow;
   // Another app draws it: where it opens.
@@ -842,7 +852,7 @@ function TypeRow({ type, onStart, blocked = false, app }: { type: WorkerType; on
       className="flex w-full items-center gap-3 rounded-2xl border bg-card p-4 text-left shadow-sm active:bg-muted/60 disabled:opacity-55"
     >
       <div className="min-w-0 flex-1">
-        <div className="truncate text-base font-semibold">{typeLabel(type.name, type.title)}</div>
+        <div className="truncate text-base font-semibold">{typeLabel(type.name, type.title, locale)}</div>
         <div className={cn("mt-0.5 text-[13px]", ready ? "font-medium text-emerald-700 dark:text-emerald-400" : "text-muted-foreground")}>{now}</div>
       </div>
       {type.payMsat > 0 && <PayPill msat={type.payMsat} className="shrink-0" />}
@@ -864,8 +874,9 @@ function Stat({ label, msat, note }: { label: string; msat: number; note?: strin
 
 /** One of their tasks: the kind, when, how it ended and what it earned; an
  *  answer staff sent back says so, and why — what to fix. */
-function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string | undefined }) {
+function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: LocalText | undefined }) {
   const w = useWorkerWords();
+  const locale = useLocale();
   const fmt = useFormats();
   const sats = useSatsWithFiat();
   const e = item.earned;
@@ -882,10 +893,10 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
   return (
     <li className={cn("flex min-w-0 items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[15px] font-medium">{item.ask ?? typeLabel(item.type, title)}</div>
+        <div className="truncate text-[15px] font-medium">{localText(item.ask, locale) ?? typeLabel(item.type, title, locale)}</div>
         <div className="truncate text-xs text-muted-foreground">
-          {item.ask ? `${typeLabel(item.type, title)} · ` : ""}
           {fmt.ago(item.closed ?? item.taken)}
+          {item.ask ? ` · ${typeLabel(item.type, title, locale)}` : ""}
         </div>
       </div>
       <div className="flex flex-col items-end gap-1">
@@ -902,7 +913,7 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
 /** Their grouped work (`task/reply`'s `group`: a book its pages): one row a
  *  group, the ones still going first, the finished ones under their own
  *  heading when both exist. */
-function WorkGroups({ groups, all, titleOf }: { groups: WorkerTaskGroup[]; all: boolean; titleOf: (type: string) => string | undefined }) {
+function WorkGroups({ groups, all, titleOf }: { groups: WorkerTaskGroup[]; all: boolean; titleOf: (type: string) => LocalText | undefined }) {
   const w = useWorkerWords();
   const { active, done } = splitGroups(groups);
   const list = (gs: WorkerTaskGroup[]) => (
@@ -927,7 +938,7 @@ function WorkGroups({ groups, all, titleOf }: { groups: WorkerTaskGroup[]; all: 
 /** One group: its name, pages, earnings and how its pages were judged;
  *  opened, its pages (each a history row). Its answers are read with the row,
  *  so the earnings are the group's all, not the newest fifty's. */
-function GroupRow({ group, all, titleOf }: { group: WorkerTaskGroup; all: boolean; titleOf: (type: string) => string | undefined }) {
+function GroupRow({ group, all, titleOf }: { group: WorkerTaskGroup; all: boolean; titleOf: (type: string) => LocalText | undefined }) {
   const w = useWorkerWords();
   const fmt = useFormats();
   const [open, setOpen] = useState(false);
@@ -972,10 +983,11 @@ function GroupRow({ group, all, titleOf }: { group: WorkerTaskGroup; all: boolea
  *  (its pictures are read only then, so a long list loads none). */
 function ReplyLine({ item, reply }: { item: Pick<WorkerHistoryItem, "lease">; reply: TaskReply }) {
   const w = useWorkerWords();
+  const locale = useLocale();
   const [open, setOpen] = useState(false);
   const files = reply.files ?? [];
   const pictures = files.filter(isPicture).length;
-  const said = taskAsk(reply.show) ?? shownFields(reply.show)[0]?.[1];
+  const said = taskAsk(reply.show, locale) ?? shownFields(reply.show)[0]?.[1];
   const summary = said ?? (pictures ? w.pictures(pictures) : w.files(files.length));
   return (
     <div className="w-full max-w-full min-w-0 basis-full">
@@ -1002,7 +1014,8 @@ function ReplyLine({ item, reply }: { item: Pick<WorkerHistoryItem, "lease">; re
  * each one, and no `item`.
  */
 export function TaskReplyView({ item, reply, file, className }: { item?: Pick<WorkerHistoryItem, "lease">; reply: TaskReply; file?: (f: TaskReplyFile) => ReactNode; className?: string }) {
-  const heading = taskAsk(reply.show);
+  const locale = useLocale();
+  const heading = taskAsk(reply.show, locale);
   const fields = shownFields(reply.show);
   return (
     <div className={cn("flex w-full max-w-full min-w-0 flex-col gap-2.5", className)} data-testid="task-reply">

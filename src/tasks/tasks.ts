@@ -208,7 +208,19 @@ export const TASK_REQUESTS_PER_MINUTE = 240;
 /** A task type's name (§4.2): lowercase segments joined by "/". */
 export const TYPE_NAME_RE = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?(?:\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)*$/;
 export const TYPE_NAME_MAX = 128;
-/** The most characters a type's `title` takes. */
+/** Text for workers in one or several languages: a plain string, or a map of
+ *  language → text (`{ en: "Scan book", es: "Escanear libro" }`); the page
+ *  picks the viewer's language (kit's `localText`). */
+export type LocalText = string | Record<string, string>;
+
+/** A `LocalText` as one plain line for the server's own messages: the
+ *  English entry (else the first), or the string. */
+export function plainText(v: LocalText | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  return typeof v === "string" ? v : (v["en"] ?? Object.values(v)[0]);
+}
+
+/** The most characters a type's `title` takes (each language's, in a map). */
 export const TYPE_TITLE_MAX = 80;
 const ACTOR_MAX = 512;
 const TEXT_MAX = 2000;
@@ -353,7 +365,7 @@ export interface TaskTypeInput {
   app: string;
   /** What workers call it (plans/i18n.md), at most `TYPE_TITLE_MAX`
    *  characters; absent, empty or null: none, and they read its name. */
-  title?: string | null;
+  title?: LocalText | null;
   /** The answer's schema (§4.5); refused when it uses what strut does not check. */
   answer: unknown;
   leaseSeconds?: number;
@@ -503,7 +515,7 @@ export interface WorkerXp extends Level {
 export interface WorkerTypeView {
   name: string;
   /** What workers call it (`TaskType.title`); absent: its name. */
-  title?: string;
+  title?: LocalText;
   app: string;
   payMsat: number;
   qualifying: boolean;
@@ -522,7 +534,7 @@ export interface WorkerHistoryItem {
   type: string;
   /** What the task asked, as they saw it: its `show.ask`, else `show.title`,
    *  else a `show` that is itself a string; at most 200 characters. */
-  ask?: string;
+  ask?: LocalText;
   taken: number;
   closed?: number;
   status: LeaseStatus;
@@ -743,7 +755,7 @@ export function percentiles(xs: readonly number[]): Percentiles | undefined {
  *  limits, and what each worker did of it in the last `days`. */
 export interface TypeNumbers {
   type: string;
-  title?: string;
+  title?: LocalText;
   enabled: boolean;
   open: boolean;
   paySats?: number;
@@ -1262,7 +1274,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const today = await s.tasks.totals({ types: capped.map((k) => k.name), worker: actor, since: at - (at % DAY_MS), now: at });
       for (const k of capped) {
         const r = today.find((x) => x.type === k.name);
-        if (r && r.answered + r.open >= k.limits!.perWorkerDay!) out.set(k.name, `you have done today's ${k.limits!.perWorkerDay} of ${k.title ?? k.name}; more tomorrow`);
+        if (r && r.answered + r.open >= k.limits!.perWorkerDay!) out.set(k.name, `you have done today's ${k.limits!.perWorkerDay} of ${plainText(k.title) ?? k.name}; more tomorrow`);
       }
     }
     const budgeted = kinds.filter((k) => k.limits?.budgetSats !== undefined && k.paySats);
@@ -1270,7 +1282,7 @@ export function createTasks(deps: TasksDeps): TasksService {
       const all = await s.tasks.totals({ types: budgeted.map((k) => k.name), since: 0, now: at });
       for (const k of budgeted) {
         const spent = all.filter((x) => x.type === k.name).reduce((n, x) => n + x.payMsat + x.openPayMsat, 0);
-        if (spent + Math.round(k.paySats! * 1000) > Math.round(k.limits!.budgetSats! * 1000)) out.set(k.name, `${k.title ?? k.name} has used its budget: there is no more of this work`);
+        if (spent + Math.round(k.paySats! * 1000) > Math.round(k.limits!.budgetSats! * 1000)) out.set(k.name, `${plainText(k.title) ?? k.name} has used its budget: there is no more of this work`);
       }
     }
     return out;
@@ -3025,13 +3037,26 @@ function payOk(v: unknown): number | undefined {
   return v > 0 ? Math.round(v * 1000) / 1000 : undefined;
 }
 
-/** A type's title, trimmed; undefined for none. */
-function titleOk(v: unknown): string | undefined {
+/** A type's title, trimmed: a string, or a map of language → string (each
+ *  at most `TYPE_TITLE_MAX`); undefined for none. */
+function titleOk(v: unknown): LocalText | undefined {
   if (v === undefined || v === null) return undefined;
-  if (typeof v !== "string") throw new TaskError("bad_request", "title is what workers call the type, in words");
-  const t = v.trim().replace(/\s+/g, " ");
-  if (t.length > TYPE_TITLE_MAX) throw new TaskError("bad_request", `title is at most ${TYPE_TITLE_MAX} characters`);
-  return t || undefined;
+  const one = (x: unknown): string | undefined => {
+    if (typeof x !== "string") throw new TaskError("bad_request", "title is what workers call the type, in words: a string, or { en, es } texts");
+    const t = x.trim().replace(/\s+/g, " ");
+    if (t.length > TYPE_TITLE_MAX) throw new TaskError("bad_request", `title is at most ${TYPE_TITLE_MAX} characters`);
+    return t || undefined;
+  };
+  if (typeof v === "object" && !Array.isArray(v)) {
+    const out: Record<string, string> = {};
+    for (const [k, x] of Object.entries(v)) {
+      if (!/^[a-z]{2,3}(?:-[A-Za-z0-9]+)*$/.test(k)) throw new TaskError("bad_request", `title's languages are codes like "en" and "es", not ${JSON.stringify(k)}`);
+      const t = one(x);
+      if (t) out[k] = t;
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+  return one(v);
 }
 
 /** When a type's paid answer earns (`PAY_ON`): `answer` when left out. */
@@ -3081,13 +3106,19 @@ function limitsOk(v: unknown): LimitRule | undefined {
 
 /** What a task asks, in words, as a worker's page draws it (strut/views'
  *  `taskAsk`): `show.ask`, else `show.title`, else a `show` that is a string;
- *  at most `ASK_CHARS`. */
+ *  each a string or a language map; at most `ASK_CHARS`. */
 const ASK_CHARS = 200;
-function askOf(show: unknown): string | undefined {
+function askOf(show: unknown): LocalText | undefined {
   const o = show && typeof show === "object" && !Array.isArray(show) ? (show as Record<string, unknown>) : undefined;
-  const text = typeof show === "string" ? show : [o?.["ask"], o?.["title"]].find((v): v is string => typeof v === "string" && !!v.trim());
-  const t = text?.trim();
-  return t ? (t.length > ASK_CHARS ? `${t.slice(0, ASK_CHARS - 1)}…` : t) : undefined;
+  const cut = (v: string) => (v.length > ASK_CHARS ? `${v.slice(0, ASK_CHARS - 1)}…` : v);
+  const text = (v: unknown): LocalText | undefined => {
+    if (typeof v === "string") return v.trim() ? cut(v.trim()) : undefined;
+    if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+    const out: Record<string, string> = {};
+    for (const [k, x] of Object.entries(v)) if (typeof x === "string" && x.trim()) out[k] = cut(x.trim());
+    return Object.keys(out).length ? out : undefined;
+  };
+  return (typeof show === "string" ? text(show) : undefined) ?? (o ? (text(o["ask"]) ?? text(o["title"])) : undefined);
 }
 
 /** Whether type `k` is one a worker call reads: drawn by `app` when it names

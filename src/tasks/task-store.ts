@@ -40,6 +40,7 @@
  * `settle`'s own transaction when the service hands it a decider (`equal`),
  * else later by `decide`, guarded, while no lease can be taken.
  */
+import type { LocalText } from "./tasks.js";
 import type { AnswerSchema } from "./answer-schema.js";
 import type { AttachmentRule } from "./answer-files.js";
 import type { RunAttachment } from "../core.js";
@@ -179,7 +180,7 @@ export interface TaskType {
   /** What workers call it, in their own words and language (plans/i18n.md):
    *  "Revisión de recibo" for `shops/receipt-check`, whose name is ASCII.
    *  Absent: the name's last segment, words spaced. */
-  title?: string;
+  title?: LocalText;
   /** The app that draws it. */
   app: string;
   /** The answer's shape (§4.5), checked when the type was saved. */

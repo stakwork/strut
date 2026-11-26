@@ -2,7 +2,7 @@
 // plans/human-steps.md §9.4). Fields a server may not answer — a host's own
 // task store, an older strut — are optional, and the page shows a part only
 // when its field is there (§9.7).
-import type { AnswerSchema } from "@strut/kit/folds";
+import type { AnswerSchema, LocalText } from "@strut/kit/folds";
 
 export type TaskStatus = "open" | "settled" | "expired" | "cancelled" | "disputed";
 export type WorkerStatus = "new" | "active" | "suspended" | "banned";
@@ -30,7 +30,7 @@ export interface CopiesRule {
 export interface TaskType {
   name: string;
   /** What workers call it, in their language (plans/i18n.md); absent: its name. */
-  title?: string;
+  title?: LocalText;
   app: string;
   answer: AnswerSchema;
   leaseSeconds: number;
@@ -506,7 +506,7 @@ export interface SupportFile {
  *  did of it in the last `days`. */
 export interface TypeNumbers {
   type: string;
-  title?: string;
+  title?: LocalText;
   enabled: boolean;
   open: boolean;
   paySats?: number;

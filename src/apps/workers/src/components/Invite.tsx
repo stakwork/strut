@@ -10,6 +10,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useHost, useStrutClient } from "@strut/kit";
+import { localText } from "@strut/kit/folds";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { INVITE_WORDS, acceptedBy, fmtWhen, inviteBadge, inviteExpiry, inviteOpen, invitesReadMs, shortActor, sortInvites, whatsappUrl } from "../lib/view";
@@ -88,7 +89,7 @@ export function InviteList(props: { types?: TaskType[] | undefined; workers?: Wo
   /** The work an invite is for, as staff call it. */
   const workOf = (i: InviteRow) => {
     if (!i.type) return "Anything open";
-    const title = props.types?.find((t) => t.name === i.type)?.title?.trim();
+    const title = localText(props.types?.find((t) => t.name === i.type)?.title);
     return title || i.type;
   };
   const cancel = async (code: string) => {

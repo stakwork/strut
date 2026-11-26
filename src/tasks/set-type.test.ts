@@ -136,6 +136,15 @@ describe("task/set-type: its input, the merge and the card", () => {
     assert.deepEqual(mergeType("new", undefined, { app: "workers" }), { app: "workers", answer: { type: "object", properties: {} } });
   });
 
+  it("a title may be a language map: merged whole, kept, and written on the card", () => {
+    const map = { en: "Scan book", es: "Escanear libro" };
+    assert.deepEqual(mergeType("pet-match", row({}), { app: "workers", title: map }).title, map);
+    assert.equal(typeChangeInput.safeParse({ name: "x", app: "a", title: map }).success, true);
+    assert.equal(typeChangeInput.safeParse({ name: "x", app: "a", title: { "Not A Lang": "x" } }).success, false);
+    assert.equal(typeChangeInput.safeParse({ name: "x", app: "a", title: { en: "x".repeat(81) } }).success, false);
+    assert.equal(typeCard({ name: "pet-match", app: "workers", title: map }).title, "New task: Scan book / Escanear libro");
+  });
+
   it("a title (plans/i18n.md) is kept when left out, replaced when given, gone with null; the card says it", () => {
     const was = row({ title: "Revisión de recibo" });
     assert.equal(mergeType("pet-match", was, { app: "workers" }).title, "Revisión de recibo");
