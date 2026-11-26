@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
-import { jobRoot, jobsCapability, readJobRecord } from "./jobs.js";
-import { STRUT_SENT, checksFixPrompt, createPrChecks, outcomeOf, prOf, type PrChecksDeps } from "./pr-checks.js";
+import { editPrFixes, jobRoot, jobsCapability, readJobRecord } from "./jobs.js";
+import { PR_FIXES_MAX, STRUT_SENT, checksFixPrompt, createPrChecks, failedAt, outcomeOf, prOf, type PrChecksDeps } from "./pr-checks.js";
 import type { PrStatus } from "./steps/lib/github/pr-status.js";
 import prChecksStep from "./steps/lib/job/pr-checks.js";
 import { fixPrompt } from "./apps/jamie/src/lib/pr.js";
@@ -22,7 +22,11 @@ const PR = "https://github.com/acme/app/pull/7";
 const PR2 = "https://github.com/acme/app/pull/8";
 const DAY = 24 * 60 * 60 * 1000;
 
-type Check = [name: string, status: "failed" | "running" | "passed" | "skipped"];
+/** When a check that is not running finished, unless it says: a minute ago. */
+const DONE = new Date(Date.now() - 60_000).toISOString();
+const later = (ms: number) => new Date(Date.now() + ms).toISOString();
+
+type Check = [name: string, status: "failed" | "running" | "passed" | "skipped", finishedAt?: string];
 function prStatus(url: string, checks: Check[], state: PrStatus["state"] = "open"): PrStatus {
   const n = Number(url.split("/").pop());
   const counts = { passed: 0, failed: 0, running: 0, skipped: 0, total: checks.length };
@@ -37,7 +41,7 @@ function prStatus(url: string, checks: Check[], state: PrStatus["state"] = "open
     base: "main",
     headSha: `sha${n}`,
     mergeable: true,
-    checks: checks.map(([name, status]) => ({ name, status })),
+    checks: checks.map(([name, status, finishedAt = DONE]) => ({ name, status, ...(status === "running" ? {} : { finishedAt }) })),
     counts,
   };
 }
@@ -58,6 +62,13 @@ describe("pull request checks: the pure parts", () => {
     assert.equal(outcomeOf(prStatus(PR, [["build", "passed"], ["docs", "skipped"]])), "clean");
     assert.equal(outcomeOf(prStatus(PR, [])), "clean", "no checks: nothing to fix");
     assert.equal(outcomeOf(prStatus(PR, [["build", "failed"], ["lint", "passed"]], "draft")), "failed");
+  });
+
+  it("failedAt: the last failed check to finish; none without a time, or with no failure", () => {
+    const s = prStatus(PR, [["build", "failed", "2026-11-26T09:11:46Z"], ["lint", "failed", "2026-11-26T09:10:00Z"], ["docs", "passed", "2026-11-26T09:20:00Z"]]);
+    assert.equal(failedAt(s), Date.parse("2026-11-26T09:11:46Z"));
+    assert.equal(failedAt({ checks: [{ name: "deploy", status: "failed" }] }), undefined);
+    assert.equal(failedAt(prStatus(PR, [["build", "passed"]])), undefined);
   });
 
   it("the fix turn's words are the PR card's Fix, word for word", () => {
@@ -105,7 +116,9 @@ describe("pull request checks: a pass", () => {
       warn: (m) => void warnings.push(m),
     });
     const fixes = async () => (await readJobRecord(jobRoot(dir, "j-1")))?.prFixes;
-    return { checks, states, reads, launches, warnings, flags, fixes };
+    /** Another turn of the job, now (`recordRun` stamps it). */
+    const turn = (runId: string) => jobsCapability(dir).recordRun("j-1", { workflow: "job", runId, actor: "alice" });
+    return { checks, states, reads, launches, warnings, flags, fixes, turn };
   }
 
   it("nothing while a check runs, when all passed, or once merged — and the PR is read again next pass", async () => {
@@ -119,7 +132,7 @@ describe("pull request checks: a pass", () => {
     assert.equal(await h.fixes(), undefined);
   });
 
-  it("every check done and one failed: ONE turn, as the person, naming the conversation, with the card's words; never again for that PR", async () => {
+  it("every check done and one failed: ONE turn, as the person, naming the conversation, with the card's words; not again for that failure", async () => {
     const h = await harness();
     h.states[PR] = prStatus(PR, [["build", "failed"], ["lint", "passed"]]);
     assert.deepEqual(await h.checks.check(), { jobs: 1, sent: 1 });
@@ -132,11 +145,66 @@ describe("pull request checks: a pass", () => {
     assert.equal(l.prompt, `${fixPrompt(h.states[PR]!)}\n${STRUT_SENT}`);
     const fix = (await h.fixes())?.[PR];
     assert.equal(fix?.runId, "fix-1", "the mark names the turn");
+    assert.equal(fix?.count, 1);
 
-    // Failed again after the fix: the next fix is a person's click.
-    assert.deepEqual(await h.checks.check(), { jobs: 0, sent: 0 });
+    // The same failure, read again: already in hand.
+    assert.deepEqual(await h.checks.check(), { jobs: 1, sent: 0 });
     assert.equal(h.launches.length, 1);
-    assert.equal(h.reads.length, 1, "a fixed PR is not read again");
+  });
+
+  it("a failure after the fix (a re-run, a pushed fix) is a new one: another turn, at most PR_FIXES_MAX a PR, then not read again", async () => {
+    const h = await harness();
+    for (let n = 1; n <= PR_FIXES_MAX; n++) {
+      // Each failure finishes after the turn sent for the last.
+      h.states[PR] = prStatus(PR, [["build", "failed", n === 1 ? DONE : later(n * 1000)]]);
+      assert.deepEqual(await h.checks.check({ url: PR }), { jobs: 1, sent: 1 }, `failure ${n}`);
+      assert.equal((await h.fixes())?.[PR]?.count, n);
+    }
+    h.states[PR] = prStatus(PR, [["build", "failed", later(60_000)]]);
+    const reads = h.reads.length;
+    assert.deepEqual(await h.checks.check(), { jobs: 0, sent: 0 }, "spent: the next fix is a person's click");
+    assert.equal(h.reads.length, reads, "a spent PR is not read again");
+    assert.equal(h.launches.length, PR_FIXES_MAX);
+  });
+
+  it("a person's Fix on the card since the failure finished is the fix (peel#614): nothing sent; the re-run's failure after it gets one", async () => {
+    const prompts: Record<string, string> = {};
+    const h = await harness({ reporter: async (_rec, runId) => ({ conversation: "alice/c-1", actor: "alice", principal: "alice", ...(prompts[runId] ? { prompt: prompts[runId] } : {}) }) });
+    h.states[PR] = prStatus(PR, [["build", "failed"]]);
+    prompts["click"] = fixPrompt(h.states[PR]!);
+    await h.turn("click");
+    assert.deepEqual(await h.checks.check(), { jobs: 1, sent: 0 });
+    assert.equal(await h.fixes(), undefined, "a click spends none of the automatic ones");
+
+    // Re-run, failed again, after the click's turn: the agent never saw it.
+    h.states[PR] = prStatus(PR, [["build", "failed", later(5_000)]]);
+    assert.deepEqual(await h.checks.check(), { jobs: 1, sent: 1 });
+  });
+
+  it("a turn since the failure that was not told to fix it does not count; nor does a Fix from before it", async () => {
+    const prompts: Record<string, string> = {};
+    const h = await harness({ reporter: async (_rec, runId) => ({ conversation: "alice/c-1", actor: "alice", principal: "alice", ...(prompts[runId] ? { prompt: prompts[runId] } : {}) }) });
+    const earlier = prStatus(PR, [["build", "failed"]]);
+    prompts["old-click"] = fixPrompt(earlier);
+    await h.turn("old-click");
+    prompts["chat"] = "Rename the Mac row too.";
+    await h.turn("chat");
+    // This failure finished after both turns (a re-run with the same words).
+    h.states[PR] = prStatus(PR, [["build", "failed", later(5_000)]]);
+    assert.deepEqual(await h.checks.check(), { jobs: 1, sent: 1 });
+  });
+
+  it("a mark from before the count is one fix; a failure with no time is in hand once marked", async () => {
+    const h = await harness();
+    await editPrFixes(jobRoot(dir, "j-1"), (f) => void (f[PR] = { at: DONE, runId: "old" }));
+    h.states[PR] = prStatus(PR, [["build", "failed", later(1_000)]]);
+    assert.deepEqual(await h.checks.check(), { jobs: 1, sent: 1 });
+    assert.equal((await h.fixes())?.[PR]?.count, 2);
+
+    const s = prStatus(PR, [["build", "failed"]]);
+    delete s.checks[0]!.finishedAt;
+    h.states[PR] = s;
+    assert.deepEqual(await h.checks.check(), { jobs: 1, sent: 0 });
   });
 
   it("a job with a turn in flight is passed over, nothing taken; the next pass sends it", async () => {
@@ -149,7 +217,7 @@ describe("pull request checks: a pass", () => {
     assert.deepEqual(await h.checks.check(), { jobs: 1, sent: 1 });
   });
 
-  it("a launch that is refused gives the mark back, so the next pass tries again", async () => {
+  it("a launch that is refused gives the mark back as it was, so the next pass tries again", async () => {
     const h = await harness();
     h.states[PR] = prStatus(PR, [["build", "failed"]]);
     h.flags.refuse = true;
@@ -158,6 +226,12 @@ describe("pull request checks: a pass", () => {
     assert.equal(h.warnings.length, 1);
     h.flags.refuse = false;
     assert.deepEqual(await h.checks.check(), { jobs: 1, sent: 1 });
+    const first = (await h.fixes())?.[PR];
+
+    h.states[PR] = prStatus(PR, [["build", "failed", later(1_000)]]);
+    h.flags.refuse = true;
+    assert.deepEqual(await h.checks.check(), { jobs: 1, sent: 0 });
+    assert.deepEqual((await h.fixes())?.[PR], first, "the earlier fix's mark, back");
   });
 
   it("two failing PRs on one job: one turn naming both, both marked", async () => {
@@ -266,7 +340,7 @@ describe("pull request checks through a whole strut", () => {
         return json({ html_url: PR, number: 7, title: "Fix it", state: "open", draft: false, merged: false, mergeable: true, user: { login: "bob" }, head: { ref: "fix/7", sha: "sha7" }, base: { ref: "main" } });
       }
       if (path === "/repos/acme/app/commits/sha7/check-runs") {
-        return json({ total_count: 1, check_runs: [{ id: 11, name: "build", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/runs/11", app: { slug: "github-actions" } }] });
+        return json({ total_count: 1, check_runs: [{ id: 11, name: "build", status: "completed", conclusion: "failure", completed_at: DONE, html_url: "https://github.com/acme/app/runs/11", app: { slug: "github-actions" } }] });
       }
       if (path === "/repos/acme/app/commits/sha7/status") return json({ state: "failure", statuses: [] });
       return new Response("{}", { status: 404, headers: { "content-type": "application/json" } });
@@ -319,6 +393,6 @@ describe("pull request checks through a whole strut", () => {
     assert.equal(start.actor, "bob", "as the person who ran that turn");
 
     const again = await post("/steps/job%2Fpr-checks/run", { config: {} });
-    assert.deepEqual(again.body.output ?? again.body, { jobs: 0, sent: 0 }, "once per pull request");
+    assert.deepEqual(again.body.output ?? again.body, { jobs: 1, sent: 0 }, "once per failure: the fix turn, told it, started since");
   });
 });

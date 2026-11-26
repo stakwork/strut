@@ -1,7 +1,8 @@
-# A job's pull request fails its checks: strut wakes the job once
+# A job's pull request fails its checks: strut wakes the job once per failure
 
 Status: BUILT in strut (stakwork/strut#835), 2026-11-23. strut-github
 0.3.0's schedule follows once this strut is on `stable` (work item 4).
+Once per failure, not per pull request, since 2026-11-26 ("After peel#614").
 
 History:
 - 2026-11-22: proposed. It put an index of each job's pull requests and a
@@ -12,6 +13,8 @@ History:
   - then "isn't a pull request already an artifact?" A job's pull requests
     are its artifacts, so strut keeps no list of them. The only new state is
     one mark per pull request: the fix strut sent.
+- 2026-11-26, Evan, after peel#614: once per failure, and a person's Fix
+  click counts (below, "After peel#614").
 
 ## The ask
 
@@ -119,13 +122,20 @@ Code Change §6 already says how to fix: read why with `logs: true`, fix on
 the same branch, push, and say what failed.
 
 **The rules.**
-- **Once per pull request, ever:** `JobRecord.prFixes[url]`, the only new
-  state.
+- **Once per failure** (since 2026-11-26; it was once per pull request,
+  ever). A failure is the failed checks, done when the last of them
+  finished (`finishedAt`). It is in hand once a turn told to fix it started
+  after that: strut's own, or a person's Fix click (the same words, found in
+  the `run.start` prompts of the job's turns since then). A re-run that
+  fails, or a pushed fix that fails, is a new failure.
+- **At most 3 a pull request** (`PR_FIXES_MAX`): a fix that keeps failing
+  stops there, and the next is a person's click on the card.
+- **The mark:** `JobRecord.prFixes[url]` = `{ at, runId, count }`, the only
+  new state.
   - It's taken under the record's lock before the launch, with
     `editPrFixes`, which is not a use: `usedAt` stays.
-  - It's stamped with the run's id once the turn launches, and given back
-    if the launch throws.
-  - A fix that fails again is a person's click on the card.
+  - It's stamped with the run's id once the turn launches, and put back as
+    it was if the launch throws.
 - **Never beside a live turn:** a job with a run in flight (what
   `job/start` checks; since plans/job-follow-ups.md, before that the
   directory's holder) is passed over without taking anything. The next pass is
@@ -139,8 +149,9 @@ alone. It takes no person and no text, so a caller, or a forged webhook,
 can only make strut look sooner.
 
 **Cost:** each pull request read costs 3 GitHub reads (the pull, its check
-runs, its statuses), on its person's token. A pull request sent its fix is
-never read again. A merged or closed one is read each pass until its job
+runs, its statuses), on its person's token. A pull request sent its last
+fix (`PR_FIXES_MAX`) is never read again; one still failing under the cap is
+read each pass, to see a new failure. A merged or closed one is read each pass until its job
 is a week old. Every 5 minutes that's at most 36 reads an hour per pull
 request, against a user token's 5,000. An open card reads 360.
 
@@ -170,13 +181,44 @@ fire fails with "unknown step", which is why the package waits for strut's
    reported the pull request.** Their token pushed it, and their bill pays.
 3. **Does a person's Fix click spend the automatic one?** **No**, as in
    Hive. A busy job is skipped, so a click still running blocks the
-   automatic turn.
+   automatic turn. **Since 2026-11-26 the click covers its failure:** strut
+   sends nothing for a failure a Fix turn started after, and the click
+   spends none of the three.
 4. **Should the wake say the turn was automatic?** **No.** The prompt's
    second line says so in the job's thread.
 5. **How long to watch?** **7 days from the job's last use**
    (`PR_WATCH_MS`).
 6. **Where the words live:** **the engine's own copy**, pinned by a test to
    the card's `fixPrompt`.
+
+## After peel#614 (2026-11-26)
+
+Tom's job opened peel#614 on stadeum.stakwork.ai. Its first CI attempt
+failed fetching dependencies, a transient fault: Tom's plain re-run got
+past it. Then:
+
+- **09:11:58**: Tom clicked Fix. The turn read `github_pr_status { logs }`
+  and blamed the CI token. The log's `end`, 40 lines up to the first
+  `##[error]`, began inside a WARNING printed by an earlier step that had
+  passed ("stakwork/sphinx is private, so set GITHUB_TOKEN"), and the agent
+  joined that warning to the failed fetch.
+- **09:14:13**: strut's wake sent the same fix for the same failure, since
+  a click spent nothing. Same answer.
+- **09:31**: the re-run failed for the real reason (test fixtures whose
+  token expiry had passed). The one fix per pull request was spent, so
+  nothing told the job. Tom fixed it himself.
+
+So:
+
+- **Once per failure**, with a Fix click covering its failure (the rules
+  above), and at most 3 a pull request.
+- **The log's `end` starts at the failing step** (`##[group]Run …`), still
+  at most 40 lines (src/steps/lib/github/pr-status.ts `logOf`).
+- **A check says when it finished** (`finishedAt`), which is how a failure
+  is told apart from the one before it on the same commit.
+
+Not done: a way for the job to re-run a check (the App has `Actions:
+read`), and Hive's swarms, whose strut predates all of this.
 
 ## Not in this
 

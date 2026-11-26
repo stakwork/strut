@@ -84,9 +84,10 @@ export interface JobRecord {
    *  session on the server. A record from before it was kept is filled in
    *  once, by the job index's one pass over the session store. */
   sessions?: string[];
-  /** The one automatic fix strut sent for a pull request the job delivered
+  /** The automatic fixes strut sent for a pull request the job delivered
    *  whose checks failed (plans/pr-checks.md), by the pull request's URL:
-   *  taken before the turn launches, `runId` once it has. Absent until one. */
+   *  the last one's, taken before its turn launches, `runId` once it has.
+   *  Absent until one. */
   prFixes?: Record<string, PrFix>;
   /** What steps of the job's turns asked strut to look at again until it
    *  settles, then send the job one turn (plans/job-follow-ups.md). Absent
@@ -112,10 +113,13 @@ export interface JobRecord {
   spent?: Record<string, number>;
 }
 
-/** One automatic fix (`JobRecord.prFixes`). */
+/** A pull request's automatic fixes (`JobRecord.prFixes`): when the last
+ *  was sent, its run, and how many in all (absent: one, a mark from before
+ *  the count). */
 export interface PrFix {
   at: string;
   runId?: string;
+  count?: number;
 }
 
 /** A step's ask to look again later (`JobRecord.followUps`,

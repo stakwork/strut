@@ -45,16 +45,16 @@ describe("github/pr-status", () => {
             data: {
               check_runs: [
                 { name: "test", status: "completed", conclusion: "success", html_url: "https://ci/test" },
-                { name: "lint", status: "completed", conclusion: "failure", details_url: "https://ci/lint" },
+                { name: "lint", status: "completed", conclusion: "failure", details_url: "https://ci/lint", completed_at: "2026-11-26T09:11:46Z" },
                 { name: "test", status: "completed", conclusion: "failure" },
-                { name: "e2e", status: "queued" },
+                { name: "e2e", status: "queued", completed_at: null },
               ],
             },
           }
         ),
       },
       repos: {
-        getCombinedStatusForRef: async () => ({ data: { statuses: [{ context: "deploy", state: "pending" }, { context: "lint", state: "success" }] } }),
+        getCombinedStatusForRef: async () => ({ data: { statuses: [{ context: "deploy", state: "pending", updated_at: "2026-11-26T09:00:00Z" }, { context: "lint", state: "success" }] } }),
       },
     };
     const s = await readPullRequest(api, "a", "b", 5);
@@ -77,6 +77,8 @@ describe("github/pr-status", () => {
         counts: { passed: 1, failed: 1, running: 2, skipped: 0, total: 4 },
       },
     );
+    const at = Object.fromEntries(s.checks.map((c) => [c.name, c.finishedAt]));
+    assert.deepEqual(at, { lint: "2026-11-26T09:11:46Z", deploy: undefined, e2e: undefined, test: undefined }, "when it finished; none while it runs");
   });
 
   it("a PR the token cannot see is said plainly; checks that cannot be read are none", async () => {
@@ -110,6 +112,22 @@ describe("github/pr-status", () => {
     assert.equal(end.at(-1), "##[error]Process completed with exit code 1.");
     assert.equal(end[0], "line 21");
     assert.equal(logOf("a\nb").end, "a\nb", "no error: the log's own end");
+  });
+
+  it("a log's end starts at the failing step: a passing step's warning above it is not in it (peel#614)", () => {
+    const log = logOf(
+      [
+        "##[group]Run ./scripts/build-ffi.sh",
+        "##[endgroup]",
+        "WARNING: stakwork/sphinx is private, so set GITHUB_TOKEN to a token that can read it",
+        "bindings ready",
+        "##[group]Run swift build --build-tests",
+        "##[endgroup]",
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+        "##[error]Process completed with exit code 1.",
+      ].join("\n"),
+    );
+    assert.equal(log.end, "##[group]Run swift build --build-tests\n##[endgroup]\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n##[error]Process completed with exit code 1.");
   });
 
   it("with logs, each failed Actions check's log goes to a file; a status has none; a refusal is said on the check", async () => {
