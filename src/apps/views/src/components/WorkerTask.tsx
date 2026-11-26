@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronDown, ChevronRight, Clock, FileText, ImagePlus, Loader2, LogIn, MessageSquare, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
-  appLink, fieldsOf, fiatOfMsat, fiatText, formats, satsWithFiat, formProblem, localText, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useLocale, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
+  appLink, fieldsOf, fiatOfMsat, fiatText, formats, satsWithFiat, formProblem, localText, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useLocale, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWithdraw, useWorker,
   type FormSchema, type LocalText, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerTaskGroup, type WorkerType,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
@@ -344,8 +344,8 @@ export interface WorkerPageProps {
    *  employer, `useHost().name`) when it has one, else "Tasks" in the page's
    *  language. */
   title?: string;
-  /** The header's second line: what the work is, in a few words ("Tasks"
-   *  under the server's name; else "Do tasks · get paid"; "" for none). */
+  /** The header's second line ("Tasks" under the server's name; else none;
+   *  "" for none). */
   subtitle?: string;
   /** The header's mark (a lucide icon); a briefcase without one. */
   icon?: ReactNode;
@@ -575,7 +575,7 @@ export function WorkerPage({ type, title: named, subtitle: line, icon, intro, ev
         )}
         <div className="min-w-0">
           <div className="truncate text-[15px] leading-tight font-semibold">{back && working ? typeLabel(working, me.data?.types.find((t) => t.name === working)?.title, locale) : title}</div>
-          {subtitle && <div className="truncate text-xs text-muted-foreground">{back && working ? title : subtitle}</div>}
+          {(back && working ? title : subtitle) && <div className="truncate text-xs text-muted-foreground">{back && working ? title : subtitle}</div>}
         </div>
       </header>
       <main className="flex flex-1 flex-col px-4 pt-1">{body}</main>
@@ -607,7 +607,6 @@ const HOME_POLL_MS = 15_000;
  */
 export function WorkHome({ only, all = false, first, onStart }: { only?: string; all?: boolean; first?: string; onStart: (type: string | null) => void }) {
   const w = useWorkerWords();
-  const fmt = useFormats();
   const here = useApp()?.name;
   const me = useWorker({ all });
   const history = useTaskHistory({ all, groups: true });
@@ -686,13 +685,10 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
         <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{w.earnedHere}</h2>
         <div className="grid grid-cols-2 gap-2">
           <Stat label={w.readyToWithdraw} msat={info.balance.withdrawableMsat} />
-          <Stat
-            label={w.held}
-            msat={info.balance.heldMsat}
-            {...(info.balance.nextReleaseAt ? { note: w.nextClears(fmt.until(info.balance.nextReleaseAt)) } : {})}
-          />
+          <Stat label={w.held} msat={info.balance.heldMsat} />
           {!!info.pendingMsat && <Stat label={w.waitingForOk} msat={info.pendingMsat} note={w.paidOnceOk} />}
         </div>
+        <WithdrawAction info={info} />
       </section>
 
       {!history.error && (
@@ -714,6 +710,41 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
           )}
         </section>
       )}
+    </div>
+  );
+}
+
+/**
+ * Withdraw, where the balance is: the kit's `useWithdraw` (`task/withdraw`,
+ * the server picks the address) for all `task/me` says may be taken now. With
+ * nothing to take, or a payout on its way, or withdrawing closed, the button
+ * stays and says why.
+ */
+function WithdrawAction({ info }: { info: WorkerInfo }) {
+  const w = useWorkerWords();
+  const fmt = useFormats();
+  const { withdraw, status } = useWithdraw();
+  const [note, setNote] = useState<string | null>(null);
+  const payout = info.payout;
+  const max = payout?.on ? payout.maxMsat : 0;
+  const sending = status === "sending";
+  const why = payout?.out ? w.withdrawOnTheWay : max > 0 ? undefined : info.balance.withdrawableMsat > 0 ? w.withdrawUnavailable : w.withdrawNothing;
+  const go = async () => {
+    setNote(null);
+    try {
+      const r = await withdraw(max);
+      setNote(r.state === "failed" ? r.error ?? w.withdrawUnavailable : r.state === "pending" ? w.withdrawPending : w.withdrawSent);
+    } catch (e) {
+      setNote(refusalText(e, w) || errorText(e));
+    }
+  };
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="withdraw-action">
+      <Button disabled={!!why || sending} onClick={() => void go()} className={cn("h-12 w-full rounded-xl text-base font-semibold", ACCENT_BUTTON)}>
+        {sending ? <Loader2 className="size-4 animate-spin" /> : null}
+        {sending ? w.withdrawing : w.withdraw(fmt.sats(max))}
+      </Button>
+      <p className="m-0 text-xs text-muted-foreground" role="status">{note ?? why ?? w.withdrawHint}</p>
     </div>
   );
 }
@@ -888,7 +919,7 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: LocalTex
   else if (item.pending) badge = <Badge>{w.waitingForOk}</Badge>;
   else if (!e) badge = <Badge tone="done">{w.sent}</Badge>;
   else if (e.takenBack) badge = <Badge tone="error">{w.notPaid}</Badge>;
-  else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.until(e.releases))}</Badge>;
+  else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.day(e.releases))}</Badge>;
   else badge = <Badge tone="done">{w.cleared}</Badge>;
   return (
     <li className={cn("flex min-w-0 items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
@@ -1042,7 +1073,8 @@ const isPicture = (f: TaskReplyFile) => f.mediaType.startsWith("image/") || IMAG
  *  it, anything else (or a picture that cannot be read here) named. */
 function ReplyFile({ item, file }: { item?: Pick<WorkerHistoryItem, "lease">; file: TaskReplyFile }) {
   const picture = isPicture(file);
-  const read = useTaskFileUrl(item, file.path, { enabled: picture });
+  // A reply of a task another app draws (the dashboard lists every app's) reads too.
+  const read = useTaskFileUrl(item, file.path, { enabled: picture, all: true });
   if (picture && !read.error) {
     return (
       <figure className="m-0 w-full max-w-full min-w-0 overflow-hidden rounded-2xl border bg-muted/50">

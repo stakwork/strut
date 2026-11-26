@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { RUN_FILE_MAX_BYTES } from "../../../runs.js";
-import { workerCall } from "./_shared.js";
+import { appsOf, workerCall } from "./_shared.js";
 
 /**
  * One file the task a worker leases names (plans/human-steps.md §5.5): only
@@ -21,10 +21,11 @@ export default defineStep({
   input: z.object({
     lease: z.string().min(1).describe("The lease task/next handed out (or, after the answer, the history item's lease)."),
     path: z.string().min(1).describe("One of the task's files, as task/next listed it — or of its reply's files, task/history listed."),
+    all: z.boolean().optional().describe("With a history item's lease: the reply of a task of any app the viewer can open here (as task/history { all: true } lists), not only this app's."),
   }),
   output: z.any(),
   async run(cfg, ctx?: StepContext) {
-    const { tasks, actor, app } = workerCall("task/file", ctx);
-    return tasks.file(actor, { lease: cfg.lease, path: cfg.path, app });
+    const call = workerCall("task/file", ctx);
+    return call.tasks.file(call.actor, { lease: cfg.lease, path: cfg.path, app: call.app, ...(cfg.all ? { ...(await appsOf(call, true)), all: true } : {}) });
   },
 });

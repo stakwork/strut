@@ -3,7 +3,7 @@
 /** Names a workflow keeps for its own bookkeeping, never for the worker:
  *  compared after lower-casing and dropping `_`, `-` (so `isCover`-style keys
  *  match by their plain name too). `flag` is not here: it names what to fix. */
-export const INTERNAL_KEYS: ReadonlySet<string> = new Set(["id", "ok", "idem", "replay", "hash", "key", "index", "pos"]);
+export const INTERNAL_KEYS: ReadonlySet<string> = new Set(["id", "ok", "idem", "replay", "hash", "key", "index", "pos", "pending", "numberstatus", "jeverror", "booktitle", "bookauthor"]);
 
 /** Whether a `show` entry is bookkeeping, not something to show a worker:
  *  its key is one of `INTERNAL_KEYS` (case, `_` and `-` ignored), starts with
@@ -16,7 +16,8 @@ export function isInternalKey(key: string, value?: unknown): boolean {
 }
 
 /** The rest of what a task shows, as label and value: `show`'s other plain
- *  fields (text, numbers, yes or no), in order, without bookkeeping
+ *  fields (text and numbers; a bare yes or no is a flag, not worth a label, so
+ *  only an opt-in `fields` shows one), in order, without bookkeeping
  *  (`isInternalKey`). A `show.fields` (or `show.display`) array of key names
  *  is an opt-in: only those keys, in that order, whatever their names. Nested
  *  values are left to an app's own view. */
@@ -35,7 +36,7 @@ export function shownFields(show: unknown): Array<[string, string]> {
   }
   for (const [k, v] of Object.entries(o)) {
     if (k === "ask" || k === "title" || isInternalKey(k, v)) continue;
-    const t = plain(v);
+    const t = typeof v === "boolean" ? undefined : plain(v);
     if (t !== undefined) out.push([k, t]);
   }
   return out;
