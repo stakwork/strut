@@ -247,7 +247,7 @@ export async function llmsTxt(index: PackageIndex, opts: { publicUrl: string; st
     }
   }
   out.push("", "## Optional", "");
-  if (opts.store) out.push(`- [The store page](${opts.store}/?store=1): the same, for a person — a package's Install link there opens their strut's Publish dialog on its Packages tab, on the name`);
+  if (opts.store) out.push(`- [The store page](${opts.store}/?store=1): the same, for a person — a package's Install link there opens their strut's Publish dialog on its Store tab, on the name`);
   out.push(`- [strut](https://github.com/stakwork/strut): the workflow engine these packages install into`);
   return out.join("\n") + "\n";
 }
@@ -261,6 +261,6 @@ export function indexInstructions(opts: { publicUrl: string; store?: string }): 
     `This is a strut PACKAGE INDEX at ${opts.publicUrl} — the phone book of a package store: it lists publishers, each by the public key that signs its catalog, and follows every listed publisher's public catalog. Here you find what people have published for strut, the workflow engine — PACKAGES of workflows (automations), steps, apps (front ends over workflows) and Concept pages (knowledge), each pinned by its digest. ` +
     `search_packages finds packages by words (each hit says what the release holds, read off its archive); get_package reads one package's page — its apps, each workflow's inputs and what it runs, its steps and the secrets they read, its Concept pages, its README, and \`can\`: whether running it spends (a model call), acts (a step that writes to the world) or runs code; get_concept browses the Concept tree the packages carry, or reads one page; search_live finds what the listed servers show LIVE — their public views, and what anyone may run there, free or for sats, ON that server (its \`mcp\` door or its \`llms.txt\`), never here. ` +
     `Everything here is DERIVED and unsigned past the index card: a reading of the publishers' catalogs and archives as this index crawled them, never a check — an install re-verifies the package against its publisher's own signed catalog and re-reads its files through the real parsers. ` +
-    `Nothing here installs, and you cannot: a package is installed on a PERSON's own strut, on their yes — from its UI's Publish dialog, Packages tab (Find the name, then Install), from this store's Install link${link}, which opens that tab on the name, or proposed by an agent that holds strut's package/install tool there (a card the person approves). Tell them the name, publisher/name, and what the page says it needs and can do.`
+    `Nothing here installs, and you cannot: a package is installed on a PERSON's own strut, on their yes — from its UI's Publish dialog, Store tab (find the name, then Install), from this store's Install link${link}, which opens that tab on the name, or proposed by an agent that holds strut's package/install tool there (a card the person approves). Tell them the name, publisher/name, and what the page says it needs and can do.`
   );
 }

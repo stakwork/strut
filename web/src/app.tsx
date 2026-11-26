@@ -265,7 +265,7 @@ function Shell() {
   const [installLink] = useState<InstallLink | null>(() => parseInstallLink(location.search));
   // The Publish dialog's tab while it is open (null: closed). The topbar's
   // button opens it on the tab used last.
-  const [publishTab, setPublishTab] = useState<PublishTab | null>(installLink ? "packages" : null);
+  const [publishTab, setPublishTab] = useState<PublishTab | null>(installLink ? "get" : null);
   const publishOpen = publishTab !== null;
   const pickPublishTab = (tab: PublishTab) => { setPublishTab(tab); savePref("publishTab", tab); };
   // On an INDEX strut, the listing requests waiting for its operator
@@ -2070,10 +2070,10 @@ function Shell() {
           <button class="btn" onClick={() => setShowSecrets(true)}>Secrets</button>
           <button
             class={`btn${publishOpen ? " is-active" : ""}`}
-            title="Packages other strut servers install, and what anyone can read here with no account"
+            title="Publish your apps and workflows for others, or install packages others built"
             onClick={() => {
               const last = loadPref<PublishTab>("publishTab", "packages");
-              setPublishTab(last === "index" && indexWaiting === undefined ? "packages" : last);
+              setPublishTab(last === "index" && indexWaiting === undefined ? "public" : last);
             }}
           >Publish{!!indexWaiting && <span class="publish-dirty-dot" title={`${indexWaiting} listing request${indexWaiting === 1 ? "" : "s"} waiting for you`} />}</button>
           <button class={`btn btn-ai${showChat ? " is-active" : ""}`} onClick={() => setShowChat(!showChat)}>AI</button>

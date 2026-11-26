@@ -83,10 +83,7 @@ export function EarningsPanel() {
 
   return (
     <div class="earnings-panel">
-      <div class="auto-hint">
-        What anyone's runs of the workflows and tools you sell here were charged, what they cost you, and the wallet the sats land in.
-        Earned and cost are dollars; the wallet holds sats.
-      </div>
+      <div class="auto-hint">Earned and cost are dollars; the wallet holds sats.</div>
       {error && <div class="auto-error">{error}</div>}
       {!view && !error && <div class="auto-hint">Loading…</div>}
 
@@ -124,7 +121,7 @@ export function EarningsPanel() {
                   <button class="btn" disabled={!!addBlocked} title={addBlocked ?? "An invoice into this wallet, to pay from your own"} onClick={() => setAdding(true)}>
                     Add sats
                   </button>
-                  <button class="btn btn-primary" disabled={!!blocked} title={blocked ?? "Pay a Lightning invoice out of this wallet"} onClick={() => setWithdrawing(true)}>
+                  <button class={`btn${blocked ? "" : " btn-primary"}`} disabled={!!blocked} title={blocked ?? "Pay a Lightning invoice out of this wallet"} onClick={() => setWithdrawing(true)}>
                     Withdraw
                   </button>
                 </div>
@@ -179,9 +176,9 @@ export function EarningsPanel() {
           )}
 
           <div class="flyout-section">
-            <div class="flyout-section-title">By item</div>
+            <div class="flyout-section-title">By workflow or tool</div>
             {items.length === 0 ? (
-              <div class="auto-hint">Nothing anyone may run here yet: open it under Public view with "anyone can run it".</div>
+              <div class="auto-hint">Nothing anyone may run here yet: add a workflow under Public view and tick "anyone can run it".</div>
             ) : (
               <table class="earnings-table">
                 <thead>

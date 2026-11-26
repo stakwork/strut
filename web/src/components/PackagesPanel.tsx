@@ -7,6 +7,7 @@ import { errorMessage } from "../helpers";
 import { PACKAGE_SEGMENT, byNamespace, comesAlong, installProgressText, isHostsStamp, isInstalledName, nextVersion, packageLabel, pickerGroups, picksFromRelease } from "../package-release";
 import { canWords, indexIdOf, type InstallLink } from "../store-links";
 import { ConfirmButton } from "./ConfirmButton";
+import { ChevronRightIcon, CloseIcon, FileIcon } from "../icons";
 import { ListingLines } from "./ListingLines";
 import { CopyButton } from "./CopyButton";
 import { CreateRepo, PackageRepos } from "./PackageRepos";
@@ -154,41 +155,52 @@ function PublisherHead(props: { publisher: api.PublisherInfo | null | undefined;
       setBusy(false);
     }
   };
+  if (props.publisher === undefined) return <div class="auto-hint">Loading…</div>;
+  // Step 1, alone on the tab until it is done: nothing below works without it.
+  if (!name) {
+    return (
+      <div class="publish-step">
+        <div class="publish-step-n">Step 1 of 2</div>
+        <div class="publish-step-title">Pick your publisher name</div>
+        <div class="auto-hint">
+          Like a username: it goes in front of every package you share (<code>acme</code> in <code>acme/tools</code>). You pick it once and it cannot be changed.
+        </div>
+        <div class="publish-step-row">
+          <input type="text" value={draft} placeholder="acme" disabled={busy} autoFocus
+            onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && draft.trim()) void save(); }} />
+          <button class="btn btn-primary" disabled={busy || !draft.trim()} onClick={() => void save()}>{busy ? "Saving…" : "Save name"}</button>
+        </div>
+        {error && <div class="auto-error">{error}</div>}
+        <div class="publish-step-next">Next: create your first package.</div>
+      </div>
+    );
+  }
   return (
     <>
       <div class="publisher-head">
-        <span class="auto-meta">Publisher</span>
-        {name ? (
-          <span class="package-name" title="The first segment of every package published here">{name}</span>
-        ) : (
-          <>
-            <input type="text" value={draft} placeholder="stakwork" disabled={busy || props.publisher === undefined}
-              onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && draft.trim()) void save(); }} />
-            <button class="btn btn-primary" disabled={busy || !draft.trim()} onClick={() => void save()}>Set</button>
-          </>
-        )}
-        {props.publisher && (
+        <span class="publisher-avatar">{name[0]!.toUpperCase()}</span>
+        <span class="publisher-who">
+          <span class="auto-meta">Sharing as</span>
+          <span class="package-name" title="The first part of every package shared from here">{name}</span>
+        </span>
+      </div>
+      {props.publisher && (
+        <details class="publisher-keys">
+          <summary>Keys, for a server that follows yours</summary>
           <span class="package-key">
             <span class="auto-meta">fleet</span>
             <code class="package-digest" title="The FLEET key: what a subscribing strut follows">{props.publisher.key}</code>
             <CopyButton value={props.publisher.key} label="Copy the fleet key" />
           </span>
-        )}
-      </div>
-      {props.publisher?.public && (
-        <div class="publisher-head">
-          <span class="package-key">
-            <span class="auto-meta">public</span>
-            <code class="package-digest" title="The PUBLIC key: seals the public catalog, the only key the world sees">{props.publisher.public}</code>
-            <CopyButton value={props.publisher.public} label="Copy the public key" />
-          </span>
-        </div>
-      )}
-      {!name && props.publisher !== undefined && (
-        <div class="auto-hint publisher-hint">
-          The publisher is the first segment of every package published here (<code>stakwork</code> in <code>stakwork/tools</code>). Set it once.
-        </div>
+          {props.publisher.public && (
+            <span class="package-key">
+              <span class="auto-meta">public</span>
+              <code class="package-digest" title="The PUBLIC key: seals the public catalog, the only key the world sees">{props.publisher.public}</code>
+              <CopyButton value={props.publisher.public} label="Copy the public key" />
+            </span>
+          )}
+        </details>
       )}
       {error && <div class="auto-error">{error}</div>}
     </>
@@ -365,27 +377,43 @@ function PackagePage(props: {
         {newest && <span class="package-version">{newest.version}</span>}
       </div>
       <div class="dialog-field">
-        <label>Workflows</label>
-        {props.workflows.length > 8 && (
-          <input type="text" class="package-filter" value={q} placeholder="Filter by name or category"
-            onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
-        )}
-        {groups.length === 0 && <div class="auto-hint">{q ? "Nothing matches." : "No workflows here yet."}</div>}
-        {groups.map((g) => (
-          <div class="package-group" key={g.category ?? ""}>
-            <div class="package-group-title">{g.category ?? "No category"}</div>
-            {g.names.map((n) => (
-              <label class="package-workflow" key={n}>
-                <input type="checkbox" checked={workflows.has(n)} onChange={() => toggle(workflows, setWorkflows, n)} />
-                {n}
-              </label>
-            ))}
-          </div>
-        ))}
+        <label>Workflows {workflows.size > 0 && <span class="share-count">{workflows.size} included</span>}</label>
+        <PickedChips names={[...workflows].sort()} onRemove={(n) => toggle(workflows, setWorkflows, n)} empty="None included yet: tick the ones this package should carry." />
+        {/* The list folds away once something is picked: the chips say what is in. */}
+        <Fold class="pick-list" initial={workflows.size === 0} summary={<>
+            <ChevronRightIcon size={12} class="pick-list-chev" />
+            {workflows.size === 0 ? "Choose workflows" : "Add or remove workflows"}
+            <span class="auto-hint">{props.workflows.length} here</span>
+          </>}>
+          {props.workflows.length > 8 && (
+            <input type="text" class="package-filter" value={q} placeholder="Filter by name or category"
+              onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
+          )}
+          {groups.length === 0 && <div class="auto-hint">{q ? "Nothing matches." : "No workflows here yet."}</div>}
+          {groups.map((g) => {
+            const on = g.names.filter((n) => workflows.has(n)).length;
+            // A lone group, or a search, shows its rows; many groups start folded.
+            return (
+              <Fold class="package-group" key={g.category ?? ""} initial={groups.length === 1} force={!!q.trim()} summaryClass="package-group-title" summary={<>
+                  <ChevronRightIcon size={10} class="pick-list-chev" />
+                  {g.category ?? "No category"}
+                  <span class={`share-count${on ? " on" : ""}`}>{on} of {g.names.length}</span>
+                </>}>
+                {g.names.map((n) => (
+                  <label class="package-workflow" key={n}>
+                    <input type="checkbox" checked={workflows.has(n)} onChange={() => toggle(workflows, setWorkflows, n)} />
+                    {n}
+                  </label>
+                ))}
+              </Fold>
+            );
+          })}
+        </Fold>
       </div>
       {pickableApps.length > 0 && (
         <div class="dialog-field">
-          <label>Apps</label>
+          <label>Apps {apps.size > 0 && <span class="share-count">{apps.size} included</span>}</label>
+          <PickedChips names={[...apps].sort()} labelOf={(n) => pickableApps.find((a) => a.name === n)?.title || n} onRemove={(n) => toggle(apps, setApps, n)} />
           {pickableApps.map((a) => (
             <label class="package-workflow" key={a.name} title={a.name}>
               <input type="checkbox" checked={apps.has(a.name)} onChange={() => toggle(apps, setApps, a.name)} />
@@ -567,20 +595,40 @@ function PackageEarnings(props: { pkg: string; release?: string }) {
 
 /** "New package": a name, one segment, under this strut's publisher — then
  *  its page. A name already published opens that package. */
-function NewPackage(props: { publisher?: string; onOpen: (pkg: string) => void }) {
+function NewPackage(props: { publisher: string; first?: boolean; onOpen: (pkg: string) => void }) {
   const [draft, setDraft] = useState("");
   const name = draft.trim();
   const ok = PACKAGE_SEGMENT.test(name);
   const open = () => {
-    if (props.publisher && ok) props.onOpen(`${props.publisher}/${name}`);
+    if (ok) props.onOpen(`${props.publisher}/${name}`);
   };
-  return (
-    <div class="package-new">
-      <input type="text" value={draft} placeholder={props.publisher ? "tools" : "Set the publisher first"} disabled={!props.publisher}
+  const row = (
+    <div class="publish-step-row">
+      <span class="package-prefix">{props.publisher}/</span>
+      <input type="text" value={draft} placeholder="name it, e.g. legal-tools" aria-label="New package name" autoFocus={props.first}
         onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
         onKeyDown={(e) => { if (e.key === "Enter") open(); }} />
-      <button class="btn" disabled={!props.publisher || !ok} onClick={open}>New package</button>
-      {name && !ok && <div class="auto-hint">Lowercase letters, digits and dashes, starting with a letter.</div>}
+      <button class={`btn${props.first ? " btn-primary" : ""}`} disabled={!ok} onClick={open}>{props.first ? "Create package" : "Create"}</button>
+    </div>
+  );
+  const bad = name && !ok && <div class="auto-hint">Lowercase letters, digits and dashes, starting with a letter.</div>;
+  if (!props.first) {
+    return (
+      <div class="package-new-more">
+        <div class="flyout-section-title">New package</div>
+        {row}
+        {bad || <div class="auto-hint">A package is a named bundle. Name it here; you pick the workflows and apps that go in it next.</div>}
+      </div>
+    );
+  }
+  return (
+    <div class="publish-step">
+      <div class="publish-step-n">Step 2 of 2</div>
+      <div class="publish-step-title">Create your first package</div>
+      <div class="auto-hint">A package is a named bundle of your workflows and apps. Give it a short name.</div>
+      {row}
+      {bad}
+      <div class="publish-step-next">Next: tick what goes in it, then publish.</div>
     </div>
   );
 }
@@ -717,7 +765,7 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
   const none = indexes !== null && indexes.length === 0;
   return (
     <div class="flyout-section">
-      <div class="flyout-section-title">Find</div>
+      <div class="flyout-section-title">Find a package</div>
       {props.initial && (
         <div class="auto-card">
           <div class="auto-card-head"><span class="package-name">{props.initial.pkg}</span><span class="badge badge-accent">from the store</span></div>
@@ -810,7 +858,11 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
   );
 }
 
-export function PackagesPanel(props: { install?: InstallLink | null }) {
+/** `part`: "share" is what this server publishes (the publisher, its
+ *  packages, repos); "get" is what it takes from others (find, following,
+ *  installed). Two tabs of the Publish dialog. */
+export function PackagesPanel(props: { part: "share" | "get"; install?: InstallLink | null }) {
+  const share = props.part === "share";
   const [catalog, setCatalog] = useState<api.Catalog | null | undefined>(undefined);
   const [publisher, setPublisher] = useState<api.PublisherInfo | null | undefined>(undefined);
   const [workflows, setWorkflows] = useState<api.WorkflowEntry[]>([]);
@@ -822,7 +874,13 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
   const byPackage = useEarnings({ by: "package" });
   const installedEarnings = useMemo(() => (byPackage ? new Map(byPackage.rows.map((r) => [r.key, r])) : null), [byPackage]);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpenPage] = useState<string | null>(null);
+  // The two tabs are two mounts: a package page reads what is installed afresh,
+  // so an install on Store never leaves its picker offering those items.
+  const setOpen = (pkg: string | null) => {
+    setOpenPage(pkg);
+    if (pkg) api.listInstalledPackages().then(setInstalled, failed("installed"));
+  };
 
   const failed = (part: string) => (err: unknown) => setErrors((e) => ({ ...e, [part]: errorMessage(err) }));
   const loadCatalog = () => api.getCatalog().then(setCatalog, failed("catalog"));
@@ -840,6 +898,7 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
   const here = useMemo(() => Object.keys(catalog?.packages ?? {}).sort(), [catalog]);
   const installedNames = useMemo(() => (installed ?? []).map((p) => p.package), [installed]);
   const newest = (pkg: string) => catalog?.packages[pkg]?.releases[0]?.version;
+  const releasesOf = (pkg: string) => catalog?.packages[pkg]?.releases.length ?? 0;
 
   return (
     <>
@@ -849,34 +908,42 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
           onBack={() => setOpen(null)} onChanged={() => { void loadCatalog(); api.getPublisher().then(setPublisher, failed("catalog")); }} />
       ) : (
         <>
-          <div class="flyout-section">
+          {share && <div class="flyout-section">
             <PublisherHead publisher={publisher} onChanged={setPublisher} />
             {publisher && <ListingLines mode="packages" publisher={publisher} onPublisher={setPublisher} />}
             {errors.catalog && <div class="auto-error">{errors.catalog}</div>}
-            <div class="flyout-section-title">Here</div>
-            {catalog === undefined && !errors.catalog && <div class="auto-hint">Loading…</div>}
-            {catalog !== undefined && here.length === 0 && (
-              <div class="auto-hint">Nothing published from here yet. Name a package, then pick the workflows it holds.</div>
+            {/* One step at a time: the name, then the first package, then the list. */}
+            {publisher?.name && catalog === undefined && !errors.catalog && <div class="auto-hint">Loading…</div>}
+            {publisher?.name && catalog !== undefined && here.length === 0 && <NewPackage first publisher={publisher.name} onOpen={setOpen} />}
+            {publisher?.name && here.length > 0 && (
+              <>
+                <NewPackage publisher={publisher.name} onOpen={setOpen} />
+                <div class="flyout-section-title">Your packages</div>
+                {here.map((pkg) => (
+                  <button class="share-card share-card-link" key={pkg} onClick={() => setOpen(pkg)} title={`Open ${pkg}`}>
+                    <span class="share-card-head">
+                      <span class="share-card-icon is-package"><FileIcon size={14} /></span>
+                      <span class="share-card-name">{packageLabel(pkg, publisher.name)}</span>
+                      <span class="auto-hint">{releasesOf(pkg)} release{releasesOf(pkg) === 1 ? "" : "s"}</span>
+                      {newest(pkg) && <span class="badge">v{newest(pkg)}</span>}
+                      <ChevronRightIcon size={14} class="share-card-go" />
+                    </span>
+                  </button>
+                ))}
+                {catalog && <div class="auto-meta package-signed">Catalog signed {ago(catalog.seq / 1e6)}</div>}
+              </>
             )}
-            {here.map((pkg) => (
-              <button class="package-row" key={pkg} onClick={() => setOpen(pkg)} title={pkg}>
-                <span class="package-name">{packageLabel(pkg, publisher?.name)}</span>
-                {newest(pkg) && <span class="package-version">{newest(pkg)}</span>}
-              </button>
-            ))}
-            <NewPackage publisher={publisher?.name} onOpen={setOpen} />
-            {catalog && <div class="auto-meta package-signed">Catalog signed {ago(catalog.seq / 1e6)}</div>}
-          </div>
+          </div>}
 
-          <FindPackages installed={installedNames} initial={props.install} onInstalled={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />
+          {!share && <FindPackages installed={installedNames} initial={props.install} onInstalled={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />}
 
-          <PackageRepos onChanged={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />
+          {share && <PackageRepos onChanged={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />}
 
-          <div class="flyout-section">
-            <div class="flyout-section-title">Following</div>
+          {!share && <div class="flyout-section">
+            <div class="flyout-section-title">Kept up to date</div>
             {errors.subs && <div class="auto-error">{errors.subs}</div>}
             {subs === null && !errors.subs && <div class="auto-hint">Loading…</div>}
-            {subs?.length === 0 && <div class="auto-hint">This strut follows no catalog.</div>}
+            {subs?.length === 0 && <div class="auto-hint">Nothing here updates itself from another server.</div>}
             {subs?.map((s) => (
               <div class="auto-card" key={s.id}>
                 <div class="auto-card-head">
@@ -917,13 +984,13 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
                 ))}
               </div>
             ))}
-          </div>
+          </div>}
 
-          <div class="flyout-section">
-            <div class="flyout-section-title">Installed</div>
+          {!share && <div class="flyout-section">
+            <div class="flyout-section-title">Installed here</div>
             {errors.installed && <div class="auto-error">{errors.installed}</div>}
             {installed === null && !errors.installed && <div class="auto-hint">Loading…</div>}
-            {installed?.length === 0 && <div class="auto-hint">No packages installed.</div>}
+            {installed?.length === 0 && <div class="auto-hint">No packages installed yet. Find one above.</div>}
             {installed?.map((p) => (
               <div class="auto-card" key={p.package}>
                 <div class="auto-card-head">
@@ -952,7 +1019,7 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
                 </ul>
               </div>
             ))}
-          </div>
+          </div>}
         </>
       )}
     </>
@@ -961,6 +1028,40 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
 
 /** Types every strut has, which no package carries (the build refuses them). */
 const STRUTS_OWN_TYPES = new Set(["Concept", "Claim", "Check", "Evidence"]);
+
+/** What is ticked in a list below it, as chips: seen at a glance, and taken
+ *  out with the chip's ×, wherever the row is in a long or filtered list. */
+/** A `<details>` that keeps its own open state (a re-render never folds it
+ *  under the person); `force` holds it open, as a search does. */
+function Fold(props: { class: string; summary: ComponentChildren; summaryClass?: string; initial: boolean; force?: boolean; children: ComponentChildren }) {
+  const [open, setOpen] = useState(props.initial);
+  return (
+    <details class={props.class} open={props.force || open} onToggle={(e) => { if (!props.force) setOpen((e.currentTarget as HTMLDetailsElement).open); }}>
+      <summary class={props.summaryClass}>{props.summary}</summary>
+      {props.children}
+    </details>
+  );
+}
+
+function PickedChips(props: { names: string[]; labelOf?: (name: string) => string; onRemove: (name: string) => void; empty?: string }) {
+  const [all, setAll] = useState(false);
+  if (props.names.length === 0) return props.empty ? <div class="auto-hint picked-empty">{props.empty}</div> : null;
+  const FEW = 8;
+  const shown = all ? props.names : props.names.slice(0, FEW);
+  const more = props.names.length - shown.length;
+  return (
+    <div class="picked-chips">
+      {shown.map((n) => (
+        <span class="picked-chip" key={n} title={n}>
+          <span class="picked-chip-name">{props.labelOf?.(n) ?? n}</span>
+          <button type="button" class="picked-chip-x" aria-label={`Take ${n} out`} title="Take it out" onClick={() => props.onRemove(n)}><CloseIcon size={10} /></button>
+        </span>
+      ))}
+      {more > 0 && <button type="button" class="picked-more" onClick={() => setAll(true)}>+{more} more</button>}
+      {all && props.names.length > FEW && <button type="button" class="picked-more" onClick={() => setAll(false)}>Show fewer</button>}
+    </div>
+  );
+}
 
 /** Names to add with one click each, or all at once: what the picked
  *  workflows' runs wrote or read. Nothing when there are none. */

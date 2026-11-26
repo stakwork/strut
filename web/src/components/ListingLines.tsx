@@ -124,7 +124,7 @@ export function ListingLines(props: {
   const name = pub?.name;
   return (
     <div class="listing-lines">
-      {view && !props.viewShows && <div class="auto-hint">Save something in the public view first: an index lists a view that shows something.</div>}
+      {view && !props.viewShows && <div class="auto-hint">Share something first; then it can be listed in the store, where people browse.</div>}
       {lines.map((l) => {
         const label = l.label ?? l.index;
         const waiting = !l.listed && l.asked?.status === "pending";
