@@ -111,6 +111,53 @@ home, and nobody types it twice.
 is the same record drawn the same way. The record says who made each
 case, claim and change.
 
+## The box is the lab
+
+An experiment runs on the server it is asked on. Its cases are runs of
+workflows there, and a change is tried on a copy of the pages (a Concept
+branch). It needs no repository and no pod.
+
+Most experiments are this kind (owner, 2026-11-25): *"The core purpose
+of strut apps is to make generative-AI-powered apps (text, image, etc),
+so people will want jamie to know how to make experiments for them too!
+A nice automatic testing paradigm for prompts sort of?"*
+
+```text
+person:  make the summaries shorter but keep every action item
+jamie:   what's your budget?
+person:  $5
+jamie:   9 of 10 with the new wording, 6 of 10 before.      [Use it]
+```
+
+A pod comes in only when what is being changed is code in a repository:
+strut's own (`plans/tools-as-pages.md`), or an app that lives in one.
+Then the lab is a second server, run from the branch. The pods example
+below is neither: its cases set pods up, so a pod is what it tests, not
+where it runs.
+
+### An app's own prompts
+
+What an app's model is told goes on a page, as everywhere in strut
+(AGENTS.md, "Core ideas"). The app's workflow reads the page
+(`context/concept`), and its YAML holds no instructions. Then a claim on
+the page, cases that are inputs to the app's workflow, a test of a new
+wording and Use it all work on it as built: by an admin in the Knowledge
+app today, and by Jamie once the test steps are his ("What strut
+needs").
+
+- **The `App` page says so,** where it tells how an app's workflows are
+  written, so an app Jamie builds can be tested from its first version.
+  `Workflow Language` is rendered from the builder's rules, which stay as
+  they are.
+- **It costs a card.** A job adds a page with `knowledge/add-page`,
+  which asks the person first. Proposed: one card at an app's first
+  build, for a page named for the app; a second prompt is a page under
+  it. Later an app could ship its pages in its own directory, as a
+  package does.
+- **What is kept in `params` instead** (a model's name, a temperature, a
+  tool list) is tried with a case that carries `params` ("What strut
+  needs").
+
 ## Starting one
 
 From the Knowledge app, as Set up is from the Code app:
@@ -183,6 +230,10 @@ stay after it ends.
 | **A sample's files kept with its verdict:** what its run left, for whoever opens the dot | A sample that ran as a job loses them. Strut closes the job once it is judged, and that deletes its directory |
 | **As many cases as a benchmark has,** and samples of each: for a job with a budget, the budget is the limit | At most 20 cases on a claim, and 20 samples of each (`CASES_MAX`, `TRIAL_N_MAX` in `src/trials.ts`) |
 | **The `Experiment` page,** under `Job`, and the list reading the kinds under it | Not there. A kind under a kind works already |
+| **A case carries `params`:** a model's name, a tool list, a prompt that is not on a page. Narrower only, where they grant tools (`plans/tools-as-pages.md`) | A case is a workflow and its input. A launch already takes `params`, and refuses ones that widen a grant (`grantWidenedBy`, `src/closure.ts`) |
+| **A build leaves nothing behind:** what a trial's job published (workflows, steps, apps) goes when the job closes, and two samples of one case never run at once | Closing a job removes its directory, its record and what it held. What it published stays, and the next sample builds on it |
+| **A real run as a case:** a run a person's app already made, kept as a case with its input | A case is typed in. `knowledge/sample` opens a trial's run and no other |
+| **A judge that hears and watches,** for an app that makes sound or video | The standard judge reads text and is shown images (`context/work-file`) |
 
 That is all. The budget is any job's to have, not only an experiment's.
 No new kind of node, no workflow of its own, and nothing in stadeum: the
