@@ -588,7 +588,6 @@ const HOME_POLL_MS = 15_000;
  */
 export function WorkHome({ only, all = false, first, onStart }: { only?: string; all?: boolean; first?: string; onStart: (type: string | null) => void }) {
   const w = useWorkerWords();
-  const fmt = useFormats();
   const here = useApp()?.name;
   const me = useWorker({ all });
   const history = useTaskHistory({ all, groups: true });
@@ -667,11 +666,7 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
         <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{w.earnedHere}</h2>
         <div className="grid grid-cols-2 gap-2">
           <Stat label={w.readyToWithdraw} msat={info.balance.withdrawableMsat} />
-          <Stat
-            label={w.held}
-            msat={info.balance.heldMsat}
-            {...(info.balance.nextReleaseAt ? { note: w.nextClears(fmt.until(info.balance.nextReleaseAt)) } : {})}
-          />
+          <Stat label={w.held} msat={info.balance.heldMsat} />
           {!!info.pendingMsat && <Stat label={w.waitingForOk} msat={info.pendingMsat} note={w.paidOnceOk} />}
         </div>
         <WithdrawAction info={info} />
@@ -899,7 +894,7 @@ function HistoryRow({ item, title }: { item: WorkerHistoryItem; title?: string |
   else if (item.pending) badge = <Badge>{w.waitingForOk}</Badge>;
   else if (!e) badge = <Badge tone="done">{w.sent}</Badge>;
   else if (e.takenBack) badge = <Badge tone="error">{w.notPaid}</Badge>;
-  else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.until(e.releases))}</Badge>;
+  else if (e.releases > Date.now()) badge = <Badge>{w.heldClears(fmt.day(e.releases))}</Badge>;
   else badge = <Badge tone="done">{w.cleared}</Badge>;
   return (
     <li className={cn("flex min-w-0 items-center gap-3 px-4 py-3", (item.reply || item.review?.why) && "flex-wrap")}>
