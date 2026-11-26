@@ -4,7 +4,9 @@ Status (2026-11-25): a plan, nothing built. The owner chose the scope that
 day, four items, out of a review of Recent Work (stakwork/strut#886), the
 canvas package and the dream. Strut's part is items 1 and 3. The canvas
 package's (stakwork/strut-canvas) is items 2 and 4. Each open question has
-a default.
+a default. Item 5, next steps, was added the same day from a second look
+at the canvas. It is the canvas package's too, and it is proposed, not
+chosen.
 
 Companions: `plans/recent-work.md` (the index this extends) and
 `plans/package-seams.md` §2 (the `on:` entries item 3 adds to).
@@ -18,6 +20,13 @@ into the canvas. And the canvas itself needs to be cleaned up
 (de-duplicated) - this shouldnt just happen with "dreams" at night, but
 ALL THE TIME"*.
 
+And on starting work from the canvas, the same day: *"Like a "next step"
+that you can just click OK once your ready?"* The agent should *"DISPLAY
+to people the current situation by just editing the graph - thus easily
+inferring the next step (or a few options) that people can start
+directly from the canvas (again, it becomes a jamie chat with jobs)"*.
+Then: *"the "next steps" becomes a job maybe?"*
+
 ## Two kinds of thing
 
 - An **index** is worked out when it is read. Recent Work is one: it is the
@@ -27,7 +36,7 @@ ALL THE TIME"*.
   be undone.
 
 Recent Work stays an index (items 1 and 2). The canvas gets synthesis
-(items 3 and 4). The dream is not used: it changes Concept pages only
+(items 3, 4 and 5). The dream is not used: it changes Concept pages only
 (ruled 2026-11-11), and canvas cards are outputs.
 
 ## What is there today
@@ -38,6 +47,8 @@ Recent Work stays an index (items 1 and 2). The canvas gets synthesis
 | The canvas and jobs | `stadeum/canvas/work` puts a job on a card when the card's `Feature.jobs` lists it (only `implement` writes it, through `job-started`) or the job's title or first input carries the card's ref_id. A job started from a chat, the Code app or by another person never shows |
 | Duplicate cards | `write` skips a card whose text is the same after case and spaces, and refuses an initiative of the same name. A near duplicate (a call rephrased, a misheard word) is written |
 | Packages hearing things | `on:` runs a package's workflow when a node of a type is created, updated or deleted. A job's end is not heard: strut's own types (`StrutJob`, `StrutArtifact`) are left out, and the strict manifest refuses an `event:` entry |
+| Starting work from a card | Only a feature that has an architecture: the app's Build runs `implement` (a dry run, then the job). No other card starts anything |
+| A chat about a card | The app adds a line naming the card to each message the person sends Jamie. No chat is recorded as about a card. `conversation/start` starts a chat with its job already running and keeps the node it is `about`; the canvas does not use it |
 | A job's end | createStrut's `wakeOnEnd` hears every job turn's end (`job` and `builder`) and reads its title, status, reply and deliverables for the wake (`wakeEndOf`) |
 
 ## 1. Recent Jobs: everyone's, with what each delivered (strut)
@@ -205,6 +216,59 @@ once it holds an `event:` entry. The canvas's CI tests against strut's
 `main`, and boxes follow strut's `stable`. So the `link` entry lands last,
 after item 3 is on strut's `stable`.
 
+## 5. Next steps: a job that has not started (canvas)
+
+A next step is one string: what to do next on a card, as a person would
+ask for it. The agent writes up to three on a card, one of them
+recommended. A person presses OK on one, and it starts.
+
+**Where it is kept.** As an open question about the card, "What next?",
+whose options are the strings. Nothing new in the graph: a question is
+already `ABOUT` an initiative, a milestone or a feature, an option
+already has `recommended`, and `ops` already chooses one. So everything
+waiting on a person, a decision or a go-ahead, is one list of open
+questions. A next-step question is marked as one (open question 7), so
+`brainstorm-check` and `tidy` leave it alone, and the app draws it on
+the card, not in a brainstorm's tree.
+
+**OK.** A new op in `ops`, `start`, run as the viewer like every op:
+
+1. it chooses the option, as `choose` does;
+2. it runs `conversation/start`: `message` the string, `about` the
+   card, and `job` with the string as its brief, under the line a canvas
+   job opens with ("On the canvas: … (`ref`)").
+
+So the person is in a new Jamie chat with the job already running. No
+model decides whether to start it, and there is no second click. The
+job's end reports in that chat. The job's first input carries the
+card's ref_id, so `work` shows it on the card from its first second, on
+any type of card, with nothing to `link`. A card's chats are
+`conversation/list { about }`.
+
+`implement` stays as it is, for a feature with an architecture: its
+brief is built from the requirements, not written by a model. Its Build
+and a next step's OK are the two ways work starts from a card.
+
+**Who writes them, and when.** A workflow, `next`:
+
+1. `next-read` (code): the card, what is under it, its work as `work`
+   gives it (jobs, pull requests) and its open questions.
+2. `llm`, with a page, `Next Steps`, under `Canvas Planning`: what a
+   good next step is (one a job can do, small, the one a person would
+   ask for), and when there is none. The workflow carries no prompt.
+3. `next-write` (code): replaces the card's next steps that a model
+   wrote and nobody started with the new ones. One a person wrote, or
+   one already started, is left.
+
+It runs when the card's situation changed: a job on the card ended
+(`event: job.ended`, after `link`), or a question about the card was
+decided (`updated: Question`). `on:`'s guards hold, so it never runs for
+its own write. A run that finds nothing changed since the steps were
+written calls no model.
+
+A next step starts nothing by itself. Only a person's OK does, as
+themself and on their bill.
+
 ## Decided
 
 | # | Question | Answer | Status |
@@ -215,6 +279,7 @@ after item 3 is on strut's `stable`.
 | 4 | When the canvas is tidied | After each write and each job's end, not nightly. The dream is not used | owner, 2026-11-25 |
 | 5 | Who finds and who decides | Code finds candidates; one model call decides, only when there are some | proposed |
 | 6 | Where the judgment lives | The `Canvas Upkeep` page, not the workflows | proposed |
+| 7 | What a next step is | A job that has not started: one string on a card, and a person's OK starts it as a Jamie chat with the job running | proposed (the owner asked for it, 2026-11-25) |
 
 ## Open questions, each with a default
 
@@ -234,6 +299,14 @@ after item 3 is on strut's `stable`.
    it, `working now` and `at` change more often, so the section is sent
    again more often: at most once in 5 minutes per person, the steps'
    keep. Default: as it is.
+7. **Marking a next-step question.** Default: a `kind` on the Question,
+   declared in `graph/Question.yaml`. The other way is a job record that
+   has not started, which strut does not have.
+8. **When next steps are written.** Default: at a job's end on the card,
+   and when a question about it is decided. Not on every edit of a card.
+9. **A step that needs a decision first.** Default: it is a brainstorm
+   question, as today, not a next step. A next step is something a job
+   can do now.
 
 ## Work items, in order
 
@@ -252,11 +325,17 @@ after item 3 is on strut's `stable`.
    page and `tidy`; then `link`, once item 3 is on strut's `stable`. The
    code steps tested directly in `package.test.ts`, the judge with a
    scripted stand-in model.
-5. **Check with a real model** on a scratch strut with the canvas. Replay
+5. **canvas:** the `Next Steps` page, `next` (its two code steps tested
+   directly, the judge with a scripted stand-in model), the `start` op,
+   the question's mark in `graph/Question.yaml`, and the card's steps
+   and OK in the app. Its `job.ended` entry lands with `link`'s.
+6. **Check with a real model** on a scratch strut with the canvas. Replay
    the 00:03 call's chunks (`call-addc3b7cc6c78da6`) and count the near
    duplicates with and without `tidy`. Start a job from a chat, not from
    `implement`, whose title names a feature and which returns a pull
-   request, and see it on that feature's card.
+   request, and see it on that feature's card. Then see a next step on
+   that card, press OK, and find the chat about the card and its job on
+   the card.
 
 ## Not in this plan
 
@@ -264,5 +343,8 @@ after item 3 is on strut's `stable`.
   review's later items.
 - `stadeum/github`'s Repositories page, for pull requests made outside
   strut.
+- An initiative under an initiative, and a canvas that opens on the
+  viewer's own work: the zoomed-out view, from the same second look.
+- Strut's own `plans/` put on the canvas.
 - Setting a feature `done` when its pull requests merge. `work` already
   shows the build's state; the status stays a person's to set.
