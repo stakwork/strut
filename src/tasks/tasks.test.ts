@@ -1190,7 +1190,11 @@ for (const impl of impls) {
       await assert.rejects(tasks().file("ann", { lease: l.lease, path: REMIX.path, app: "other-app" }), refused("wrong_app"));
       // A dashboard listing across apps (all) reads the reply of a task another app draws — their own answered lease alone.
       assert.deepEqual(await tasks().file("ann", { lease: l.lease, path: REMIX.path, all: true }), { path: REMIX.path, mediaType: "image/png", bytes: 3, base64: "AAAA" });
+      // As task/file sends it: the calling app named beside all, which doesn't narrow it to that app.
+      assert.deepEqual(await tasks().file("ann", { lease: l.lease, path: REMIX.path, app: "dashboard", all: true }), { path: REMIX.path, mediaType: "image/png", bytes: 3, base64: "AAAA" });
+      assert.deepEqual(await tasks().file("ann", { lease: l.lease, path: REMIX.path, app: "dashboard", apps: ["dashboard", "workers"], all: true }), { path: REMIX.path, mediaType: "image/png", bytes: 3, base64: "AAAA" });
       await assert.rejects(tasks().file("ann", { lease: l.lease, path: REMIX.path, apps: ["dashboard"], all: true }), refused("wrong_app"), "an app the viewer can't open here");
+      await assert.rejects(tasks().file("ann", { lease: l.lease, path: REMIX.path, app: "dashboard", apps: ["dashboard"], all: true }), refused("wrong_app"));
       await assert.rejects(tasks().file("ann", { lease: l.lease, path: "images/other.png", all: true }), refused("not_listed"));
       await assert.rejects(tasks().file("bob", { lease: l.lease, path: REMIX.path, all: true }), refused("no_lease"), "another worker's");
       // A worker who skipped sees none of it; another worker cannot use the answering lease.
@@ -1209,7 +1213,7 @@ for (const impl of impls) {
       assert.deepEqual((await tasks().task(t.id))!.reply, reply);
       assert.deepEqual(await tasks().taskFile(t.id, REMIX.path), { path: REMIX.path, mediaType: "image/png", bytes: 3, base64: "AAAA" });
       await assert.rejects(tasks().taskFile(t.id, "images/other.png"), refused("not_listed"));
-      assert.deepEqual(read, [`run:r1:${REMIX.path}`, `run:r1:${REMIX.path}`, `run:r1:${REMIX.path}`], "nothing else of the run was read");
+      assert.deepEqual(read, Array(5).fill(`run:r1:${REMIX.path}`), "nothing else of the run was read");
 
       if (impl.reopen) {
         await svc.close();

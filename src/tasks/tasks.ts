@@ -1900,10 +1900,11 @@ export function createTasks(deps: TasksDeps): TasksService {
       const replied = answered?.worker === w.actor && answered.status === "submitted" ? await s.tasks.task(answered.task) : undefined;
       if (replied?.reply) {
         // Their own answered lease alone (checked above), so a call that lists
-        // across apps (the dashboard) may read a reply of any app it lists.
+        // across apps (the dashboard) may read a reply of any app it lists:
+        // the calling app task/file names beside `all` doesn't narrow it.
         if (o.all) {
           const k = await s.tasks.type(answered!.type);
-          if (!k || !drawnBy(k, o)) throw new TaskError("wrong_app", `task type ${answered!.type} is drawn by an app you can't open here`);
+          if (!k || !drawnBy(k, o.apps ? { apps: o.apps } : {})) throw new TaskError("wrong_app", `task type ${answered!.type} is drawn by an app you can't open here`);
         } else await appOk(s, answered!, o.app);
         if (!replied.reply.files?.some((f) => f.path === path)) throw new TaskError("not_listed", `${JSON.stringify(path)} is not one of the files the run replied with`);
         const f = deps.file ? await deps.file({ ...replied, root: "run" }, path) : null;
