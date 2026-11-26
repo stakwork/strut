@@ -142,9 +142,12 @@ asks the host for a virtual key under the person's gateway customer:
 address }`, the key joined as `<virtual key>.<macaroon>` and the address
 the gateway's public route (`https://mothership.<box>`). `env` is the
 standard variables: `OPENAI_BASE_URL` (`<address>/openai/v1`),
-`OPENAI_API_KEY`, `ANTHROPIC_BASE_URL` (`<address>/anthropic`),
-`ANTHROPIC_API_KEY`, the last two keys both the joined key; Gemini is left
-out (its SDKs share no base-URL variable). `revoke` is `DELETE <url>/<id>`
+`ANTHROPIC_BASE_URL` (`<address>/anthropic`) and `GOOGLE_GEMINI_BASE_URL`
+(`<address>/genai`, which Google's GenAI SDK, `@google/genai`, reads), with `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and
+`GEMINI_API_KEY` each the joined key. No OpenRouter variables: no SDK reads
+an OpenRouter base URL from the environment, so an `OPENROUTER_API_KEY`
+would send the key to openrouter.ai; OpenRouter's models are on the OpenAI
+route as `openrouter/<org>/<id>`. `revoke` is `DELETE <url>/<id>`
 with the deployment key and no person (a job's sweep releases with none); a
 404 is fine. The `id` is the host's, and is what a step keeps (a job's
 hold), never the key. On v2 the grant's block binds whoever holds the key:

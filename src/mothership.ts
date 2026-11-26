@@ -300,8 +300,13 @@ export function resolveGrantCap(env: Record<string, string | undefined> = bootEn
   return cap;
 }
 
-/** The variables an OpenAI or Anthropic SDK reads, for `key` on the gateway's
- *  public route at `address` (stakwork/pods PLAN.md §3.2). */
+/** The variables an OpenAI, Anthropic or Gemini SDK reads, for `key` on the
+ *  gateway's public route at `address` (stakwork/pods PLAN.md §3.2). Gemini's
+ *  are Google's GenAI SDK's (`@google/genai`), on the
+ *  gateway's `/genai` route, which sends the key as `x-goog-api-key`. No
+ *  OpenRouter variables: no SDK reads an OpenRouter base URL from the
+ *  environment, so `OPENROUTER_API_KEY` would send the key to openrouter.ai.
+ *  OpenRouter's models are on the OpenAI route as `openrouter/<org>/<id>`. */
 export function grantEnv(address: string, key: string): Record<string, string> {
   const root = address.replace(/\/+$/, "");
   return {
@@ -309,6 +314,8 @@ export function grantEnv(address: string, key: string): Record<string, string> {
     OPENAI_API_KEY: key,
     ANTHROPIC_BASE_URL: `${root}/anthropic`,
     ANTHROPIC_API_KEY: key,
+    GOOGLE_GEMINI_BASE_URL: `${root}/genai`,
+    GEMINI_API_KEY: key,
   };
 }
 
