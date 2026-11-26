@@ -148,8 +148,8 @@ describe("what the panel shows", () => {
     const blocked = (withdrawableMsat: number, payout: object) => workerOf({ balance: { heldMsat: 0, withdrawableMsat }, payout })!.blocked;
     const open = { on: true, minMsat: 1_000_000, dayLeftMsat: 1_000_000_000, maxMsat: 0 };
     // stadeum1, 11-18: 150 sats against a 1,000 sat minimum; the fee is the LSP's 5 sat floor.
-    assert.equal(blocked(150_000, open), "Withdrawals start at 1,000 sats, plus up to 5 sats routing fee.");
-    assert.equal(blocked(1_004_000, open), "Withdrawals start at 1,000 sats, plus up to 5 sats routing fee.");
+    assert.equal(blocked(150_000, open), "You can withdraw once you have 1,005 sats.");
+    assert.equal(blocked(1_004_000, open), "You can withdraw once you have 1,005 sats.", "the most fee counted in");
     assert.equal(blocked(5_000_000, { ...open, dayLeftMsat: 0 }), "You've reached today's withdrawal limit. Try again tomorrow.");
     assert.equal(blocked(5_000_000, open), "Withdrawals are paused on this server until tomorrow.");
     assert.match(blocked(5_000_000, { on: false, why: "no_address", minMsat: 1_000_000, dayLeftMsat: 0, maxMsat: 0 })!, /Sign in with Peel/);
@@ -165,7 +165,7 @@ describe("what the panel shows", () => {
   it("says it in the page's words and numbers", () => {
     const blocked = (withdrawableMsat: number, payout: object) => workerOf({ balance: { heldMsat: 0, withdrawableMsat }, payout }, HOST_WORDS.es, formats("es-MX"))!.blocked;
     const open = { on: true, minMsat: 1_000_000, dayLeftMsat: 1_000_000_000, maxMsat: 0 };
-    assert.equal(blocked(150_000, open), "El retiro mínimo es de 1,000 sats, más hasta 5 sats de comisión de enrutamiento.");
+    assert.equal(blocked(150_000, open), "Podrás retirar cuando tengas 1,005 sats.");
     assert.equal(blocked(0, { ...open, out: { msat: 2_000_000 } }), "Tu retiro de 2,000 sats va en camino. Podrás retirar de nuevo cuando llegue.");
     assert.equal(blocked(5_000_000, { on: false, why: "off" }), "Los retiros están desactivados en este servidor por ahora.");
   });

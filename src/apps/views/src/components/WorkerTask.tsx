@@ -735,13 +735,14 @@ function WalletCard({ info }: { info: WorkerInfo }) {
       setNote(refusalText(err, w) || errorText(err));
     }
   };
-  const under = [fiat !== undefined ? `≈ ${fiatText(fiat, undefined, fmt.locale)}` : "", review > 0 ? w.inReview(fmt.sats(review)) : ""].filter(Boolean).join(" · ");
+  // Under a cent the fiat reads "≈ US$0.00": no figure at all says more.
+  const under = [fiat !== undefined && fiat >= 0.005 ? `≈ ${fiatText(fiat, undefined, fmt.locale)}` : "", review > 0 ? w.inReview(fmt.sats(review)) : ""].filter(Boolean).join(" · ");
   return (
     <div className="overflow-hidden rounded-2xl border bg-card" data-testid="wallet">
       <div className="flex flex-col gap-2.5 px-4 pt-4 pb-3.5">
         <div className="flex items-end gap-3">
           <div className="min-w-0 flex-1">
-            <div className="text-[13px] text-muted-foreground">{w.readyToWithdraw}</div>
+            <div className="text-[13px] text-muted-foreground">{w.balance}</div>
             <div className="text-[28px] leading-tight font-bold tracking-tight tabular-nums">{fmt.sats(free)}</div>
             {under && <div className="text-[13px] text-muted-foreground tabular-nums">{under}</div>}
           </div>
@@ -772,7 +773,8 @@ function withdrawLine(state: WithdrawState, w: WorkerWords, fmt: Formats): strin
         case "cannot_pay": return w.withdrawCannotPay;
         case "not_here": return w.withdrawNotHere;
         case "day_limit": return w.withdrawDayLimit;
-        case "below_min": return w.withdrawBelowMin(fmt.sats(state.minMsat), fmt.sats(state.feeMsat));
+        // The minimum with the most a routing fee may take on top: one figure, what they need.
+        case "below_min": return w.withdrawBelowMin(fmt.sats(state.minMsat + state.feeMsat));
         case "paused": return w.withdrawPaused;
       }
   }

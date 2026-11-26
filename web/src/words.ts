@@ -79,7 +79,7 @@ const en = {
   cannotPay: "This server can't pay out right now.",
   noPayouts: "This server doesn't pay out earnings.",
   dayLimit: "You've reached today's withdrawal limit. Try again tomorrow.",
-  belowMin: (min: string, fee: string) => `Withdrawals start at ${min}, plus up to ${fee} routing fee.`,
+  belowMin: (total: string) => `You can withdraw once you have ${total}.`,
   paused: "Withdrawals are paused on this server until tomorrow.",
   collapse: "Collapse to a dot",
 
@@ -144,7 +144,7 @@ const es: HostWords = {
   cannotPay: "Este servidor no puede pagar en este momento.",
   noPayouts: "Este servidor no paga ganancias.",
   dayLimit: "Llegaste al límite de retiros de hoy. Intenta de nuevo mañana.",
-  belowMin: (min, fee) => `El retiro mínimo es de ${min}, más hasta ${fee} de comisión de enrutamiento.`,
+  belowMin: (total) => `Podrás retirar cuando tengas ${total}.`,
   paused: "Los retiros están en pausa en este servidor hasta mañana.",
   collapse: "Reducir a un punto",
 
