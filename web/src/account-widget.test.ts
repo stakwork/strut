@@ -139,6 +139,7 @@ describe("what the panel shows", () => {
     assert.equal(creditOf(200, {}), null);
     assert.deepEqual(workerOf({ balance: { heldMsat: 2000, withdrawableMsat: 9000 }, payout: { on: true, maxMsat: 9000 } }), { heldMsat: 2000, withdrawableMsat: 9000, maxMsat: 9000, canWithdraw: true });
     assert.equal(workerOf({ balance: { heldMsat: 0, withdrawableMsat: 5000 }, payout: { on: false, maxMsat: 0 } })!.canWithdraw, false);
+    assert.deepEqual(workerOf({ balance: { heldMsat: 0, withdrawableMsat: 0 }, rate: { perBtc: { USD: 60000 } } })!.rate, { perBtc: { USD: 60000 } }, "the rate comes along, to show fiat");
     assert.equal(workerOf({ error: "refused" }), null);
     assert.equal(workerOf(null), null);
   });
