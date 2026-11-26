@@ -417,6 +417,22 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.deepEqual(list[1], { name: "zed", activeVersion: "v1", versions: ["v1"], title: "Zed one", grants: m("Zed one").grants, publisher: "ai", owner: "bob" });
     });
 
+    it("the app list with { pinned: true }: only the pinned apps, with the fields a client refreshes a tab from", async () => {
+      const m = (title: string, extra: Record<string, unknown> = {}) => manifestSchema.parse({ title, grants: { workflows: [] }, ...extra });
+      await ws.publishApp("a", "a1", m("A"));
+      await ws.publishApp("b", "b1", m("B", { icon: "star" }));
+      await ws.publishApp("b", "b2", m("B two", { icon: "moon" }));
+      await ws.publishApp("c", "c1", m("C"));
+      await ws.setAppPinned("b", true);
+      const pinned = await ws.listApps({ pinned: true });
+      assert.deepEqual(pinned.map((x) => x.name), ["b"]);
+      assert.deepEqual([pinned[0]!.activeVersion, pinned[0]!.versions, pinned[0]!.title, pinned[0]!.icon, pinned[0]!.pinned, pinned[0]!.grants], ["v2", ["v1", "v2"], "B two", "moon", true, m("B").grants]);
+      assert.deepEqual(pinned, (await ws.listApps()).filter((x) => x.pinned), "the same entries the whole list has for them");
+      assert.deepEqual(await ws.listApps({ pinned: false }), await ws.listApps(), "pinned: false is no filter");
+      await ws.setAppPinned("b", false);
+      assert.deepEqual(await ws.listApps({ pinned: true }), []);
+    });
+
     it("app publish → list → get → versions → active switching → delete; the files are the caller's", async () => {
       await ws.publishWorkflow("wf", "v1", { steps });
       const one = APP("One", ["wf"]);

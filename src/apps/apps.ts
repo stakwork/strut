@@ -294,7 +294,7 @@ export function watchAppWrites(ws: WorkspaceStore, wrote: (name: string) => void
 
 export interface AppsCapability {
   /** Every app, each with its live version's warning count when it has any. */
-  list(): Promise<AppListing[]>;
+  list(opts?: { pinned?: boolean }): Promise<AppListing[]>;
   get(name: string, version?: string): Promise<AppView | null>;
   /** One version's manifest (the live one's by default), its label, and
    *  whether strut seeded it — all the app door (`step_run`) needs, on
@@ -748,8 +748,8 @@ export function createApps(deps: AppsDeps): AppsCapability {
     });
 
   return {
-    async list() {
-      const listed = await workspace.listApps();
+    async list(opts) {
+      const listed = await workspace.listApps(opts);
       const monitor = deps.monitor;
       if (!monitor) return listed;
       return listed.map((a) => {

@@ -1056,17 +1056,20 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     return Object.keys(out.versions).length ? out : null;
   }
 
-  async listApps(): Promise<AppListEntry[]> {
+  async listApps(opts?: { pinned?: boolean }): Promise<AppListEntry[]> {
     const d = this.d;
     const apps = await this.rows<AppRow>(
-      `MATCH ${d.node("a", "StrutApp", { namespace: "$ns" })} WHERE ${d.live("a")} RETURN ${d.project("a", APP_FIELDS)} AS p`,
+      `MATCH ${d.node("a", "StrutApp", { namespace: "$ns" })} WHERE ${d.live("a")}${opts?.pinned ? " AND a.pinned = true" : ""} RETURN ${d.project("a", APP_FIELDS)} AS p`,
       { ns: this.ns },
     );
+    // Pinned only: the version rows read are those of the pinned apps alone.
+    const names = opts?.pinned ? apps.map((a) => a.name) : undefined;
+    if (names && !names.length) return [];
     // Slim rows for every version (the labels are all the list needs of the
     // inactive ones), the manifest only of each app's active version.
     const versionRows = await this.rows<AppVersionRow>(
-      `MATCH ${d.node("v", "StrutAppVersion", { namespace: "$ns" })} WHERE ${d.live("v")} RETURN ${d.project("v", APP_VERSION_LIST_FIELDS)} AS p`,
-      { ns: this.ns },
+      `MATCH ${d.node("v", "StrutAppVersion", { namespace: "$ns" })} WHERE ${d.live("v")}${names ? " AND v.name IN $names" : ""} RETURN ${d.project("v", APP_VERSION_LIST_FIELDS)} AS p`,
+      names ? { ns: this.ns, names } : { ns: this.ns },
     );
     const hashes = [...new Set(apps.map((a) => a.active_version).filter((h): h is string => !!h))];
     const manifestRows = hashes.length

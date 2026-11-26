@@ -763,7 +763,8 @@ export interface WorkspaceStore extends SubflowResolver {
   deleteStepsByPublisher(publisher: string): Promise<string[]>;
 
   // ── Apps (plans/apps.md §1.3) — the POINTERS; the files are under dataDir ──
-  listApps(): Promise<AppListEntry[]>;
+  /** Every app; `{ pinned: true }` reads only the apps pinned as tabs. */
+  listApps(opts?: { pinned?: boolean }): Promise<AppListEntry[]>;
   /** One app at a version (the active one when omitted), or null. */
   getApp(name: string, version?: string): Promise<AppRecord | null>;
   /** Record a version: a known tree hash re-activates its version (unless
@@ -1389,12 +1390,13 @@ export class FileWorkspaceStore implements WorkspaceStore {
     return out.sort();
   }
 
-  async listApps(): Promise<AppListEntry[]> {
+  async listApps(opts?: { pinned?: boolean }): Promise<AppListEntry[]> {
     const out: AppListEntry[] = [];
     for (const name of await this.appNames()) {
       const meta = await this.readAppMetadata(name);
       const active = meta?.versions[meta.active];
       if (!meta || !active) continue;
+      if (opts?.pinned && !meta.pinned) continue;
       out.push(appListEntry(name, meta, active));
     }
     return out;

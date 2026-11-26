@@ -2007,6 +2007,16 @@ describe("the API key gate", () => {
     assert.deepEqual(await names("?pinned=1", ui), ["pub"]);
     assert.deepEqual(await names("?pinned=1", { cookie: admin.cookie, "x-strut-ui": "1" }), ["pub", "secret"]);
     assert.deepEqual(await names("", { cookie: admin.cookie, "x-strut-ui": "1" }), ["pub", "secret"]);
+    // The filter reaches the store: ?pinned=1 / true ask it for pinned apps only, anything else for all.
+    const listCalls: unknown[] = [];
+    const listApps = strut.workspace.listApps.bind(strut.workspace);
+    strut.workspace.listApps = ((opts?: { pinned?: boolean }) => (listCalls.push(opts), listApps(opts))) as typeof strut.workspace.listApps;
+    try {
+      for (const q of ["?pinned=1", "?pinned=true", "", "?pinned=0"]) await names(q, ui);
+    } finally {
+      strut.workspace.listApps = listApps;
+    }
+    assert.deepEqual(listCalls, [{ pinned: true }, { pinned: true }, undefined, undefined]);
     // The app list is never cached: the UI reads it again after each change.
     const listedApps = await strut.app.request("/apps", { headers: { cookie: admin.cookie, "x-strut-ui": "1" } });
     assert.equal(listedApps.status, 200);

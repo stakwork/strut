@@ -716,6 +716,19 @@ describe("the /apps routes", () => {
       const pinnedOnly = async (q: string) => ((await (await strut.app.request(`/apps${q}`, auth)).json()) as { apps: Array<{ name: string; pinned?: boolean }> }).apps;
       for (const q of ["?pinned=1", "?pinned=true"]) assert.deepEqual((await pinnedOnly(q)).map((a) => a.name), ["hello"], q);
       assert.deepEqual(await pinnedOnly(""), tabs.apps, "without the query the list is whole");
+      // The filter reaches the store: ?pinned=1 asks it for pinned apps only, a plain read for all.
+      const listCalls: unknown[] = [];
+      const listApps = strut.workspace.listApps.bind(strut.workspace);
+      strut.workspace.listApps = ((opts?: { pinned?: boolean }) => (listCalls.push(opts), listApps(opts))) as typeof strut.workspace.listApps;
+      try {
+        await pinnedOnly("?pinned=1");
+        await pinnedOnly("?pinned=true");
+        await pinnedOnly("");
+        await pinnedOnly("?pinned=0");
+      } finally {
+        strut.workspace.listApps = listApps;
+      }
+      assert.deepEqual(listCalls, [{ pinned: true }, { pinned: true }, undefined, undefined]);
       assert.ok((await pinnedOnly("?pinned=0")).length === tabs.apps.length, "pinned=0 is no filter");
       assert.equal(((await (await strut.app.request("/apps/hello", auth)).json()) as { pinned?: boolean }).pinned, true);
       assert.equal(((await (await strut.app.request("/apps/hello/versions", auth)).json()) as { pinned?: boolean }).pinned, true);
