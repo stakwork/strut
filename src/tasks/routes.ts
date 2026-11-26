@@ -121,7 +121,7 @@
 import type { Context, Hono } from "hono";
 import { TASK_STATUSES, VERDICTS, type GroupStatus, type TaskStatus, type Verdict } from "./task-store.js";
 import { WORKER_STATUSES, type WorkerStatus } from "./worker-store.js";
-import { TaskError, type PayOn, type TaskErrorCode, type TasksCapability, type TasksService } from "./tasks.js";
+import { TaskError, type PayOn, type TaskErrorCode, type TaskTypeInput, type TasksCapability, type TasksService } from "./tasks.js";
 import { TEST_FILE_MAX_BYTES } from "./test-files.js";
 import { PAYOUT_STATES, type PayoutState } from "../payments/ledger.js";
 import { PayoutError, type PayoutErrorCode, type Payouts } from "../payments/payouts.js";
@@ -351,7 +351,7 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
       const input = {
         app: b["app"] as string,
         answer: b["answer"],
-        ...(b["title"] !== undefined ? { title: b["title"] as string | null } : {}),
+        ...(b["title"] !== undefined ? { title: b["title"] as TaskTypeInput["title"] } : {}),
         ...(b["leaseSeconds"] !== undefined ? { leaseSeconds: b["leaseSeconds"] as number } : {}),
         ...(b["withinHours"] !== undefined ? { withinHours: b["withinHours"] as number } : {}),
         ...(b["enabled"] !== undefined ? { enabled: b["enabled"] as boolean } : {}),

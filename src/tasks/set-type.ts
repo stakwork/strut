@@ -25,6 +25,7 @@
 import { z } from "zod";
 import type { CardField, ProposalDescription } from "../core.js";
 import type { Proposal } from "../proposals.js";
+import type { LocalText } from "./tasks.js";
 import { answerSchemaProblem } from "./answer-schema.js";
 import { copiesRuleOf } from "./task-copies.js";
 import { attachmentRuleOf, type AttachmentRule } from "./answer-files.js";
@@ -86,11 +87,10 @@ export const typeChangeInput = z.object({
     .regex(TYPE_NAME_RE, 'a task type\'s name is lowercase letters, digits, ".", "_" and "-", segments joined by "/"')
     .describe("The task type's name, as a `human` step's `task` names it (pet-match, acme/pet-match). An existing type is changed; a new name makes a new type."),
   title: z
-    .string()
-    .max(TYPE_TITLE_MAX)
+    .union([z.string().max(TYPE_TITLE_MAX), z.record(z.string().regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]+)*$/), z.string().max(TYPE_TITLE_MAX))])
     .nullable()
     .optional()
-    .describe("What workers call it, in their own language and words (\"Revisión de recibo\"): the name is ASCII, the title anything. Left out, a type keeps its title; null: none, and workers read its name."),
+    .describe("What workers call it, in their own language and words (\"Revisión de recibo\"): the name is ASCII, the title anything. A map `{ en: \"Scan book\", es: \"Escanear libro\" }` gives each worker their own language. Left out, a type keeps its title; null: none, and workers read its name."),
   app: z.string().min(1).describe("The app that draws its tasks: the worker app, which must grant task/next and task/submit (task/* covers them)."),
   answer: z
     .preprocess(
@@ -382,7 +382,7 @@ export function createTaskTypes(deps: TaskTypesDeps): TaskTypesCapability {
 /** The type as it would be saved, every field filled; what is wrong with a
  *  field the save would refuse (the merged rules), by field. */
 interface Planned {
-  title?: string;
+  title?: LocalText;
   app: string;
   answer: unknown;
   leaseSeconds: number;
@@ -400,6 +400,9 @@ interface Planned {
   round?: RoundRule;
   check?: CheckRule;
 }
+
+/** A title as the card writes it: a map's texts joined, `Scan book / Escanear libro`. */
+const titleText = (t: LocalText | undefined): string | undefined => (t === undefined ? undefined : typeof t === "string" ? t : Object.values(t).join(" / "));
 
 const plannedOf = (t: TaskTypeRow): Planned => ({
   ...(t.title ? { title: t.title } : {}),
@@ -451,7 +454,7 @@ function plan(name: string, existing: TaskTypeRow | undefined, change: TypeField
   return {
     ...(openWarning ? { openWarning } : {}),
     planned: {
-      ...(merged.title ? { title: merged.title.trim() } : {}),
+      ...(merged.title ? { title: typeof merged.title === "string" ? merged.title.trim() : merged.title } : {}),
       app: merged.app,
       answer: merged.answer,
       leaseSeconds: merged.leaseSeconds ?? DEFAULT_LEASE_SECONDS,
@@ -671,7 +674,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   const { planned: after, problems, openWarning } = plan(name, existing, change);
   const before = existing ? plannedOf(existing) : undefined;
   const turnsOff = !!before?.enabled && !after.enabled;
-  const human = after.title ?? name.replace(/[-_]+/g, " ");
+  const human = titleText(after.title) ?? name.replace(/[-_]+/g, " ");
   const title = !existing ? `New task: ${human}` : turnsOff ? `Turn off task: ${human}` : `Change task: ${human}`;
   /** "$3.50 (5,500 sats)", or the sats alone with no rate. */
   const money = (sats: number) => (!sats ? "unpaid" : usdPerBtc ? `${usdText((roundMsat(sats) * usdPerBtc) / 1e8)} (${satsText(sats)})` : satsText(sats));
@@ -682,7 +685,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   const changes: string[] = [];
   if (before) {
     const line = (key: string, was: string, now: string) => changes.push(`${changeLabel[key] ?? key}: ${was} → ${now}`);
-    if ((before.title ?? "") !== (after.title ?? "")) line("title", before.title ? `“${before.title}”` : "none", after.title ? `“${after.title}”` : "none");
+    if (!sameJson(before.title ?? "", after.title ?? "")) line("title", before.title ? `“${titleText(before.title)}”` : "none", after.title ? `“${titleText(after.title)}”` : "none");
     if (before.app !== after.app) line("drawn by", before.app, after.app);
     if (after.answer !== undefined && !sameJson(before.answer, after.answer)) changes.push("questions: new ones (see A worker hands in)");
     if (before.leaseSeconds !== after.leaseSeconds) line("lease", secondsText(before.leaseSeconds), secondsText(after.leaseSeconds));
@@ -764,7 +767,7 @@ export function typeCard(cfg: TypeChange, o: { existing?: TaskTypeRow; appProble
   if (after.limits) fields.push({ label: "Limits", value: limitsText(after.limits, money) });
 
   // Under Details: the type's own settings, for whoever wants them.
-  const named = after.title ? `${name} (“${after.title}”)` : name;
+  const named = after.title ? `${name} (“${titleText(after.title)}”)` : name;
   fields.push({ label: "Task type", value: appProblem ? `${named}, in the app ${after.app} — ${appProblem}` : `${named}, in the app ${after.app}`, ...(appProblem ? { danger: true } : { detail: true }) });
   fields.push({ label: "The answer", value: answerText(after.answer), detail: true });
   fields.push({

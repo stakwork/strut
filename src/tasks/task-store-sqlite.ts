@@ -584,7 +584,7 @@ export class SqliteTaskStore implements TaskStore {
         t.attachments ? JSON.stringify(t.attachments) : null,
         t.standing ? JSON.stringify(t.standing) : null,
         t.round ? JSON.stringify(t.round) : null,
-        t.title ?? null,
+        t.title === undefined ? null : typeof t.title === "string" ? t.title : JSON.stringify(t.title),
         t.limits ? JSON.stringify(t.limits) : null,
         t.check ? JSON.stringify(t.check) : null,
         t.payOn ?? null,
@@ -1193,7 +1193,7 @@ function typeOf(r: Row): TaskType {
   if (check !== undefined) t.check = JSON.parse(check) as CheckRule;
   if (opt<string>(r.pay_on) === "ok") t.payOn = "ok";
   const title = opt<string>(r.title);
-  if (title !== undefined) t.title = title;
+  if (title !== undefined) t.title = title.startsWith("{") ? (JSON.parse(title) as Record<string, string>) : title;
   const limits = opt<string>(r.limits);
   if (limits !== undefined) t.limits = JSON.parse(limits) as LimitRule;
   const by = opt<string>(r.changed_by);

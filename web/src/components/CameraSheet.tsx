@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { CameraPhoto } from "@strut/kit/camera";
+import type { CameraAction, CameraActionResult, CameraPhoto } from "@strut/kit/camera";
 import { words } from "../words";
 
 // ── The host's camera (@strut/kit/camera) ──────────────────────────────────
@@ -10,7 +10,9 @@ import { words } from "../words";
 // (`useCamera().capture()`). The stream never reaches the page: the person
 // takes a shot, looks at it, and only "Use photo" hands that one JPEG over —
 // or, when the page asked with `review: false`, the shutter hands it over at
-// once (one tap a photo: the pages of a book). Every shot flashes, and the
+// once (one tap a photo: the pages of a book). An app may add `actions`
+// beside the shutter (a book's "Finish book"): a tap closes the sheet and
+// answers { action: id }, not on the Retake / Use photo screen. Every shot flashes, and the
 // shutter waits for the camera's first frame. Cancel, or the page going away,
 // answers null. In the page's language (../words).
 //
@@ -44,7 +46,9 @@ export function CameraSheet(props: {
   title?: string;
   /** Retake / Use photo before the page gets it; false: the shutter hands it over. */
   review: boolean;
-  onDone: (photo: CameraPhoto | null) => void;
+  /** Buttons the page adds beside the shutter, on the live viewfinder only. */
+  actions?: CameraAction[];
+  onDone: (photo: CameraPhoto | CameraActionResult | null) => void;
 }) {
   const video = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -126,7 +130,15 @@ export function CameraSheet(props: {
             <button type="button" class="camera-btn is-primary" disabled={busy} onClick={() => void hand(shot.jpeg, shot)}>{words.usePhoto}</button>
           </>
         ) : (
-          <button type="button" class="camera-shutter" aria-label={words.takePhoto} disabled={!!error || !ready || busy} onClick={take} />
+          <>
+            <div class="camera-actions">
+              {props.actions?.map((a) => (
+                <button type="button" key={a.id} class="camera-action" data-testid={`camera-action-${a.id}`} disabled={busy} onClick={() => props.onDone({ action: a.id })}>{a.label}</button>
+              ))}
+            </div>
+            <button type="button" class="camera-shutter" aria-label={words.takePhoto} disabled={!!error || !ready || busy} onClick={take} />
+            <div class="camera-actions-balance" aria-hidden="true" />
+          </>
         )}
       </div>
     </div>

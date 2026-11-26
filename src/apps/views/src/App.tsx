@@ -7,7 +7,7 @@ import { LANGS, StrutProvider, useStrutClient, useStrutHost, type HostState, typ
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, ConceptDiff, DocumentView, LaunchForm, TaskForm, WorkerTask, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WalkthroughPlayer, WorkProducts, type RunGraphSelection,
+  AgentTrace, ArtifactView, ConceptDiff, DocumentView, LaunchForm, TaskForm, WorkerTask, WorkHome, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WalkthroughPlayer, WorkProducts, type RunGraphSelection,
 } from "./index";
 import { editEntry, type ConceptPage } from "@strut/kit";
 import { createFixtureClient } from "./fixtures/client";
@@ -649,19 +649,23 @@ const WORKER_TASKS = {
 };
 
 function WorkerTaskDemo() {
-  const [kind, setKind] = useState<keyof typeof WORKER_TASKS>("photo");
+  const [kind, setKind] = useState<keyof typeof WORKER_TASKS | "dashboard">("photo");
   const [sent, setSent] = useState<unknown>(null);
   return (
     <div className="grid max-w-md gap-3">
       <div className="flex flex-wrap gap-1">
-        {(Object.keys(WORKER_TASKS) as Array<keyof typeof WORKER_TASKS>).map((k) => (
+        {([...Object.keys(WORKER_TASKS), "dashboard"] as Array<keyof typeof WORKER_TASKS | "dashboard">).map((k) => (
           <button key={k} type="button" onClick={() => (setKind(k), setSent(null))} className={cn("rounded-md border px-2.5 py-1 text-xs", kind === k ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}>
             {k}
           </button>
         ))}
       </div>
       <div className="flex min-h-[640px] flex-col rounded-3xl border p-4">
-        <WorkerTask key={kind} task={WORKER_TASKS[kind]} submit={async (answer, files) => setSent({ answer, files: (files ?? []).map((f) => f.name) })} skip={async () => setSent("skipped")} />
+        {kind === "dashboard" ? (
+          <WorkHome onStart={() => {}} />
+        ) : (
+          <WorkerTask key={kind} task={WORKER_TASKS[kind]} submit={async (answer, files) => setSent({ answer, files: (files ?? []).map((f) => f.name) })} skip={async () => setSent("skipped")} />
+        )}
       </div>
       {sent !== null && <pre className="rounded bg-muted p-2 text-xs">{JSON.stringify(sent, null, 2)}</pre>}
     </div>

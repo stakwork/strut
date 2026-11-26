@@ -72,6 +72,20 @@ export function gradeDraftOf(g: GradeRule | undefined): GradeDraft {
   return { kind: "step", step: g.step, config: g.config ? JSON.stringify(g.config, null, 2) : "" };
 }
 
+/** The title field as the server takes it: text, or a JSON map `{"en": …, "es": …}` of it per language. */
+function titleInput(text: string): string | Record<string, string> {
+  const t = text.trim();
+  if (t.startsWith("{")) {
+    try {
+      const m: unknown = JSON.parse(t);
+      if (m && typeof m === "object" && !Array.isArray(m)) return m as Record<string, string>;
+    } catch {
+      /* not JSON: it is the title */
+    }
+  }
+  return t;
+}
+
 /** A type as a draft; a new type from the store's defaults. */
 export function draftOf(t?: TaskType): Draft {
   const tests = t?.tests ?? DEFAULTS.tests;
@@ -80,7 +94,7 @@ export function draftOf(t?: TaskType): Draft {
   const answer = t?.answer ?? (schemaOf(STARTER) as AnswerSchema);
   return {
     name: t?.name ?? "",
-    title: t?.title ?? "",
+    title: typeof t?.title === "object" ? JSON.stringify(t.title) : (t?.title ?? ""),
     app: t?.app ?? "",
     leaseMinutes: s((t?.leaseSeconds ?? DEFAULTS.leaseSeconds) / 60),
     withinHours: s(t?.withinHours ?? DEFAULTS.withinHours),
@@ -156,7 +170,7 @@ export function saveOf(d: Draft, shown: { pay: boolean; tests: boolean; copies: 
   const within = num(d.withinHours, "expires after");
   if (typeof within !== "number") return within;
   const input: Record<string, unknown> = { name: d.name, app: d.app, answer: answer.schema, leaseSeconds: Math.round(lease * 60), withinHours: within, enabled: d.enabled };
-  if (d.title.trim()) input["title"] = d.title.trim();
+  if (d.title.trim()) input["title"] = titleInput(d.title);
   if (shown.open) input["open"] = d.open;
   else if (was?.open !== undefined) input["open"] = was.open;
   if (shown.pay) {

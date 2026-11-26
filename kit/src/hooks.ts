@@ -11,7 +11,7 @@ import type { DisplayMode, HostState, Theme } from "./host.js";
 import { appLink, pageOf, shareLink, type AppLinkInput } from "./links.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
 import { foldWorkProducts, type WorkProduct, type WorkProductEvent } from "./folds/work-products.js";
-import { formats, wordsFor, type Formats, type Words } from "./folds/words.js";
+import { formats, wordsFor, type Formats, type LocalText, type Words } from "./folds/words.js";
 
 /** The run steps the hooks call (§5). */
 export const RUN_STEPS = {
@@ -966,8 +966,9 @@ export interface WorkerBalance {
 export interface WorkerType {
   name: string;
   /** What workers call it, in their language (plans/i18n.md); absent: its
-   *  name, as `typeLabel` writes it. Absent from a server before titles. */
-  title?: string;
+   *  name, as `typeLabel` writes it. Absent from a server before titles.
+   *  A string, or a map `{ en, es }` of the languages it is written in. */
+  title?: LocalText;
   app: string;
   /** What an answer earns now, msat; 0 when unpaid. */
   payMsat: number;
@@ -986,8 +987,9 @@ export interface WorkerType {
 export interface WorkerHistoryItem {
   lease: string;
   type: string;
-  /** What the task asked, as they saw it (`show.ask`, else `show.title`). */
-  ask?: string;
+  /** What the task asked, as they saw it (`show.ask`, else `show.title`);
+   *  a string, or a map `{ en, es }`. */
+  ask?: LocalText;
   /** When they took it, and when it left their hand; epoch ms. */
   taken: number;
   closed?: number;
@@ -1079,13 +1081,6 @@ export interface WorkerInfo {
    *  where this level starts, `toSats` where the next does (absent at the
    *  top). Absent on a server without it. */
   xp?: { sats: number; level: number; fromSats: number; toSats?: number };
-}
-
-/** What `msat` is worth in `currency` at a `useWorker()` rate, or undefined
- *  when the rate has no figure for it. */
-export function fiatOfMsat(msat: number, rate: { perBtc: Record<string, number> } | undefined, currency = "USD"): number | undefined {
-  const perBtc = rate?.perBtc[currency.toUpperCase()];
-  return perBtc ? (msat / 1000 / 100_000_000) * perBtc : undefined;
 }
 
 /** The refusal code a task call's error begins with (`not_active`,

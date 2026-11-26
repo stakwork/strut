@@ -133,6 +133,15 @@ for (const impl of impls) {
       }
     });
 
+    it("a type's title may be a language map, trimmed per language, kept in the store and the dashboard", async () => {
+      const t = await tasks().setType("shops/book-scan", { app: "workers", answer: BOX, title: { en: " Scan  book ", es: "Escanear libro", fr: " " } }, "staff");
+      assert.deepEqual(t.title, { en: "Scan book", es: "Escanear libro" });
+      assert.deepEqual((await tasks().types())[0]!.title, { en: "Scan book", es: "Escanear libro" }, "read back from the store");
+      assert.deepEqual((await tasks().me("ann")).types[0]!.title, { en: "Scan book", es: "Escanear libro" });
+      await assert.rejects(tasks().setType("shops/book-scan", { app: "workers", answer: BOX, title: { en: 7 } as unknown as Record<string, string> }), refused("bad_request"));
+      await assert.rejects(tasks().setType("shops/book-scan", { app: "workers", answer: BOX, title: { "Not A Lang": "x" } }), refused("bad_request"));
+    });
+
     // ── rule 1: one task per key ──────────────────────────────────────
 
     it("one task per workflow, run and step path, whatever happens to its type since", async () => {

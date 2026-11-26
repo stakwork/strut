@@ -25,6 +25,46 @@ export function wordsFor<W>(words: Words<W>, locale?: string | null): W {
   return words[langOf(locale)] ?? words.en;
 }
 
+/** Text a person wrote once for several languages: a plain string, or a map
+ *  of language → text (`{ en: "Scan book", es: "Escanear libro" }`). */
+export type LocalText = string | Partial<Record<string, string>>;
+
+const ES_HINTS = /[áéíóúñ¿¡]|\b(?:de|del|la|el|los|las|una|un|para|con|por|y|foto|fotos|siguiente|página|libro|portada|pendiente|revisión|escanear|enviar|listo)\b/giu;
+const EN_HINTS = /\b(?:the|of|to|and|for|with|page|next|photo|scan|book|cover|pending|review|send|done)\b/giu;
+const hits = (re: RegExp, t: string) => (t.match(re) ?? []).length;
+/** How Spanish (+) or English (-) a text reads, by accents and common words. */
+const esLean = (t: string) => hits(ES_HINTS, t) - hits(EN_HINTS, t);
+
+/** The legacy bilingual pattern `English / Español` (either order): exactly
+ *  one " / ", both halves words, and one clearly reads Spanish and the other
+ *  not. Anything else (a path, "A / B" with no tell-tale words) is not it. */
+function splitBilingual(text: string): { en: string; es: string } | undefined {
+  const parts = text.split(" / ");
+  if (parts.length !== 2) return undefined;
+  const [a, b] = [parts[0]!.trim(), parts[1]!.trim()];
+  if (!a || !b || !/\p{L}{2}/u.test(a) || !/\p{L}{2}/u.test(b)) return undefined;
+  const [la, lb] = [esLean(a), esLean(b)];
+  if (la === lb || (la > 0 && lb > 0) || (la <= 0 && lb <= 0)) return undefined;
+  return la > lb ? { en: b, es: a } : { en: a, es: b };
+}
+
+/** A `LocalText` in a locale's language: a map's entry for it, else its
+ *  English one, else its first non-empty one; a plain string as it is — except
+ *  the legacy `English / Español` pair, whose half for the language is taken
+ *  (the first is English, the second Spanish). Undefined for none. */
+export function localText(text: LocalText | null | undefined, locale?: string | null): string | undefined {
+  if (text === null || text === undefined) return undefined;
+  const lang = langOf(locale);
+  if (typeof text === "string") {
+    const t = text.trim();
+    if (!t) return undefined;
+    const pair = splitBilingual(t);
+    return pair ? pair[lang] ?? pair.en : t;
+  }
+  const pick = (v: string | undefined) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+  return pick(text[lang]) ?? pick(text["en"]) ?? Object.values(text).map(pick).find((v) => v !== undefined);
+}
+
 /** Numbers, sats and times as one locale writes them. */
 export interface Formats {
   locale: string;

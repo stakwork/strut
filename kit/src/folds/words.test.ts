@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { formats, langOf, wordsFor, LANGS } from "./words.js";
+import { formats, langOf, wordsFor, localText, LANGS } from "./words.js";
 
 // The languages strut's worker-facing screens speak (plans/i18n.md), and
 // numbers, sats and times as a locale writes them.
@@ -50,5 +50,30 @@ describe("words: formats", () => {
   it("a tag Intl refuses writes as English", () => {
     assert.equal(formats("not a tag!").locale, "en-US");
     assert.equal(formats("es_MX").locale, "es-MX");
+  });
+});
+
+describe("localText", () => {
+  it("picks a map's language, then English, then any", () => {
+    assert.equal(localText({ en: "Scan book", es: "Escanear libro" }, "es-MX"), "Escanear libro");
+    assert.equal(localText({ en: "Scan book", es: "Escanear libro" }, "fr"), "Scan book");
+    assert.equal(localText({ es: "Escanear libro" }, "en"), "Escanear libro");
+    assert.equal(localText({ en: " " }, "en"), undefined);
+    assert.equal(localText(undefined), undefined);
+  });
+  it("keeps plain strings, trimmed", () => {
+    assert.equal(localText("  Scan book ", "es"), "Scan book");
+    assert.equal(localText("", "es"), undefined);
+  });
+  it("shows one half of the legacy English / Spanish pattern, either order", () => {
+    assert.equal(localText("Photo of the next page. / Foto de la siguiente página.", "es"), "Foto de la siguiente página.");
+    assert.equal(localText("Photo of the next page. / Foto de la siguiente página.", "en"), "Photo of the next page.");
+    assert.equal(localText("Escanear libro / Scan book", "en"), "Scan book");
+    assert.equal(localText("Escanear libro / Scan book", "es"), "Escanear libro");
+    assert.equal(localText("Page 52 - pending review / Página 52 - pendiente de revisión", "en"), "Page 52 - pending review");
+    assert.equal(localText("Cover / Portada", "es"), "Portada");
+  });
+  it("leaves other slashes alone", () => {
+    for (const t of ["Yes / No", "Cats / Dogs", "a / b / c", "Photo / Foto / Photo", "Open / "]) assert.equal(localText(t, "es"), t.trim());
   });
 });

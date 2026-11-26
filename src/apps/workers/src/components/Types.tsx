@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus, Save, Trash2, UserPlus } from "lucide-react";
-import { taskAppProblem } from "@strut/kit/folds";
+import { localText, taskAppProblem } from "@strut/kit/folds";
 import { useStrutClient } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -124,7 +124,7 @@ function TypeCard(props: { type: TaskType; row?: TypeStats | undefined; shown: S
             )}
           </div>
           <p className="text-sm text-muted-foreground">
-            {t.title?.trim() ? `Workers call it “${t.title.trim()}”, and see it in ` : "Workers see it in "}
+            {localText(t.title) ? `Workers call it “${typeof t.title === "string" ? t.title.trim() : Object.values(t.title ?? {}).join(" / ")}”, and see it in ` : "Workers see it in "}
             {t.app}.
           </p>
         </div>
@@ -338,8 +338,8 @@ function TypeEditor(props: Props & { type?: TaskType; missing?: string; openTask
             <Input id="type-name" value={d.name} onChange={(e) => set({ name: e.target.value })} placeholder="pet-match" aria-invalid={!!(d.name && nameProblem)} />
           </Field>
         )}
-        <Field label="What workers call it" htmlFor="type-title" hint="In their language, any words: “Revisión de recibo”. Empty: they read the name.">
-          <Input id="type-title" value={d.title} maxLength={80} onChange={(e) => set({ title: e.target.value })} placeholder={d.name ? d.name.split("/").pop()!.replace(/[-_]+/g, " ") : "Pet match"} />
+        <Field label="What workers call it" htmlFor="type-title" hint="In their language, any words: “Revisión de recibo”. For several languages write a map: {&quot;en&quot;: &quot;Scan book&quot;, &quot;es&quot;: &quot;Escanear libro&quot;}. Empty: they read the name.">
+          <Input id="type-title" value={d.title} maxLength={400} onChange={(e) => set({ title: e.target.value })} placeholder={d.name ? d.name.split("/").pop()!.replace(/[-_]+/g, " ") : "Pet match"} />
         </Field>
         <Field label="App" htmlFor="type-app" hint={appProblem ? <span className="text-destructive">{appProblem}.</span> : "The worker app whose page draws this type's tasks."}>
           <NativeSelect id="type-app" value={d.app} onChange={(e) => set({ app: e.target.value })}>

@@ -12,7 +12,7 @@ import { AccountWidget } from "./AccountWidget";
 import { appIdentityOf, createPlacementController, initialState, serverNameOf, type PlacementController } from "../account-widget";
 import { PaymentSheet } from "./PaymentSheet";
 import { CameraSheet } from "./CameraSheet";
-import type { CameraCapture, CameraPhoto } from "@strut/kit/camera";
+import type { CameraActionResult, CameraCapture, CameraPhoto } from "@strut/kit/camera";
 import { SignInSheet } from "./SignInSheet";
 import { words } from "../words";
 import { signInSilently, signInWithKey, signInWithSphinx, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
@@ -140,7 +140,7 @@ export function AppHost(props: {
   const signInRef = useRef(signIn);
   signInRef.current = signIn;
   /** The photo the page asked for (@strut/kit/camera), and where it goes. */
-  const [camera, setCamera] = useState<(CameraCapture & { app: string; done: (p: CameraPhoto | null) => void }) | null>(null);
+  const [camera, setCamera] = useState<(CameraCapture & { app: string; done: (p: CameraPhoto | CameraActionResult | null) => void }) | null>(null);
   const cameraRef = useRef(camera);
   cameraRef.current = camera;
   const connRef = useRef<AppHostConnection | null>(null);
@@ -239,7 +239,7 @@ export function AppHost(props: {
             onSession: () => setSessionTick((t) => t + 1),
             // The page's photo: strut's camera sheet, the frame having none.
             onCapture: (params) =>
-              new Promise<CameraPhoto | null>((resolve) => {
+              new Promise<CameraPhoto | CameraActionResult | null>((resolve) => {
                 cameraRef.current?.done(null);
                 setCamera({
                   ...params,
@@ -407,6 +407,7 @@ export function AppHost(props: {
           facing={camera.facing}
           maxSide={camera.maxSide}
           review={camera.review}
+          {...(camera.actions ? { actions: camera.actions } : {})}
           onDone={camera.done}
           {...(camera.title ? { title: camera.title } : {})}
         />
