@@ -488,7 +488,7 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
       execute: async ({ query, limit }) => {
         if (!deps.packages) return { error: "This strut server has no package indexes wired (ctx.services.packages)." };
         const found = await deps.packages.search(query, { limit });
-        return { ...found, install: `A person installs a hit from the UI at ${base}/ — Packages, Find the name, Install — or opens ${base}/?install=<publisher/name>, which opens that dialog on the name.` };
+        return { ...found, install: `A person installs a hit from the UI at ${base}/ — Publish, Store, find the name, Install — or opens ${base}/?install=<publisher/name>, which opens that dialog on the name.` };
       },
     }),
 
@@ -510,7 +510,7 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
           return {
             ...page,
             ui: `${base}/?install=${encodeURIComponent(name)}`,
-            install: `A person installs it from the UI at ${base}/ — Packages, Find "${name}", Install — or opens the \`ui\` link, which opens that dialog on the name.`,
+            install: `A person installs it from the UI at ${base}/ — Publish, Store, find "${name}", Install — or opens the \`ui\` link, which opens that dialog on the name.`,
           };
         } catch (err) {
           return { error: err instanceof Error ? err.message : String(err) };

@@ -149,7 +149,7 @@ describe("the assistant MCP door (POST /mcp)", () => {
       // this strut follows no index, so a search is empty and a page says why.
       const noStore = json(await client.callTool({ name: "search_packages", arguments: { query: "linear" } }));
       assert.deepEqual([noStore.packages, noStore.peers, noStore.errors], [[], [], []]);
-      assert.match(noStore.install, /Packages, Find the name, Install/);
+      assert.match(noStore.install, /Publish, Store, find the name, Install/);
       const noPage = await client.callTool({ name: "get_package", arguments: { package: "acme/linear" } });
       assert.ok(noPage.isError);
       assert.match(json(noPage).error, /^package_index_none: .*follows no package index/);
