@@ -126,7 +126,8 @@ export interface LlmGrant {
   /** What a step keeps (a job's hold) and `revoke` takes. Never the key. */
   id: string;
   /** The standard variables an SDK reads: `OPENAI_BASE_URL`,
-   *  `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`. */
+   *  `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`,
+   *  `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_KEY`. */
   env: Record<string, string>;
   /** When the grant ends: `hours` from now, or sooner when the person's
    *  authorization ends sooner. */

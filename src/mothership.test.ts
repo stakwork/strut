@@ -558,6 +558,8 @@ describe("mothership: grants for a machine outside strut", () => {
       OPENAI_API_KEY: key,
       ANTHROPIC_BASE_URL: "https://mothership.box.example/anthropic",
       ANTHROPIC_API_KEY: key,
+      GOOGLE_GEMINI_BASE_URL: "https://mothership.box.example/genai",
+      GEMINI_API_KEY: key,
     });
     assert.equal(call.method, "POST");
     assert.equal(call.url, URL);
@@ -693,7 +695,7 @@ describe("mothership: grants for a machine outside strut", () => {
     const services = { http: async () => ({}), secrets: { get: async () => undefined }, llm: grants } as unknown as StrutCapabilities;
 
     const asEvan = await runWorkflow(wf, {}, registry, { services, actor: ACTOR, principal: ACTOR });
-    assert.deepEqual(asEvan.output, { llm: true, id: "pk-1", names: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL"] });
+    assert.deepEqual(asEvan.output, { llm: true, id: "pk-1", names: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL"] });
     assert.equal(host.calls[0]!.headers["x-strut-actor"], ACTOR);
     assert.deepEqual((await runWorkflow(wf, {}, registry, { services })).output, { llm: true, id: null, names: [] });
     assert.deepEqual((await runWorkflow(wf, {}, registry, { services, principal: ACTOR, origin: "public" })).output, { llm: false });
