@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Briefcase, Camera, Check, ChevronDown, ChevronRight, Clock, FileText, ImagePlus, Loader2, LogIn, MessageSquare, Plus, RotateCcw, X, Zap } from "lucide-react";
 import {
-  appLink, fieldsOf, formats, formProblem, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWorker,
+  appLink, fieldsOf, formats, formProblem, taskErrorCode, useAccountWidget, useApp, useCamera, useFormats, useHost, useStep, useTask, useTaskFileUrl, useTaskHistory, useToolInput, useVisitor, useWithdraw, useWorker,
   type FormSchema, type TaskReply, type TaskReplyFile, type UseTask, type WorkerHistoryItem, type WorkerInfo, type WorkerTask as Task, type WorkerType,
 } from "@strut/kit";
 import { Button } from "@/components/ui/button";
@@ -671,6 +671,7 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
           />
           {!!info.pendingMsat && <Stat label={w.waitingForOk} msat={info.pendingMsat} note={w.paidOnceOk} />}
         </div>
+        <WithdrawAction info={info} />
       </section>
 
       {!history.error && (
@@ -687,6 +688,41 @@ export function WorkHome({ only, all = false, first, onStart }: { only?: string;
           )}
         </section>
       )}
+    </div>
+  );
+}
+
+/**
+ * Withdraw, where the balance is: the kit's `useWithdraw` (`task/withdraw`,
+ * the server picks the address) for all `task/me` says may be taken now. With
+ * nothing to take, or a payout on its way, or withdrawing closed, the button
+ * stays and says why.
+ */
+function WithdrawAction({ info }: { info: WorkerInfo }) {
+  const w = useWorkerWords();
+  const fmt = useFormats();
+  const { withdraw, status } = useWithdraw();
+  const [note, setNote] = useState<string | null>(null);
+  const payout = info.payout;
+  const max = payout?.on ? payout.maxMsat : 0;
+  const sending = status === "sending";
+  const why = payout?.out ? w.withdrawOnTheWay : max > 0 ? undefined : info.balance.withdrawableMsat > 0 ? w.withdrawUnavailable : w.withdrawNothing;
+  const go = async () => {
+    setNote(null);
+    try {
+      const r = await withdraw(max);
+      setNote(r.state === "failed" ? r.error ?? w.withdrawUnavailable : r.state === "pending" ? w.withdrawPending : w.withdrawSent);
+    } catch (e) {
+      setNote(refusalText(e, w) || errorText(e));
+    }
+  };
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="withdraw-action">
+      <Button disabled={!!why || sending} onClick={() => void go()} className={cn("h-12 w-full rounded-xl text-base font-semibold", ACCENT_BUTTON)}>
+        {sending ? <Loader2 className="size-4 animate-spin" /> : null}
+        {sending ? w.withdrawing : w.withdraw(fmt.sats(max))}
+      </Button>
+      <p className="m-0 text-xs text-muted-foreground" role="status">{note ?? why ?? w.withdrawHint}</p>
     </div>
   );
 }
@@ -938,7 +974,8 @@ const isPicture = (f: TaskReplyFile) => f.mediaType.startsWith("image/") || IMAG
  *  it, anything else (or a picture that cannot be read here) named. */
 function ReplyFile({ item, file }: { item?: Pick<WorkerHistoryItem, "lease">; file: TaskReplyFile }) {
   const picture = isPicture(file);
-  const read = useTaskFileUrl(item, file.path, { enabled: picture });
+  // A reply of a task another app draws (the dashboard lists every app's) reads too.
+  const read = useTaskFileUrl(item, file.path, { enabled: picture, all: true });
   if (picture && !read.error) {
     return (
       <figure className="m-0 w-full max-w-full min-w-0 overflow-hidden rounded-2xl border bg-muted/50">

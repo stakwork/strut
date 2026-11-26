@@ -797,7 +797,8 @@ export interface TasksCapability {
    *  live lease, whether or not another path exists. Through a lease they
    *  ANSWERED, only a file the run's reply lists (`task/reply`), and
    *  nothing else of the run. */
-  file(actor: string, o: { lease: string; path: string; app?: string }): Promise<RunFile>;
+  /** `all`: the call reads across apps (`apps`, or any when absent), as `history { all }` lists them: a reply's file is then read for any of those apps' tasks. */
+  file(actor: string, o: { lease: string; path: string; app?: string; apps?: string[]; all?: boolean }): Promise<RunFile>;
   /** Who the worker is here, what they may take, what they are owed, and
    *  whether they may withdraw (`address`: the Sphinx address their session
    *  carries, §8.2); the first call writes them as `new`. `invite`, as on
@@ -1898,7 +1899,12 @@ export function createTasks(deps: TasksDeps): TasksService {
       const answered = typeof o.lease === "string" && o.lease ? await s.tasks.lease(o.lease) : undefined;
       const replied = answered?.worker === w.actor && answered.status === "submitted" ? await s.tasks.task(answered.task) : undefined;
       if (replied?.reply) {
-        await appOk(s, answered!, o.app);
+        // Their own answered lease alone (checked above), so a call that lists
+        // across apps (the dashboard) may read a reply of any app it lists.
+        if (o.all) {
+          const k = await s.tasks.type(answered!.type);
+          if (!k || !drawnBy(k, o)) throw new TaskError("wrong_app", `task type ${answered!.type} is drawn by an app you can't open here`);
+        } else await appOk(s, answered!, o.app);
         if (!replied.reply.files?.some((f) => f.path === path)) throw new TaskError("not_listed", `${JSON.stringify(path)} is not one of the files the run replied with`);
         const f = deps.file ? await deps.file({ ...replied, root: "run" }, path) : null;
         if (!f) throw new TaskError("no_file", `${JSON.stringify(path)} is no longer there`);
