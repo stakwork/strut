@@ -90,7 +90,7 @@ export const typeChangeInput = z.object({
     .union([z.string().max(TYPE_TITLE_MAX), z.record(z.string().regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]+)*$/), z.string().max(TYPE_TITLE_MAX))])
     .nullable()
     .optional()
-    .describe("What workers call it, in their own language and words (\"Revisión de recibo\"): the name is ASCII, the title anything. A map `{ en: "Scan book", es: "Escanear libro" }` gives each worker their own language. Left out, a type keeps its title; null: none, and workers read its name."),
+    .describe("What workers call it, in their own language and words (\"Revisión de recibo\"): the name is ASCII, the title anything. A map `{ en: \"Scan book\", es: \"Escanear libro\" }` gives each worker their own language. Left out, a type keeps its title; null: none, and workers read its name."),
   app: z.string().min(1).describe("The app that draws its tasks: the worker app, which must grant task/next and task/submit (task/* covers them)."),
   answer: z
     .preprocess(

@@ -32,7 +32,7 @@ export default defineStep({
       z.object({
         lease: z.string(),
         type: z.string(),
-        ask: z.string().optional(),
+        ask: z.union([z.string(), z.record(z.string(), z.string())]).optional(),
         taken: z.number(),
         closed: z.number().optional(),
         status: z.enum(LEASE_STATUSES),

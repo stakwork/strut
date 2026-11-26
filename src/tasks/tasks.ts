@@ -534,7 +534,7 @@ export interface WorkerHistoryItem {
   type: string;
   /** What the task asked, as they saw it: its `show.ask`, else `show.title`,
    *  else a `show` that is itself a string; at most 200 characters. */
-  ask?: string;
+  ask?: LocalText;
   taken: number;
   closed?: number;
   status: LeaseStatus;
@@ -755,7 +755,7 @@ export function percentiles(xs: readonly number[]): Percentiles | undefined {
  *  limits, and what each worker did of it in the last `days`. */
 export interface TypeNumbers {
   type: string;
-  title?: string;
+  title?: LocalText;
   enabled: boolean;
   open: boolean;
   paySats?: number;
@@ -3118,7 +3118,7 @@ function askOf(show: unknown): LocalText | undefined {
     for (const [k, x] of Object.entries(v)) if (typeof x === "string" && x.trim()) out[k] = cut(x.trim());
     return Object.keys(out).length ? out : undefined;
   };
-  return text(show) ?? (o ? (text(o["ask"]) ?? text(o["title"])) : undefined);
+  return (typeof show === "string" ? text(show) : undefined) ?? (o ? (text(o["ask"]) ?? text(o["title"])) : undefined);
 }
 
 /** Whether type `k` is one a worker call reads: drawn by `app` when it names
