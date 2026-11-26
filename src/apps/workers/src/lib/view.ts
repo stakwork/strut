@@ -2,6 +2,7 @@
 // opens, what the Queue warns of, which parts the server answers for (§9.7),
 // and how things read. No React here: src/apps/workers.test.ts tests them.
 import type { Balance, Books, Grant, Invite, InvitesAnswer, InviteStatus, Lease, Payout, SentFile, Standing, SupportConversation, SupportFilter, SupportMessage, Task, TaskStats, TaskStatus, TaskType, TypeShare, Verdict, Worker, WorkerStatus } from "./types";
+import { localText } from "@strut/kit/folds";
 
 export const TABS = ["queue", "types", "workers", "tasks", "groups", "tests", "payouts", "support"] as const;
 export type Tab = (typeof TABS)[number];
@@ -607,7 +608,7 @@ export interface InviteChoice {
 export function inviteChoices(types: TaskType[] | undefined): InviteChoice[] {
   return (types ?? [])
     .filter((t) => t.enabled)
-    .map((t) => ({ name: t.name, label: t.title?.trim() ? `${t.title.trim()} (${t.name})` : t.name, open: t.open !== false, app: t.app, online: t.share ? t.share.public : true }))
+    .map((t) => ({ name: t.name, label: localText(t.title) ? `${localText(t.title)} (${t.name})` : t.name, open: t.open !== false, app: t.app, online: t.share ? t.share.public : true }))
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
