@@ -32,6 +32,7 @@
  *
  * Never on a services bag: only the staff's `/tasks/invites` routes hold it.
  */
+import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { LightningError } from "./lightning.js";
@@ -59,12 +60,19 @@ export function invitedAppUrl(base: string, code: string, o: { createdAt?: strin
   return input ? `${link}&input=${encodeURIComponent(input)}` : link;
 }
 
+/** A short link's code: 8 random bytes in base64url (11 characters), so unguessable. */
+const SHORT_CODE = /^[A-Za-z0-9_-]{8,32}$/;
+
 /** What strut keeps of an invite (the daemon keeps the rest): the kind of
  *  work it is for, none for open work alone. */
 export interface InviteNote {
   type?: string;
   /** The admin who made it (an actor); invites made before this have none. */
   by?: string;
+  /** A free label staff gave it (a batch name, "Class A"): invites sharing one are listed together. */
+  label?: string;
+  /** The code of its short link (`<base>/public/i/<short>`), which redirects to the full join link while the invite is open. */
+  short?: string;
 }
 
 /** The invites' notes, by code. */
@@ -162,6 +170,10 @@ export interface InviteView {
   expiresAt?: string;
   /** Who made it (an actor), when known. */
   by?: string;
+  /** The label staff gave it (a batch name), when it has one. */
+  label?: string;
+  /** `<base>/public/i/<code>`: what staff send instead of `link`, which is far too long to send. It redirects to `link`, so it works only while the invite does. */
+  shortLink?: string;
   /** The worker who redeemed it, when `status` is `used` because Tasks
    *  granted work by it (an existing Peel account never makes the daemon
    *  say `used`). */
@@ -195,10 +207,12 @@ export interface InvitesDeps {
 
 export interface Invites {
   /** A new invite, its link opening Tasks on `type` when given. */
-  create(o: { sats?: number; type?: string; base: string; by?: string }): Promise<InviteView>;
+  create(o: { sats?: number; type?: string; label?: string; base: string; by?: string }): Promise<InviteView>;
   /** Every invite the daemon keeps, newest first. */
   list(o: { base: string }): Promise<InvitesList>;
   cancel(code: string): Promise<{ code: string; status: InviteStatus }>;
+  /** The full join link a short code stands for, only while its invite is still open and its link valid; undefined otherwise. Reads the daemon, so a cancelled or used invite stops at once. */
+  resolveShort(short: string, base: string): Promise<string | undefined>;
 }
 
 /** A grant link's code begins so: strut's own, live without the daemon.
@@ -245,6 +259,8 @@ export function createInvites(deps: InvitesDeps): Invites {
       ...(note?.type ? { type: note.type } : {}),
       ...(Number.isFinite(Date.parse(inv.createdAt ?? "")) ? { expiresAt: new Date(Date.parse(inv.createdAt as string) + INVITE_TOKEN_DAYS * 86_400_000).toISOString() } : {}),
       ...(note?.by ? { by: note.by } : {}),
+      ...(note?.label ? { label: note.label } : {}),
+      ...(link && note?.short ? { shortLink: `${base.replace(/\/+$/, "")}/public/i/${note.short}` } : {}),
     };
   };
   const tasksOnline = async () => (await deps.publicApps()).includes(TASKS_APP);
@@ -271,7 +287,7 @@ export function createInvites(deps: InvitesDeps): Invites {
       // Before anything is paid: the wallet that can.
       const payer = await payerOf();
       const inv = await payer.invite({ sats }).catch(fromWallet);
-      const note: InviteNote = { ...(o.type ? { type: o.type } : {}), ...(o.by ? { by: o.by } : {}) };
+      const note: InviteNote = { ...(o.type ? { type: o.type } : {}), ...(o.by ? { by: o.by } : {}), ...(o.label ? { label: o.label } : {}), short: randomBytes(8).toString("base64url") };
       await notes.set(inv.code, note);
       return view(inv, o.base, true, note);
     },
@@ -313,6 +329,17 @@ export function createInvites(deps: InvitesDeps): Invites {
         const who = taken.get(inv.code);
         return who ? { ...v, status: "used" as const, takenBy: who } : v;
       }), ...head };
+    },
+
+    async resolveShort(short, base) {
+      if (!SHORT_CODE.test(short)) return undefined;
+      const noted = await notes.all();
+      const code = Object.keys(noted).find((k) => noted[k]?.short === short);
+      if (!code) return undefined;
+      const { invites } = await this.list({ base });
+      const inv = invites.find((i) => i.code === code);
+      const open = inv && (inv.status === "ready" || inv.status === "sending");
+      return open && inv.link && (!inv.expiresAt || Date.parse(inv.expiresAt) > Date.now()) ? inv.link : undefined;
     },
 
     async cancel(code) {

@@ -32,6 +32,7 @@
  * `/public-view`, the person's door to the record, is mounted by
  * createStrut behind the gate like any write.
  */
+import { INVITE_PREVIEW_HEADERS, PEEL_ICON, PEEL_ICON_PATH, invitePreviewPage } from "./invite-preview.js";
 import type { Context, Hono } from "hono";
 import type { Flow, RunEvent, StepRegistry } from "./core.js";
 import type { RunStore } from "./store.js";
@@ -96,6 +97,8 @@ export interface PublicRouteDeps {
   };
   /** The headers an app's document is served with (it runs: it is the app). */
   documentHeaders?: (path: string) => Record<string, string>;
+  /** A worker invite's short link (`GET /public/i/:code`): the full join link it stands for, while its invite is open; undefined otherwise. */
+  inviteLink?: (short: string, base: string) => Promise<string | undefined>;
   /** The server's name (its brand's, src/brand.ts), for the invite page. */
   serverName?: () => Promise<string | undefined>;
   /** The brand's look (src/brand.ts `brandStyles`), for a visitor's page:
@@ -412,6 +415,19 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     const lang = joinLang(c.req.query("lang"), c.req.header("accept-language"), c.req.header("cookie"));
     return c.body(joinPage(await deps.serverName?.().catch(() => undefined), lang), 200, { ...JOIN_HEADERS });
   });
+  // A worker invite's SHORT link: the join link is too long to send, so strut
+  // sends `/public/i/<code>`. It answers the preview chat apps draw (Open Graph
+  // tags, src/invite-preview.ts) and sends a browser on to the join link by a
+  // meta refresh, its `#…` kept. Only while the invite is open; never cached.
+  app.get("/public/i/:code", async (c) => {
+    const base = deps.baseOf?.(c) ?? new URL(c.req.url).origin;
+    const link = await deps.inviteLink?.(c.req.param("code") ?? "", base).catch(() => undefined);
+    if (!link) return c.text("This invite link is not valid any more.", 404, { "cache-control": "no-store" });
+    const url = `${base.replace(/\/+$/, "")}/public/i/${c.req.param("code")}`;
+    const siteName = await deps.serverName?.().catch(() => undefined);
+    return c.body(invitePreviewPage({ link, url, base, siteName }), 200, { ...INVITE_PREVIEW_HEADERS });
+  });
+  app.get(PEEL_ICON_PATH, (c) => c.body(PEEL_ICON, 200, { "content-type": "image/png", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" }));
   // The brand's LOOK (src/brand.ts): the style variables strut's host hands
   // a visitor's page and draws its own frame around it in, so a worker sees
   // one look from the loading screen on. A color, a radius, a font — what

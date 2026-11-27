@@ -1446,7 +1446,7 @@ describe("the API key gate", () => {
       assert.ok(res.status === 200 || res.status === 404, `${route} → ${res.status}`);
       // A worker invite's page (plans/human-steps.md §5.8) is static: the
       // invite rides after `#`, so it holds nothing but its own script.
-      if (path === "/public/join" || path === "/public/join/qrcode.js" || path === "/public/brand") {
+      if (path === "/public/join" || path === "/public/join/qrcode.js" || path === "/public/join/peel.png" || path === "/public/brand") {
         assert.equal(res.status, 200, route);
         continue;
       }

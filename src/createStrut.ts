@@ -4679,7 +4679,10 @@ export async function createStrut<TServices = unknown>(
     draining: () => drain.refusal(),
     ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
   });
+  // The invites service (made with the task routes below), for a short link's redirect.
+  let inviteService: ReturnType<typeof createInvites> | undefined;
   const publicDoors = publicRoutes(app, {
+    inviteLink: async (short, base) => inviteService?.resolveShort(short, base),
     surface: publicSurface,
     baseOf: (c) => baseOfRequest(c),
     visitorAddress,
@@ -7549,14 +7552,14 @@ export async function createStrut<TServices = unknown>(
     // on the base the share links use, opening Tasks on the kind of work it
     // is for — which strut notes beside tasks.db, as the daemon keeps no
     // more than code, sats and status.
-    invites: createInvites({
+    invites: (inviteService = createInvites({
       payer: () => payments.payer(),
       inviteSats: async () => (await payouts.settings()).inviteSats,
       publicApps: async () => (await publicSurface.get()).apps.map((a) => a.name),
       typeApp: async (name) => (await (hostTasks ?? tasks.capability).types()).find((t) => t.name === name)?.app,
       takenBy: async (code) => (await tasks.grantedBy(`invite:${code}`))[0],
       ...(store instanceof MemoryRunStore ? {} : { notes: fileInviteNotes(join(dataDir, "tasks", "invites.json")) }),
-    }),
+    })),
     // Tasks online (§5.8): the one app a Workers page puts in the public view
     // itself, as the Public view tab saves it with nothing unticked —
     // strut's own seed, calling only the worker's task/* steps.
