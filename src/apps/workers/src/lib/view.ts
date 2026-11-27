@@ -724,8 +724,17 @@ export function inviteSatsOf(text: string): { sats: number } | { problem: string
   return Number.isInteger(n) && n >= 1 && n <= 100_000 ? { sats: n } : { problem: "A whole number of sats, 1 to 100,000." };
 }
 
-/** How many invites one New invite may make: the dropdown's choices. Each costs the wallet its sats and a mixer fee, so the cap is small. */
-export const INVITE_BATCH_SIZES = [1, 5, 10, 25] as const;
+/** The most invites one New invite may make, and the quick picks beside the number box. Each costs the wallet its sats and a mixer fee, so the cap is small. */
+export const INVITE_BATCH_MAX = 50;
+export const INVITE_BATCH_PICKS = [5, 10, 25] as const;
+
+/** How many, as typed: a whole number 1 to INVITE_BATCH_MAX. Blank or anything else is a problem (the button waits). */
+export function inviteCountOf(text: string): { count: number } | { problem: string } {
+  const t = text.trim();
+  const n = Number(t);
+  if (t && Number.isInteger(n) && n >= 1 && n <= INVITE_BATCH_MAX) return { count: n };
+  return { problem: `A whole number of invites, 1 to ${INVITE_BATCH_MAX}.` };
+}
 
 /** A batch label as typed: trimmed, at most the route's 80 characters. */
 export function inviteLabelOf(text: string): string {

@@ -21,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { cn } from "@/lib/utils";
-import { INVITE_BATCH_SIZES, INVITE_WORDS, anyOpenWork, inviteBatchCost, inviteBatchResult, inviteChoices, inviteLabelOf, inviteOpen, inviteSatsOf, inviteWhyText, inviteWorkText } from "../lib/view";
+import { INVITE_BATCH_MAX, INVITE_BATCH_PICKS, INVITE_WORDS, anyOpenWork, inviteBatchCost, inviteBatchResult, inviteChoices, inviteCountOf, inviteLabelOf, inviteOpen, inviteSatsOf, inviteWhyText, inviteWorkText } from "../lib/view";
 import type { MadeInvite, TaskType, TypeShare, Worker } from "../lib/types";
 import { ErrorLine, Field, Note, useAct } from "./bits";
 import { InviteBadge, InviteList, useInvites, WhatsappButton } from "./Invite";
@@ -205,7 +205,10 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
   }, [q.data?.sats, touched]);
   const [made, setMade] = useState<MadeInvite | null>(null);
   // How many to make at once (1: one invite, as ever) and the batch's label; the batch just made.
-  const [count, setCount] = useState(1);
+  const [countText, setCountText] = useState("1");
+  const counted = inviteCountOf(countText);
+  // Past the cap or empty: nothing is made (the button waits); the loop caps too.
+  const count = "count" in counted ? Math.min(counted.count, INVITE_BATCH_MAX) : 1;
   const [labelText, setLabelText] = useState("");
   const [progress, setProgress] = useState(0);
   const [batch, setBatch] = useState<{ invites: MadeInvite[]; label: string; wanted: number; work: string } | null>(null);
@@ -217,7 +220,7 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
   const offline = choice && !choice.online;
   const workName = localText(props.types?.find((t) => t.name === work)?.title) || work;
   const make = async () => {
-    if ("problem" in sats) return;
+    if ("problem" in sats || "problem" in counted) return;
     if (count === 1) {
       const out = await act("invite", () => client.run<MadeInvite>("staff/invite", { ...sats, ...(work ? { type: work } : {}) }));
       if (out) {
@@ -282,26 +285,41 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
           </Field>
           {"problem" in sats && <Note className="text-destructive">{sats.problem}</Note>}
           <Field label="How many" htmlFor={`${id}-count`} hint="Each is its own link, for one person, used once.">
-            <NativeSelect id={`${id}-count`} className="w-32" value={String(count)} onChange={(e) => setCount(Number(e.target.value))}>
-              {INVITE_BATCH_SIZES.map((n) => (
-                <NativeSelectOption key={n} value={String(n)}>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                id={`${id}-count`}
+                className="w-24"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={INVITE_BATCH_MAX}
+                step={1}
+                value={countText}
+                onChange={(e) => setCountText(e.target.value)}
+                // Left past the cap: bring it back to it, so the box never keeps a number nothing would make.
+                onBlur={() => "problem" in counted && Number(countText) > INVITE_BATCH_MAX && setCountText(String(INVITE_BATCH_MAX))}
+              />
+              {INVITE_BATCH_PICKS.map((n) => (
+                <Button key={n} type="button" size="xs" variant={count === n && "count" in counted ? "default" : "outline"} onClick={() => setCountText(String(n))}>
                   {n}
-                </NativeSelectOption>
+                </Button>
               ))}
-            </NativeSelect>
+              <span className="text-xs text-muted-foreground">max {INVITE_BATCH_MAX}</span>
+            </div>
           </Field>
+          {"problem" in counted && <Note className="text-destructive">{counted.problem}</Note>}
           {count > 1 && (
             <Field label="Batch label (optional)" htmlFor={`${id}-label`} hint="A name for the group, such as Class A: it heads them in the list and on the printed sheet.">
               <Input id={`${id}-label`} className="max-w-xs" maxLength={80} value={labelText} onChange={(e) => setLabelText(e.target.value)} />
             </Field>
           )}
-          {!("problem" in sats) && (
+          {!("problem" in sats) && !("problem" in counted) && (
             <div data-testid="invite-cost">
               <Note>This takes {inviteBatchCost(count, sats.sats)} from this server's wallet.</Note>
             </div>
           )}
           <div>
-            <Button size="sm" disabled={busy !== null || "problem" in sats || !q.data || !!offline} onClick={() => void make()}>
+            <Button size="sm" disabled={busy !== null || "problem" in sats || "problem" in counted || !q.data || !!offline} onClick={() => void make()}>
               {busy === "invite" ? (count > 1 ? `Making ${progress} of ${count}…` : "Making it…") : count > 1 ? `Make ${count} invite links` : "Make an invite link"}
             </Button>
           </div>

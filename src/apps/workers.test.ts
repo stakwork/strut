@@ -22,7 +22,7 @@ import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./workers/src/lib/schema.js";
 import {
   anyOpenWork, answerFiles, fmtWhen, grantedBy, inviteChoices, inviteWorkText, isPicture, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, needsYou, navOf, toReviewOf, moneyOf, captionOf, answerLine, answerFields, emptyFields, pictureOf, tookText, happenings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
-  INVITE_WORDS, acceptedBy, inviteBadge, inviteExpiry, sortInvites, inviteOpen, invitesReadMs, inviteSatsOf, inviteWhyText, whatsappUrl, inviteBatchCost, inviteBatchResult, inviteCsv, inviteLabelOf, groupInvites,
+  INVITE_WORDS, acceptedBy, inviteBadge, inviteExpiry, sortInvites, inviteOpen, invitesReadMs, inviteSatsOf, inviteWhyText, whatsappUrl, inviteBatchCost, inviteBatchResult, inviteCountOf, inviteCsv, inviteLabelOf, groupInvites,
   fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
   fitWithin,
   shrinkable,
@@ -415,6 +415,9 @@ describe("strut/workers: the Queue, deep links, and what shows", () => {
   });
 
   it("Invite batches: the cost said first, the outcome, the CSV, the list's sections by label", () => {
+    assert.deepEqual(inviteCountOf(" 7 "), { count: 7 });
+    assert.deepEqual(inviteCountOf("50"), { count: 50 });
+    for (const bad of ["", " ", "0", "-1", "2.5", "51", "abc"]) assert.ok("problem" in inviteCountOf(bad), bad);
     assert.equal(inviteBatchCost(1, 500), "500 sats, plus the mixer's fee");
     assert.equal(inviteBatchCost(10, 1500), "10 × 1,500 = 15,000 sats, plus the mixer's fee for each");
     assert.equal(inviteBatchResult(1, 1), "Invite made.");
