@@ -1006,6 +1006,28 @@ export function readLinkChallenge(challenge: unknown, now = Date.now()): LinkCha
   return { host, ...(actor ? { actor } : {}), ...(name ? { name } : {}), nonce, exp: claims.exp };
 }
 
+/** Why `readLinkChallenge` refuses a challenge, for logs only (call it on the
+ *  failure path): malformed, bad_signature or expired — undefined if it reads. */
+export function linkChallengeFault(challenge: unknown, now = Date.now()): "malformed" | "bad_signature" | "expired" | undefined {
+  if (typeof challenge !== "string" || !challenge.startsWith(LINK_PREFIX)) return "malformed";
+  const token = challenge.slice(LINK_PREFIX.length);
+  const secret = tokenSecret();
+  const dot = token.indexOf(".");
+  if (!secret || dot <= 0) return "malformed";
+  const payload = token.slice(0, dot);
+  const got = token.slice(dot + 1);
+  const expected = sign("link", payload, secret);
+  if (expected.length !== got.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(got))) return "bad_signature";
+  try {
+    const exp = (JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { exp?: unknown } | null)?.exp;
+    if (typeof exp !== "number") return "malformed";
+    if (!(exp > now)) return "expired";
+  } catch {
+    return "malformed";
+  }
+  return readLinkChallenge(challenge, now) ? undefined : "malformed";
+}
+
 /** Spend a link challenge: its claims, once. Called once its signature
  *  holds, so a challenge someone only saw cannot be burned. */
 export function redeemLinkChallenge(challenge: unknown, now = Date.now()): LinkChallenge | undefined {

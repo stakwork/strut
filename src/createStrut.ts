@@ -40,7 +40,7 @@ import { bindPrincipal, runWorkflow, settleUnfinishedRun, summaryFromLog } from 
 import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { inviteOf, principalRequired } from "./auth.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostKeys, hostOf, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, trustedEmbedOrigin, frameAncestors, foreignUpgrade, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, linkChallenge, readLinkChallenge, redeemLinkChallenge, LINKED_TOKEN_DAYS, RENEW_CHALLENGE_MS, type LinkChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, hostKeys, hostOf, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, trustedEmbedOrigin, frameAncestors, foreignUpgrade, signInTicket, sessionCookie, sessionOf, isSecureRequest, visitorOf, startVisitorSession, visitorSessionCookie, visitorChallenge, readVisitorChallenge, redeemVisitorChallenge, linkChallenge, readLinkChallenge, linkChallengeFault, redeemLinkChallenge, LINKED_TOKEN_DAYS, RENEW_CHALLENGE_MS, type LinkChallenge, type Scope, type VisitorKeyMode } from "./auth.js";
 import { createLnurlLogins, createVisitorBudget, fromHex, hostOfRequest, isVisitorMethod, lnurlLogin, METHOD_INFO, nostrSigner, offeredMethods, keptSphinxAddress, signedInRefusal, visitorLimits, visitorWrite, VERIFIERS } from "./visitors.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
 import type { ArtifactsCapability, HttpCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
@@ -5513,18 +5513,26 @@ export async function createStrut<TServices = unknown>(
   /** The signed challenge a body carries: its claims, spent, and the key
    *  that signed it — or the refusal. */
   const peelSigned = async (c: Context, body: Record<string, unknown>): Promise<{ claims: LinkChallenge; account: Account } | Response> => {
-    const refuse = (error: string) => c.json({ error: `unauthorized: ${error}` }, 401);
+    const host = boxHost(c);
+    const refuse = (error: string, reason: string, id?: string, extra = "") => {
+      console.warn(`[people/link] 401 reason=${reason} host=${host}${extra}${id ? ` ${reason === "bad_key_signature" ? "key" : "nonce"}=${id}` : ""}`);
+      return c.json({ error: `unauthorized: ${error}` }, 401);
+    };
     const claims = readLinkChallenge(body["challenge"]);
-    if (!claims) return refuse("this challenge has expired or is not this server's — ask for another");
-    if (claims.host !== boxHost(c)) return refuse(`this challenge was for ${claims.host}`);
+    const nonce = claims?.nonce.slice(0, 8);
+    if (!claims) {
+      const reason = typeof body["challenge"] !== "string" || !body["challenge"] ? "missing_challenge" : (linkChallengeFault(body["challenge"]) ?? "invalid");
+      return refuse("this challenge has expired or is not this server's — ask for another", reason);
+    }
+    if (claims.host !== host) return refuse(`this challenge was for ${claims.host}`, "wrong_host", nonce, ` challenge_host=${claims.host}`);
     const key = fromHex(body["key"]);
     const sig = fromHex(body["sig"]);
     const hexKey = accountKey("sphinx", typeof body["key"] === "string" ? body["key"] : "");
     if (!key || !sig || !hexKey) return c.json({ error: "key and sig are hex: the compressed secp256k1 key (33 bytes) and the Lightning signed message (65 bytes)" }, 400);
-    if (!(await VERIFIERS["ln-message"]!(new TextEncoder().encode(body["challenge"] as string), key, sig))) return refuse("the signature does not hold for this challenge and key");
+    if (!(await VERIFIERS["ln-message"]!(new TextEncoder().encode(body["challenge"] as string), key, sig))) return refuse("the signature does not hold for this challenge and key", "bad_key_signature", hexKey.slice(0, 8));
     // Spent once its signature holds, so a challenge someone only saw
     // cannot be burned.
-    if (!redeemLinkChallenge(body["challenge"])) return refuse("this challenge was already used");
+    if (!redeemLinkChallenge(body["challenge"])) return refuse("this challenge was already used", "already_used", nonce);
     return { claims, account: { kind: "sphinx", key: hexKey } };
   };
   /** Peel's token for `actor` on `account`, and who that is. */
@@ -5553,9 +5561,15 @@ export async function createStrut<TServices = unknown>(
     const signed = await peelSigned(c, body);
     if (signed instanceof Response) return signed;
     const { claims, account } = signed;
-    if (!claims.actor) return c.json({ error: "unauthorized: this challenge links nobody — it renews a token (POST /people/token); a link starts in the Jamie app's Connect" }, 401);
+    if (!claims.actor) {
+      console.warn(`[people/link] 401 reason=links_nobody host=${boxHost(c)} nonce=${claims.nonce.slice(0, 8)}`);
+      return c.json({ error: "unauthorized: this challenge links nobody — it renews a token (POST /people/token); a link starts in the Jamie app's Connect" }, 401);
+    }
     const was = await people.linkOf(account);
-    if (was && was.actor !== claims.actor) return c.json({ error: `linked_elsewhere: ${accountText(account)} is linked to another person here — they remove it in Connect first` }, 409);
+    if (was && was.actor !== claims.actor) {
+      console.log(`[people/link] 409 reason=linked_elsewhere host=${boxHost(c)} key=${account.key.slice(0, 8)}`);
+      return c.json({ error: `linked_elsewhere: ${accountText(account)} is linked to another person here — they remove it in Connect first` }, 409);
+    }
     await people.link(account, claims.actor, { name: body["name"], address: body["address"] });
     return peelToken(c, claims.actor, account);
   });
