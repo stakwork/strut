@@ -623,6 +623,17 @@ export function anyOpenWork(types: TaskType[] | undefined): boolean {
   return (types ?? []).some((t) => t.enabled && t.open !== false);
 }
 
+/** The work an invite is for, as the picker shows it: `picked` while it is
+ *  still offered, else "Anything open" ("") while some work that is on is
+ *  open, else the first kind of work — an invite for anything open gives a
+ *  worker nothing where all the work is invite-only. "" when nothing is on. */
+export function inviteWorkOf(types: TaskType[] | undefined, picked: string): string {
+  const open = anyOpenWork(types);
+  const choices = inviteChoices(types);
+  if (picked ? choices.some((c) => c.name === picked) : open) return picked;
+  return open ? "" : (choices[0]?.name ?? "");
+}
+
 // ── Invites (plans/human-steps.md §5.8) ─────────────────────────────────────
 
 /** An invite's status in words. */
