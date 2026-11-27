@@ -32,6 +32,7 @@
  * `/public-view`, the person's door to the record, is mounted by
  * createStrut behind the gate like any write.
  */
+import { INVITE_PREVIEW_HEADERS, PEEL_ICON, PEEL_ICON_PATH, invitePreviewPage } from "./invite-preview.js";
 import type { Context, Hono } from "hono";
 import type { Flow, RunEvent, StepRegistry } from "./core.js";
 import type { RunStore } from "./store.js";
@@ -415,14 +416,18 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     return c.body(joinPage(await deps.serverName?.().catch(() => undefined), lang), 200, { ...JOIN_HEADERS });
   });
   // A worker invite's SHORT link: the join link is too long to send, so strut
-  // sends `/public/i/<code>` and this redirects to it, its `#…` kept in the
-  // Location (a browser keeps a redirect's fragment). Only while the invite is
-  // open; never cached, and the page it lands on keeps no referrer.
+  // sends `/public/i/<code>`. It answers the preview chat apps draw (Open Graph
+  // tags, src/invite-preview.ts) and sends a browser on to the join link by a
+  // meta refresh, its `#…` kept. Only while the invite is open; never cached.
   app.get("/public/i/:code", async (c) => {
-    const link = await deps.inviteLink?.(c.req.param("code") ?? "", deps.baseOf?.(c) ?? new URL(c.req.url).origin).catch(() => undefined);
+    const base = deps.baseOf?.(c) ?? new URL(c.req.url).origin;
+    const link = await deps.inviteLink?.(c.req.param("code") ?? "", base).catch(() => undefined);
     if (!link) return c.text("This invite link is not valid any more.", 404, { "cache-control": "no-store" });
-    return c.body(null, 302, { location: link, "cache-control": "no-store", "referrer-policy": "no-referrer" });
+    const url = `${base.replace(/\/+$/, "")}/public/i/${c.req.param("code")}`;
+    const siteName = await deps.serverName?.().catch(() => undefined);
+    return c.body(invitePreviewPage({ link, url, base, siteName }), 200, { ...INVITE_PREVIEW_HEADERS });
   });
+  app.get(PEEL_ICON_PATH, (c) => c.body(PEEL_ICON, 200, { "content-type": "image/png", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" }));
   // The brand's LOOK (src/brand.ts): the style variables strut's host hands
   // a visitor's page and draws its own frame around it in, so a worker sees
   // one look from the loading screen on. A color, a radius, a font — what

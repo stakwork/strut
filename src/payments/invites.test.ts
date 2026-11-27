@@ -20,6 +20,7 @@ import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { WORKERS_APP } from "../apps/workers-seed.js";
 import { setEnv } from "../test-util/public-door.js";
 import { INVITE_PRICE_SATS, startFakeSphinxDaemon, type FakeSphinxDaemon } from "../../scripts/fake-sphinx-daemon.js";
+import { INVITE_PREVIEW } from "../invite-preview.js";
 import inviteStep from "../steps/lib/staff/invite.js";
 import invitesStep from "../steps/lib/staff/invites.js";
 import cancelInviteStep from "../steps/lib/staff/cancel-invite.js";
@@ -408,7 +409,7 @@ describe("worker invites on a server (§5.8)", () => {
     assert.deepEqual(((await (await req("/public-view", { headers: keyed })).json()) as { surface: { apps: unknown[] } }).surface.apps, before.apps);
   });
 
-  it("a short link: /public/i/<code> redirects, fragment kept, to the full link while the invite is open; unknown, malformed and cancelled are 404; the QR is of the short link", async () => {
+  it("a short link: /public/i/<code> answers a preview page (Open Graph tags, a refresh to the full link with its #fragment) while the invite is open; unknown, malformed and cancelled are 404; the QR is of the short link", async () => {
     const ctx = staffCtx();
     const made = (await inviteStep.run({ sats: 21, label: "Class A" }, ctx as never)) as { code: string; link: string; shortLink: string; qrSvg: string };
     assert.match(made.shortLink, /^http:\/\/strut\.test\/public\/i\/[A-Za-z0-9_-]{11}$/);
@@ -416,10 +417,28 @@ describe("worker invites on a server (§5.8)", () => {
     assert.notEqual(made.qrSvg, (await import("../move/link.js")).qrSvg(made.link), "the QR is of the short link");
     const code = made.shortLink.split("/").pop()!;
     const hit = await req(`/public/i/${code}`, { redirect: "manual" });
-    assert.equal(hit.status, 302, "no key needed");
-    assert.equal(hit.headers.get("location"), made.link, "the whole link, #action=… included");
-    assert.ok(hit.headers.get("location")!.includes("#action=i&"));
+    assert.equal(hit.status, 200, "no key needed; a page for a chat app's preview, not a bare redirect");
     assert.equal(hit.headers.get("cache-control"), "no-store");
+    assert.equal(hit.headers.get("referrer-policy"), "no-referrer");
+    const html = await hit.text();
+    const tag = (p: string) => new RegExp(`<meta property="${p}" content="([^"]*)">`).exec(html)?.[1];
+    assert.equal(tag("og:title"), INVITE_PREVIEW.title);
+    assert.equal(tag("og:description"), INVITE_PREVIEW.description);
+    assert.equal(tag("og:url"), made.shortLink);
+    assert.equal(tag("og:image"), "http://strut.test/public/join/peel.png");
+    assert.ok(html.includes('<meta name="twitter:card" content="summary">'));
+    // A browser goes on to the whole link, `#action=…` included (a refresh and a visible link, no script).
+    const decode = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    const u = new URL(made.link);
+    assert.equal(decode(/http-equiv="refresh" content="0;url=([^"]*)"/.exec(html)![1]!), `${u.pathname}${u.search}${u.hash}`, "origin-relative: it resolves on the origin the page came from");
+    assert.equal(decode(/<a href="([^"]*)"/.exec(html)![1]!), `${u.pathname}${u.search}${u.hash}`);
+    assert.ok(u.hash.startsWith("#action=i&"));
+    assert.ok(!/<script/i.test(html));
+    assert.ok(!html.includes(made.code), "the Sphinx invite's code is in no tag");
+    const icon = await req("/public/join/peel.png");
+    assert.equal(icon.status, 200);
+    assert.equal(icon.headers.get("content-type"), "image/png");
+    assert.deepEqual([...new Uint8Array(await icon.arrayBuffer()).slice(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
     // The list carries it too; an invite made with no short code (before) has none.
     const listed = (await invitesStep.run({}, ctx as never)) as { invites: Array<{ code: string; shortLink?: string; label?: string }> };
     assert.equal(listed.invites.find((i) => i.code === made.code)?.shortLink, made.shortLink);
