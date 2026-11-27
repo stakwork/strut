@@ -707,13 +707,13 @@ export function inviteWhyText(why: NonNullable<InvitesAnswer["why"]>): string {
 }
 
 /** The words a worker is sent with the link. */
-export function inviteMessage(link: string): string {
-  return `You're invited to work with us. Open this on your phone to sign up with Peel: ${link}`;
+export function inviteMessage(link: string, text = "You're invited to work with us. Open this on your phone to sign up with Peel:"): string {
+  return `${text} ${link}`;
 }
 
 /** The message as a WhatsApp share link (an https link a host opens). */
-export function whatsappUrl(link: string): string {
-  return `https://wa.me/?text=${encodeURIComponent(inviteMessage(link))}`;
+export function whatsappUrl(link: string, text?: string): string {
+  return `https://wa.me/?text=${encodeURIComponent(inviteMessage(link, text))}`;
 }
 
 /** An invite's sats as typed: a whole number 1 to 100,000. Blank is a problem (the box starts filled). */

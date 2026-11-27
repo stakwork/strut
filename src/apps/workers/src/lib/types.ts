@@ -419,6 +419,10 @@ export interface Invite {
   expiresAt?: string;
   /** The admin who made it (an actor), when it was noted. */
   by?: string;
+  /** The language it is sent in (a code of `InvitesAnswer.languages`); none: English. */
+  lang?: string;
+  /** The words a share button sends before the link, in its language (only with `lang`). */
+  shareText?: string;
   /** `<base>/public/i/<code>`: the short link to send (it redirects to `link`). */
   shortLink?: string;
   /** A batch name staff gave it: invites sharing one are listed together. */
@@ -431,6 +435,8 @@ export interface InvitesAnswer {
   invites: Invite[];
   /** What an invite gives when it names none. */
   sats: number;
+  /** The languages an invite may be sent in. */
+  languages?: { code: string; label: string }[];
   why?: "no_pay_credential" | "no_invites";
 }
 

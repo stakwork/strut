@@ -98,7 +98,7 @@ export interface PublicRouteDeps {
   /** The headers an app's document is served with (it runs: it is the app). */
   documentHeaders?: (path: string) => Record<string, string>;
   /** A worker invite's short link (`GET /public/i/:code`): the full join link it stands for, while its invite is open; undefined otherwise. */
-  inviteLink?: (short: string, base: string) => Promise<string | undefined>;
+  inviteLink?: (short: string, base: string) => Promise<{ link: string; lang?: string } | undefined>;
   /** The server's name (its brand's, src/brand.ts), for the invite page. */
   serverName?: () => Promise<string | undefined>;
   /** The brand's look (src/brand.ts `brandStyles`), for a visitor's page:
@@ -421,11 +421,11 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
   // meta refresh, its `#…` kept. Only while the invite is open; never cached.
   app.get("/public/i/:code", async (c) => {
     const base = deps.baseOf?.(c) ?? new URL(c.req.url).origin;
-    const link = await deps.inviteLink?.(c.req.param("code") ?? "", base).catch(() => undefined);
-    if (!link) return c.text("This invite link is not valid any more.", 404, { "cache-control": "no-store" });
+    const found = await deps.inviteLink?.(c.req.param("code") ?? "", base).catch(() => undefined);
+    if (!found) return c.text("This invite link is not valid any more.", 404, { "cache-control": "no-store" });
     const url = `${base.replace(/\/+$/, "")}/public/i/${c.req.param("code")}`;
     const siteName = await deps.serverName?.().catch(() => undefined);
-    return c.body(invitePreviewPage({ link, url, base, siteName }), 200, { ...INVITE_PREVIEW_HEADERS });
+    return c.body(invitePreviewPage({ ...found, url, base, siteName }), 200, { ...INVITE_PREVIEW_HEADERS });
   });
   app.get(PEEL_ICON_PATH, (c) => c.body(PEEL_ICON, 200, { "content-type": "image/png", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" }));
   // The brand's LOOK (src/brand.ts): the style variables strut's host hands

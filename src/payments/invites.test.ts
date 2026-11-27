@@ -20,7 +20,7 @@ import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { WORKERS_APP } from "../apps/workers-seed.js";
 import { setEnv } from "../test-util/public-door.js";
 import { INVITE_PRICE_SATS, startFakeSphinxDaemon, type FakeSphinxDaemon } from "../../scripts/fake-sphinx-daemon.js";
-import { INVITE_PREVIEW } from "../invite-preview.js";
+import { INVITE_LANGUAGES, inviteLanguage } from "../invite-preview.js";
 import inviteStep from "../steps/lib/staff/invite.js";
 import invitesStep from "../steps/lib/staff/invites.js";
 import cancelInviteStep from "../steps/lib/staff/cancel-invite.js";
@@ -154,7 +154,7 @@ describe("createInvites (§5.8)", () => {
     const old = invitePayer({ noRoute: true }).payer;
     for (const [payer, why, status] of [[null, "no_pay_credential", 409], [nwc, "no_invites", 501], [old, "no_invites", 501]] as const) {
       const invites = createInvites({ ...deps(), payer: async () => payer });
-      assert.deepEqual(await invites.list({ base: BASE }), { invites: [], sats: 100, why });
+      assert.deepEqual(await invites.list({ base: BASE }), { invites: [], sats: 100, languages: INVITE_LANGUAGES.map(({ code, label }) => ({ code, label })), why });
       await assert.rejects(invites.create({ base: BASE }), refused(why, status));
     }
   });
@@ -422,8 +422,8 @@ describe("worker invites on a server (§5.8)", () => {
     assert.equal(hit.headers.get("referrer-policy"), "no-referrer");
     const html = await hit.text();
     const tag = (p: string) => new RegExp(`<meta property="${p}" content="([^"]*)">`).exec(html)?.[1];
-    assert.equal(tag("og:title"), INVITE_PREVIEW.title);
-    assert.equal(tag("og:description"), INVITE_PREVIEW.description);
+    assert.equal(tag("og:title"), inviteLanguage().title);
+    assert.equal(tag("og:description"), inviteLanguage().description);
     assert.equal(tag("og:url"), made.shortLink);
     assert.equal(tag("og:image"), "http://strut.test/public/join/peel.png");
     assert.ok(html.includes('<meta name="twitter:card" content="summary">'));
@@ -446,6 +446,30 @@ describe("worker invites on a server (§5.8)", () => {
     for (const bad of ["nope", "AAAAAAAAAAA", "a".repeat(40), "..%2Fbalance"]) assert.equal((await req(`/public/i/${bad}`, { redirect: "manual" })).status, 404, bad);
     await cancelInviteStep.run({ code: made.code }, ctx as never);
     assert.equal((await req(`/public/i/${code}`, { redirect: "manual" })).status, 404, "cancelled: the short link stops with the invite");
+  });
+
+  it("a language: noted at create, its share text listed, the short link's preview and continue link in it; unknown at create is refused, unknown stored falls back to English", async () => {
+    const ctx = staffCtx();
+    const es = (await inviteStep.run({ sats: 21, lang: "es" }, ctx as never)) as { code: string; shortLink: string; lang: string; shareText: string };
+    assert.equal(es.lang, "es");
+    assert.equal(es.shareText, inviteLanguage("es").share);
+    const html = await (await req(`/public/i/${es.shortLink.split("/").pop()}`)).text();
+    const tag = (p: string) => new RegExp(`<meta property="${p}" content="([^"]*)">`).exec(html)?.[1];
+    assert.ok(html.startsWith('<!doctype html>\n<html lang="es">'));
+    assert.equal(tag("og:locale"), "es_ES");
+    assert.equal(tag("og:title"), "Completa tareas, gana Bitcoin");
+    assert.match(html, /<a href="[^"]*\?lang=es#action=i&amp;/, "the join page opens in Spanish");
+    assert.ok(html.includes(">Continuar</a>"));
+    const en = (await inviteStep.run({ sats: 21 }, ctx as never)) as { code: string; shortLink: string; lang?: string; shareText?: string };
+    assert.equal(en.lang, undefined, "no language chosen: English, as before");
+    assert.equal(en.shareText, undefined);
+    const enHtml = await (await req(`/public/i/${en.shortLink.split("/").pop()}`)).text();
+    assert.ok(enHtml.includes('<html lang="en">') && enHtml.includes('content="en_US"') && !enHtml.includes("?lang="));
+    const listed = (await invitesStep.run({}, ctx as never)) as { languages: Array<{ code: string; label: string }> };
+    assert.deepEqual(listed.languages, INVITE_LANGUAGES.map(({ code, label }) => ({ code, label })));
+    await assert.rejects(inviteStep.run({ lang: "xx" }, ctx as never), /lang is one of en, es/);
+    assert.equal(inviteLanguage("xx").code, "en");
+    assert.equal(inviteLanguage(undefined).code, "en");
   });
 
   it("GET /public/join answers without the key: the static page, its script pinned by hash; the QR library beside it", async () => {

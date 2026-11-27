@@ -38,6 +38,7 @@ import { dirname } from "node:path";
 import { LightningError } from "./lightning.js";
 import { INVITE_CODE, NO_INVITES, type InviteStatus, type Payer, type WalletInvite } from "./payer.js";
 import { INVITE_SATS_MAX } from "./ledger.js";
+import { INVITE_LANGUAGES, inviteLanguage } from "../invite-preview.js";
 import { publicAppLinks } from "../public-routes.js";
 import { inviteToken } from "../auth.js";
 import { TASKS_APP } from "../apps/tasks-seed.js";
@@ -73,6 +74,8 @@ export interface InviteNote {
   label?: string;
   /** The code of its short link (`<base>/public/i/<short>`), which redirects to the full join link while the invite is open. */
   short?: string;
+  /** The language it is sent in (a code of INVITE_LANGUAGES): its short link's preview and the join page speak it. None: English. */
+  lang?: string;
 }
 
 /** The invites' notes, by code. */
@@ -174,6 +177,10 @@ export interface InviteView {
   label?: string;
   /** `<base>/public/i/<code>`: what staff send instead of `link`, which is far too long to send. It redirects to `link`, so it works only while the invite does. */
   shortLink?: string;
+  /** The language it is sent in, when one was chosen. */
+  lang?: string;
+  /** The words a share button sends before the link, in its language: only when a language was chosen. */
+  shareText?: string;
   /** The worker who redeemed it, when `status` is `used` because Tasks
    *  granted work by it (an existing Peel account never makes the daemon
    *  say `used`). */
@@ -184,6 +191,8 @@ export interface InvitesList {
   invites: InviteView[];
   /** What an invite starts a worker with when staff name none. */
   sats: number;
+  /** The languages an invite may be sent in. */
+  languages: { code: string; label: string }[];
   /** Why this server cannot invite: no pay credential, or a daemon without
    *  the routes. Absent when it can. */
   why?: "no_pay_credential" | "no_invites";
@@ -207,12 +216,12 @@ export interface InvitesDeps {
 
 export interface Invites {
   /** A new invite, its link opening Tasks on `type` when given. */
-  create(o: { sats?: number; type?: string; label?: string; base: string; by?: string }): Promise<InviteView>;
+  create(o: { sats?: number; type?: string; label?: string; lang?: string; base: string; by?: string }): Promise<InviteView>;
   /** Every invite the daemon keeps, newest first. */
   list(o: { base: string }): Promise<InvitesList>;
   cancel(code: string): Promise<{ code: string; status: InviteStatus }>;
   /** The full join link a short code stands for, only while its invite is still open and its link valid; undefined otherwise. Reads the daemon, so a cancelled or used invite stops at once. */
-  resolveShort(short: string, base: string): Promise<string | undefined>;
+  resolveShort(short: string, base: string): Promise<{ link: string; lang?: string } | undefined>;
 }
 
 /** A grant link's code begins so: strut's own, live without the daemon.
@@ -260,6 +269,7 @@ export function createInvites(deps: InvitesDeps): Invites {
       ...(Number.isFinite(Date.parse(inv.createdAt ?? "")) ? { expiresAt: new Date(Date.parse(inv.createdAt as string) + INVITE_TOKEN_DAYS * 86_400_000).toISOString() } : {}),
       ...(note?.by ? { by: note.by } : {}),
       ...(note?.label ? { label: note.label } : {}),
+      ...(note?.lang ? { lang: note.lang, shareText: inviteLanguage(note.lang).share } : {}),
       ...(link && note?.short ? { shortLink: `${base.replace(/\/+$/, "")}/public/i/${note.short}` } : {}),
     };
   };
@@ -275,6 +285,7 @@ export function createInvites(deps: InvitesDeps): Invites {
     async create(o) {
       const sats = o.sats ?? (await deps.inviteSats());
       if (!Number.isSafeInteger(sats) || sats < 1 || sats > INVITE_SATS_MAX) throw new InviteError("bad_request", `sats is a whole number from 1 to ${INVITE_SATS_MAX}`);
+      if (o.lang !== undefined && !INVITE_LANGUAGES.some((l) => l.code === o.lang)) throw new InviteError("bad_request", `lang is one of ${INVITE_LANGUAGES.map((l) => l.code).join(", ")}`);
       const apps = await deps.publicApps();
       if (!apps.includes(TASKS_APP)) {
         throw new InviteError("no_worker_app", `the Tasks page (${TASKS_APP}) is not in the public view: put it online first, so the link has somewhere to open`);
@@ -287,14 +298,14 @@ export function createInvites(deps: InvitesDeps): Invites {
       // Before anything is paid: the wallet that can.
       const payer = await payerOf();
       const inv = await payer.invite({ sats }).catch(fromWallet);
-      const note: InviteNote = { ...(o.type ? { type: o.type } : {}), ...(o.by ? { by: o.by } : {}), ...(o.label ? { label: o.label } : {}), short: randomBytes(8).toString("base64url") };
+      const note: InviteNote = { ...(o.type ? { type: o.type } : {}), ...(o.by ? { by: o.by } : {}), ...(o.label ? { label: o.label } : {}), short: randomBytes(8).toString("base64url"), ...(o.lang ? { lang: o.lang } : {}) };
       await notes.set(inv.code, note);
       return view(inv, o.base, true, note);
     },
 
     async list(o) {
       const [online, sats] = await Promise.all([tasksOnline(), deps.inviteSats()]);
-      const head = { sats };
+      const head = { sats, languages: INVITE_LANGUAGES.map(({ code, label }) => ({ code, label })) };
       let payer: Awaited<ReturnType<typeof payerOf>>;
       try {
         payer = await payerOf();
@@ -339,7 +350,7 @@ export function createInvites(deps: InvitesDeps): Invites {
       const { invites } = await this.list({ base });
       const inv = invites.find((i) => i.code === code);
       const open = inv && (inv.status === "ready" || inv.status === "sending");
-      return open && inv.link && (!inv.expiresAt || Date.parse(inv.expiresAt) > Date.now()) ? inv.link : undefined;
+      return open && inv.link && (!inv.expiresAt || Date.parse(inv.expiresAt) > Date.now()) ? { link: inv.link, ...(inv.lang ? { lang: inv.lang } : {}) } : undefined;
     },
 
     async cancel(code) {

@@ -210,6 +210,7 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
   // Past the cap or empty: nothing is made (the button waits); the loop caps too.
   const count = "count" in counted ? Math.min(counted.count, INVITE_BATCH_MAX) : 1;
   const [labelText, setLabelText] = useState("");
+  const [lang, setLang] = useState("");
   const [progress, setProgress] = useState(0);
   const [batch, setBatch] = useState<{ invites: MadeInvite[]; label: string; wanted: number; work: string } | null>(null);
   const sats = inviteSatsOf(satsText);
@@ -222,7 +223,7 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
   const make = async () => {
     if ("problem" in sats || "problem" in counted) return;
     if (count === 1) {
-      const out = await act("invite", () => client.run<MadeInvite>("staff/invite", { ...sats, ...(work ? { type: work } : {}) }));
+      const out = await act("invite", () => client.run<MadeInvite>("staff/invite", { ...sats, ...(work ? { type: work } : {}), ...(lang ? { lang } : {}) }));
       if (out) {
         setBatch(null);
         setMade(out);
@@ -237,7 +238,7 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
     await act("invite", async () => {
       for (let k = 0; k < count; k++) {
         setProgress(k + 1);
-        got.push(await client.run<MadeInvite>("staff/invite", { ...sats, ...(work ? { type: work } : {}), ...(label ? { label } : {}) }));
+        got.push(await client.run<MadeInvite>("staff/invite", { ...sats, ...(work ? { type: work } : {}), ...(label ? { label } : {}), ...(lang ? { lang } : {}) }));
       }
     });
     setProgress(0);
@@ -307,6 +308,17 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
               <span className="text-xs text-muted-foreground">max {INVITE_BATCH_MAX}</span>
             </div>
           </Field>
+          {(q.data?.languages?.length ?? 0) > 1 && (
+            <Field label="Language" htmlFor={`${id}-lang`} hint="The language of the link's preview card and of the page it opens.">
+              <NativeSelect id={`${id}-lang`} className="w-40" value={lang} onChange={(e) => setLang(e.target.value)}>
+                {q.data?.languages?.map((l, k) => (
+                  <NativeSelectOption key={l.code} value={k === 0 ? "" : l.code}>
+                    {l.label}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </Field>
+          )}
           {"problem" in counted && <Note className="text-destructive">{counted.problem}</Note>}
           {count > 1 && (
             <Field label="Batch label (optional)" htmlFor={`${id}-label`} hint="A name for the group, such as Class A: it heads them in the list and on the printed sheet.">
@@ -360,7 +372,7 @@ function MadeCard(props: { invite: MadeInvite; work?: string | undefined }) {
           <>
             <CopyLine label="Invite link" value={inviteLinkOf(invite) as string} hint="Send it by text message or WhatsApp, or let them scan the code. It works once." />
             <div>
-              <WhatsappButton link={inviteLinkOf(invite) as string} />
+              <WhatsappButton link={inviteLinkOf(invite) as string} text={invite.shareText} />
             </div>
           </>
         ) : (

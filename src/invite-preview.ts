@@ -8,13 +8,43 @@
  * shows on links sent after it.
  */
 
-/** What the preview says: the one place to edit it. */
-export const INVITE_PREVIEW = {
-  title: "Complete Tasks, Earn Bitcoin",
-  description: "You're invited to Peel. Do simple tasks on your phone and get paid in bitcoin.",
-  /** The continue link's words. */
-  continue: "Continue",
-};
+/** One language of the preview. `title`, `description` and `continue` are the page's words; `locale` is og:locale; `share` is the message a share button sends before the link. */
+export interface InviteLanguage {
+  code: string;
+  label: string;
+  locale: string;
+  title: string;
+  description: string;
+  continue: string;
+  share: string;
+}
+
+/** The languages an invite may be sent in, and what each says: the one place to edit the copy, and a language is one more entry. The first is the default. */
+export const INVITE_LANGUAGES: InviteLanguage[] = [
+  {
+    code: "en",
+    label: "English",
+    locale: "en_US",
+    title: "Complete Tasks, Earn Bitcoin",
+    description: "You're invited to Peel. Do simple tasks on your phone and get paid in bitcoin.",
+    continue: "Continue",
+    share: "You're invited to work with us. Open this on your phone to sign up with Peel:",
+  },
+  {
+    code: "es",
+    label: "Español",
+    locale: "es_ES",
+    title: "Completa tareas, gana Bitcoin",
+    description: "Te invitaron a Peel. Haz tareas sencillas en tu teléfono y recibe pagos en bitcoin.",
+    continue: "Continuar",
+    share: "Te invitamos a trabajar con nosotros. Ábrelo en tu teléfono para registrarte en Peel:",
+  },
+];
+
+/** A language by its code; an unknown or missing one is the default (English). */
+export function inviteLanguage(code?: string | undefined): InviteLanguage {
+  return INVITE_LANGUAGES.find((l) => l.code === code) ?? INVITE_LANGUAGES[0]!;
+}
 
 /** Peel's icon (stakwork/peel-android, design/peel.svg) as a 512 × 512 PNG: chat apps do not draw an SVG. Served at `/public/join/peel.png`. */
 export const PEEL_ICON_PATH = "/public/join/peel.png";
@@ -142,20 +172,24 @@ export const INVITE_PREVIEW_HEADERS = {
 };
 
 /** The preview page: `link` the full join link (what it sends on to, by its path), `url` the short link as shared, `base` this server's base (the icon is on it). */
-export function invitePreviewPage(o: { link: string; url: string; base: string; siteName?: string | undefined }): string {
+export function invitePreviewPage(o: { link: string; url: string; base: string; siteName?: string | undefined; lang?: string | undefined }): string {
+  const words = inviteLanguage(o.lang);
   // On to the join link by its path (origin-relative), so it resolves on the origin the page came from, whatever front sits before this server.
   const to = (() => {
     try {
       const u = new URL(o.link);
+      // An invite sent in a language opens the join page in it (its `?lang=`).
+      if (o.lang) u.searchParams.set("lang", words.code);
       return `${u.pathname}${u.search}${u.hash}`;
     } catch {
       return o.link;
     }
   })();
   const image = `${o.base.replace(/\/+$/, "")}${PEEL_ICON_PATH}`;
-  const { title, description } = INVITE_PREVIEW;
+  const { title, description } = words;
   const meta = [
     ["og:type", "website"],
+    ["og:locale", words.locale],
     ...(o.siteName ? [["og:site_name", o.siteName]] : []),
     ["og:title", title],
     ["og:description", description],
@@ -168,7 +202,7 @@ export function invitePreviewPage(o: { link: string; url: string; base: string; 
     .map(([p, c]) => `<meta property="${p}" content="${esc(c!)}">`)
     .join("\n");
   return `<!doctype html>
-<html lang="en">
+<html lang="${esc(words.code)}">
 <head>
 <meta charset="utf-8">
 <title>${esc(title)}</title>
@@ -183,7 +217,7 @@ ${meta}
 <meta name="robots" content="noindex">
 <style>body{font:16px system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;text-align:center}a{color:#d9661f}</style>
 </head>
-<body><p><a href="${esc(to)}">${esc(INVITE_PREVIEW.continue)}</a></p></body>
+<body><p><a href="${esc(to)}">${esc(words.continue)}</a></p></body>
 </html>
 `;
 }

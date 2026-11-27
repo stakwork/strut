@@ -418,6 +418,8 @@ describe("strut/workers: the Queue, deep links, and what shows", () => {
     assert.deepEqual(inviteCountOf(" 7 "), { count: 7 });
     assert.deepEqual(inviteCountOf("50"), { count: 50 });
     for (const bad of ["", " ", "0", "-1", "2.5", "51", "abc"]) assert.ok("problem" in inviteCountOf(bad), bad);
+    assert.equal(whatsappUrl("https://x/i/a"), `https://wa.me/?text=${encodeURIComponent("You're invited to work with us. Open this on your phone to sign up with Peel: https://x/i/a")}`, "no language: the words as ever");
+    assert.equal(whatsappUrl("https://x/i/a", "Te invitamos:"), `https://wa.me/?text=${encodeURIComponent("Te invitamos: https://x/i/a")}`);
     assert.equal(inviteBatchCost(1, 500), "500 sats, plus the mixer's fee");
     assert.equal(inviteBatchCost(10, 1500), "10 × 1,500 = 15,000 sats, plus the mixer's fee for each");
     assert.equal(inviteBatchResult(1, 1), "Invite made.");

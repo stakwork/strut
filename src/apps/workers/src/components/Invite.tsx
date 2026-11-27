@@ -40,18 +40,18 @@ export function InviteBadge(props: { status: InviteStatus }) {
 
 /** Share the link in WhatsApp: an https link the host opens (a frame opens
  *  no `sms:`). Absent outside a host. */
-export function WhatsappButton(props: { link: string; small?: boolean; onRefused?: (why: string) => void }) {
+export function WhatsappButton(props: { link: string; text?: string | undefined; small?: boolean; onRefused?: (why: string) => void }) {
   const host = useHost();
   if (!host.connected) return null;
   return (
-    <Button size={props.small ? "xs" : "sm"} variant="outline" onClick={() => void host.openLink(whatsappUrl(props.link)).catch(() => props.onRefused?.("This page cannot open WhatsApp: copy the link."))}>
+    <Button size={props.small ? "xs" : "sm"} variant="outline" onClick={() => void host.openLink(whatsappUrl(props.link, props.text)).catch(() => props.onRefused?.("This page cannot open WhatsApp: copy the link."))}>
       Share in WhatsApp
     </Button>
   );
 }
 
 /** Copy the link; share it in WhatsApp. */
-function LinkActions(props: { link: string }) {
+function LinkActions(props: { link: string; text?: string | undefined }) {
   const [said, setSaid] = useState<string | null>(null);
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -67,7 +67,7 @@ function LinkActions(props: { link: string }) {
       >
         Copy link
       </Button>
-      <WhatsappButton link={props.link} small onRefused={setSaid} />
+      <WhatsappButton link={props.link} text={props.text} small onRefused={setSaid} />
       {said && <span className="text-xs text-muted-foreground">{said}</span>}
     </div>
   );
@@ -129,7 +129,7 @@ export function InviteList(props: { types?: TaskType[] | undefined; workers?: Wo
               </div>
               {inviteOpen(i) && (
                 <div className="flex basis-full flex-wrap items-center gap-2">
-                  {inviteLinkOf(i) && <LinkActions link={inviteLinkOf(i) as string} />}
+                  {inviteLinkOf(i) && <LinkActions link={inviteLinkOf(i) as string} text={i.shareText} />}
                   <Button size="xs" variant="outline" disabled={busy !== null} onClick={() => void cancel(i.code)}>
                     Cancel
                   </Button>

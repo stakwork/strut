@@ -99,7 +99,7 @@ export function InviteBatch(props: { invites: MadeInvite[]; label?: string | und
               {open && inviteLinkOf(i) && (
                 <div className="flex flex-wrap items-center justify-center gap-2" data-print-hide>
                   <CardCopy link={inviteLinkOf(i) as string} n={k + 1} />
-                  <WhatsappButton link={inviteLinkOf(i) as string} small />
+                  <WhatsappButton link={inviteLinkOf(i) as string} text={i.shareText} small />
                 </div>
               )}
             </li>
