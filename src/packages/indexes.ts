@@ -246,8 +246,12 @@ export type PackagesCapability = Pick<PackageIndexes, "search" | "get" | "concep
    *  indexes, or a `pk:` ref with its `url`. */
   install?(ref: string, opts: { proposal: string; index?: string; digest?: string; url?: string; actor?: string }): Promise<unknown>;
   /** A package opened here as a git repo (src/packages/repos.ts): where it
-   *  is, the commit installed, and what the workspace changed since. */
-  repo?(pkg: string): Promise<{ url: string; branch: string; path?: string; commit: string; forked: Array<{ kind: string; name: string }> } | undefined>;
+   *  is, the commit installed, what the workspace changed since, and the
+   *  commit message saved for those edits. */
+  repo?(pkg: string): Promise<{ url: string; branch: string; path?: string; commit: string; forked: Array<{ kind: string; name: string }>; message?: string } | undefined>;
+  /** `package/commit-message`'s door: save the commit message for a repo's
+   *  edits (blank clears it). A note on file, nothing pushed. */
+  saveMessage?(pkg: string, message: string): Promise<void>;
   /** `package/commit`'s door (plans/app-repos.md §3.3): commits and pushes
    *  ONLY as the apply of an ACCEPTED proposal of that step for this very
    *  package and message, checked against the record on disk. */

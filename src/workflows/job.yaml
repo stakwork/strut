@@ -268,7 +268,10 @@ params:
     - package/install
     # A package opened here as a git repo (plans/app-repos.md §3.3):
     # committed and pushed only on an admin's yes — the call is a proposal.
+    # Its commit message is saved by whoever edits it, with no ask: the
+    # person's Commit starts from it.
     - package/commit
+    - package/commit-message
     # Another strut server's public door (plans/paid-runs.md §10): what it
     # sells, and a run or a tool call there spending the credit this strut
     # already holds — no ask (decision 16). Buying credit is an admin's yes:

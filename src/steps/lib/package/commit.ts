@@ -28,7 +28,10 @@ import { PACKAGE_NAME } from "../../../packages/format.js";
 
 const input = z.object({
   package: z.string().regex(PACKAGE_NAME, "a package is named publisher/name").describe("The package, `publisher/name`, opened here as a repo (Packages → Repos)."),
-  message: z.string().min(1).describe("The commit message: what changed, in the person's terms. Its first line is the title (and the pull request's)."),
+  message: z
+    .string()
+    .min(1)
+    .describe("The commit message: what changed, in the person's terms — start from the one package/commit-message saved. Its first line is the title (and the pull request's)."),
   branch: z
     .string()
     .min(1)

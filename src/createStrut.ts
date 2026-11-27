@@ -6193,8 +6193,11 @@ export async function createStrut<TServices = unknown>(
   // the proof, as for package/install.
   packagesBag["repo"] ??= async (pkg: string) => {
     const r = await repos.get(pkg);
-    return r ? { url: r.url, branch: r.branch, ...(r.path ? { path: r.path } : {}), commit: r.commit, forked: [...r.added, ...r.forked, ...r.deleted] } : undefined;
+    return r ? { url: r.url, branch: r.branch, ...(r.path ? { path: r.path } : {}), commit: r.commit, forked: [...r.added, ...r.forked, ...r.deleted], ...(r.message ? { message: r.message } : {}) } : undefined;
   };
+  // `package/commit-message`'s door: a note on the repo's record that the
+  // person's Commit starts from — nothing leaves the server, so no ask.
+  packagesBag["saveMessage"] ??= (pkg: string, message: string) => oneAtATime(() => repos.setMessage(pkg, message));
   packagesBag["commit"] ??= async (pkg: string, o: { proposal: string; message: string; branch?: string; pr?: boolean; actor?: string }) => {
     const rec = typeof o?.proposal === "string" ? await readProposal(proposalsDir, o.proposal) : null;
     const asked = (rec?.input ?? {}) as { package?: unknown; message?: unknown; branch?: unknown; pr?: unknown };

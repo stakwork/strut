@@ -2593,6 +2593,8 @@ export interface RepoInfo {
   originals?: RepoItem[];
   /** A pull's merge waits on a conflict (the commit holding the edits). */
   merge?: string;
+  /** The commit message the agents who made the edits saved: Commit starts from it. */
+  message?: string;
   workdir: string;
   /** New here: added under the package's prefix, not in the commit yet. */
   added: RepoItem[];

@@ -88,7 +88,8 @@ An app's line in Recent Work, and in app/list, says where it comes from
 when it was not made here: that is where a change to it goes. One from a
 repository opened here is changed here, in place, even when the person
 names the repository, and reaches it with package/commit when they ask.
-Strut's own comes back at the next boot. When the repository its line
+Save what you changed in it with package/commit-message: the person's
+Commit starts from that message. Strut's own comes back at the next boot. When the repository its line
 names is one of the person's, a change to it is a change to its code
 there; otherwise change a copy of it, under a name of your own.
 
