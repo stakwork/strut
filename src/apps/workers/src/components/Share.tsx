@@ -21,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { cn } from "@/lib/utils";
-import { INVITE_BATCH_MAX, INVITE_BATCH_PICKS, INVITE_WORDS, anyOpenWork, inviteBatchCost, inviteBatchResult, inviteChoices, inviteCountOf, inviteLabelOf, inviteOpen, inviteSatsOf, inviteWhyText, inviteWorkText } from "../lib/view";
+import { INVITE_BATCH_MAX, INVITE_BATCH_PICKS, INVITE_WORDS, anyOpenWork, inviteBatchCost, inviteBatchResult, inviteChoices, inviteCountOf, inviteLabelOf, inviteLinkOf, inviteOpen, inviteSatsOf, inviteWhyText, inviteWorkText } from "../lib/view";
 import type { MadeInvite, TaskType, TypeShare, Worker } from "../lib/types";
 import { ErrorLine, Field, Note, useAct } from "./bits";
 import { InviteBadge, InviteList, useInvites, WhatsappButton } from "./Invite";
@@ -356,11 +356,11 @@ function MadeCard(props: { invite: MadeInvite; work?: string | undefined }) {
           {INVITE_WORDS[invite.status]}
           {invite.status === "sending" ? ". It works once it is ready." : "."}
         </Note>
-        {!open ? null : invite.link ? (
+        {!open ? null : inviteLinkOf(invite) ? (
           <>
-            <CopyLine label="Invite link" value={invite.link} hint="Send it by text message or WhatsApp, or let them scan the code. It works once." />
+            <CopyLine label="Invite link" value={inviteLinkOf(invite) as string} hint="Send it by text message or WhatsApp, or let them scan the code. It works once." />
             <div>
-              <WhatsappButton link={invite.link} />
+              <WhatsappButton link={inviteLinkOf(invite) as string} />
             </div>
           </>
         ) : (

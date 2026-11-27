@@ -13,7 +13,7 @@ import { useHost, useStrutClient } from "@strut/kit";
 import { localText } from "@strut/kit/folds";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { INVITE_WORDS, acceptedBy, fmtWhen, groupInvites, inviteBadge, inviteExpiry, inviteOpen, invitesReadMs, shortActor, sortInvites, whatsappUrl } from "../lib/view";
+import { INVITE_WORDS, acceptedBy, fmtWhen, groupInvites, inviteBadge, inviteExpiry, inviteLinkOf, inviteOpen, invitesReadMs, shortActor, sortInvites, whatsappUrl } from "../lib/view";
 import type { Invite as InviteRow, InvitesAnswer, InviteStatus, TaskType, Worker } from "../lib/types";
 import { ErrorLine, Loading, Note, useAct } from "./bits";
 
@@ -129,7 +129,7 @@ export function InviteList(props: { types?: TaskType[] | undefined; workers?: Wo
               </div>
               {inviteOpen(i) && (
                 <div className="flex basis-full flex-wrap items-center gap-2">
-                  {i.link && <LinkActions link={i.link} />}
+                  {inviteLinkOf(i) && <LinkActions link={inviteLinkOf(i) as string} />}
                   <Button size="xs" variant="outline" disabled={busy !== null} onClick={() => void cancel(i.code)}>
                     Cancel
                   </Button>

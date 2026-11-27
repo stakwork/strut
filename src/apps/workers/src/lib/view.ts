@@ -724,6 +724,11 @@ export function inviteSatsOf(text: string): { sats: number } | { problem: string
   return Number.isInteger(n) && n >= 1 && n <= 100_000 ? { sats: n } : { problem: "A whole number of sats, 1 to 100,000." };
 }
 
+/** The link to send for an invite: the short one when it has one, else the full join link. */
+export function inviteLinkOf(i: { link?: string | undefined; shortLink?: string | undefined }): string | undefined {
+  return i.shortLink ?? i.link;
+}
+
 /** The most invites one New invite may make, and the quick picks beside the number box. Each costs the wallet its sats and a mixer fee, so the cap is small. */
 export const INVITE_BATCH_MAX = 50;
 export const INVITE_BATCH_PICKS = [5, 10, 25] as const;

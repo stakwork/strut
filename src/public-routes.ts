@@ -96,6 +96,8 @@ export interface PublicRouteDeps {
   };
   /** The headers an app's document is served with (it runs: it is the app). */
   documentHeaders?: (path: string) => Record<string, string>;
+  /** A worker invite's short link (`GET /public/i/:code`): the full join link it stands for, while its invite is open; undefined otherwise. */
+  inviteLink?: (short: string, base: string) => Promise<string | undefined>;
   /** The server's name (its brand's, src/brand.ts), for the invite page. */
   serverName?: () => Promise<string | undefined>;
   /** The brand's look (src/brand.ts `brandStyles`), for a visitor's page:
@@ -411,6 +413,15 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
   app.get("/public/join", async (c) => {
     const lang = joinLang(c.req.query("lang"), c.req.header("accept-language"), c.req.header("cookie"));
     return c.body(joinPage(await deps.serverName?.().catch(() => undefined), lang), 200, { ...JOIN_HEADERS });
+  });
+  // A worker invite's SHORT link: the join link is too long to send, so strut
+  // sends `/public/i/<code>` and this redirects to it, its `#…` kept in the
+  // Location (a browser keeps a redirect's fragment). Only while the invite is
+  // open; never cached, and the page it lands on keeps no referrer.
+  app.get("/public/i/:code", async (c) => {
+    const link = await deps.inviteLink?.(c.req.param("code") ?? "", deps.baseOf?.(c) ?? new URL(c.req.url).origin).catch(() => undefined);
+    if (!link) return c.text("This invite link is not valid any more.", 404, { "cache-control": "no-store" });
+    return c.body(null, 302, { location: link, "cache-control": "no-store", "referrer-policy": "no-referrer" });
   });
   // The brand's LOOK (src/brand.ts): the style variables strut's host hands
   // a visitor's page and draws its own frame around it in, so a worker sees

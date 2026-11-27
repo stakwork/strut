@@ -408,6 +408,27 @@ describe("worker invites on a server (§5.8)", () => {
     assert.deepEqual(((await (await req("/public-view", { headers: keyed })).json()) as { surface: { apps: unknown[] } }).surface.apps, before.apps);
   });
 
+  it("a short link: /public/i/<code> redirects, fragment kept, to the full link while the invite is open; unknown, malformed and cancelled are 404; the QR is of the short link", async () => {
+    const ctx = staffCtx();
+    const made = (await inviteStep.run({ sats: 21, label: "Class A" }, ctx as never)) as { code: string; link: string; shortLink: string; qrSvg: string };
+    assert.match(made.shortLink, /^http:\/\/strut\.test\/public\/i\/[A-Za-z0-9_-]{11}$/);
+    assert.ok(made.shortLink.length < made.link.length / 4, "far shorter than the join link");
+    assert.notEqual(made.qrSvg, (await import("../move/link.js")).qrSvg(made.link), "the QR is of the short link");
+    const code = made.shortLink.split("/").pop()!;
+    const hit = await req(`/public/i/${code}`, { redirect: "manual" });
+    assert.equal(hit.status, 302, "no key needed");
+    assert.equal(hit.headers.get("location"), made.link, "the whole link, #action=… included");
+    assert.ok(hit.headers.get("location")!.includes("#action=i&"));
+    assert.equal(hit.headers.get("cache-control"), "no-store");
+    // The list carries it too; an invite made with no short code (before) has none.
+    const listed = (await invitesStep.run({}, ctx as never)) as { invites: Array<{ code: string; shortLink?: string; label?: string }> };
+    assert.equal(listed.invites.find((i) => i.code === made.code)?.shortLink, made.shortLink);
+    assert.equal(listed.invites.find((i) => i.code === made.code)?.label, "Class A");
+    for (const bad of ["nope", "AAAAAAAAAAA", "a".repeat(40), "..%2Fbalance"]) assert.equal((await req(`/public/i/${bad}`, { redirect: "manual" })).status, 404, bad);
+    await cancelInviteStep.run({ code: made.code }, ctx as never);
+    assert.equal((await req(`/public/i/${code}`, { redirect: "manual" })).status, 404, "cancelled: the short link stops with the invite");
+  });
+
   it("GET /public/join answers without the key: the static page, its script pinned by hash; the QR library beside it", async () => {
     const page = await req("/public/join");
     assert.equal(page.status, 200);

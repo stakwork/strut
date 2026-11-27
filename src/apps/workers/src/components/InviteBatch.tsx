@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import { Check, Copy, Download, Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { inviteCsv, inviteOpen, type BatchRow } from "../lib/view";
+import { inviteCsv, inviteLinkOf, inviteOpen, type BatchRow } from "../lib/view";
 import type { MadeInvite } from "../lib/types";
 import { InviteBadge, WhatsappButton } from "./Invite";
 import { Note } from "./bits";
@@ -52,7 +52,7 @@ export function InviteBatch(props: { invites: MadeInvite[]; label?: string | und
     document.head.appendChild(el);
     return () => el.remove();
   }, []);
-  const rows: BatchRow[] = props.invites.flatMap((i, k) => (i.link ? [{ n: k + 1, label: props.label, link: i.link }] : []));
+  const rows: BatchRow[] = props.invites.flatMap((i, k) => { const link = inviteLinkOf(i); return link ? [{ n: k + 1, label: props.label, link }] : []; });
   const copyAll = () =>
     void navigator.clipboard?.writeText(rows.map((r) => r.link).join("\n")).then(
       () => setSaid(`Copied ${rows.length} links, one a line.`),
@@ -96,10 +96,10 @@ export function InviteBatch(props: { invites: MadeInvite[]; label?: string | und
               ) : (
                 <Note>{open ? "The wallet gave no link for it." : "No longer open."}</Note>
               )}
-              {open && i.link && (
+              {open && inviteLinkOf(i) && (
                 <div className="flex flex-wrap items-center justify-center gap-2" data-print-hide>
-                  <CardCopy link={i.link} n={k + 1} />
-                  <WhatsappButton link={i.link} small />
+                  <CardCopy link={inviteLinkOf(i) as string} n={k + 1} />
+                  <WhatsappButton link={inviteLinkOf(i) as string} small />
                 </div>
               )}
             </li>
