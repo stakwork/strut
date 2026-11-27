@@ -358,6 +358,42 @@ describe("a repo", () => {
     }
   });
 
+  it("keeps the commit message an agent saved for the edits until a commit, or a pull's commit of them, takes it", async () => {
+    const remote = await moonRemote();
+    const view = (await (await req("/packages/repos", json({ url: remote.url }))).json()) as RepoView;
+    const step = async (config: Record<string, unknown>) => {
+      const body = (await (await req("/steps/package%2Fcommit-message/run", json({ config }))).json()) as { status: string; output?: unknown; error?: { message?: string } };
+      assert.equal(body.status, "success", JSON.stringify(body.error));
+      return body.output as { package: string; message: string | null; changed: string[] };
+    };
+    const saved = async () => ((await (await req("/packages/repos/acme/moon")).json()) as RepoView).message;
+
+    await editScore('"one"', '"two"');
+    assert.deepEqual(await step({ package: "acme/moon" }), { package: "acme/moon", message: null, changed: ["acme/moon/score"] }, "read: nothing saved yet, and what changed");
+    await step({ package: "acme/moon", message: "  Say two\n\nThe score says two now.\n" });
+    assert.equal(await saved(), "Say two\n\nThe score says two now.", "on the repo, for the Commit panel");
+    assert.equal((await step({ package: "acme/moon" })).message, "Say two\n\nThe score says two now.");
+    await step({ package: "acme/moon", message: " " });
+    assert.equal(await saved(), undefined, "blank clears it");
+    // A Commit takes the edits, and the message with them.
+    await step({ package: "acme/moon", message: "Say two" });
+    await req("/packages/repos/acme/moon/commit", json({ message: "Say two", branch: "main" }));
+    assert.equal(await saved(), undefined);
+
+    // A pull commits the edits first, under the saved message.
+    await editScore('"two"', '"three"');
+    await step({ package: "acme/moon", message: "Say three" });
+    await pushElsewhere(remote.url, { "workflows/more.yaml": SCORE("acme/moon/more", "m") }, "more");
+    const p = (await (await req("/packages/repos/acme/moon/pull", json({}))).json()) as PullResult;
+    assert.ok(p.local);
+    assert.equal(git(view.workdir, "log", "-1", "--format=%s", p.local), "Say three");
+    assert.equal(await saved(), undefined);
+
+    const refused = (await (await req("/steps/package%2Fcommit-message/run", json({ config: { package: "acme/sun", message: "x" } }))).json()) as { status: string; error?: { message?: string } };
+    assert.equal(refused.status, "error");
+    assert.match(refused.error?.message ?? "", /acme\/sun is not opened here as a repo/);
+  });
+
   it("refuses package/commit outside an accepted proposal", async () => {
     const remote = await moonRemote();
     await req("/packages/repos", json({ url: remote.url }));

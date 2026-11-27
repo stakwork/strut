@@ -113,7 +113,12 @@ function CommitRepo(props: { repo: api.RepoInfo; onDone: () => void }) {
   const r = props.repo;
   const [diff, setDiff] = useState<api.RepoDiff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
-  const [message, setMessage] = useState("");
+  // The message the agents who made the edits saved, until the person types.
+  const [message, setMessage] = useState(r.message ?? "");
+  const [typed, setTyped] = useState(false);
+  useEffect(() => {
+    if (!typed) setMessage(r.message ?? "");
+  }, [r.message]);
   const [straight, setStraight] = useState(false);
   const [branch, setBranch] = useState("");
   const [busy, setBusy] = useState(false);
@@ -158,7 +163,15 @@ function CommitRepo(props: { repo: api.RepoInfo; onDone: () => void }) {
       )}
       <div class="dialog-field">
         <label>Message</label>
-        <textarea rows={2} value={message} placeholder="What changed" onInput={(e) => setMessage((e.target as HTMLTextAreaElement).value)} />
+        <textarea
+          rows={Math.min(8, Math.max(2, message.split("\n").length))}
+          value={message}
+          placeholder="What changed"
+          onInput={(e) => {
+            setTyped(true);
+            setMessage((e.target as HTMLTextAreaElement).value);
+          }}
+        />
       </div>
       <div class="repo-push">
         <label class="listing-check">

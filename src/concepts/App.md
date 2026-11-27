@@ -106,8 +106,11 @@ package a bare name means the package's own item first, so a new bare
 name is outside the package, and no commit carries it. The package's
 items still call each other by their bare names.
 
-The edit ends on this server. Say that the change is here and not yet in
-the repository, and stop there. A commit is the person's to ask for:
+The edit ends on this server. Save what you changed as its commit
+message with `package/commit-message`, in the person's terms: their
+Commit starts from it, and it covers every edit not yet committed, so
+read the saved one first and keep what is still true. Say that the change
+is here and not yet in the repository, and stop there. A commit is the person's to ask for:
 `package/commit` when you hold it (they approve it on a card: a new
 branch with a pull request, or straight to the followed branch when they
 say so), else theirs from Packages → Repos. Never check the repository

@@ -22,6 +22,8 @@
  *           fork any more.
  *           A page goes back to the file it has, in that file's form; only
  *           a page renamed here moves, and only a new page takes its key.
+ *           Its message is the person's; the agents who made the edits
+ *           save one (`package/commit-message`) for it to start from.
  *   Diff    what a Commit would write, staged in a scratch worktree at HEAD:
  *           viewing it never writes to the working copy or its index.
  *   Pull    the edits committed locally first (nothing is lost, git has both
@@ -80,6 +82,11 @@ export interface RepoRecord {
    *  written from the workspace — the merge supersedes those edits, and a
    *  person may conclude it by hand — and Commit waits for a Pull. */
   merge?: string;
+  /** The commit message the agents who edited the package here saved
+   *  (`package/commit-message`): what the person's Commit starts from.
+   *  Gone once the edits it describes are committed: by a Commit, or by a
+   *  Pull's commit of them, which it is the message of. */
+  message?: string;
 }
 
 export interface RepoItem {
@@ -195,6 +202,8 @@ export interface Repos {
   create(input: CreateInput): Promise<RepoView & { install: InstallResult; originals: RepoItem[] }>;
   diff(pkg: string): Promise<RepoDiff>;
   commit(pkg: string, input: CommitInput): Promise<CommitResult>;
+  /** Save the commit message for the edits not yet committed; blank clears it. */
+  setMessage(pkg: string, message: string): Promise<void>;
   pull(pkg: string, opts?: { actor?: string }): Promise<PullResult>;
   retire(pkg: string, items: RepoItem[]): Promise<{ retired: RepoItem[]; failed: Array<RepoItem & { error: string }> }>;
   close(pkg: string): Promise<boolean>;
@@ -234,6 +243,8 @@ export function createRepos(deps: ReposDeps): Repos {
     return rec;
   };
   const save = async (rec: RepoRecord) => writeAll([...(await readAll()).filter((r) => r.package !== rec.package), rec]);
+  /** The record once the edits its message describes are committed. */
+  const said = ({ message: _m, ...rest }: RepoRecord): RepoRecord => rest;
 
   /** The token for a repository's host and the secret that serves it,
    *  read as the actor when the deployment keeps per-actor secrets (theirs
@@ -703,8 +714,9 @@ export function createRepos(deps: ReposDeps): Repos {
           else if (!auth) prSkipped = `no token in ${secret ?? "a secret that serves github.com"} to open a pull request with`;
           else pr = await (deps.pullRequest ?? githubPullRequest)({ owner: parsed.repo.owner, repo: parsed.repo.name, head: done.target!, base: rec.branch, title: message.split("\n")[0]!, body: message.split("\n").slice(1).join("\n").trim() || `From ${pkg}, committed in strut.` }, auth.token);
         }
-        // The commit applied through the repo door: every item stamped with it.
-        const { install } = await apply(rec, input.actor);
+        // The commit applied through the repo door: every item stamped with
+        // it. The saved message described these edits: it goes.
+        const { install } = await apply(said(rec), input.actor);
         return {
           package: pkg,
           committed: true,
@@ -717,6 +729,12 @@ export function createRepos(deps: ReposDeps): Repos {
           install,
         };
       });
+    },
+
+    async setMessage(pkg, message) {
+      const rec = said(await record(pkg));
+      const text = message.trim();
+      await save(text ? { ...rec, message: text } : rec);
     },
 
     async pull(pkg, opts = {}) {
@@ -743,7 +761,7 @@ export function createRepos(deps: ReposDeps): Repos {
             await writeEdits(rec);
             await ok(["add", "-A", "--", pathspec(rec)], work);
             if ((await run(["diff", "--cached", "--quiet"], work)).code === 1) {
-              await commitAs(work, identity, `Edits in strut before pulling ${rec.branch}`);
+              await commitAs(work, identity, rec.message || `Edits in strut before pulling ${rec.branch}`);
               local = (await ok(["rev-parse", "HEAD"], work)).trim();
             }
           }
@@ -760,12 +778,14 @@ export function createRepos(deps: ReposDeps): Repos {
           }
           return local ? { local } : {};
         });
+        // The edits committed here took the saved message: it goes.
+        const kept = step.local ? said(rec) : rec;
         if (step.conflict) {
           const head = (await ok(["rev-parse", "HEAD"], work)).trim();
-          if (!rec.merge) await save({ ...rec, merge: head });
+          if (!rec.merge) await save({ ...kept, merge: head });
           return { package: pkg, commit: head, conflict: step.conflict, ...(step.local ? { local: step.local } : {}) };
         }
-        const { rec: next, install } = await apply(rec, opts.actor);
+        const { rec: next, install } = await apply(kept, opts.actor);
         return { package: pkg, commit: next.commit, ...(step.local ? { local: step.local } : {}), install };
       });
     },
