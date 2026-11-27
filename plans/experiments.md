@@ -1,9 +1,10 @@
 # Experiments: a goal and a budget, and Jamie does the rest
 
-> **Status (2026-11-23): a plan.** Strut tests a change to one page
-> today, from an admin's Knowledge app. A budget on a job, a change that
-> spans pages, the form that starts one, and Jamie doing it all are not
-> built.
+> **Status (2026-11-27): a plan, one part built.** Strut tests a change
+> to one page today, from an admin's Knowledge app. A budget on a job is
+> built, and Jamie's reply carries one to the job it starts
+> (stakwork/strut#872). A change that spans pages, the form that starts
+> one, and Jamie doing it all are not built. "First" says what is next.
 >
 > **The goal (owner, 2026-11-23):** *"an Experiments tab in the Knowledge
 > app that generates a bunch of cases for you and runs them all the way
@@ -49,9 +50,14 @@
 > being done, and then a brand new prompt that should understand
 > immediately what the user is talking about"*.
 >
+> **Jamie offers one (owner, 2026-11-27, asked and not ruled):** *"Can
+> it be triggered from Jamie himself (as a job kind, so Jamie could
+> seamlessly say like 'do you want me to run an experiment on
+> this?')"*
+>
 > Only the quoted words are the owner's. The rest is proposed. Read
 > against strut `main` @07101d4b and stakwork/pods `main` @95d6c37, and
-> strut checked again @20fca3ee.
+> strut checked again @20fca3ee and, the whole plan, @9369a905.
 > Earlier drafts had kinds of case, rounds, a rule for keeping a change,
 > and the budget in the prompt. This file's history has them.
 
@@ -178,13 +184,25 @@ Experiments
   in a chat.
 - **Start** opens a Jamie chat with the experiment already running,
   through the seam Set up uses (`conversation/start`): no model turn
-  decides it, and there is no second click.
+  decides it, and there is no second click. The seam takes no budget
+  yet ("What strut needs").
 - **It starts a job of kind `Experiment`.** Jamie opens the page under
   it that fits, as any job does with its kind.
 - **From a page,** the same form starts one about that page. From a
   page under `Experiment`, it starts one of that kind.
 - **In a Jamie chat,** a person just asks, and Jamie asks for the
-  budget, as in the owner's example.
+  budget, as in the owner's example. His reply carries the kind and the
+  budget to the job it starts (`start.kind`, `start.budgetUsd`; built).
+  What tells him to ask is the `Experiment` page, with no code: its one
+  line is what he sees of a kind in his list, and he opens a kind's page
+  for what a person decides before the work starts.
+- **Jamie can offer one** (owner, asked): "do you want me to run an
+  experiment on this?" The same page says when (open question 9).
+- **A plain change is still a card.** Asked to change what a page says,
+  Jamie proposes the edit and the person accepts it
+  (`knowledge/edit-page`, built). Nothing is tried and nothing is spent.
+  An experiment is the other way to the same change: it is tried on
+  cases first.
 - **Nothing is spent before the budget is set.** The steps that run a
   test answer only a job that has one.
 - **Jamie says nothing extra** before he goes (owner).
@@ -222,11 +240,11 @@ stay after it ends.
 
 | What | Today |
 | --- | --- |
-| **A budget on a job:** a cap on the model calls of the job and every run it starts, kept at the gateway ("The budget" below) | A run carries a cap the gateway keeps, and a person's delegation a ceiling over all their work. Nothing caps a job and what it starts |
 | **A test of a change that spans pages,** either side able to start from an earlier test's change ("A test of several pages") | `test` takes one page's new wording against the page as it is |
 | **A case with a history:** launches that run first, in order, before the one that is judged, and a judge that reads all of it ("A case with a history") | A case is one launch: a workflow and its input. "A case of more than one message" is not built (docs/knowledge.md) |
 | **The test steps as Jamie's tools:** `knowledge/checks`, `add-check`, `cases`, `trial`, `test` and `sample`, for a job with a budget, which is told when a test's last sample is judged | They answer only strut's own page shown to an admin: "a trial spends, and a page's words are an agent's rules" (open question 1). A trial's end wakes nothing |
 | **The form and the list** in the Knowledge app, and a page's experiments on its card | A page's card has its checks and tests |
+| **The form's budget reaches the job:** `conversation/start`'s `job` takes `budgetUsd`, from a page's call only, where the viewer typed it | Its `job` is a title, a brief, a kind and repositories (`PreparedJob` in `src/core.ts`). Only Jamie's own reply starts a job with a budget |
 | **A sample's files kept with its verdict:** what its run left, for whoever opens the dot | A sample that ran as a job loses them. Strut closes the job once it is judged, and that deletes its directory |
 | **As many cases as a benchmark has,** and samples of each: for a job with a budget, the budget is the limit | At most 20 cases on a claim, and 20 samples of each (`CASES_MAX`, `TRIAL_N_MAX` in `src/trials.ts`) |
 | **The `Experiment` page,** under `Job`, and the list reading the kinds under it | Not there. A kind under a kind works already |
@@ -235,9 +253,8 @@ stay after it ends.
 | **A real run as a case:** a run a person's app already made, kept as a case with its input | A case is typed in. `knowledge/sample` opens a trial's run and no other |
 | **A judge that hears and watches,** for an app that makes sound or video | The standard judge reads text and is shown images (`context/work-file`) |
 
-That is all. The budget is any job's to have, not only an experiment's.
-No new kind of node, no workflow of its own, and nothing in stadeum: the
-Knowledge app is strut's, framed as any app is (rule 1).
+That is all. No new kind of node, no workflow of its own, and nothing in
+stadeum: the Knowledge app is strut's, framed as any app is (rule 1).
 
 Already built, and used as it is:
 
@@ -248,29 +265,54 @@ Already built, and used as it is:
 - Concept branches, which a test's changed side runs on;
 - a package's pages carrying their claims and checks;
 - a cap on one run, kept at the gateway;
+- a budget on a job and everything it starts, and Jamie's reply
+  carrying one to the job ("The budget");
 - `conversation/start`, and the chat about a node.
+
+### First
+
+Three rows give a person an experiment in a Jamie chat, on one page's
+wording:
+
+1. the `Experiment` page;
+2. the test steps as the tools of a job with a budget;
+3. that job told when a test's last sample is judged.
+
+The budget is built, and so is the reply that carries it. The form is
+then one call to `conversation/start`, once that takes a budget. A test
+of several pages is next: the owner's first use changes `Pod` and
+`Pod Setup` together. Each other row waits for the use that needs it.
 
 ### The budget
 
-The gateway applies the cap of every block on a call, not only the last
-(docs/models.md), and a person's delegation is the first block. So a job
-with a budget holds a link of its own: the delegation, extended with the
-job as its `run_id` and the budget as its `max_cost_usd`. Every run
-under the job links from it instead of from the delegation: the job's
-turns, the jobs its trials start, and their judges. Today each run's
-link comes off the delegation itself (`runLink` in `src/mothership.ts`),
-and a sample's job knows nothing of the job that asked for it, so the
-trial hands the budget's job to each sample it starts.
+Built (stakwork/strut#872; docs/jobs.md, "A budget on a job"). It is any
+job's to have, not only an experiment's.
 
-Strut also adds up what the job's runs cost, from the cost each run's
-summary already has (`totals.cost`). That sum is the "$64 of $100" in
-the list, and it is what makes strut start nothing more. The gateway is
-the hard stop on what is in flight.
+- **A person sets it.** `job/start { budgetUsd }`, which Jamie's reply
+  carries with only the amount the person gave, or
+  `PUT /jobs/:id/budget`. Nothing a job's own agent holds can raise it.
+- **What spends it:** the job's runs, their children, their checks, and
+  the samples of a trial one of its runs asked for (`ctx.budgetJob`).
+- **Strut adds up** what those runs cost, from the cost each run's
+  summary has (`totals.cost`), and starts nothing more once the budget
+  is spent. The sum is the "$64 of $100" in the list.
+- **The gateway is the hard stop** on what is in flight. The job holds a
+  link of its own between the person's delegation and each run's link,
+  capped at the budget (`src/mothership.ts`).
+- **A turn that ended for want of budget** wakes no model turn. The chat
+  is told in a fixed line.
 
-A box with no gateway (no Mothership: a model key of its own, local
-development) has only strut's sum. It starts nothing past the budget,
-and a run in flight finishes, so a climb there can go over by what was
-in flight.
+Not yet:
+
+- **A job that a budgeted job starts** with `job/start` is not held to
+  the budget. No job's agent holds `job/start` today, and a trial's
+  samples are held already.
+- **A pod's own model calls,** through a key strut granted it, are
+  capped by the gateway and are not in strut's sum.
+- **A box with no gateway** (no Mothership: a model key of its own,
+  local development) has only strut's sum. It starts nothing past the
+  budget, and a run in flight finishes, so a climb there can go over by
+  what was in flight.
 
 ### A test of several pages
 
@@ -280,6 +322,10 @@ under `parent`. `from`, a test's id, starts both sides from that test's
 changed side, so a climb builds on its best so far. A Concept branch is
 a copy of the whole tree, a package's pages included (`src/branches.ts`),
 so the changed side runs as it does today.
+
+Use it puts one page's wording on today (`knowledge/use`). With
+`changes` it lands every page of the test or none: where one of them
+cannot be written, it is refused, saying which (open question 4).
 
 ### A case with a history
 
@@ -420,10 +466,15 @@ Each is the same steps, used by something else:
 1. **Jamie holding the test steps.** Strut keeps them to an admin's own
    page because a trial spends and a page's words are an agent's rules.
    Proposed: a budget is the person's yes to the spending, so a job with
-   one holds them. All but `knowledge/use`: the page's words stay a
-   person's (question 2).
-2. **Who uses the result.** A person, with Use it (proposed). Or Jamie,
-   when it stops *"in a good spot"*?
+   one holds them. All but `knowledge/use`, which stays a person's: a
+   button, or a card the person accepts (question 2).
+2. **Who uses the result, and where.** A person, with Use it (proposed).
+   Or Jamie, when it stops *"in a good spot"*? And the `[Use it]` the
+   chat shows in "The box is the lab" is not there today: Use it is a
+   button in the Knowledge app. Proposed: a card in the chat, as a page
+   edit is. The job calls `knowledge/use` and the person accepts it
+   (`approve:` in `job.yaml`), so the page's words stay a person's. Or
+   Jamie's reply links the test in the Knowledge app.
 3. **"Mock data prs."** Pull requests that add seed data or stubs to a
    repository, as read above? Or made-up pull requests as data, for an
    app that shows them?
@@ -431,7 +482,9 @@ Each is the same steps, used by something else:
    graph. Use it writes into a checkout of the package where the box has
    one, and is refused where it doesn't. The pods package's source is
    `package/` in stakwork/pods, and boxes follow a published copy. So
-   where does a climb on `Pod Setup` land?
+   where does a climb on `Pod Setup` land? The owner's first use waits
+   on this: on a box, a climb on `Pod` and `Pod Setup` finds a better
+   wording and has nowhere to put it.
 5. **What a question runs on.** A case that only asks something needs a
    workflow that answers in one run. The orchestrator sends what it must
    find out to a job, and a trial holds jobs.
@@ -449,3 +502,11 @@ Each is the same steps, used by something else:
    sample's own jobs and conversations hidden from everything else. A
    person of the sample's own, and a history by two people, need a run
    seen as one person that spends as another.
+9. **When Jamie offers one.** The owner asked that he can. Nothing says
+   when, and the chat in "The box is the lab" answers a plain request to
+   change a wording with "what's your budget?". Read as a rule, that
+   makes every change an experiment. Proposed, as a line on the
+   `Experiment` page: he offers when the page has cases to judge a
+   change by, or when the person says a change did not work. Otherwise
+   the change is a card ("Starting one"). He never starts one unasked:
+   the budget is the person's yes.
