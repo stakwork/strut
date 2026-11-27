@@ -4949,11 +4949,13 @@ export async function createStrut<TServices = unknown>(
   // peer. Read by its file token, the document still opens: only a listing
   // a full-scope caller made mints one.
   app.get("/apps", async (c) => {
-    const listed = await apps.list();
+    const pinned = c.req.query("pinned");
+    const listed = await apps.list(pinned === "1" || pinned === "true" ? { pinned: true } : undefined);
     const full = (await scopeOf(c)) === "full";
     // No Cache-Control: the UI reads the list again right after a publish,
     // set-live or pin, and a cached copy would hide the change.
-    return c.json({ apps: full ? listed : listed.filter((a) => !a.admin) });
+    const visible = full ? listed : listed.filter((a) => !a.admin);
+    return c.json({ apps: visible });
   });
   const adminAppRefusal = async (c: Context, name: string, version?: string): Promise<Response | null> => {
     if (version && isPreviewLabel(version)) return null;
