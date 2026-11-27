@@ -102,7 +102,7 @@
  * through the payer (the daemon pays the mixer for an invite), opening
  * TASKS (`strut/tasks`), the server's one work page.
  *
- * - `POST /tasks/invites { sats?, type? }` → `{ code, link, sats, status,
+ * - `POST /tasks/invites { sats?, type?, label? }` → `{ code, link, sats, status,
  *   type? }`: `link` is `https://<public view>/public/join#<the invite>&a=<
  *   Tasks' URL>`, which opens `type` when given (and gives it, when it is
  *   invite-only); `sats` the worker's starting balance (the payout
@@ -322,12 +322,14 @@ export function taskRoutes(app: Hono<any>, deps: TaskRoutesDeps): void {
   app.post("/tasks/invites", (c) =>
     inviteAnswer(c, async (i, base) => {
       const b = await body(c);
-      const extra = Object.keys(b).filter((k) => k !== "sats" && k !== "type");
-      if (extra.length) throw new TaskError("bad_request", `an invite takes sats and type; not ${extra.join(", ")}`);
+      const extra = Object.keys(b).filter((k) => k !== "sats" && k !== "type" && k !== "label");
+      if (extra.length) throw new TaskError("bad_request", `an invite takes sats, type and label; not ${extra.join(", ")}`);
       if (b["sats"] !== undefined && typeof b["sats"] !== "number") throw new TaskError("bad_request", "sats is a whole number of sats");
       if (b["type"] !== undefined && (typeof b["type"] !== "string" || !b["type"])) throw new TaskError("bad_request", "type is a task type's name");
+      if (b["label"] !== undefined && (typeof b["label"] !== "string" || b["label"].length > 80)) throw new TaskError("bad_request", "label is a text of at most 80 characters");
+      const label = typeof b["label"] === "string" ? b["label"].trim() : "";
       const maker = (await by(c)).by;
-      return { ...(await i.create({ base, ...(maker ? { by: maker } : {}), ...(b["sats"] !== undefined ? { sats: b["sats"] as number } : {}), ...(b["type"] ? { type: b["type"] as string } : {}) })) };
+      return { ...(await i.create({ base, ...(label ? { label } : {}), ...(maker ? { by: maker } : {}), ...(b["sats"] !== undefined ? { sats: b["sats"] as number } : {}), ...(b["type"] ? { type: b["type"] as string } : {}) })) };
     }),
   );
 

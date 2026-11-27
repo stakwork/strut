@@ -22,7 +22,7 @@ import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./workers/src/lib/schema.js";
 import {
   anyOpenWork, answerFiles, fmtWhen, grantedBy, inviteChoices, inviteWorkText, isPicture, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, needsYou, navOf, toReviewOf, moneyOf, captionOf, answerLine, answerFields, emptyFields, pictureOf, tookText, happenings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
-  INVITE_WORDS, acceptedBy, inviteBadge, inviteExpiry, sortInvites, inviteOpen, invitesReadMs, inviteSatsOf, inviteWhyText, whatsappUrl,
+  INVITE_WORDS, acceptedBy, inviteBadge, inviteExpiry, sortInvites, inviteOpen, invitesReadMs, inviteSatsOf, inviteWhyText, whatsappUrl, inviteBatchCost, inviteBatchResult, inviteCsv, inviteLabelOf, groupInvites,
   fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
   fitWithin,
   shrinkable,
@@ -412,6 +412,23 @@ describe("strut/workers: the Queue, deep links, and what shows", () => {
       "a failed payout and another day count for nothing",
     );
     assert.equal(mostByOneWorkerToday([], day), 0);
+  });
+
+  it("Invite batches: the cost said first, the outcome, the CSV, the list's sections by label", () => {
+    assert.equal(inviteBatchCost(1, 500), "500 sats, plus the mixer's fee");
+    assert.equal(inviteBatchCost(10, 1500), "10 × 1,500 = 15,000 sats, plus the mixer's fee for each");
+    assert.equal(inviteBatchResult(1, 1), "Invite made.");
+    assert.equal(inviteBatchResult(10, 10), "All 10 invites made.");
+    assert.match(inviteBatchResult(3, 10), /^3 of 10 invites made/);
+    assert.equal(inviteBatchResult(0, 5), "No invite was made.");
+    assert.equal(inviteLabelOf("  Class A "), "Class A");
+    assert.equal(inviteLabelOf("x".repeat(100)).length, 80);
+    assert.equal(
+      inviteCsv([{ n: 1, label: "Class, A", link: "https://x/a" }, { n: 2, link: "https://x/b" }]),
+      'number,label,link\r\n1,"Class, A",https://x/a\r\n2,,https://x/b\r\n',
+    );
+    const groups = groupInvites([{ code: "a", label: "B" }, { code: "b" }, { code: "c", label: "B" }, { code: "d", label: "A" }]);
+    assert.deepEqual(groups.map((g) => [g.label, g.invites.map((i) => i.code)]), [["B", ["a", "c"]], [undefined, ["b"]], ["A", ["d"]]]);
   });
 
   it("Invite (§5.8): the sats as typed, what may still be shared or cancelled, why a server cannot invite, the WhatsApp link", () => {

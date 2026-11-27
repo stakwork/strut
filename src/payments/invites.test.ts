@@ -212,6 +212,18 @@ describe("createInvites (§5.8)", () => {
     assert.equal((await invites.create({ base: BASE })).by, undefined);
   });
 
+  it("a batch label: noted at create and listed with the invite; none when not given", async () => {
+    const { payer } = invitePayer();
+    const invites = createInvites({ ...deps(), publicApps: async () => [TASKS_APP], payer: async () => payer, notes: memoryInviteNotes() });
+    const made = await invites.create({ base: BASE, label: "Class A" });
+    assert.equal(made.label, "Class A");
+    const plain = await invites.create({ base: BASE });
+    assert.equal(plain.label, undefined);
+    const listed = (await invites.list({ base: BASE })).invites;
+    assert.equal(listed.filter((i) => i.label === "Class A").length, 1);
+    assert.equal(listed.filter((i) => i.label === undefined).length, 1);
+  });
+
   it("the notes on disk: written one after another, read back by the next process", async () => {
     const dir = await mkdtemp(join(tmpdir(), "strut-invite-notes-"));
     try {

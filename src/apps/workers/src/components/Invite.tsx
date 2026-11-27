@@ -13,7 +13,7 @@ import { useHost, useStrutClient } from "@strut/kit";
 import { localText } from "@strut/kit/folds";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { INVITE_WORDS, acceptedBy, fmtWhen, inviteBadge, inviteExpiry, inviteOpen, invitesReadMs, shortActor, sortInvites, whatsappUrl } from "../lib/view";
+import { INVITE_WORDS, acceptedBy, fmtWhen, groupInvites, inviteBadge, inviteExpiry, inviteOpen, invitesReadMs, shortActor, sortInvites, whatsappUrl } from "../lib/view";
 import type { Invite as InviteRow, InvitesAnswer, InviteStatus, TaskType, Worker } from "../lib/types";
 import { ErrorLine, Loading, Note, useAct } from "./bits";
 
@@ -99,7 +99,18 @@ export function InviteList(props: { types?: TaskType[] | undefined; workers?: Wo
     <div className="flex flex-col gap-2">
       <ErrorLine error={error} />
       <ul className="flex max-h-[28rem] flex-col divide-y overflow-y-auto rounded-md border" data-testid="invite-list">
-        {invites.map((i) => {
+        {groupInvites(invites).flatMap((g) => [
+          ...(g.label
+            ? [
+                <li key={`batch:${g.label}`} className="flex flex-wrap items-center gap-x-3 bg-muted/50 px-3 py-1.5 text-sm" data-testid="invite-group">
+                  <span className="font-medium">{g.label}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {g.invites.length} invites · {g.invites.filter((i) => i.status === "used").length} taken · {g.invites.filter(inviteOpen).length} open
+                  </span>
+                </li>,
+              ]
+            : []),
+          ...g.invites.map((i) => {
           const took = i.status === "used" ? acceptedBy(i, props.workers) : null;
           const until = inviteOpen(i) ? inviteExpiry(i) : null;
           const maker = i.by ? shortActor(i.by) : "";
@@ -126,7 +137,8 @@ export function InviteList(props: { types?: TaskType[] | undefined; workers?: Wo
               )}
             </li>
           );
-        })}
+          }),
+        ])}
       </ul>
     </div>
   );

@@ -65,6 +65,8 @@ export interface InviteNote {
   type?: string;
   /** The admin who made it (an actor); invites made before this have none. */
   by?: string;
+  /** A free label staff gave it (a batch name, "Class A"): invites sharing one are listed together. */
+  label?: string;
 }
 
 /** The invites' notes, by code. */
@@ -162,6 +164,8 @@ export interface InviteView {
   expiresAt?: string;
   /** Who made it (an actor), when known. */
   by?: string;
+  /** The label staff gave it (a batch name), when it has one. */
+  label?: string;
   /** The worker who redeemed it, when `status` is `used` because Tasks
    *  granted work by it (an existing Peel account never makes the daemon
    *  say `used`). */
@@ -195,7 +199,7 @@ export interface InvitesDeps {
 
 export interface Invites {
   /** A new invite, its link opening Tasks on `type` when given. */
-  create(o: { sats?: number; type?: string; base: string; by?: string }): Promise<InviteView>;
+  create(o: { sats?: number; type?: string; label?: string; base: string; by?: string }): Promise<InviteView>;
   /** Every invite the daemon keeps, newest first. */
   list(o: { base: string }): Promise<InvitesList>;
   cancel(code: string): Promise<{ code: string; status: InviteStatus }>;
@@ -245,6 +249,7 @@ export function createInvites(deps: InvitesDeps): Invites {
       ...(note?.type ? { type: note.type } : {}),
       ...(Number.isFinite(Date.parse(inv.createdAt ?? "")) ? { expiresAt: new Date(Date.parse(inv.createdAt as string) + INVITE_TOKEN_DAYS * 86_400_000).toISOString() } : {}),
       ...(note?.by ? { by: note.by } : {}),
+      ...(note?.label ? { label: note.label } : {}),
     };
   };
   const tasksOnline = async () => (await deps.publicApps()).includes(TASKS_APP);
@@ -271,7 +276,7 @@ export function createInvites(deps: InvitesDeps): Invites {
       // Before anything is paid: the wallet that can.
       const payer = await payerOf();
       const inv = await payer.invite({ sats }).catch(fromWallet);
-      const note: InviteNote = { ...(o.type ? { type: o.type } : {}), ...(o.by ? { by: o.by } : {}) };
+      const note: InviteNote = { ...(o.type ? { type: o.type } : {}), ...(o.by ? { by: o.by } : {}), ...(o.label ? { label: o.label } : {}) };
       await notes.set(inv.code, note);
       return view(inv, o.base, true, note);
     },

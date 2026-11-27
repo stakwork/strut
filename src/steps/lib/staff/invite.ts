@@ -13,6 +13,7 @@ export default defineStep({
   input: z.object({
     sats: z.number().int().positive().optional().describe("The worker's starting sats; the payout settings' inviteSats when left out."),
     type: z.string().min(1).optional().describe("The kind of work the invite is for: Tasks opens it, and gives it when it is invite-only. Left out: open work alone."),
+    label: z.string().max(80).optional().describe("A free label (a batch name such as \"Class A\"); the Workers app lists invites sharing one together."),
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext) {

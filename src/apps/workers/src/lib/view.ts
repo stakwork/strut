@@ -724,6 +724,61 @@ export function inviteSatsOf(text: string): { sats: number } | { problem: string
   return Number.isInteger(n) && n >= 1 && n <= 100_000 ? { sats: n } : { problem: "A whole number of sats, 1 to 100,000." };
 }
 
+/** How many invites one New invite may make: the dropdown's choices. Each costs the wallet its sats and a mixer fee, so the cap is small. */
+export const INVITE_BATCH_SIZES = [1, 5, 10, 25] as const;
+
+/** A batch label as typed: trimmed, at most the route's 80 characters. */
+export function inviteLabelOf(text: string): string {
+  return text.trim().slice(0, 80);
+}
+
+/** Said before a batch is made: what it costs the wallet in starting sats (the mixer's fee comes on top, per invite). */
+export function inviteBatchCost(count: number, sats: number): string {
+  return count > 1 ? `${count} × ${sats.toLocaleString("en-US")} = ${(count * sats).toLocaleString("en-US")} sats, plus the mixer's fee for each` : `${sats.toLocaleString("en-US")} sats, plus the mixer's fee`;
+}
+
+/** What a batch run answers: how many were made, and what stopped it. */
+export function inviteBatchResult(made: number, wanted: number): string {
+  if (made >= wanted) return wanted === 1 ? "Invite made." : `All ${wanted} invites made.`;
+  return made ? `${made} of ${wanted} invites made. The rest were not (see the error); the ${made} made are below and in the list.` : `No invite was made.`;
+}
+
+/** One invite of a batch, as the sheet, the CSV and the print show it: #n, its label and link. */
+export interface BatchRow {
+  n: number;
+  label?: string | undefined;
+  link: string;
+}
+
+function csvCell(v: string): string {
+  return /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+
+/** The batch as CSV: number, label, link. */
+export function inviteCsv(rows: BatchRow[]): string {
+  return ["number,label,link", ...rows.map((r) => [String(r.n), r.label ?? "", r.link].map(csvCell).join(","))].join("\r\n") + "\r\n";
+}
+
+/** The invites in sections, newest first: those sharing a label are one section (placed where the newest of them is); each unlabelled one stands alone. */
+export function groupInvites<T extends { code: string; label?: string | undefined }>(invites: T[]): { label?: string; invites: T[] }[] {
+  const out: { label?: string; invites: T[] }[] = [];
+  const byLabel = new Map<string, { label: string; invites: T[] }>();
+  for (const i of invites) {
+    if (!i.label) {
+      out.push({ invites: [i] });
+      continue;
+    }
+    let g = byLabel.get(i.label);
+    if (!g) {
+      g = { label: i.label, invites: [] };
+      byLabel.set(i.label, g);
+      out.push(g);
+    }
+    g.invites.push(i);
+  }
+  return out;
+}
+
 // ── Support (plans/support-chat.md) ─────────────────────────────────────────
 
 /** Who a conversation is with, to staff: the worker's name as staff wrote it
