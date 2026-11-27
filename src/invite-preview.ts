@@ -10,8 +10,8 @@
 
 /** What the preview says: the one place to edit it. */
 export const INVITE_PREVIEW = {
-  title: "You're invited to Peel",
-  description: "Do simple tasks and earn bitcoin. Open this link on your phone to get started.",
+  title: "Complete Tasks, Earn Bitcoin",
+  description: "You're invited to Peel. Do simple tasks on your phone and get paid in bitcoin.",
   /** The continue link's words. */
   continue: "Continue",
 };
