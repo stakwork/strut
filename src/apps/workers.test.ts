@@ -21,7 +21,7 @@ import { answerSchemaProblem } from "../tasks/answer-schema.js";
 import { inProcessDoor, STAFF_ROUTES } from "../steps/lib/_admin-door.js";
 import { KINDS, modelOf, modelProblem, newField, parseOptions, schemaOf, withKind, type AnswerModel, type FieldModel } from "./workers/src/lib/schema.js";
 import {
-  anyOpenWork, answerFiles, fmtWhen, grantedBy, inviteChoices, inviteWorkText, isPicture, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, needsYou, navOf, toReviewOf, moneyOf, captionOf, answerLine, answerFields, emptyFields, pictureOf, tookText, happenings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
+  anyOpenWork, inviteWorkOf, answerFiles, fmtWhen, grantedBy, inviteChoices, inviteWorkText, isPicture, inputOf, leaseOutcome, liveTypesText, mostByOneWorkerToday, openPayHint, owedLine, payoutCover, payoutState, placeOf, shortAddress, needsYou, navOf, toReviewOf, moneyOf, captionOf, answerLine, answerFields, emptyFields, pictureOf, tookText, happenings, reviewSummary, reviewText, shortActor, shownOf, standingLow, standingText, testsAnswerOf, typeNameProblem, whoElse, whoOf, workersInOrder,
   INVITE_WORDS, acceptedBy, inviteBadge, inviteExpiry, sortInvites, inviteOpen, invitesReadMs, inviteSatsOf, inviteWhyText, whatsappUrl, inviteBatchCost, inviteBatchResult, inviteCountOf, inviteCsv, inviteLabelOf, groupInvites,
   fmtBytes, initialsOf, messageLine, paymentLine, supportName, textPieces,
   fitWithin,
@@ -839,6 +839,16 @@ describe("strut/workers — seeded, an admin's, and its page's calls", () => {
     assert.equal(inviteWorkText(inviteChoices([pets])[0]), "Invite-only: this link makes it theirs.");
     assert.equal(anyOpenWork([pets]), false, "pets is invite-only here: no link for a group");
     assert.equal(anyOpenWork([{ ...pets, open: true }]), true);
+    assert.equal(anyOpenWork([{ ...pets, open: true, enabled: false }]), false, "open but turned off is no open work");
+    // The picker: "Anything open" ("") only while some work that is on is open; a pick stays only while offered.
+    const openPets = { ...pets, name: "open-pets", open: true };
+    assert.equal(inviteWorkOf([pets, openPets], ""), "", "open work: it starts on Anything open");
+    assert.equal(inviteWorkOf([pets], ""), "pets", "all invite-only: it starts on the first kind of work");
+    assert.equal(inviteWorkOf([pets, { ...openPets, enabled: false }], ""), "pets", "the open type is off: Anything open is gone");
+    assert.equal(inviteWorkOf([pets, openPets], "pets"), "pets", "a pick still offered stays");
+    assert.equal(inviteWorkOf([{ ...pets, enabled: false }, openPets], "pets"), "", "a pick turned off falls back to Anything open");
+    assert.equal(inviteWorkOf([pets, { ...pets, name: "zoo" }], "gone"), "pets", "a pick gone, nothing open: the first kind of work");
+    assert.equal(inviteWorkOf(undefined, ""), "", "nothing on: nothing to pick");
     await strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ apps: [] }) });
   });
 

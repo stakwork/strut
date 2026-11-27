@@ -21,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { cn } from "@/lib/utils";
-import { INVITE_BATCH_MAX, INVITE_BATCH_PICKS, INVITE_WORDS, anyOpenWork, inviteBatchCost, inviteBatchResult, inviteChoices, inviteCountOf, inviteLabelOf, inviteLinkOf, inviteOpen, inviteSatsOf, inviteWhyText, inviteWorkText } from "../lib/view";
+import { INVITE_BATCH_MAX, INVITE_BATCH_PICKS, INVITE_WORDS, anyOpenWork, inviteBatchCost, inviteBatchResult, inviteChoices, inviteCountOf, inviteLabelOf, inviteLinkOf, inviteOpen, inviteSatsOf, inviteWhyText, inviteWorkOf, inviteWorkText } from "../lib/view";
 import type { MadeInvite, TaskType, TypeShare, Worker } from "../lib/types";
 import { ErrorLine, Field, Note, useAct } from "./bits";
 import { InviteBadge, InviteList, useInvites, WhatsappButton } from "./Invite";
@@ -196,7 +196,10 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
   const q = useInvites();
   const { act, busy, error } = useAct();
   const choices = inviteChoices(props.types);
-  const [work, setWork] = useState(props.type ?? props.pick ?? "");
+  // "Anything open" only while some work that is on is open; what was picked stays only while it is offered.
+  const anything = anyOpenWork(props.types);
+  const [picked, setPicked] = useState(props.pick ?? "");
+  const work = props.type ?? inviteWorkOf(props.types, picked);
   const [satsText, setSatsText] = useState("");
   const [touched, setTouched] = useState(false);
   // Start the box at the server's default, unless they have typed.
@@ -264,8 +267,8 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
         <>
           {!props.type && (
             <Field label="Work they'll do" htmlFor={`${id}-work`} hint={inviteWorkText(choice)}>
-              <NativeSelect id={`${id}-work`} value={work} onChange={(e) => setWork(e.target.value)}>
-                <NativeSelectOption value="">Anything open</NativeSelectOption>
+              <NativeSelect id={`${id}-work`} value={work} onChange={(e) => setPicked(e.target.value)}>
+                {anything && <NativeSelectOption value="">Anything open</NativeSelectOption>}
                 {choices.map((c) => (
                   <NativeSelectOption key={c.name} value={c.name}>
                     {c.open ? c.label : `${c.label} · invite-only`}
@@ -319,7 +322,7 @@ function InviteMaker(props: { types?: TaskType[] | undefined; type?: string; pic
             </div>
           )}
           <div>
-            <Button size="sm" disabled={busy !== null || "problem" in sats || "problem" in counted || !q.data || !!offline} onClick={() => void make()}>
+            <Button size="sm" disabled={busy !== null || "problem" in sats || "problem" in counted || !q.data || !!offline || (!work && !anything)} onClick={() => void make()}>
               {busy === "invite" ? (count > 1 ? `Making ${progress} of ${count}…` : "Making it…") : count > 1 ? `Make ${count} invite links` : "Make an invite link"}
             </Button>
           </div>
