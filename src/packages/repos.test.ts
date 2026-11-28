@@ -459,6 +459,54 @@ describe("adding to a repo", () => {
     assert.deepEqual([after.added, after.forked], [[], []]);
   });
 
+  it("pulls a change to an app that has the name of one of the package's workflows, each as its own item", async () => {
+    // One name, two kinds, as stadeum/canvas ships `canvas` the workflow and `canvas` the app. What the install does
+    // with each is its own: an app that changed is published though the workflow of its name did not, and the
+    // other way round.
+    const APP = (text: string) => ({
+      "apps/score/app.yaml": "title: Score\ndescription: The score, shown.\nicon: hand\ngrants:\n  workflows: []\n  steps: []\n",
+      "apps/score/src/App.tsx": `export default function App() {\n  return <main>${text}</main>;\n}\n`,
+    });
+    const remote = await moonRemote();
+    await pushElsewhere(remote.url, APP("one"), "an app named as the workflow");
+    const opened = await req("/packages/repos", json({ url: remote.url }));
+    assert.equal(opened.status, 201, await opened.clone().text());
+    const appAt = async () => {
+      const a = (await strut.workspace.getApp("acme/moon/score"))!;
+      return { label: a.active, count: Object.keys(a.versions).length, ...a.versions[a.active]! };
+    };
+    const flowAt = async () => {
+      const m = (await strut.workspace.getWorkflowMetadata("acme/moon/score"))!;
+      return { label: m.active, count: Object.keys(m.versions).length, ...m.versions[m.active]! };
+    };
+    const app1 = await appAt();
+    const flow1 = await flowAt();
+
+    // The remote changes the app alone.
+    await pushElsewhere(remote.url, APP("two"), "the app alone");
+    let p = (await (await req("/packages/repos/acme/moon/pull", json({}))).json()) as PullResult;
+    const app2 = await appAt();
+    assert.notEqual(app2.hash, app1.hash, "the app is the new commit's, not the old version stamped with it");
+    assert.equal(app2.count, 2);
+    assert.equal(app2.upstream?.commit, p.commit);
+    const flow2 = await flowAt();
+    assert.deepEqual([flow2.label, flow2.count, flow2.hash], [flow1.label, 1, flow1.hash], "the workflow is not published again");
+    assert.equal(flow2.upstream?.commit, p.commit, "stamped with the commit in place");
+
+    // The remote changes the workflow alone.
+    await pushElsewhere(remote.url, { "workflows/score.yaml": SCORE("acme/moon/score", "two") }, "the workflow alone");
+    p = (await (await req("/packages/repos/acme/moon/pull", json({}))).json()) as PullResult;
+    const flow3 = await flowAt();
+    assert.notEqual(flow3.hash, flow1.hash);
+    assert.equal(flow3.count, 2);
+    const app3 = await appAt();
+    assert.deepEqual([app3.label, app3.count, app3.hash], [app2.label, 2, app2.hash], "the app is not published again");
+    assert.equal(app3.upstream?.commit, p.commit);
+    // Nothing here reads as edited.
+    const view = (await (await req("/packages/repos/acme/moon")).json()) as RepoView;
+    assert.deepEqual([view.added, view.forked], [[], []]);
+  });
+
   it("keeps the rule for a package installed the ordinary way, and puts it back when the repo is closed", async () => {
     // Installed from a file: a new name under it is refused, with the way to add one.
     const dir = join(root, "plain");
