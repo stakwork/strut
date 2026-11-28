@@ -35,7 +35,7 @@ import { remoteAppLink, remoteHere } from "./remote-app";
 import { storePurse } from "./store-purse";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
 import { PAGE_CONTEXT } from "../../kit/src/links";
-import { CAMERA_CAPABILITY, CAMERA_CAPTURE_METHOD, CAMERA_PASS_THROUGH, parseCaptureParams, type CameraActionResult, type CameraCapture, type CameraPhoto } from "@strut/kit/camera";
+import { CAMERA_CAPABILITY, CAMERA_CHECK_NAMES, CAMERA_CAPTURE_METHOD, CAMERA_PASS_THROUGH, parseCaptureParams, type CameraActionResult, type CameraCapture, type CameraPhoto } from "@strut/kit/camera";
 import { ACCOUNT_CAPABILITY, ACCOUNT_PLACEMENT_METHOD, VISITOR_CAPABILITY, VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD } from "@strut/kit/visitor";
 import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, liveCredit, type BrandStyles } from "./api";
 import { signOutVisitor, visitorAuth, visitorChannelTicket, visitorInfo, type SignInMethod, type VisitorSession } from "./visitor-signin";
@@ -330,7 +330,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
               ...(channels ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}),
               ...(visitorCap ? { [VISITOR_CAPABILITY]: visitorCap } : {}),
               ...(accountOn ? { [ACCOUNT_CAPABILITY]: { v: 1 } } : {}),
-              ...(cameraOn ? { [CAMERA_CAPABILITY]: { v: 1, actions: true } } : {}),
+              ...(cameraOn ? { [CAMERA_CAPABILITY]: { v: 1, actions: true, checks: [...CAMERA_CHECK_NAMES] } } : {}),
             },
           }
         : {}),
