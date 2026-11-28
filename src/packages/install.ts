@@ -261,6 +261,10 @@ export async function installPackages(deps: PackageDeps, refs: PackageRef[], opt
   }
 }
 
+/** An item's key in the install's maps: its kind and its name. A name alone is not one item — a package may ship a
+ *  workflow and an app of one name (`canvas` the workflow, `canvas` the app), and each has its own plan. */
+const keyOf = (item: { kind: string; name: string }): string => `${item.kind}:${item.name}`;
+
 /** A workflow, step or app the release ships, and what the install does with it. */
 type ItemPlan =
   | { action: "new" }
@@ -369,7 +373,7 @@ async function installSet(
     for (const m of members) {
       for (const item of m.info.items.filter((i) => i.kind === "step")) {
         stepDone(m);
-        const plan = checked.plan.get(item.name)!;
+        const plan = checked.plan.get(keyOf(item))!;
         if (plan.action === "stamp") stamps.push({ m, item });
         if (!writes(plan)) {
           if (plan.action !== "stamp") done(m, "step", item.name, plan);
@@ -395,7 +399,7 @@ async function installSet(
     for (const m of members) {
       for (const item of m.info.items.filter((i) => i.kind === "workflow")) {
         workflowDone(m);
-        const plan = checked.plan.get(item.name)!;
+        const plan = checked.plan.get(keyOf(item))!;
         if (plan.action === "stamp") stamps.push({ m, item });
         if (!writes(plan)) {
           if (plan.action !== "stamp") done(m, "workflow", item.name, plan);
@@ -423,14 +427,14 @@ async function installSet(
     // them published. A person's publish, as installing is a person's act.
     for (const m of members) {
       for (const item of m.info.items.filter((i) => i.kind === "app")) {
-        const plan = checked.plan.get(item.name)!;
+        const plan = checked.plan.get(keyOf(item))!;
         if (plan.action === "stamp") stamps.push({ m, item });
         else if (!writes(plan)) done(m, "app", item.name, plan);
       }
     }
     for (const [i, app] of checked.apps.entries()) {
       tell({ phase: "apps", package: app.member.info.manifest.package, done: i, total: checked.apps.length });
-      const plan = checked.plan.get(app.name)!;
+      const plan = checked.plan.get(keyOf({ kind: "app", name: app.name }))!;
       const r = await deps.apps!.publish(app.dir, app.name, { surface: "person", ...options(app.member, plan, { kind: "app", name: app.name }) });
       if (!r.ok) throw new Error(`bad_package: the app ${app.name} — ${r.errors.join("; ")}`);
       done(app.member, "app", app.name, plan, r.version);
@@ -680,7 +684,7 @@ async function resolveSet(
 }
 
 interface Checked {
-  /** Each workflow, step and app of the set, by name: what the install does with it. */
+  /** Each workflow, step and app of the set, by kind and name (`keyOf`): what the install does with it. */
   plan: Map<string, ItemPlan>;
   /** By package: the items installed here that its release no longer
    *  ships (an update through the distro's door). */
@@ -742,7 +746,7 @@ async function checkSet(
     if (here && door === "repo" && here.door !== "repo") {
       throw conflict(`${pkg} is installed here already (${here.door === "distro" ? "by the distro" : `from ${here.source?.ref ?? "a package"}`}) — uninstall it first (DELETE /packages/${pkg}), then open its repo`);
     }
-    const mine = new Map((here?.items ?? []).map((i) => [i.name, i]));
+    const mine = new Map((here?.items ?? []).map((i) => [keyOf(i), i]));
     if (here && (door === "distro" || door === "repo")) {
       const ships = new Set(m.info.items.map((i) => `${i.kind}:${i.name}`));
       const gone = here.items.filter((i) => !ships.has(`${i.kind}:${i.name}`));
@@ -759,16 +763,16 @@ async function checkSet(
     const local = new Map<string, InstalledItem>();
     for (const [kind, names] of [["workflow", [...workspaceWorkflows]], ["step", workspaceSteps], ["app", workspaceApps]] as const) {
       for (const name of names.filter(under)) {
-        if (mine.has(name)) continue;
-        if (takesLocal) local.set(name, { kind, name, modified: true });
+        if (mine.has(keyOf({ kind, name }))) continue;
+        if (takesLocal) local.set(keyOf({ kind, name }), { kind, name, modified: true });
         else problems.push(`the ${kind} ${name} is a local one under ${pkg}/`);
       }
     }
 
     for (const item of m.info.items) {
       if (item.kind === "step" || item.kind === "workflow" || item.kind === "app") {
-        const at = mine.get(item.name) ?? local.get(item.name);
-        out.plan.set(item.name, at ? await planItem(deps, m, item, at, door) : { action: "new" });
+        const at = mine.get(keyOf(item)) ?? local.get(keyOf(item));
+        out.plan.set(keyOf(item), at ? await planItem(deps, m, item, at, door) : { action: "new" });
         if (item.kind === "step" && isSealedStep(item.name, undefined, sealed)) problems.push(`${item.name} is in a sealed namespace (${sealed.join(", ")}): those are strut's`);
         if (item.kind === "step" && !at && registry[item.name] && !workspaceSteps.includes(item.name)) problems.push(`${item.name} is a step strut ships`);
         if (item.kind === "app" && isFirstPartyName(item.name)) problems.push(`the app ${item.name} is under ${FIRST_PARTY_PREFIX}: those are strut's`);
@@ -867,7 +871,7 @@ async function checkSet(
 
   // Apps: each one the install publishes BUILDS against this strut's kit,
   // with the set's workflows and apps in reach, before anything is written.
-  const publishes = (name: string) => ["new", "update", "diverge"].includes(out.plan.get(name)?.action ?? "");
+  const publishes = (name: string) => ["new", "update", "diverge"].includes(out.plan.get(keyOf({ kind: "app", name }))?.action ?? "");
   const staged = new Map<string, { dir: string; hash: string; member: Member; path: string }>();
   for (const m of members) {
     for (const item of m.info.items.filter((i) => i.kind === "app" && publishes(i.name))) {
@@ -1045,7 +1049,7 @@ async function trialLoad(deps: PackageDeps, members: Member[], plan: Map<string,
   const check: string[] = [];
   for (const m of members) {
     for (const item of m.info.items.filter((i) => i.kind === "step")) {
-      const action = plan.get(item.name)?.action;
+      const action = plan.get(keyOf(item))?.action;
       const local = action === "modified" || action === "diverge";
       const code = local ? (await deps.workspace.getStepSource(item.name))?.code : await readFile(join(m.info.dir, item.path), "utf-8");
       if (code === undefined) continue;
@@ -1088,7 +1092,7 @@ function retirements(checked: Checked, members: Member[], door: PackageDoor): Re
     const shipped = members.find((m) => m.info.manifest.package === pkg)?.info.items ?? [];
     const forkedStep =
       items.some((i) => i.kind === "step" && !i.helper && i.modified) ||
-      shipped.some((i) => i.kind === "step" && !isHelper(i) && ["modified", "diverge"].includes(checked.plan.get(i.name)?.action ?? ""));
+      shipped.some((i) => i.kind === "step" && !isHelper(i) && ["modified", "diverge"].includes(checked.plan.get(keyOf(i))?.action ?? ""));
     for (const item of items) {
       if (item.kind === "concept" && item.modified !== false) {
         out.push({ pkg, item, go: false, reason: item.modified ? "edited here" : "its file is not in the package cache, so an edit cannot be told apart" });
