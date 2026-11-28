@@ -790,10 +790,12 @@ export const OWN_CREATED_AT: Readonly<Record<string, "published_at" | "started_a
 };
 
 /** The Strut types that declared their own `created_by` before it was a
- *  core attribute: who opened the chat, who launched the job. A Neo4j graph
- *  stores the core one on these types alone (as it stored their own), and
- *  no other node gets one there; a Ladybug file stores it on every node. */
-export const OWN_CREATED_BY: ReadonlySet<string> = new Set(["StrutChat", "StrutJob"]);
+ *  core attribute: who opened the chat, who launched the job; and
+ *  dictation's vocabulary (`Lingo`, `Mishearing`, seed-types.ts), whose
+ *  dictation/undo takes back only what dictation wrote. A Neo4j graph
+ *  stores the core one on these types alone, and no other node gets one
+ *  there; a Ladybug file stores it on every node. */
+export const OWN_CREATED_BY: ReadonlySet<string> = new Set(["StrutChat", "StrutJob", "Lingo", "Mishearing"]);
 
 /** Edge types whose declared target is a wildcard (any node label). */
 export const WILDCARD_TARGET_EDGES = new Set(["ACCESSED", "DERIVED_FROM"]);

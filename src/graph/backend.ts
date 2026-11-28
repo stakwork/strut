@@ -340,6 +340,12 @@ async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jB
         console.warn(`[graph] re-keyed workspace nodes on their exact names: ${JSON.stringify(exactKeyMigration)}`);
       }
       seed = await seedStrutDomain(engine);
+      for (const [type, why] of Object.entries(seed.replaced)) {
+        console.warn(`[graph] replaced ${type}, another type with nothing of it here (${why}), by dictation's`);
+      }
+      for (const [type, why] of Object.entries(seed.foreign)) {
+        console.warn(`[graph] ${type} is another type here (${why}): left as it is, and dictation keeps no vocabulary on this graph`);
+      }
     }
     const schemas = new SchemaResolver(engine);
     // The pass starts now and runs in the background; the old awaited

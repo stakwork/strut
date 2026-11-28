@@ -14,7 +14,9 @@
  *     plans/ontology.md);
  *   - the base types `Person` (the user is the one marked `is_owner`) and
  *     `Lingo` (plans/graph-memory-plan.md step 2), with their rules;
- *   - `Mishearing`, dictation's hidden record of a word it mishears;
+ *   - `Mishearing`, dictation's hidden record of a word it mishears
+ *     (`Lingo` and `Mishearing` are dictation's vocabulary, which Neo4j
+ *     seeds too: `../seed-types.ts`);
  *   - `Thing`, the root, with `name` and `description` only.
  *
  * Pure: no engine, no addon. `nodeColumns()` is the columns a new file is
@@ -27,14 +29,12 @@
 import { createHash } from "node:crypto";
 import type { EdgeSchemaRow } from "../engine.js";
 import { fromStrut, type NodeSchema } from "../schema-resolver.js";
-import { CONCEPT_TYPE, SEED_EDGES, SEED_TYPES, seedType } from "../seed-types.js";
+import { CONCEPT_TYPE, LINGO_SCHEMA, LINGO_TYPE, MISHEARING_SCHEMA, MISHEARING_TYPE, SEED_EDGES, SEED_TYPES, seedType } from "../seed-types.js";
 import { STRUT_DOMAIN, STRUT_EDGES, THING_TYPE, getStrutSchema, type AttrBase } from "../strut-schemas.js";
 
-export { CONCEPT_TYPE };
+export { CONCEPT_TYPE, LINGO_TYPE, MISHEARING_TYPE };
 /** A person; the user is the one Person marked `is_owner` (no `Self` type). */
 export const PERSON_TYPE = "Person";
-/** A word or phrase dictation learns (src/audio's fixer reads the type). */
-export const LINGO_TYPE = "Lingo";
 /** A temporal edge's search row (plans/graph-edge-search.md): one hidden
  *  node per fact, holding its composed text and vector, since a rel table
  *  takes no index. Written by `assert` alone (`ladybug/temporal.ts`). */
@@ -44,12 +44,6 @@ export const EDGE_TEXT_TYPE = "EdgeText";
  *  still leads to the kept node and the merge can be undone. Written by
  *  `graph/merge` alone. */
 export const MERGE_TYPE = "Merge";
-/** A mishearing dictation learned (src/steps/lib/dictation/_store.ts): one
- *  hidden node per pair, saying dictation writes `value` for the node
- *  `entity_ref_id` (as `form`, null meaning its name). Undo and remove are
- *  soft deletes with the reason. Not searched, embedded or walked. */
-export const MISHEARING_TYPE = "Mishearing";
-
 /** The ontology's own type: one row per type in the `Node` table. */
 export const SCHEMA_TYPE = "Schema";
 
@@ -74,9 +68,8 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
   // The base types (plans/graph-memory-plan.md step 2), without jarvis's
   // fixture. Two people may share a name, so a Person is keyed by its
   // ref_id and named by its email; the user is the Person whose `is_owner` is
-  // true. A Lingo word is keyed by its ref_id too: a name key keeps only
-  // a-z and digits, so a word with no Latin letters (凯特) could not be one.
-  // `resolve` finds a word by its name or `alt_names`.
+  // true. Lingo, dictation's word, is the seed both engines share
+  // (`../seed-types.ts`).
   seedType(PERSON_TYPE, "ref_id", ["name", "description", "email"], "name", "description", {
     name: "string",
     description: "?string",
@@ -84,11 +77,7 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     is_owner: "?boolean",
     alt_names: "?list",
   }, { role: "entity", identifiers: ["email"] }),
-  seedType(LINGO_TYPE, "ref_id", ["name", "description"], "name", "description", {
-    name: "string",
-    description: "?string",
-    alt_names: "?list",
-  }, { role: "entity" }),
+  LINGO_SCHEMA,
   // No domain: these rows are memory, which the memory tools read.
   seedType(EDGE_TEXT_TYPE, "edgetext-edge_ref_id", ["composed"], "text", "text", {
     edge_ref_id: "string",
@@ -113,14 +102,8 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     undone_at: "?int",
     undone_by: "?string",
   }, { role: "record" }), embed: false },
-  // Read by dictation alone, by `entity_ref_id`.
-  { ...seedType(MISHEARING_TYPE, "ref_id", [], "value", "value", {
-    entity_ref_id: "string",
-    /** What dictation writes. */
-    value: "string",
-    /** The written form it is heard for; absent: the entity's name. */
-    form: "?string",
-  }, { role: "record" }), embed: false },
+  // Dictation's, as Lingo is.
+  MISHEARING_SCHEMA,
 ];
 
 /** The types that are records, not nodes: never searched, walked or resolved. */

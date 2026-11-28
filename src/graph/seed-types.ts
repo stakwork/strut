@@ -7,17 +7,20 @@
  *
  * They keep jarvis's names and key specs, so a fresh graph's ids and keys
  * match a swarm's, but declare exactly the attributes strut writes and
- * reads (`claims.ts`'s field lists, `concept-seed.ts`). Every other type is
- * created at runtime (`graph/create-schema`, an app's `data.graph`, a
- * package).
+ * reads (`claims.ts`'s field lists, `concept-seed.ts`). Beside them,
+ * dictation's vocabulary (`VOCABULARY_TYPES`: `Lingo`, `Mishearing`), strut's
+ * own names. Every other type is created at runtime (`graph/create-schema`,
+ * an app's `data.graph`, a package).
  *
  *   - A Ladybug file seeds them at open with the rest of its ontology
- *     (`ladybug/registry.ts`), adding its own types on top (`Person`,
- *     `Lingo`, the record types).
+ *     (`ladybug/registry.ts`), adding its own types on top (`Person`, the
+ *     record types).
  *   - Neo4j seeds each one at boot ONLY WHEN IT IS MISSING
  *     (`schema-seed.ts`), through `createNodeSchema`, the call an agent
  *     makes. On a swarm jarvis's own rows for these names are already
- *     there, and they are jarvis's: nothing is extended.
+ *     there, and they are jarvis's: nothing is extended. A vocabulary type
+ *     the graph holds already is extended only when it is dictation's
+ *     (`notDictations`), and otherwise left as it is.
  *
  * Pure: no engine.
  */
@@ -114,6 +117,54 @@ export const SEED_TYPES: readonly NodeSchema[] = [
     step: "?string",
   }, { role: "concept" }),
 ];
+
+/** A word or phrase dictation learns (src/audio's fixer reads the type). */
+export const LINGO_TYPE = "Lingo";
+/** A mishearing dictation learned (src/steps/lib/dictation/_graph.ts): one
+ *  hidden node per pair, saying dictation writes `value` for the node
+ *  `entity_ref_id` (as `form`, null meaning its name). Undo and remove are
+ *  soft deletes with the reason. Not searched, embedded or walked. */
+export const MISHEARING_TYPE = "Mishearing";
+
+// Dictation's vocabulary, the same on both engines: a Ladybug file seeds the
+// two at open (`ladybug/registry.ts`), Neo4j at boot (`schema-seed.ts`). A
+// Lingo word is keyed by its ref_id: a name key keeps only a-z and digits,
+// so a word with no Latin letters (凯特) could not be one. `resolve` finds a
+// word by its name or `alt_names`.
+export const LINGO_SCHEMA: NodeSchema = seedType(LINGO_TYPE, "ref_id", ["name", "description"], "name", "description", {
+  name: "string",
+  description: "?string",
+  alt_names: "?list",
+}, { role: "entity" });
+// Read by dictation alone, by `entity_ref_id`.
+export const MISHEARING_SCHEMA: NodeSchema = { ...seedType(MISHEARING_TYPE, "ref_id", [], "value", "value", {
+  entity_ref_id: "string",
+  /** What dictation writes. */
+  value: "string",
+  /** The written form it is heard for; absent: the entity's name. */
+  form: "?string",
+}, { role: "record" }), embed: false };
+
+/** Lingo, Mishearing. */
+export const VOCABULARY_TYPES: readonly NodeSchema[] = [LINGO_SCHEMA, MISHEARING_SCHEMA];
+
+/** Why the graph's type `held` is not dictation's `ours`, or null: another
+ *  key, an attribute of ours it holds as another type, or one it requires
+ *  that dictation never writes (an app's own `Lingo`, keyed by its name and
+ *  requiring what the app saves). Such a type is never extended or written
+ *  by dictation: half of each would be neither. */
+export function notDictations(held: Pick<NodeSchema, "key_spec" | "attributes">, ours: NodeSchema): string | null {
+  const base = (t: string) => t.replace(/^\?/, "");
+  if (held.key_spec !== ours.key_spec) return `keyed by ${held.key_spec}, not ${ours.key_spec}`;
+  for (const [k, t] of Object.entries(ours.attributes)) {
+    const h = held.attributes[k];
+    if (h && base(h) !== base(t)) return `${k} is a ${base(h)}, not a ${base(t)}`;
+  }
+  for (const [k, t] of Object.entries(held.attributes)) {
+    if (!t.startsWith("?") && k !== "name" && !(k in ours.attributes)) return `it requires ${k}`;
+  }
+  return null;
+}
 
 /** The domain each seed type has on Neo4j: jarvis's, so a fresh graph's
  *  nodes carry the labels a swarm's do (`Domain_epistemic`,
