@@ -28,6 +28,12 @@
  *   Sphinx iOS app registers it too). Both taps copy `sphinx.chat://?<q>`,
  *   exactly as Android's does, for a Peel with no account to read on first
  *   launch. Neither navigation is prevented.
+ * - **An expired invite**: the worker app's token inside `a=`
+ *   (`strut-invite.<claims>.<sig>`, src/auth.ts) carries its `exp`; the page
+ *   reads it, unverified (only to word the page; Tasks checks the signature),
+ *   and past it keeps the card but shows `#expired` ("This invite has expired")
+ *   instead of the Copy and Open buttons or the QR code. A cancelled or used
+ *   invite looks live here: only the server knows.
  * - **Anywhere else** it says to open the link on a phone and draws
  *   a QR code of its own URL, invite included, with qrcode-generator's
  *   browser build served beside it (`/public/join/qrcode.js`).
@@ -91,6 +97,27 @@ export const JOIN_SCRIPT = `(function () {
   // The invite, as the app takes it after "sphinx.chat://?".
   var q = location.hash.slice(1).replace(/^sphinx\\.chat:\\/\\/\\?/i, "");
   if (!/^action=i&/.test(q) || !/(^|&)d=[^&]+/.test(q) || /[#\\s]/.test(q)) { document.getElementById("card").hidden = true; show("bad"); return; }
+  // An invite past its date: the token inside a= (the worker app's ?input=invite=strut-invite.<claims>.<sig>)
+  // says when it stops, in its unsigned claims; read here, never trusted for more than this message.
+  // Its card stays (who invited), but nothing offers to open it.
+  try {
+    var sec = q.split("&").filter(function (p) { return /^a=/.test(p); });
+    if (sec.length === 1) {
+      var input = new URL(decodeURIComponent(sec[0].slice(2))).searchParams.get("input") || "";
+      var tok = new URLSearchParams(input).get("invite") || "";
+      var m = /^strut-invite\.([A-Za-z0-9_-]+)\./.exec(tok);
+      if (m) {
+        var b64 = m[1].replace(/-/g, "+").replace(/_/g, "/");
+        while (b64.length % 4) b64 += "=";
+        var exp = JSON.parse(atob(b64)).exp;
+        if (typeof exp === "number" && exp < Date.now()) {
+          document.body.className = "expired";
+          show("expired");
+          return;
+        }
+      }
+    }
+  } catch (e) {}
   // The page's language rides along into the worker app's link: the invite's single a= section is
   // that app's URL, whose locale is ?lang= else the browser's. A page in en leaves it to auto-detect.
   var lang = document.documentElement && document.documentElement.lang;
@@ -209,6 +236,8 @@ p { margin: 0; }
 #android, #ios { position: sticky; bottom: 0; margin-top: auto; padding: 2rem 0 1.25rem; text-align: center; background: linear-gradient(to bottom, transparent, var(--bg) 40%); display: flex; flex-direction: column; gap: 0.6rem; }
 .copy { display: block; width: 100%; margin-top: 1rem; padding: 12px; border-radius: 999px; border: 1px solid var(--accent); background: transparent; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; }
 .copy + .muted { margin-top: 0.4rem; font-size: 0.8rem; }
+.note { margin: 0; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line); background: var(--card); text-align: center; font-size: 0.9rem; }
+.expired .copy, .expired .copy + .muted { display: none; }
 .button { display: block; padding: 17px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 700; text-decoration: none; }
 [hidden] { display: none !important; }
 `;
@@ -239,6 +268,7 @@ const en = {
   copyInvite: "Copy invite",
   pasteHint: "Then open Peel and paste it at Join with an invite.",
   copied: "Copied",
+  expired: "This invite has expired.",
 };
 type JoinWords = typeof en;
 /** Neutral Latin American Spanish, `tú` (plans/i18n.md). */
@@ -263,6 +293,7 @@ const es: JoinWords = {
   copyInvite: "Copiar invitación",
   pasteHint: "Luego abre Peel y pégala en Unirme con una invitación.",
   copied: "Copiada",
+  expired: "Esta invitación caducó.",
 };
 const JOIN_WORDS = { en, es };
 export type JoinLang = keyof typeof JOIN_WORDS;
@@ -321,6 +352,7 @@ export function joinPage(name?: string, lang: JoinLang = "en"): string {
 <p class="muted">${w.pasteHint}</p>
 </div>
 <p id="bad" hidden>${w.bad}</p>
+<p id="expired" class="note" role="status" hidden>${w.expired}</p>
 <div id="android" hidden>
 <a id="open" class="button" href="#">${w.open}</a>
 <p class="muted">${w.installs}</p>
