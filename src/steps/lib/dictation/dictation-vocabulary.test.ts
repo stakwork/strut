@@ -258,6 +258,26 @@ describe("dictation's vocabulary beside another Lingo (neo4j)", { skip: neo.skip
     assert.deepEqual([again.replaced, again.foreign, again.createdSchemas], [{}, {}, []], "a second boot changes nothing");
   });
 
+  it("leaves one another type's edge rule names as it is (jarvis's Lingo is the end of DefinedTerm's)", async () => {
+    await createNodeSchema(b, b.schemas, appLingo);
+    await createNodeSchema(b, b.schemas, { type: "DefinedTerm", attributes: { name: "string" } });
+    await b.schemas.createEdgeSchema("DefinedTerm", "RELATED_TO", "Lingo");
+    const seed = await seedStrutDomain(b);
+    assert.match(seed.foreign["Lingo"] ?? "", /keyed by lingo-name, not ref_id/);
+    assert.deepEqual(seed.replaced, {});
+    assert.ok(await b.schemas.edgeSchema("RELATED_TO", "DefinedTerm", "Lingo"), "its rule stays");
+  });
+
+  it("on a graph jarvis shares, leaves one with nothing of it as it is too: jarvis's own Lingo is jarvis's", async () => {
+    await createNodeSchema(b, b.schemas, appLingo);
+    await b.query("CREATE (:About {hidden_domains: []})");
+    b.schemas.invalidate();
+    const seed = await seedStrutDomain(b);
+    assert.match(seed.foreign["Lingo"] ?? "", /keyed by lingo-name, not ref_id/);
+    assert.deepEqual(seed.replaced, {});
+    await assert.rejects(run(add, { heard: "stack work", written: "Stakwork" }, ctx()), /Lingo is not dictation's/);
+  });
+
   it("leaves one with a node of it, even a deleted one, as it is, and refuses to write a word into it", async () => {
     await createNodeSchema(b, b.schemas, appLingo);
     const ref = (await b.nodes.write({ type: "Lingo", data: { name: "Stakwork", heard: "stack work", corrected: "Stakwork" } })).ref_id;

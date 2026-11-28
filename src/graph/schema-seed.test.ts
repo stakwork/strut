@@ -79,7 +79,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.equal(thing[0]!.properties["node_key"], "thing-name");
     assert.ok(typeof thing[0]!.properties["ref_id"] === "string");
     const schemas = snap1.nodes.filter((n) => n.labels.includes("Schema"));
-    assert.equal(schemas.length, 20);
+    assert.equal(schemas.length, 1 + STRUT_SCHEMAS.length + SEED_TYPES.length + VOCABULARY_TYPES.length);
     for (const s of schemas) {
       assert.deepEqual(s.labels, ["Schema"], "Schema nodes carry no other label");
       assert.equal(s.properties["attributes"], undefined);
@@ -99,7 +99,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.equal(concept.properties["node_key"], "concept-name");
     assert.equal(concept.properties["domain"], "General");
     const childOf = snap1.rels.filter((r) => r.type === "CHILD_OF");
-    assert.equal(childOf.length, 19);
+    assert.equal(childOf.length, schemas.length - 1, "every type but Thing");
     for (const r of childOf) {
       assert.equal((r.to as { type: string }).type, "Thing");
       assert.ok(typeof r.properties["ref_id"] === "string");

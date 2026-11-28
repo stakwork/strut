@@ -23,7 +23,8 @@
  * nothing is written (plans/ontology.md §8). Dictation's vocabulary
  * (`Lingo`, `Mishearing`) is seeded the same way; one the graph holds as
  * another type (an app's own `Lingo`) is replaced when nothing of it is
- * there (`replaced`), else left as it is (`foreign`).
+ * there and jarvis does not share the graph (`replaced`), else left as it
+ * is (`foreign`: jarvis's own `Lingo` on a swarm).
  *
  * The Schema rows go through `SchemaSource` (`engine.ts`). A Ladybug file
  * seeds its own Strut types at open (`ladybug/registry.ts`, without the
@@ -233,12 +234,13 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
   // 4c. Dictation's vocabulary (Lingo, Mishearing): created when missing.
   //     One the graph holds is extended add-only when it is dictation's —
   //     keyed by ref_id, requiring nothing dictation does not write — on any
-  //     graph (jarvis keeps neither). One that is not (an app's own `Lingo`)
-  //     is replaced by dictation's when nothing of it is there (no node, live
-  //     or deleted, in any namespace, and no subtype: its Schema node goes,
-  //     with its CHILD_OF link and its edge rules, `replaced`), and otherwise
-  //     left exactly as it is (`foreign`): neither extended nor written, so
-  //     nothing is half one type and half the other.
+  //     graph. One that is not (an app's own `Lingo`; jarvis's, on a swarm)
+  //     is replaced by dictation's on a graph strut holds alone when nothing
+  //     of it is there (no node, live or deleted, in any namespace, no
+  //     subtype, no edge rule: its Schema node and its CHILD_OF link go,
+  //     `replaced`), and otherwise left exactly as it is (`foreign`): neither
+  //     extended nor written, so nothing is half one type and half the
+  //     other. jarvis's rows are never touched.
   const vocabularyInput = (t: NodeSchema) => ({ ...seedTypeInput(t), ...(t.embed ? {} : { embed: false }) });
   for (const t of VOCABULARY_TYPES) {
     const hit = await src.schemaRow(t.type);
@@ -250,7 +252,7 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
     resolver.invalidate();
     const held = await resolver.schema(hit.type);
     const why = held ? notDictations(held, t) : "its schema does not resolve";
-    if (why && (await holdsNothing(engine, hit.type))) {
+    if (why && alone && (await holdsNothing(engine, hit.type))) {
       await src.deleteSchema(hit.type);
       resolver.invalidate();
       await createNodeSchema(engine, resolver, vocabularyInput(t));
@@ -331,11 +333,16 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
 }
 
 /** Whether nothing of `type` is in the graph: no node of it, live or
- *  soft-deleted, in any namespace, and no type under it. */
+ *  soft-deleted, in any namespace, and nothing in the ontology tied to it
+ *  but its own link to its parent — no subtype, no edge rule (jarvis's
+ *  `Lingo` is the end of `DefinedTerm`'s rules). */
 async function holdsNothing(engine: GraphEngine, type: string): Promise<boolean> {
   const [nodes] = await engine.query(`MATCH ${engine.dialect.node("n", type)} RETURN count(n) AS c`);
-  const [subtypes] = await engine.query(`MATCH (c:Schema)-[:CHILD_OF]->(s:Schema {type: $t}) RETURN count(c) AS c`, { t: type });
-  return Number(nodes?.["c"] ?? 1) === 0 && Number(subtypes?.["c"] ?? 1) === 0;
+  const [ties] = await engine.query(
+    `MATCH (s:Schema {type: $t})-[r]-() WHERE NOT (type(r) = 'CHILD_OF' AND startNode(r) = s) RETURN count(r) AS c`,
+    { t: type },
+  );
+  return Number(nodes?.["c"] ?? 1) === 0 && Number(ties?.["c"] ?? 1) === 0;
 }
 
 /** A seed type as `createNodeSchema` takes it, with its Neo4j domain. */
