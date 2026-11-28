@@ -80,6 +80,15 @@ Core attributes are listed under "Core attributes" below.
 ### 5. Add identity
 - `resolve`: key, identifier, name and alias (`alt_names`), then candidates. Ladybug only; Neo4j refuses it (`src/graph/resolve.ts`).
 - `merge`: move edges, keep old ids working, record it, allow undo.
+- **Names as facts.** A node's other names have dates and sources ("Thomas Smith" is the legal name, "Tom" is what he goes by, and "TAS" is what Bob calls him), so they are temporal facts, not a plain list.
+  - **The fact:** `KNOWN_AS` is a temporal edge from a node to a `Name` node, written with `assert`, carrying `valid_at`, `invalid_at` and `sources`.
+  - **The Name node:** keyed by the cleaned name, scoped to the type and namespace it names (`Person|private|tom`). Several nodes can point at one Name, since two people can both be "Tom".
+  - **Things with facts of their own aren't Names.** A ticker, a username or a domain is its own node, joined to the thing it names by an edge (`Bitcoin -HAS_TICKER-> BTC`). An edge schema marks which edge types `resolve` follows as names.
+  - **`alt_names` is derived.** The writer keeps it equal to the node's current `KNOWN_AS` names, in the same transaction, as it does for `title` and `search_text`, so nothing writes it by hand.
+  - **Every `entity` and `concept` type gets `alt_names`**, including types made later with create-schema, and the text index reads it.
+  - **The index.** Ladybug indexes only its primary key, its text and its vectors, so `resolve`'s key, identifier, name and alias stages each scan a column. The Name table's primary key makes the name stages one primary-key lookup plus one hop. Before building this, time `resolve` on 50k-node and 500k-node files.
+  - **`merge`** combines both nodes' `KNOWN_AS` facts.
+  - **Identifiers aren't names.** A phone number or an employee ID is an identifier (stage 2), unique to one node.
 
 ### 6. Enforce privacy with namespaces
 - Replace `managed_by: memory` with one check under every read tool: each reader has a list of namespaces, plus an optional domain filter, set by the host (`graphReaders`; a host that sets none runs as before). A job's list leaves domain `Strut` out, so it sees no Strut records.
