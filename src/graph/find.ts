@@ -105,8 +105,8 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
   const bounds = boundsOf(b);
   // A fact's search row (EdgeText) is read as its fact, through search, a
   // merge record (Merge) through the node it points to, and a mishearing
-  // through dictation: none is a node.
-  const hiddenRow = b.kind === "ladybug" && !!type && HIDDEN_TYPES.includes(type);
+  // through dictation: none is a node, on either engine.
+  const hiddenRow = !!type && HIDDEN_TYPES.includes(type);
   if (!type || !schema || hiddenRow || (bounds && hidesType(bounds.list, schema.domainLabels))) throw new FindError(`unknown node type "${raw}" — graph/get-ontology lists the types`);
   const query = bounds?.query ?? b.query.bind(b);
 

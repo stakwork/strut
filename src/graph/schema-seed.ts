@@ -20,7 +20,10 @@
  * an agent makes — and each of their edge rules only where the graph does
  * not already allow that edge. On a swarm (or a graph seeded with jarvis's
  * library) jarvis's own rows are there and allow every one of them, so
- * nothing is written (plans/ontology.md §8).
+ * nothing is written (plans/ontology.md §8). Dictation's vocabulary
+ * (`Lingo`, `Mishearing`) is seeded the same way; one the graph holds as
+ * another type (an app's own `Lingo`) is replaced when nothing of it is
+ * there (`replaced`), else left as it is (`foreign`).
  *
  * The Schema rows go through `SchemaSource` (`engine.ts`). A Ladybug file
  * seeds its own Strut types at open (`ladybug/registry.ts`, without the
@@ -30,11 +33,11 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Bolt } from "./bolt.js";
-import type { EngineLike, SchemaSource } from "./engine.js";
+import type { EngineLike, GraphEngine, SchemaSource } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { createNodeSchema, type NodeSchemaInput } from "./schema-crud.js";
 import { SchemaResolver, type NodeSchema } from "./schema-resolver.js";
-import { SEED_DOMAINS, SEED_EDGES, SEED_TYPES } from "./seed-types.js";
+import { SEED_DOMAINS, SEED_EDGES, SEED_TYPES, VOCABULARY_TYPES, notDictations } from "./seed-types.js";
 import {
   THING_SCHEMA,
   THING_TYPE,
@@ -97,6 +100,13 @@ export interface SeedReport {
   /** Schema statements skipped because an equivalent jarvis-owned object
    *  already exists under another shape (see `schemaStatement`). */
   skippedSchemaObjects: string[];
+  /** A vocabulary type the graph already holds as another type (an app's
+   *  own `Lingo`) with something of it there, left exactly as it is: type →
+   *  why. Dictation refuses to write on such a graph. */
+  foreign: Record<string, string>;
+  /** A vocabulary type the graph held as another type with nothing of it
+   *  (no node, live or deleted, no subtype), replaced by dictation's: type → why. */
+  replaced: Record<string, string>;
 }
 
 /**
@@ -129,6 +139,8 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
     createdEdgeSchemas: [],
     skippedEdgeSchemas: [],
     skippedSchemaObjects: [],
+    foreign: {},
+    replaced: {},
   };
   if (src.holdsStrutTypes) return { ...report, mode: "file" };
   // Neo4j DDL (constraints, search indexes): nothing to run on Ladybug,
@@ -218,6 +230,45 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
     report.createdSchemas.push(t.type);
   }
 
+  // 4c. Dictation's vocabulary (Lingo, Mishearing): created when missing.
+  //     One the graph holds is extended add-only when it is dictation's —
+  //     keyed by ref_id, requiring nothing dictation does not write — on any
+  //     graph (jarvis keeps neither). One that is not (an app's own `Lingo`)
+  //     is replaced by dictation's when nothing of it is there (no node, live
+  //     or deleted, in any namespace, and no subtype: its Schema node goes,
+  //     with its CHILD_OF link and its edge rules, `replaced`), and otherwise
+  //     left exactly as it is (`foreign`): neither extended nor written, so
+  //     nothing is half one type and half the other.
+  const vocabularyInput = (t: NodeSchema) => ({ ...seedTypeInput(t), ...(t.embed ? {} : { embed: false }) });
+  for (const t of VOCABULARY_TYPES) {
+    const hit = await src.schemaRow(t.type);
+    if (!hit) {
+      await createNodeSchema(engine, resolver, vocabularyInput(t));
+      report.createdSchemas.push(t.type);
+      continue;
+    }
+    resolver.invalidate();
+    const held = await resolver.schema(hit.type);
+    const why = held ? notDictations(held, t) : "its schema does not resolve";
+    if (why && (await holdsNothing(engine, hit.type))) {
+      await src.deleteSchema(hit.type);
+      resolver.invalidate();
+      await createNodeSchema(engine, resolver, vocabularyInput(t));
+      report.replaced[t.type] = `${hit.type}: ${why}`;
+      continue;
+    }
+    if (why) {
+      report.foreign[t.type] = `${hit.type}: ${why}`;
+      continue;
+    }
+    const missing: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(t.attributes)) if (!(k in hit.props)) missing[k] = v;
+    if (Object.keys(missing).length > 0) {
+      await src.extendSchema(hit.type, missing);
+      report.reconciled[t.type] = Object.keys(missing).sort();
+    }
+  }
+
   // 5. Global objects (jarvis-owned in shared mode; IF NOT EXISTS is a no-op).
   await ddl(
     `CREATE CONSTRAINT unique_node_key_global IF NOT EXISTS
@@ -277,6 +328,14 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
   await src.stampMigration(STRUT_MIGRATION_ID);
 
   return report;
+}
+
+/** Whether nothing of `type` is in the graph: no node of it, live or
+ *  soft-deleted, in any namespace, and no type under it. */
+async function holdsNothing(engine: GraphEngine, type: string): Promise<boolean> {
+  const [nodes] = await engine.query(`MATCH ${engine.dialect.node("n", type)} RETURN count(n) AS c`);
+  const [subtypes] = await engine.query(`MATCH (c:Schema)-[:CHILD_OF]->(s:Schema {type: $t}) RETURN count(c) AS c`, { t: type });
+  return Number(nodes?.["c"] ?? 1) === 0 && Number(subtypes?.["c"] ?? 1) === 0;
 }
 
 /** A seed type as `createNodeSchema` takes it, with its Neo4j domain. */

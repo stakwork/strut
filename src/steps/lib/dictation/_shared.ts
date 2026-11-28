@@ -4,14 +4,13 @@
 import { z } from "zod";
 import type { StepContext } from "../../../core.js";
 import { lexiconFrom, type Lexicon } from "../../../audio/lingo.js";
-import { graphLearn, graphLexicon, onLadybug } from "./_graph.js";
+import { graphLearn, graphLexicon } from "./_graph.js";
 
 export { UNDONE } from "./_graph.js";
 
-/** Dictation's vocabulary as memory/lexicon reads it now: none on a graph
- *  that is not a Ladybug one (a Neo4j deployment keeps no vocabulary). */
+/** Dictation's vocabulary as memory/lexicon reads it now, from the workspace
+ *  graph (a Ladybug file or Neo4j). */
 export async function readLexicon(ctx: StepContext<unknown>): Promise<Lexicon> {
-  if (!onLadybug(ctx)) return { entries: [], undone: [] };
   return lexiconFrom(await graphLexicon(ctx));
 }
 

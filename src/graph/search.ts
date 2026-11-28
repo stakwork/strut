@@ -35,6 +35,7 @@ import { nodeTitle } from "./title.js";
 import { worldTime } from "./world-time.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { GLOBAL_VECTOR_INDEX, SEARCH_TEXT_INDEX } from "./schema-seed.js";
+import { HIDDEN_TYPES } from "./ladybug/registry.js";
 import { OWN_CREATED_AT, SCHEMA_CORE_PROPERTIES, getStrutSchema, vectorIndexedPairs, vectorStem } from "./strut-schemas.js";
 
 // ── Constants (jarvis) ──────────────────────────────────────────────────────
@@ -716,9 +717,13 @@ export function serializeEdge(type: string, props: Record<string, unknown>, sour
   return out;
 }
 
+/** A node a reader shows: live, not muted or blocked, and no record strut
+ *  keeps hidden (`HIDDEN_TYPES`: dictation's `Mishearing`, the one a Neo4j
+ *  graph holds), as a Ladybug file's reader leaves them out. */
 function visibility(alias: string): string {
   return [
     NODE_LIVE(alias),
+    `NOT (${HIDDEN_TYPES.map((t) => `${alias}:\`${t}\``).join(" OR ")})`,
     `(${alias}.is_muted IS NULL OR ${alias}.is_muted <> true)`,
     `(${alias}.status IS NULL OR NOT ${alias}.status IN $blocked_statuses)`,
   ].join(" AND ");

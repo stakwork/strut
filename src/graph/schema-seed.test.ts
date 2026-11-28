@@ -5,7 +5,7 @@ import { Bolt } from "./bolt.js";
 import { seedStrutDomain, flattenSchema, STRUT_MIGRATION_ID, DOMAIN_VECTOR_INDEX, DOMAIN_FULLTEXT_INDEX_V2, GLOBAL_VECTOR_INDEX, SEARCH_TEXT_INDEX } from "./schema-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { TESTCASE_TYPE } from "./claims.js";
-import { SEED_EDGES, SEED_TYPES } from "./seed-types.js";
+import { SEED_EDGES, SEED_TYPES, VOCABULARY_TYPES } from "./seed-types.js";
 import { seedJarvisOntology } from "./__fixtures__/jarvis-seed.js";
 import { THING_SCHEMA, STRUT_EDGES, STRUT_SCHEMAS, assertLibraryWellFormed, searchableAttributes, vectorIndexName } from "./strut-schemas.js";
 import { graphSnapshot, schemaObjectNames, testGraphConfig, wipeGraph } from "./test-util.js";
@@ -58,7 +58,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
   it("standalone: seeds Thing + the Strut and seed types + edges + indexes, and is idempotent", async () => {
     const r1 = await seedStrutDomain(bolt);
     assert.equal(r1.mode, "standalone");
-    assert.deepEqual(r1.createdSchemas.sort(), [...STRUT_SCHEMAS, ...SEED_TYPES].map((s) => s.type).sort());
+    assert.deepEqual(r1.createdSchemas.sort(), [...STRUT_SCHEMAS, ...SEED_TYPES, ...VOCABULARY_TYPES].map((s) => s.type).sort());
     // PUBLISHED_BY → Person is skipped (no Person schema in standalone).
     assert.deepEqual(r1.skippedEdgeSchemas, ["StrutStepVersion-[PUBLISHED_BY]->Person", "HiveWorkspaceMember-[SENT]->StrutAgentSession", "Person-[SENT]->StrutAgentSession"]);
     // Every row but PUBLISHED_BY's and the Ladybug-only one: Neo4j's seed as
@@ -115,11 +115,11 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
 
     // Domain registered by existence.
     const domains = await bolt.run(`MATCH (s:Schema) WHERE s.domain IS NOT NULL RETURN DISTINCT toLower(s.domain) AS d`);
-    assert.deepEqual(domains.map((d) => d["d"]).sort(), ["epistemic", "general", "strut"]);
+    assert.deepEqual(domains.map((d) => d["d"]).sort(), ["entity", "epistemic", "general", "strut"]);
 
     // Constraints + indexes.
     const names = await schemaObjectNames(bolt);
-    for (const s of [...STRUT_SCHEMAS, ...SEED_TYPES]) assert.ok(names.constraints.includes(`unique_${s.type.toLowerCase()}_node_key`), s.type);
+    for (const s of [...STRUT_SCHEMAS, ...SEED_TYPES, ...VOCABULARY_TYPES]) assert.ok(names.constraints.includes(`unique_${s.type.toLowerCase()}_node_key`), s.type);
     assert.ok(names.constraints.includes("unique_node_key_global"));
     assert.ok(names.constraints.includes("migration_id_unique"));
     assert.ok(names.indexes.includes(DOMAIN_VECTOR_INDEX));
@@ -204,7 +204,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     const before = await graphSnapshot(bolt);
     const r = await seedStrutDomain(bolt);
     assert.equal(r.mode, "shared");
-    assert.equal(r.createdSchemas.length, 13 + SEED_TYPES.length);
+    assert.equal(r.createdSchemas.length, 13 + SEED_TYPES.length + VOCABULARY_TYPES.length);
     assert.ok(!r.createdSchemas.includes("StrutRun"));
     assert.deepEqual(r.reconciled, { StrutRun: ["summary"] });
     assert.deepEqual(r.skippedEdgeSchemas, ["HiveWorkspaceMember-[SENT]->StrutAgentSession"], "no member type in this jarvis");
