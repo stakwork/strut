@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { nodeColor } from "../lib/colors";
 import { errorText } from "../lib/format";
 import { getNeighbors, getNodes } from "../lib/graph";
+import { NODE_WIDTH, ringPlaces } from "../lib/ring";
 import { FloatingEdge } from "./FloatingEdge";
 
 const EDGE_TYPES: EdgeTypes = { floating: FloatingEdge };
@@ -22,6 +23,8 @@ export interface NodeGraphProps {
   selected?: string | null;
   /** Node types not drawn (the centre always is); toggling one refits, it reads nothing again. */
   hiddenTypes?: ReadonlySet<string>;
+  /** Node types never placed, whatever the reader may see (an app's "not knowledge": the runs and claims beside a Concept). */
+  skipType?: (type: string) => boolean;
   /** The canvas's height in px. */
   height?: number;
   className?: string;
@@ -44,9 +47,6 @@ interface Link {
   target: string;
   type: string;
 }
-
-const RING = 230;
-const ARC = 230;
 
 const degreeOf = (edges: Record<string, number> | undefined, only?: string[]) =>
   Object.entries(edges ?? {}).reduce((n, [t, c]) => (!only?.length || only.includes(t) ? n + c : n), 0);
@@ -82,11 +82,11 @@ function FitOnResize({ fit }: { fit: () => void }) {
  * A node's neighbourhood in React Flow: the node in the middle, its
  * neighbours around it (`graph/graph-neighbors`). Each node's + opens its
  * neighbours outward, its collapse chip folds away what that opening (and the openings
- * past it) placed; a click on a node is `onSelect`'s. Every read goes
+ * past it) placed; a click on a node is `onSelect`'s, and a node dragged stays where it is put. Every read goes
  * through the importing app's grants (`graph/graph-get-batched` for the
  * first node, `graph/graph-neighbors`).
  */
-export function NodeGraph({ refId, edgeTypes, hiddenTypes, onSelect, selected, height = 480, className }: NodeGraphProps) {
+export function NodeGraph({ refId, edgeTypes, hiddenTypes, skipType, onSelect, selected, height = 480, className }: NodeGraphProps) {
   const client = useStrutClient();
   const { theme } = useHost();
   const [placed, setPlaced] = useState<Map<string, Placed>>(new Map());
@@ -95,6 +95,8 @@ export function NodeGraph({ refId, edgeTypes, hiddenTypes, onSelect, selected, h
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const edgeKey = useMemo(() => (edgeTypes ?? []).join(","), [edgeTypes]);
+  const skip = useRef(skipType);
+  skip.current = skipType;
   const flow = useRef<ReactFlowInstance | null>(null);
   /** Opening places nodes: fit them in once React Flow has measured them (`onNodesChange`). */
   const fitPending = useRef(false);
@@ -105,22 +107,18 @@ export function NodeGraph({ refId, edgeTypes, hiddenTypes, onSelect, selected, h
     async (id: string, at: Map<string, Placed>) => {
       setLoading(id);
       try {
-        const around = await getNeighbors(client, id, { edgeTypes });
+        const around = (await getNeighbors(client, id, { edgeTypes })).filter((n) => !skip.current?.(n.node_type));
         const from = at.get(id)!;
         const fresh = around.filter((n) => !at.has(n.ref_id));
-        const centre = from.x === 0 && from.y === 0;
-        const outward = centre ? 0 : Math.atan2(from.y, from.x);
-        const spread = centre ? 2 * Math.PI : Math.PI;
-        const radius = centre ? RING : ARC;
+        const places = ringPlaces(fresh.length, from, from.from ? at.get(from.from) : undefined);
         const next = new Map(at);
         fresh.forEach((n, i) => {
-          const a = centre ? (i / Math.max(1, fresh.length)) * spread : outward - spread / 2 + ((i + 0.5) / fresh.length) * spread;
           next.set(n.ref_id, {
             ref_id: n.ref_id,
             node_type: n.node_type,
             name: n.name,
-            x: from.x + Math.cos(a) * radius,
-            y: from.y + Math.sin(a) * radius,
+            x: places[i]!.x,
+            y: places[i]!.y,
             degree: degreeOf(n.edges, edgeTypes),
             from: id,
           });
@@ -244,7 +242,7 @@ export function NodeGraph({ refId, edgeTypes, hiddenTypes, onSelect, selected, h
           borderWidth: p.ref_id === refId ? 3 : 1.5,
           background: "var(--card)",
           color: "var(--card-foreground)",
-          width: 168,
+          width: NODE_WIDTH,
           opacity: loading === p.ref_id ? 0.6 : 1,
           ...(p.ref_id === selected ? { boxShadow: `0 0 0 4px color-mix(in oklab, ${nodeColor(p.node_type)} 30%, transparent)` } : {}),
         },
@@ -286,6 +284,18 @@ export function NodeGraph({ refId, edgeTypes, hiddenTypes, onSelect, selected, h
           if (fitPending.current && changes.some((c) => c.type === "dimensions")) {
             fitPending.current = false;
             fit();
+          }
+          // A node dragged stays where it was put.
+          const moved = changes.flatMap((c) => (c.type === "position" && c.position ? [{ id: c.id, ...c.position }] : []));
+          if (moved.length) {
+            setPlaced((prev) => {
+              const next = new Map(prev);
+              for (const m of moved) {
+                const p = next.get(m.id);
+                if (p) next.set(m.id, { ...p, x: m.x, y: m.y });
+              }
+              return next;
+            });
           }
         }}
         nodesConnectable={false}
