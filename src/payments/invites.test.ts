@@ -545,9 +545,11 @@ const JOIN_WORD_VALUES = (lang: "en" | "es"): string[] => {
 };
 
 /** The join page's script in a stand-in browser: what it shows and links. */
-async function runJoin(o: { hash: string; userAgent: string; release?: unknown; noClipboard?: boolean; platform?: string; touch?: number; search?: string; lang?: string; execOk?: boolean; rejectClipboard?: boolean }) {
+async function runJoin(o: { hash: string; userAgent: string; release?: unknown; noClipboard?: boolean; platform?: string; touch?: number; search?: string; lang?: string; execOk?: boolean; rejectClipboard?: boolean; storage?: Record<string, string> }) {
   const el = (id: string) => ({ id, hidden: true, href: "#", innerHTML: "" });
-  const els = Object.fromEntries(["android", "ios", "elsewhere", "bad", "open", "testflight", "open-ios", "qr", "card"].map((id) => [id, el(id)]));
+  const els = Object.fromEntries(["android", "ios", "elsewhere", "bad", "open", "testflight", "open-ios", "qr", "card", "installs", "tf-hint"].map((id) => [id, el(id)]));
+  // Shown by the HTML itself, inside a dock: only the script hides them.
+  for (const id of ["installs", "testflight", "tf-hint"]) els[id]!.hidden = false;
   const copyBtn = { id: "copy", textContent: "Copy invite", onclick: undefined as undefined | (() => void), getAttribute: (n: string) => (n === "data-copied" ? "Copied" : null) };
   (els as Record<string, unknown>)["copy"] = copyBtn;
   const execed: string[] = [];
@@ -559,6 +561,9 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown; 
   const href = `https://s.example/public/join${o.hash}`;
   const doc: { cookie: string } = { cookie: "" };
   const replaced: string[] = [];
+  const listeners: Record<string, () => void> = {};
+  const page = { hidden: false };
+  const storage = o.storage;
   const switchers = ["en", "es"].map((l) => ({ getAttribute: () => l, onclick: undefined as undefined | (() => void) }));
   runInNewContext(JOIN_SCRIPT, {
     // What /public/join/qrcode.js defines, once the page has loaded it.
@@ -567,8 +572,11 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown; 
     navigator: o.noClipboard ? { userAgent: o.userAgent, platform: o.platform, maxTouchPoints: o.touch } : { userAgent: o.userAgent, platform: o.platform, maxTouchPoints: o.touch, clipboard: { writeText: async (t: string) => { if (o.rejectClipboard) throw new Error("no"); copied.push(t); } } },
     setTimeout: (f: () => void) => void timers.push(f),
     URL,
+    ...(storage ? { localStorage: { getItem: (k: string) => storage[k] ?? null, setItem: (k: string, v: string) => void (storage[k] = v) } } : {}),
     document: {
       documentElement: { lang: o.lang ?? "en" },
+      get hidden() { return page.hidden; },
+      addEventListener: (t: string, f: () => void) => void (listeners[t] = f),
       body: { appendChild: () => {}, removeChild: () => {} },
       execCommand: (c: string) => { execed.push(c); return o.execOk ?? true; }, get cookie() { return doc.cookie; }, set cookie(v: string) { doc.cookie = v; }, querySelectorAll: () => switchers, getElementById: (id: string) => els[id], createElement: () => ({ style: {}, select() { execed.push("select"); } }), head: { appendChild: (s: Record<string, unknown>) => appended.push(s) } },
     fetch: async (url: string) => {
@@ -579,7 +587,7 @@ async function runJoin(o: { hash: string; userAgent: string; release?: unknown; 
   });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
-  return { els, appended, fetched, drawn, copied, href, doc, replaced, switchers, copyBtn, execed, timers };
+  return { els, appended, fetched, drawn, copied, href, doc, replaced, switchers, copyBtn, execed, timers, visible: (v: boolean) => { page.hidden = !v; listeners["visibilitychange"]?.(); } };
 }
 
 describe("the join page's script (§5.8)", () => {
@@ -700,6 +708,36 @@ describe("the join page's script (§5.8)", () => {
     const badIos = await runJoin({ hash: "#x", userAgent: IPHONE });
     assert.equal(badIos.els["bad"]!.hidden, false);
     assert.equal(badIos.els["ios"]!.hidden, true);
+  });
+
+  it("once Peel has opened (a tap on Open, then the page hidden): Get Peel and the install hints go, now and on later visits; Open and Copy stay", async () => {
+    type El = { onclick: () => void; hidden: boolean };
+    const gone = (r: Awaited<ReturnType<typeof runJoin>>, ids: string[]) => ids.map((id) => r.els[id]!.hidden);
+    // A first visit: everything there.
+    const storage: Record<string, string> = {};
+    const r = await runJoin({ hash, userAgent: IPHONE, storage });
+    assert.deepEqual(gone(r, ["testflight", "tf-hint"]), [false, false]);
+    // Hidden with no tap first (the lock screen, another app): nothing learned.
+    r.visible(false); r.visible(true);
+    assert.deepEqual(gone(r, ["testflight", "tf-hint"]), [false, false]);
+    assert.deepEqual(storage, {});
+    (r.els["open-ios"] as unknown as El).onclick();
+    r.visible(false);
+    assert.equal(storage["peel_opened"], "1");
+    r.visible(true);
+    assert.deepEqual(gone(r, ["testflight", "tf-hint"]), [true, true]);
+    assert.equal(r.els["ios"]!.hidden, false, "Open stays");
+    // The next visit on this phone, Android's hint too.
+    const again = await runJoin({ hash, userAgent: ANDROID, storage });
+    assert.equal(again.els["installs"]!.hidden, true);
+    const fresh = await runJoin({ hash, userAgent: ANDROID, storage: {} });
+    assert.equal(fresh.els["installs"]!.hidden, false);
+    assert.equal(again.els["android"]!.hidden, false);
+    // No storage (private mode): it still drops them on the way back, and nothing throws.
+    const bare = await runJoin({ hash, userAgent: IPHONE });
+    (bare.els["open-ios"] as unknown as El).onclick();
+    assert.doesNotThrow(() => { bare.visible(false); bare.visible(true); });
+    assert.equal(bare.els["testflight"]!.hidden, true);
   });
 
   it("anywhere else: open it on a phone, a QR code of the page's own URL; no invite: says so and fires nothing", async () => {
