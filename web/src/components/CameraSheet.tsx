@@ -11,7 +11,7 @@ import { words } from "../words";
 // takes a shot, looks at it, and only "Use photo" hands that one JPEG over —
 // or, when the page asked with `review: false`, the shutter hands it over at
 // once (one tap a photo: the pages of a book). An app may add `actions`
-// beside the shutter (a book's "Finish book"): a tap closes the sheet and
+// at the bottom right, in the shutter's row (a book's "Finish book"): a tap closes the sheet and
 // answers { action: id }, not on the Retake / Use photo screen. Every shot flashes, and the
 // shutter waits for the camera's first frame. Cancel, or the page going away,
 // answers null. In the page's language (../words).
@@ -58,7 +58,7 @@ export function CameraSheet(props: {
   title?: string;
   /** Retake / Use photo before the page gets it; false: the shutter hands it over. */
   review: boolean;
-  /** Buttons the page adds beside the shutter, on the live viewfinder only. */
+  /** Buttons the page adds at the bottom right of the live viewfinder, on the live viewfinder only. */
   actions?: CameraAction[];
   onDone: (photo: CameraPhoto | CameraActionResult | null) => void;
 }) {
@@ -155,13 +155,13 @@ export function CameraSheet(props: {
           </>
         ) : (
           <>
+            <div class="camera-actions-balance" aria-hidden="true" />
+            <button type="button" class="camera-shutter" aria-label={words.takePhoto} disabled={!!error || !ready || busy} onClick={take} />
             <div class="camera-actions">
               {props.actions?.map((a) => (
                 <button type="button" key={a.id} class="camera-action" data-testid={`camera-action-${a.id}`} disabled={busy} onClick={() => props.onDone({ action: a.id })}>{a.label}</button>
               ))}
             </div>
-            <button type="button" class="camera-shutter" aria-label={words.takePhoto} disabled={!!error || !ready || busy} onClick={take} />
-            <div class="camera-actions-balance" aria-hidden="true" />
           </>
         )}
       </div>

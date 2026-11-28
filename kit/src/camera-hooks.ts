@@ -10,7 +10,7 @@ export interface UseCamera {
   /** Open the host's camera; the photo the person took as a JPEG `File`, or
    *  null when they cancelled. Call it on a click. */
   capture(params?: CameraCaptureParams): Promise<File | null>;
-  /** Like `capture`, with `params.actions` (buttons beside the shutter): the
+  /** Like `capture`, with `params.actions` (buttons at the bottom right of the live viewfinder): the
    *  photo, the id of the action tapped, or null when cancelled. */
   captureOrAction(params?: CameraCaptureParams): Promise<CameraOutcome>;
 }

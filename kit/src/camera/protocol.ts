@@ -25,7 +25,7 @@ export const CAMERA_MAX_SIDE = 4096;
 export const CAMERA_ACTIONS_MAX = 2;
 export const CAMERA_ACTION_LABEL_MAX = 24;
 
-/** A button the page adds beside the shutter ("Finish book"): tapping it
+/** A button the page adds at the bottom right of the live viewfinder ("Finish book"): tapping it
  *  closes the camera and answers `{ action: id }` instead of a photo. */
 export interface CameraAction {
   /** What the page gets back: 1 to 32 of a-z, 0-9, `_` and `-`. */
@@ -45,7 +45,7 @@ export interface CameraCaptureParams {
    *  default. `false`: the shutter hands the photo over at once — one tap a
    *  photo, for many in a row (the pages of a book). */
   review?: boolean;
-  /** Up to `CAMERA_ACTIONS_MAX` buttons beside the shutter on the live
+  /** Up to `CAMERA_ACTIONS_MAX` buttons at the bottom right of the live
    *  viewfinder (not on the Retake / Use photo screen). Cancel stays. */
   actions?: CameraAction[];
 }
